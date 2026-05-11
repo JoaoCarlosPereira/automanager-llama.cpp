@@ -193,22 +193,22 @@ def index():
         m_dir = os.path.dirname(m).replace(MODELS_DIR, "")
         is_default = "checked" if m == default_model else ""
         model_items += f"""
-        <div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg">
-            <div class="flex-1 min-w-0 mr-4 md:mr-6">
-                <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2">
-                    <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i>
-                    <p class="text-sm md:text-base font-bold text-slate-100 truncate" title="{m_name}">{m_name}</p>
+        <div class="group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg">
+            <div class="flex-1 min-w-0 mr-4">
+                <div class="flex items-center gap-2 mb-1">
+                    <i class="fas fa-cube text-blue-400 text-[10px]"></i>
+                    <p class="text-sm font-bold text-slate-100 truncate" title="{m_name}">{m_name}</p>
                 </div>
-                <p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
+                <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
             </div>
-            <div class="flex items-center gap-3 md:gap-6">
-                <div class="flex flex-col items-center gap-1 md:gap-1.5">
-                    <span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
-                    <input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" 
+            <div class="flex items-center gap-3 md:gap-4">
+                <div class="flex flex-col items-center gap-1">
+                    <span class="text-[8px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
+                    <input type="checkbox" class="model-default-checkbox w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" 
                            {is_default} onclick="setDefaultModel(this, '{m}')">
                 </div>
-                <button onclick="startModel('{m}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
-                    <i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
+                <button onclick="startModel('{m}')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
+                    <i class="fas fa-play text-[8px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
                 </button>
             </div>
         </div>
@@ -221,34 +221,34 @@ def index():
         if len(gpus) == 1: default_val = "100"
         gpu_rows += f"""
         <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
-            <td class="px-3 md:px-6 py-4 md:py-8 text-center">
+            <td class="px-3 md:px-6 py-4 md:py-6 text-center">
                 <div class="flex flex-col items-center gap-2">
-                    <span class="gpu-util-val text-xs md:text-sm font-black text-blue-400 font-mono">0%</span>
-                    <div class="w-12 md:w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div></div>
+                    <span class="gpu-util-val text-xs font-black text-blue-400 font-mono">0%</span>
+                    <div class="w-12 h-1 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div></div>
                 </div>
             </td>
-            <td class="px-2 md:px-4 py-4 md:py-8">
+            <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex items-center gap-2 md:gap-4">
-                    <input type="checkbox" checked class="gpu-checkbox w-5 h-5 md:w-6 md:h-6 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
-                    <div class="flex flex-col"><span class="text-[9px] md:text-[11px] font-black text-blue-400 uppercase tracking-widest mb-0.5">ID {g['index']}</span><span class="text-sm md:text-base font-bold text-slate-100 whitespace-nowrap">{g['name']}</span></div>
+                    <input type="checkbox" checked class="gpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <div class="flex flex-col"><span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">ID {g['index']}</span><span class="text-sm font-bold text-slate-100 whitespace-nowrap">{g['name']}</span></div>
                 </div>
             </td>
-            <td class="px-2 md:px-4 py-4 md:py-8">
+            <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex flex-col md:flex-row gap-2 md:gap-6">
-                    <div class="flex flex-col"><span class="text-[8px] md:text-[10px] font-black text-slate-500 uppercase mb-0.5 md:mb-1.5">Temp</span><span class="gpu-temp-val text-xs md:text-sm font-bold text-slate-300 font-mono">--°C</span></div>
-                    <div class="flex flex-col"><span class="text-[8px] md:text-[10px] font-black text-slate-500 uppercase mb-0.5 md:mb-1.5">Power</span><span class="gpu-power-val text-xs md:text-sm font-bold text-slate-300 font-mono">--W</span></div>
+                    <div class="flex flex-col"><span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Temp</span><span class="gpu-temp-val text-xs font-bold text-slate-300 font-mono">--°C</span></div>
+                    <div class="flex flex-col"><span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Power</span><span class="gpu-power-val text-xs font-bold text-slate-300 font-mono">--W</span></div>
                 </div>
             </td>
-            <td class="px-2 md:px-4 py-4 md:py-8">
+            <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex flex-col gap-2 min-w-[100px] md:min-w-[160px]">
-                    <div class="flex justify-between items-end"><span class="text-[8px] md:text-[10px] font-black text-slate-500 uppercase">VRAM</span><span class="gpu-vram-text text-[9px] md:text-xs font-mono text-blue-400">0 / {g['vram']} MB</span></div>
-                    <div class="w-full h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-vram-bar h-full bg-cyan-500 transition-all duration-1000" style="width: 0%"></div></div>
+                    <div class="flex justify-between items-end"><span class="text-[8px] font-black text-slate-500 uppercase">VRAM</span><span class="gpu-vram-text text-[9px] font-mono text-blue-400">0 / {g['vram']} MB</span></div>
+                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-vram-bar h-full bg-cyan-500 transition-all duration-1000" style="width: 0%"></div></div>
                 </div>
             </td>
-            <td class="px-2 md:px-4 py-4 md:py-8">
+            <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="relative">
-                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-16 md:w-24 pl-2 md:pl-4 pr-6 md:pr-10 py-2 md:py-3 bg-slate-900/80 border border-slate-700 rounded-xl text-sm md:text-base font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
-                    <span class="absolute right-2 md:right-4 top-1/2 -translate-y-1/2 text-[10px] md:text-xs font-black text-slate-600">%</span>
+                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-20 pl-2 md:pl-3 pr-6 md:pr-8 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
+                    <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
                 </div>
             </td>
         </tr>
@@ -265,7 +265,7 @@ def index():
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
             :root { --bg-deep: #020617; --card-bg: rgba(15, 23, 42, 0.6); }
-            body { font-family: 'Space Grotesk', sans-serif; background: radial-gradient(circle at 50% 0%, #1e3a8a 0%, #020617 100%); background-attachment: fixed; font-size: 16px; }
+            body { font-family: 'Space Grotesk', sans-serif; background: radial-gradient(circle at 50% 0%, #1e3a8a 0%, #020617 100%); background-attachment: fixed; }
             .font-mono { font-family: 'JetBrains Mono', monospace; }
             .glass { background: var(--card-bg); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); }
             .custom-scroll::-webkit-scrollbar { width: 6px; }
@@ -278,79 +278,79 @@ def index():
     </head>
     <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
         <div class="max-w-[1600px] mx-auto px-4 md:px-8 pt-6 md:pt-10">
-            <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-6 rounded-3xl md:rounded-[2.5rem] gap-4">
+            <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
                 <div class="flex items-center gap-4 md:gap-6">
-                    <div class="bg-blue-600 p-3 md:p-4 rounded-2xl shadow-xl shadow-blue-500/20"><i class="fas fa-brain text-white text-xl md:text-2xl"></i></div>
+                    <div class="bg-blue-600 p-3 rounded-2xl shadow-xl shadow-blue-500/20"><i class="fas fa-brain text-white text-xl md:text-2xl"></i></div>
                     <div>
-                        <h1 class="text-xl md:text-2xl font-bold tracking-tight text-white flex items-center gap-2 md:gap-3">Automanager <span class="text-blue-500 font-light">Llama.cpp</span></h1>
-                        <p class="text-[11px] md:text-sm text-slate-500 font-mono tracking-wider uppercase">Interface Avançada de Computação Neural</p>
+                        <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2 md:gap-3">Automanager <span class="text-blue-500 font-light">Llama.cpp</span></h1>
+                        <p class="text-[10px] text-slate-500 font-mono tracking-wider uppercase">Interface Avançada de Computação Neural</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-4 md:gap-8 w-full md:w-auto justify-center md:justify-end">
-                    <div class="hidden sm:flex items-center gap-3 md:gap-5 px-4 md:px-6 py-2 md:py-3 bg-slate-900/50 rounded-2xl border border-slate-800">
-                        <div class="flex flex-col items-end"><span class="text-[9px] md:text-[10px] text-slate-500 font-black uppercase tracking-tighter">IP do Motor</span><span id="display-ip" class="text-xs md:text-sm font-mono text-blue-400">#FIXED_IP#</span></div>
-                        <i class="fas fa-network-wired text-slate-600 text-base md:text-lg"></i>
+                    <div class="hidden sm:flex items-center gap-3 md:gap-5 px-4 md:px-6 py-2 bg-slate-900/50 rounded-xl border border-slate-800">
+                        <div class="flex flex-col items-end"><span class="text-[9px] md:text-[10px] text-slate-500 font-black uppercase tracking-tighter">IP do Motor</span><span id="display-ip" class="text-xs font-mono text-blue-400">#FIXED_IP#</span></div>
+                        <i class="fas fa-network-wired text-slate-600 text-sm md:text-base"></i>
                     </div>
-                    <div id="status-badge" class="px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase transition-all duration-500"><div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div>OFFLINE</div>
+                    <div id="status-badge" class="px-6 md:px-8 py-2 md:py-2.5 rounded-xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 glass border-slate-700/50 text-slate-500 uppercase transition-all duration-500"><div class="w-2 h-2 rounded-full bg-slate-600"></div>OFFLINE</div>
                 </div>
             </header>
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
                 <div class="lg:col-span-8 space-y-6 md:space-y-10">
                     <div class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
-                        <div class="glass p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border-l-4 border-blue-600">
-                            <div class="flex justify-between items-start mb-4 md:mb-6"><p class="text-[9px] md:text-[11px] font-black text-slate-500 uppercase tracking-widest font-mono">Processador (Host)</p><i class="fas fa-microchip text-slate-700 text-xs md:text-sm"></i></div>
-                            <div class="flex items-end justify-between gap-4 md:gap-6"><h3 id="cpu-val" class="text-2xl md:text-4xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden"><div id="cpu-bar" class="h-full bg-blue-500 transition-all duration-700 shadow-[0_0_10px_rgba(37,99,235,0.5)]" style="width: 0%"></div></div></div>
+                        <div class="glass p-5 rounded-[1.5rem] border-l-4 border-blue-600">
+                            <div class="flex justify-between items-start mb-4"><p class="text-[10px] font-black text-slate-500 uppercase tracking-widest font-mono">Processador (Host)</p><i class="fas fa-microchip text-slate-700 text-xs"></i></div>
+                            <div class="flex items-end justify-between gap-4"><h3 id="cpu-val" class="text-3xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden"><div id="cpu-bar" class="h-full bg-blue-500 transition-all duration-700 shadow-[0_0_10px_rgba(37,99,235,0.5)]" style="width: 0%"></div></div></div>
                         </div>
-                        <div class="glass p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border-l-4 border-emerald-600">
-                            <div class="flex justify-between items-start mb-4 md:mb-6"><p class="text-[9px] md:text-[11px] font-black text-slate-500 uppercase tracking-widest font-mono">Memória RAM (Host)</p><i class="fas fa-memory text-slate-700 text-xs md:text-sm"></i></div>
-                            <div class="flex items-end justify-between gap-4 md:gap-6"><h3 id="ram-val" class="text-2xl md:text-4xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden"><div id="ram-bar" class="h-full bg-emerald-500 transition-all duration-700" style="width: 0%"></div></div></div>
+                        <div class="glass p-5 rounded-[1.5rem] border-l-4 border-emerald-600">
+                            <div class="flex justify-between items-start mb-4"><p class="text-[10px] font-black text-slate-500 uppercase tracking-widest font-mono">Memória RAM (Host)</p><i class="fas fa-memory text-slate-700 text-xs"></i></div>
+                            <div class="flex items-end justify-between gap-4"><h3 id="ram-val" class="text-3xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden"><div id="ram-bar" class="h-full bg-emerald-500 transition-all duration-700" style="width: 0%"></div></div></div>
                         </div>
                     </div>
-                    <div class="glass rounded-[2rem] md:rounded-[2.5rem] overflow-hidden p-6 md:p-10">
-                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-6 md:gap-8 mb-8 md:mb-10 border-b border-slate-800/50 pb-6 md:pb-8">
-                             <div><h3 class="font-bold text-lg md:text-xl text-white flex items-center gap-3 md:gap-4"><i class="fas fa-microchip text-blue-500"></i>Recursos de GPU & Configuração</h3><p class="text-xs md:text-sm text-slate-500 mt-2 font-medium italic">Monitore e distribua a carga de processamento entre as GPUs</p></div>
-                             <div class="flex items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 md:p-2 rounded-2xl border border-slate-800"><label class="text-[9px] md:text-[11px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-3 md:px-5 py-2 md:py-3 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" selected class="bg-slate-900">64K</option><option value="131072" class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
+                    <div class="glass rounded-[2rem] overflow-hidden p-6 md:p-8">
+                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-6 md:gap-8 mb-8 border-b border-slate-800/50 pb-6">
+                             <div><h3 class="font-bold text-lg text-white flex items-center gap-3"><i class="fas fa-microchip text-blue-500"></i>Recursos de GPU & Configuração</h3><p class="text-xs text-slate-500 mt-1 font-medium italic">Monitore e distribua a carga de processamento entre as GPUs</p></div>
+                             <div class="flex items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800"><label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" selected class="bg-slate-900">64K</option><option value="131072" class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
                         </div>
-                        <div class="overflow-x-auto"><table class="w-full text-left"><thead class="text-[9px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest"><tr><th class="px-4 md:px-6 py-4 md:py-5 text-center">Uso</th><th class="px-4 py-4 md:py-5">Dispositivo</th><th class="px-4 py-4 md:py-5">Monitoramento</th><th class="px-4 py-4 md:py-5">VRAM Status</th><th class="px-4 py-4 md:py-5">Distribuição</th></tr></thead><tbody id="gpu-table-body" class="divide-y divide-slate-800/50">#GPU_ROWS#</tbody></table></div>
-                        <div class="flex flex-col sm:flex-row justify-between items-center pt-8 md:pt-10 gap-4"><div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500"><i class="fas fa-info-circle text-blue-500"></i>Distribua 100% da carga total entre as GPUs selecionadas</div><span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-5 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span></div>
+                        <div class="overflow-x-auto"><table class="w-full text-left"><thead class="text-[9px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest"><tr><th class="px-4 md:px-6 py-4 text-center">Uso</th><th class="px-4 py-4">Dispositivo</th><th class="px-4 py-4">Monitoramento</th><th class="px-4 py-4">VRAM Status</th><th class="px-4 py-4">Distribuição</th></tr></thead><tbody id="gpu-table-body" class="divide-y divide-slate-800/50">#GPU_ROWS#</tbody></table></div>
+                        <div class="flex flex-col sm:flex-row justify-between items-center pt-8 gap-4"><div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500"><i class="fas fa-info-circle text-blue-500"></i>Distribua 100% da carga total entre as GPUs selecionadas</div><span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 py-2 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span></div>
                     </div>
-                    <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-12 rounded-[2rem] md:rounded-[3rem] border border-blue-500/30 hidden transition-all duration-700 animate-in fade-in zoom-in">
+                    <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] border border-blue-500/30 hidden transition-all duration-700 animate-in fade-in zoom-in">
                         <div class="flex flex-col lg:flex-row items-center justify-between gap-8 md:gap-10">
                             <div class="flex items-center gap-5 md:gap-8 w-full">
-                                <div class="w-16 md:w-20 h-16 md:h-20 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0"><i class="fas fa-robot text-2xl md:text-3xl"></i></div>
+                                <div class="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0"><i class="fas fa-robot text-2xl md:text-3xl"></i></div>
                                 <div class="min-w-0">
-                                    <p class="text-blue-400 text-[10px] md:text-[11px] font-black uppercase tracking-[0.3em] mb-2 md:mb-3 font-mono">Motor de Computação Primário</p>
-                                    <h2 id="active-model-name" class="text-xl md:text-3xl font-bold text-white truncate max-w-[200px] sm:max-w-md">--</h2>
-                                    <div class="flex gap-4 md:gap-6 mt-2 md:mt-4"><div class="flex items-center gap-2 md:gap-3 text-[10px] md:text-xs font-mono text-slate-400"><span class="w-1.5 md:w-2 h-1.5 md:h-2 rounded-full bg-emerald-500"></span>Ativo há: <span id="uptime-val">Calculando...</span></div></div>
+                                    <p class="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2 font-mono">Motor de Computação Primário</p>
+                                    <h2 id="active-model-name" class="text-xl md:text-2xl font-bold text-white truncate max-w-[200px] sm:max-w-md">--</h2>
+                                    <div class="flex gap-4 mt-3"><div class="flex items-center gap-2 text-[10px] font-mono text-slate-400"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Ativo há: <span id="uptime-val">Calculando...</span></div></div>
                                 </div>
                             </div>
                             <div class="flex flex-col sm:flex-row gap-4 md:gap-6 w-full lg:w-auto">
-                                <a id="chat-link" href="#" target="_blank" class="px-6 md:px-12 py-4 md:py-5 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-[10px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-3 md:gap-4 uppercase tracking-widest whitespace-nowrap">
-                                    <i class="fas fa-comments text-sm md:text-base"></i> ABRIR CHAT
+                                <a id="chat-link" href="#" target="_blank" class="px-6 md:px-10 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-[10px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-3 md:gap-4 uppercase tracking-widest whitespace-nowrap">
+                                    <i class="fas fa-comments text-sm"></i> ABRIR CHAT
                                 </a>
-                                <button onclick="stopModel()" class="px-6 md:px-12 py-4 md:py-5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[10px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
+                                <button onclick="stopModel()" class="px-6 md:px-10 py-4 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[10px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
                                     ENCERRAR
                                 </button>
                             </div>
                         </div>
                     </div>
-                    <div class="glass rounded-[2rem] md:rounded-[2.5rem] overflow-hidden shadow-2xl border border-slate-800">
-                        <div class="px-6 md:px-10 py-4 md:py-5 bg-slate-900/60 border-b border-slate-800 flex justify-between items-center">
+                    <div class="glass rounded-[2rem] overflow-hidden shadow-2xl border border-slate-800">
+                        <div class="px-6 md:px-10 py-4 bg-slate-900/60 border-b border-slate-800 flex justify-between items-center">
                             <div class="flex items-center gap-3 md:gap-4">
-                                <div class="flex gap-1.5 md:gap-2"><div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-700"></div><div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-700"></div><div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-700"></div></div>
+                                <div class="flex gap-1.5 md:gap-2"><div class="w-2 h-2 rounded-full bg-slate-700"></div><div class="w-2 h-2 rounded-full bg-slate-700"></div><div class="w-2 h-2 rounded-full bg-slate-700"></div></div>
                                 <p class="text-slate-400 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono ml-2 md:ml-4">Saída de logs do sistema</p>
                             </div>
-                            <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] md:text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest"><i class="fas fa-trash-alt mr-2 md:mr-3"></i> Limpar</button>
+                            <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] md:text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest"><i class="fas fa-trash-alt mr-2"></i> Limpar</button>
                         </div>
                         <div id="log-box" class="custom-scroll p-6 md:p-10 h-[300px] md:h-[400px] overflow-y-auto font-mono text-[10px] md:text-xs text-slate-400 leading-relaxed whitespace-pre-wrap bg-slate-950/40"></div>
                     </div>
                 </div>
                 <div class="lg:col-span-4 space-y-6 md:space-y-10">
-                    <div class="glass rounded-[2rem] md:rounded-[2.5rem] border border-slate-800 flex flex-col h-auto md:h-[1000px]">
-                        <div class="p-6 md:p-10 border-b border-slate-800/50 flex items-center justify-between"><div class="flex items-center gap-4 md:gap-5"><div class="w-10 md:w-12 h-10 md:h-12 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700"><i class="fas fa-database text-amber-500 text-base md:text-lg"></i></div><h3 class="font-bold text-lg md:text-xl text-white tracking-tight">Model Repository</h3></div><span class="text-[10px] md:text-[11px] bg-slate-800 text-slate-400 px-3 md:px-4 py-1 md:py-1.5 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span></div>
-                        <div class="p-6 md:p-10 border-b border-slate-800/30 bg-blue-600/5"><p class="text-[10px] md:text-[11px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p><div class="space-y-3 md:space-y-4"><div class="relative group"><i class="fas fa-link absolute left-4 md:left-5 top-1/2 -translate-y-1/2 text-slate-600 text-xs md:text-sm transition-colors group-focus-within:text-blue-500"></i><input type="text" id="download-url" placeholder="https://..." class="w-full pl-10 md:pl-12 pr-4 md:pr-5 py-3 md:py-4 bg-slate-900 border border-slate-700 rounded-2xl text-xs md:text-sm text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600"></div><button onclick="downloadModel()" class="w-full py-4 md:py-5 bg-slate-100 hover:bg-white text-slate-950 text-[10px] md:text-xs font-black rounded-2xl transition-all shadow-xl active:scale-[0.98] uppercase tracking-[0.2em] flex items-center justify-center gap-3 md:gap-4"><i class="fas fa-cloud-download-alt text-sm md:text-base"></i> EXECUTAR DOWNLOAD</button></div><div id="download-status" class="mt-6 md:mt-8 space-y-3 md:space-y-4"></div></div>
-                        <div id="model-list-container" class="p-6 md:p-8 flex-1 overflow-y-auto custom-scroll space-y-2">#MODEL_ITEMS#</div>
-                        <div class="p-6 md:p-10 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]"><div class="flex flex-col gap-3 md:gap-4"><div class="flex items-center justify-between"><p class="text-[9px] md:text-[10px] text-slate-500 font-black uppercase tracking-widest">Interface de API</p><span class="text-[8px] md:text-[9px] bg-emerald-500/10 text-emerald-500 px-2 md:px-3 py-0.5 md:py-1 rounded border border-emerald-500/20 uppercase font-black">Ativo</span></div><div class="flex items-center gap-3 md:gap-4 bg-slate-900 p-3 md:p-4 rounded-xl border border-slate-800 group"><code id="api-link" class="text-[10px] md:text-xs text-blue-400 font-mono flex-1 truncate"></code><button onclick="navigator.clipboard.writeText(document.getElementById('api-link').innerText)" class="text-slate-600 hover:text-white transition-colors"><i class="far fa-copy"></i></button></div></div></div>
+                    <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[900px]">
+                        <div class="p-8 border-b border-slate-800/50 flex items-center justify-between"><div class="flex items-center gap-4 md:gap-5"><div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700"><i class="fas fa-database text-amber-500 text-sm md:text-base"></i></div><h3 class="font-bold text-base md:text-lg text-white tracking-tight">Model Repository</h3></div><span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span></div>
+                        <div class="p-8 border-b border-slate-800/30 bg-blue-600/5"><p class="text-[10px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p><div class="space-y-3 md:space-y-4"><div class="relative group"><i class="fas fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 text-xs md:text-sm transition-colors group-focus-within:text-blue-500"></i><input type="text" id="download-url" placeholder="https://..." class="w-full pl-10 pr-4 py-3 bg-slate-900 border border-slate-700 rounded-2xl text-xs text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600"></div><button onclick="downloadModel()" class="w-full py-4 bg-slate-100 hover:bg-white text-slate-950 text-[10px] font-black rounded-2xl transition-all shadow-xl active:scale-[0.98] uppercase tracking-[0.2em] flex items-center justify-center gap-3 md:gap-4"><i class="fas fa-cloud-download-alt text-sm"></i> EXECUTAR DOWNLOAD</button></div><div id="download-status" class="mt-6 md:mt-8 space-y-3"></div></div>
+                        <div id="model-list-container" class="p-6 flex-1 overflow-y-auto custom-scroll space-y-2">#MODEL_ITEMS#</div>
+                        <div class="p-8 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]"><div class="flex flex-col gap-3"><div class="flex items-center justify-between"><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Interface de API</p><span class="text-[8px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/20 uppercase font-black">Ativo</span></div><div class="flex items-center gap-3 md:gap-4 bg-slate-900 p-3 rounded-xl border border-slate-800 group"><code id="api-link" class="text-[10px] text-blue-400 font-mono flex-1 truncate"></code><button onclick="navigator.clipboard.writeText(document.getElementById('api-link').innerText)" class="text-slate-600 hover:text-white transition-colors"><i class="far fa-copy"></i></button></div></div></div>
                     </div>
                 </div>
             </div>
