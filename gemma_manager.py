@@ -6,7 +6,10 @@ import psutil
 import json
 import logging
 import re
-from fastapi import FastAPI, HTTPException
+import uuid
+import threading
+import requests
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -22,6 +25,55 @@ app = FastAPI(title="Llama.cpp Model Manager")
 MODELS_DIR = "/media/docker/models"
 SERVER_LOG_PATH = "/root/gemma_server.log"
 FIXED_IP = "192.168.2.183"
+
+# Estado dos downloads
+downloads = {}
+
+def download_model_task(download_id: str, url: str, filename: Optional[str]):
+    try:
+        if not filename:
+            filename = url.split("/")[-1].split("?")[0]
+            if not filename.endswith(".gguf"):
+                filename += ".gguf"
+        
+        # Remove a extensão para criar o nome da pasta
+        model_name_folder = filename.replace(".gguf", "")
+        model_specific_dir = os.path.join(MODELS_DIR, model_name_folder)
+        
+        # Garante que o diretório específico existe
+        os.makedirs(model_specific_dir, exist_ok=True)
+        path = os.path.join(model_specific_dir, filename)
+        
+        # Se o arquivo já existe dentro da pasta, adiciona um sufixo
+        if os.path.exists(path):
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}_{int(time.time())}{ext}"
+            path = os.path.join(model_specific_dir, filename)
+
+        downloads[download_id] = {"filename": filename, "status": "downloading", "progress": 0}
+        
+        logging.info(f"Iniciando download: {url} -> {path}")
+        
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        
+        downloaded = 0
+        with open(path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192 * 4):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        downloads[download_id]["progress"] = round((downloaded / total_size) * 100, 2)
+        
+        downloads[download_id]["status"] = "completed"
+        downloads[download_id]["progress"] = 100
+        logging.info(f"Download concluído: {filename}")
+    except Exception as e:
+        logging.error(f"Erro no download {download_id}: {e}")
+        downloads[download_id]["status"] = "failed"
+        downloads[download_id]["error"] = str(e)
 
 def get_gguf_models():
     files = glob.glob(os.path.join(MODELS_DIR, "**/*.gguf"), recursive=True)
@@ -216,7 +268,19 @@ def index():
                             <i class="fas fa-folder text-amber-400"></i>
                             <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Modelos Disponíveis</h3>
                         </div>
-                        <div class="p-4 flex-1 overflow-y-auto custom-scroll">#MODEL_ITEMS#</div>
+                        
+                        <div class="p-6 border-b border-slate-50 bg-slate-50/50">
+                            <p class="text-[10px] font-black text-slate-400 uppercase mb-3 tracking-widest">Baixar Novo Modelo</p>
+                            <div class="space-y-2">
+                                <input type="text" id="download-url" placeholder="URL do arquivo .gguf" class="w-full px-4 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                                <button onclick="downloadModel()" class="w-full py-2.5 bg-green-600 text-white text-[10px] font-black rounded-xl hover:bg-green-700 transition-all shadow-lg shadow-green-100 active:scale-95 uppercase">
+                                    <i class="fas fa-download mr-2"></i> Iniciar Download
+                                </button>
+                            </div>
+                            <div id="download-status" class="mt-4 space-y-2"></div>
+                        </div>
+
+                        <div id="model-list-container" class="p-4 flex-1 overflow-y-auto custom-scroll">#MODEL_ITEMS#</div>
                         <div class="p-6 bg-slate-50 border-t border-slate-100 rounded-b-2xl text-center">
                              <p class="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">OpenAI API Endpoint</p>
                              <p id="api-link" class="text-[10px] text-blue-600 font-mono font-bold"></p>
@@ -297,6 +361,82 @@ def index():
                 } catch(e) {}
             }
 
+            async function downloadModel() {
+                const urlInput = document.getElementById('download-url');
+                const url = urlInput.value.trim();
+                if (!url) return alert("Por favor, insira a URL do modelo GGUF.");
+                
+                try {
+                    const res = await fetch('/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ url })
+                    });
+                    if (res.ok) {
+                        urlInput.value = '';
+                        updateDownloads();
+                    } else {
+                        alert("Erro ao iniciar download.");
+                    }
+                } catch(e) {
+                    alert("Erro de conexão.");
+                }
+            }
+
+            async function updateDownloads() {
+                try {
+                    const res = await fetch('/downloads');
+                    const data = await res.json();
+                    const container = document.getElementById('download-status');
+                    const entries = Object.entries(data);
+                    
+                    if (entries.length === 0) {
+                        container.innerHTML = '';
+                        return;
+                    }
+
+                    let hasCompleted = false;
+                    container.innerHTML = entries.map(([id, d]) => {
+                        if (d.status === 'completed') hasCompleted = true;
+                        return `
+                        <div class="p-3 bg-white rounded-xl border border-slate-100 shadow-sm">
+                            <div class="flex justify-between items-center mb-2">
+                                <p class="text-[9px] font-black truncate flex-1 mr-2 text-slate-700" title="${d.filename}">${d.filename}</p>
+                                <span class="text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                    d.status === 'completed' ? 'bg-green-100 text-green-600' : 
+                                    d.status === 'failed' ? 'bg-red-100 text-red-600' : 
+                                    'bg-blue-100 text-blue-600'
+                                }">${d.status}</span>
+                            </div>
+                            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div class="h-full bg-blue-500 transition-all duration-500" style="width: ${d.progress}%"></div>
+                            </div>
+                            ${d.error ? `<p class="text-[8px] text-red-500 mt-1 font-medium italic">${d.error}</p>` : ''}
+                        </div>
+                        `;
+                    }).join('');
+                    
+                    if (hasCompleted) updateModels();
+                } catch(e) {}
+            }
+
+            async function updateModels() {
+                try {
+                    const res = await fetch('/models');
+                    const data = await res.json();
+                    const container = document.getElementById('model-list-container');
+                    container.innerHTML = data.map(m => `
+                        <div class="flex items-center justify-between p-3 mb-2 bg-gray-50 rounded-xl hover:bg-blue-50 transition-all border border-transparent hover:border-blue-100">
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-bold text-gray-800 truncate" title="${m.name}">${m.name}</p>
+                                <p class="text-[9px] text-gray-400 truncate uppercase">${m.dir}</p>
+                            </div>
+                            <button onclick="startModel('${m.path}')" class="ml-3 px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 transition-all shadow-md active:scale-95 uppercase">Iniciar</button>
+                        </div>
+                    `).join('');
+                } catch(e) {}
+            }
+
             async function startModel(path) {
                 const weights = [];
                 document.querySelectorAll('.gpu-row').forEach(r => {
@@ -318,7 +458,8 @@ def index():
 
             setInterval(updateMetrics, 2000);
             setInterval(updateStatus, 5000);
-            updateStatus(); updateMetrics();
+            setInterval(updateDownloads, 3000);
+            updateStatus(); updateMetrics(); updateDownloads(); updateModels();
         </script>
     </body>
     </html>
@@ -340,9 +481,35 @@ class StartRequest(BaseModel):
     gpu_weights: List[GPUWeight]
     context_size: int = 65536
 
+class DownloadRequest(BaseModel):
+    url: str
+    filename: Optional[str] = None
+
 @app.get("/status")
 def get_status():
     return find_llama_server()
+
+@app.get("/models")
+def list_models():
+    models = get_gguf_models()
+    result = []
+    for m in models:
+        result.append({
+            "path": m,
+            "name": os.path.basename(m),
+            "dir": os.path.dirname(m).replace(MODELS_DIR, "") or "/"
+        })
+    return result
+
+@app.get("/downloads")
+def get_downloads():
+    return downloads
+
+@app.post("/download")
+def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
+    download_id = str(uuid.uuid4())
+    background_tasks.add_task(download_model_task, download_id, req.url, req.filename)
+    return {"download_id": download_id}
 
 @app.post("/start")
 def start_model(req: StartRequest):
