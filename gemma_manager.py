@@ -20,11 +20,27 @@ import time
 logging.basicConfig(filename='/root/manager.log', level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-app = FastAPI(title="Llama.cpp Model Manager")
+app = FastAPI(title="Automanager Llama.cpp")
 
 MODELS_DIR = "/media/docker/models"
 SERVER_LOG_PATH = "/root/gemma_server.log"
 FIXED_IP = "192.168.2.183"
+CONFIG_PATH = "/root/automanager_config.json"
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                return json.load(f)
+        except: return {}
+    return {}
+
+def save_config(config):
+    try:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(config, f)
+    except Exception as e:
+        logging.error(f"Erro ao salvar config: {e}")
 
 # Estado dos downloads
 downloads = {}
@@ -36,22 +52,17 @@ def download_model_task(download_id: str, url: str, filename: Optional[str]):
             if not filename.endswith(".gguf"):
                 filename += ".gguf"
         
-        # Remove a extensão para criar o nome da pasta
         model_name_folder = filename.replace(".gguf", "")
         model_specific_dir = os.path.join(MODELS_DIR, model_name_folder)
-        
-        # Garante que o diretório específico existe
         os.makedirs(model_specific_dir, exist_ok=True)
         path = os.path.join(model_specific_dir, filename)
         
-        # Se o arquivo já existe dentro da pasta, adiciona um sufixo
         if os.path.exists(path):
             base, ext = os.path.splitext(filename)
             filename = f"{base}_{int(time.time())}{ext}"
             path = os.path.join(model_specific_dir, filename)
 
         downloads[download_id] = {"filename": filename, "status": "downloading", "progress": 0}
-        
         logging.info(f"Iniciando download: {url} -> {path}")
         
         response = requests.get(url, stream=True, timeout=30)
@@ -116,17 +127,41 @@ def find_llama_server():
         except (psutil.NoSuchProcess, psutil.AccessDenied): continue
     return {"running": False}
 
+@app.on_event("startup")
+async def startup_event():
+    config = load_config()
+    default_model = config.get("default_model")
+    if default_model and os.path.exists(default_model):
+        if not find_llama_server().get("running"):
+            logging.info(f"Auto-start: {default_model}")
+            try:
+                gpus = get_gpu_info()
+                weights = []
+                for g in gpus:
+                    is_3090 = "3090" in g['name']
+                    val = 100 if len(gpus) == 1 else (95 if is_3090 else 5)
+                    weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
+                start_model(StartRequest(path=default_model, gpu_weights=weights))
+            except Exception as e:
+                logging.error(f"Auto-start error: {e}")
+
 @app.get("/metrics")
 def get_metrics():
     try:
-        gpu_output = subprocess.check_output(["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"]).decode()
+        gpu_output = subprocess.check_output(["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"]).decode()
         gpus = []
         for line in gpu_output.strip().split("\n"):
             if not line.strip(): continue
-            parts = line.split(", ")
-            if len(parts) == 4:
-                idx, util, mem_used, mem_total = parts
-                gpus.append({"index": idx, "util": util, "mem_used": mem_used, "mem_total": mem_total})
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 6:
+                idx, util, mem_used, mem_total, temp, power = parts
+                mem_used_f = float(mem_used)
+                mem_total_f = float(mem_total)
+                vram_pct = round((mem_used_f / mem_total_f) * 100, 1) if mem_total_f > 0 else 0
+                gpus.append({
+                    "index": int(idx), "util": util, "mem_used": mem_used, "mem_total": mem_total,
+                    "vram_pct": vram_pct, "temp": temp, "power": power.split('.')[0] if '.' in power else power
+                })
         return {"cpu": psutil.cpu_percent(), "ram": psutil.virtual_memory().percent, "gpus": gpus}
     except: return {"cpu": 0, "ram": 0, "gpus": []}
 
@@ -134,7 +169,7 @@ def get_metrics():
 def stream_logs():
     def generate():
         if not os.path.exists(SERVER_LOG_PATH):
-            yield "Log file not found.\n"
+            yield "Arquivo de log não encontrado.\n"
             return
         with open(SERVER_LOG_PATH, 'r') as f:
             lines = f.readlines()
@@ -149,34 +184,71 @@ def stream_logs():
 def index():
     models = get_gguf_models()
     gpus = get_gpu_info()
+    config = load_config()
+    default_model = config.get("default_model")
+    
     model_items = ""
     for m in models:
         m_name = os.path.basename(m)
         m_dir = os.path.dirname(m).replace(MODELS_DIR, "")
+        is_default = "checked" if m == default_model else ""
         model_items += f"""
-        <div class="flex items-center justify-between p-3 mb-2 bg-gray-50 rounded-xl hover:bg-blue-50 transition-all border border-transparent hover:border-blue-100">
-            <div class="flex-1 min-w-0">
-                <p class="text-sm font-bold text-gray-800 truncate" title="{m_name}">{m_name}</p>
-                <p class="text-[9px] text-gray-400 truncate uppercase">{m_dir or "/"}</p>
+        <div class="group flex items-center justify-between p-5 mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg">
+            <div class="flex-1 min-w-0 mr-6">
+                <div class="flex items-center gap-3 mb-2">
+                    <i class="fas fa-cube text-blue-400 text-xs"></i>
+                    <p class="text-base font-bold text-slate-100 truncate" title="{m_name}">{m_name}</p>
+                </div>
+                <p class="text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
             </div>
-            <button onclick="startModel('{m}')" class="ml-3 px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 transition-all shadow-md active:scale-95 uppercase">Iniciar</button>
+            <div class="flex items-center gap-6">
+                <div class="flex flex-col items-center gap-1.5">
+                    <span class="text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
+                    <input type="checkbox" class="model-default-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" 
+                           {is_default} onclick="setDefaultModel(this, '{m}')">
+                </div>
+                <button onclick="startModel('{m}')" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
+                    <i class="fas fa-play text-[10px]"></i> CARREGAR
+                </button>
+            </div>
         </div>
         """
+    
     gpu_rows = ""
     for g in gpus:
         is_3090 = "3090" in g['name']
         default_val = "95" if is_3090 else "5"
         if len(gpus) == 1: default_val = "100"
         gpu_rows += f"""
-        <tr class="gpu-row" data-index="{g['index']}" data-name="{g['name']}">
-            <td class="px-6 py-3 text-center"><input type="checkbox" checked class="gpu-checkbox w-4 h-4 text-blue-600 rounded"></td>
-            <td class="px-4 py-3 text-sm font-black text-gray-900">ID {g['index']}</td>
-            <td class="px-4 py-3 text-sm font-medium text-gray-600">{g['name']}</td>
-            <td class="px-4 py-3 text-xs font-mono text-gray-400">{g['vram']} MB</td>
-            <td class="px-4 py-3">
-                <div class="flex items-center gap-1">
-                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-16 px-2 py-1 text-sm font-black border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 outline-none" onchange="updateTotal()">
-                    <span class="text-[10px] font-bold text-gray-300">%</span>
+        <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
+            <td class="px-6 py-8 text-center">
+                <div class="flex flex-col items-center gap-3">
+                    <span class="gpu-util-val text-sm font-black text-blue-400 font-mono">0%</span>
+                    <div class="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div></div>
+                </div>
+            </td>
+            <td class="px-4 py-8">
+                <div class="flex items-center gap-4">
+                    <input type="checkbox" checked class="gpu-checkbox w-6 h-6 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <div class="flex flex-col"><span class="text-[11px] font-black text-blue-400 uppercase tracking-widest mb-1">ID {g['index']}</span><span class="text-base font-bold text-slate-100 whitespace-nowrap">{g['name']}</span></div>
+                </div>
+            </td>
+            <td class="px-4 py-8">
+                <div class="flex gap-6">
+                    <div class="flex flex-col"><span class="text-[10px] font-black text-slate-500 uppercase mb-1.5">Temp</span><span class="gpu-temp-val text-sm font-bold text-slate-300 font-mono">--°C</span></div>
+                    <div class="flex flex-col"><span class="text-[10px] font-black text-slate-500 uppercase mb-1.5">Power</span><span class="gpu-power-val text-sm font-bold text-slate-300 font-mono">--W</span></div>
+                </div>
+            </td>
+            <td class="px-4 py-8">
+                <div class="flex flex-col gap-3 min-w-[160px]">
+                    <div class="flex justify-between items-end"><span class="text-[10px] font-black text-slate-500 uppercase">VRAM Status</span><span class="gpu-vram-text text-xs font-mono text-blue-400">0 / {g['vram']} MB</span></div>
+                    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden"><div class="gpu-vram-bar h-full bg-cyan-500 transition-all duration-1000" style="width: 0%"></div></div>
+                </div>
+            </td>
+            <td class="px-4 py-8">
+                <div class="relative">
+                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-24 pl-4 pr-10 py-3 bg-slate-900/80 border border-slate-700 rounded-xl text-base font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
+                    <span class="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-slate-600">%</span>
                 </div>
             </td>
         </tr>
@@ -184,291 +256,170 @@ def index():
     
     html_template = """
     <!DOCTYPE html>
-    <html lang="pt-BR">
+    <html lang="pt-BR" class="dark">
     <head>
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Llama Manager PRO</title>
+        <title>Automanager Llama.cpp | Interface de IA</title>
         <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
-            body { font-family: 'Plus Jakarta Sans', sans-serif; }
-            .custom-scroll::-webkit-scrollbar { width: 4px; }
-            .custom-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+            @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+            :root { --bg-deep: #020617; --card-bg: rgba(15, 23, 42, 0.6); }
+            body { font-family: 'Space Grotesk', sans-serif; background: radial-gradient(circle at 50% 0%, #1e3a8a 0%, #020617 100%); background-attachment: fixed; font-size: 16px; }
+            .font-mono { font-family: 'JetBrains Mono', monospace; }
+            .glass { background: var(--card-bg); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); }
+            .custom-scroll::-webkit-scrollbar { width: 6px; }
+            .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+            @keyframes pulse-glow { 0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(37, 99, 235, 0); } 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); } }
+            .glow-online { animation: pulse-glow 2s infinite; }
+            .terminal-line { animation: fadeIn 0.3s ease-out; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         </style>
     </head>
-    <body class="bg-[#f8fafc] min-h-screen text-slate-900 pb-20">
-        <div class="max-w-7xl mx-auto px-6 pt-10">
-            <nav class="flex items-center justify-between mb-10 bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-                <div class="flex items-center gap-4">
-                    <div class="bg-blue-600 p-2.5 rounded-xl shadow-lg shadow-blue-200"><i class="fas fa-bolt text-white"></i></div>
-                    <h1 class="text-xl font-extrabold tracking-tight">Llama Manager <span class="text-blue-600">PRO</span></h1>
-                </div>
-                <div id="status-badge" class="px-5 py-2 rounded-full text-[10px] font-black tracking-widest flex items-center gap-2 bg-slate-100 text-slate-400 uppercase">OFFLINE</div>
-            </nav>
-
-            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                <div class="lg:col-span-8 space-y-8">
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                            <p class="text-[10px] font-black text-slate-400 uppercase mb-2">CPU Usage</p>
-                            <div class="flex items-end justify-between"><h3 id="cpu-val" class="text-2xl font-black">0%</h3><div class="w-12 h-1 bg-slate-100 rounded-full overflow-hidden"><div id="cpu-bar" class="h-full bg-blue-500 transition-all" style="width: 0%"></div></div></div>
-                        </div>
-                        <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                            <p class="text-[10px] font-black text-slate-400 uppercase mb-2">System RAM</p>
-                            <div class="flex items-end justify-between"><h3 id="ram-val" class="text-2xl font-black">0%</h3><div class="w-12 h-1 bg-slate-100 rounded-full overflow-hidden"><div id="ram-bar" class="h-full bg-indigo-500 transition-all" style="width: 0%"></div></div></div>
-                        </div>
-                        <div id="gpu-stats-container" class="contents"></div>
-                    </div>
-
-                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden p-6 space-y-6">
-                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-50 pb-4">
-                             <div>
-                                <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Hardware & Configuração</h3>
-                                <p class="text-xs text-slate-400 font-medium mt-1">Configure o hardware antes de iniciar</p>
-                             </div>
-                             <div class="flex items-center gap-3">
-                                <label class="text-[10px] font-black uppercase text-slate-400">Contexto:</label>
-                                <select id="context-size" class="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-xs font-black focus:ring-2 focus:ring-blue-500 outline-none">
-                                    <option value="2048">2k</option><option value="4096">4k</option><option value="8192">8k</option><option value="16384">16k</option><option value="32768">32k</option><option value="65536" selected>64k (Padrão)</option><option value="98304">96k</option><option value="131072">128k</option><option value="262144">256k</option>
-                                </select>
-                             </div>
-                        </div>
-                        <div class="overflow-x-auto"><table class="w-full text-left"><tbody class="divide-y divide-slate-50">#GPU_ROWS#</tbody></table></div>
-                        <div class="flex justify-end pt-2"><span id="total-percent" class="text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full">TOTAL: 100%</span></div>
-                    </div>
-
-                    <div id="active-card" class="bg-slate-900 p-8 rounded-3xl shadow-xl hidden border-b-8 border-blue-600 transition-all duration-300">
-                        <div class="flex items-center justify-between gap-6">
-                            <div class="min-w-0">
-                                <p class="text-blue-400 text-[10px] font-black uppercase tracking-widest mb-1">Modelo Ativo</p>
-                                <h2 id="active-model-name" class="text-xl font-black text-white truncate">--</h2>
-                            </div>
-                            <div class="flex gap-4">
-                                <a id="chat-link" href="#" target="_blank" class="px-8 py-3 bg-blue-600 text-white rounded-xl text-xs font-black hover:bg-blue-700 transition-all shadow-lg active:scale-95 flex items-center gap-2">
-                                    <i class="fas fa-comments"></i> ACESSAR CHAT
-                                </a>
-                                <button onclick="stopModel()" class="px-8 py-3 bg-red-600/20 text-red-500 rounded-xl text-xs font-black hover:bg-red-600 hover:text-white transition-all shadow-lg active:scale-95 border border-red-600/30 uppercase">Parar</button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="bg-slate-900 rounded-3xl overflow-hidden shadow-2xl">
-                        <div class="px-6 py-4 bg-slate-800/40 border-b border-slate-800 flex justify-between items-center">
-                            <p class="text-white text-[10px] font-black uppercase tracking-widest italic">Terminal Output</p>
-                            <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] text-slate-500 hover:text-white font-bold uppercase">Limpar Console</button>
-                        </div>
-                        <div id="log-box" class="custom-scroll p-6 h-64 overflow-y-auto font-mono text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap bg-black/20"></div>
+    <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
+        <div class="max-w-[1600px] mx-auto px-8 pt-10">
+            <header class="flex items-center justify-between mb-10 glass p-6 rounded-[2.5rem]">
+                <div class="flex items-center gap-6">
+                    <div class="bg-blue-600 p-4 rounded-2xl shadow-xl shadow-blue-500/20"><i class="fas fa-brain text-white text-2xl"></i></div>
+                    <div>
+                        <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-3">Automanager <span class="text-blue-500 font-light">Llama.cpp</span></h1>
+                        <p class="text-sm text-slate-500 font-mono tracking-wider uppercase">Interface Avançada de Computação Neural</p>
                     </div>
                 </div>
-
-                <div class="lg:col-span-4">
-                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm flex flex-col h-[850px]">
-                        <div class="p-6 border-b border-slate-50 flex items-center gap-3">
-                            <i class="fas fa-folder text-amber-400"></i>
-                            <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Modelos Disponíveis</h3>
+                <div class="flex items-center gap-8">
+                    <div class="hidden md:flex items-center gap-5 px-6 py-3 bg-slate-900/50 rounded-2xl border border-slate-800">
+                        <div class="flex flex-col items-end"><span class="text-[10px] text-slate-500 font-black uppercase tracking-tighter">IP do Motor</span><span id="display-ip" class="text-sm font-mono text-blue-400">#FIXED_IP#</span></div>
+                        <i class="fas fa-network-wired text-slate-600 text-lg"></i>
+                    </div>
+                    <div id="status-badge" class="px-8 py-3 rounded-2xl text-xs font-black tracking-[0.2em] flex items-center gap-4 glass border-slate-700/50 text-slate-500 uppercase transition-all duration-500"><div class="w-2.5 h-2.5 rounded-full bg-slate-600"></div>OFFLINE</div>
+                </div>
+            </header>
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-10">
+                <div class="lg:col-span-8 space-y-10">
+                    <div class="grid grid-cols-2 md:grid-cols-2 gap-6">
+                        <div class="glass p-6 rounded-[2rem] border-l-4 border-blue-600">
+                            <div class="flex justify-between items-start mb-6"><p class="text-[11px] font-black text-slate-500 uppercase tracking-widest font-mono">Processador (Host)</p><i class="fas fa-microchip text-slate-700 text-sm"></i></div>
+                            <div class="flex items-end justify-between gap-6"><h3 id="cpu-val" class="text-4xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden"><div id="cpu-bar" class="h-full bg-blue-500 transition-all duration-700 shadow-[0_0_10px_rgba(37,99,235,0.5)]" style="width: 0%"></div></div></div>
                         </div>
-                        
-                        <div class="p-6 border-b border-slate-50 bg-slate-50/50">
-                            <p class="text-[10px] font-black text-slate-400 uppercase mb-3 tracking-widest">Baixar Novo Modelo</p>
-                            <div class="space-y-2">
-                                <input type="text" id="download-url" placeholder="URL do arquivo .gguf" class="w-full px-4 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all">
-                                <button onclick="downloadModel()" class="w-full py-2.5 bg-green-600 text-white text-[10px] font-black rounded-xl hover:bg-green-700 transition-all shadow-lg shadow-green-100 active:scale-95 uppercase">
-                                    <i class="fas fa-download mr-2"></i> Iniciar Download
-                                </button>
-                            </div>
-                            <div id="download-status" class="mt-4 space-y-2"></div>
+                        <div class="glass p-6 rounded-[2rem] border-l-4 border-emerald-600">
+                            <div class="flex justify-between items-start mb-6"><p class="text-[11px] font-black text-slate-500 uppercase tracking-widest font-mono">Memória RAM (Host)</p><i class="fas fa-memory text-slate-700 text-sm"></i></div>
+                            <div class="flex items-end justify-between gap-6"><h3 id="ram-val" class="text-4xl font-bold text-white leading-none">0%</h3><div class="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden"><div id="ram-bar" class="h-full bg-emerald-500 transition-all duration-700" style="width: 0%"></div></div></div>
                         </div>
-
-                        <div id="model-list-container" class="p-4 flex-1 overflow-y-auto custom-scroll">#MODEL_ITEMS#</div>
-                        <div class="p-6 bg-slate-50 border-t border-slate-100 rounded-b-2xl text-center">
-                             <p class="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">OpenAI API Endpoint</p>
-                             <p id="api-link" class="text-[10px] text-blue-600 font-mono font-bold"></p>
+                    </div>
+                    <div class="glass rounded-[2.5rem] overflow-hidden p-10">
+                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-10 border-b border-slate-800/50 pb-8">
+                             <div><h3 class="font-bold text-xl text-white flex items-center gap-4"><i class="fas fa-microchip text-blue-500"></i>Recursos de GPU & Configuração</h3><p class="text-sm text-slate-500 mt-2 font-medium italic">Monitore e distribua a carga de processamento entre as GPUs</p></div>
+                             <div class="flex items-center gap-6 bg-slate-900/80 p-2 rounded-2xl border border-slate-800"><label class="text-[11px] font-black uppercase text-slate-400 pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-5 py-3 text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" selected class="bg-slate-900">64K</option><option value="131072" class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
                         </div>
+                        <div class="overflow-x-auto"><table class="w-full text-left"><thead class="text-[10px] font-black text-slate-500 uppercase tracking-widest"><tr><th class="px-6 py-5 text-center">Uso</th><th class="px-4 py-5">Dispositivo</th><th class="px-4 py-5">Monitoramento</th><th class="px-4 py-5">VRAM Status</th><th class="px-4 py-5">Distribuição</th></tr></thead><tbody id="gpu-table-body" class="divide-y divide-slate-800/50">#GPU_ROWS#</tbody></table></div>
+                        <div class="flex justify-between items-center pt-10"><div class="flex items-center gap-3 text-xs text-slate-500"><i class="fas fa-info-circle text-blue-500"></i>Distribua 100% da carga total entre as GPUs selecionadas</div><span id="total-percent" class="text-sm font-black tracking-widest px-6 py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span></div>
+                    </div>
+                    <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-12 rounded-[3rem] border border-blue-500/30 hidden transition-all duration-700 animate-in fade-in zoom-in">
+                        <div class="flex flex-col md:flex-row items-center justify-between gap-10">
+                            <div class="flex items-center gap-8"><div class="w-20 h-20 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40"><i class="fas fa-robot text-3xl"></i></div><div><p class="text-blue-400 text-[11px] font-black uppercase tracking-[0.3em] mb-3 font-mono">Motor de Computação Primário</p><h2 id="active-model-name" class="text-3xl font-bold text-white truncate max-w-md">--</h2><div class="flex gap-6 mt-4"><div class="flex items-center gap-3 text-xs font-mono text-slate-400"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>Ativo há: <span id="uptime-val">Calculando...</span></div></div></div></div>
+                            <div class="flex gap-6 w-full md:w-auto"><a id="chat-link" href="#" target="_blank" class="flex-1 md:flex-none px-12 py-5 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-4 uppercase tracking-widest"><i class="fas fa-comments text-base"></i> ABRIR CHAT</a><button onclick="stopModel()" class="px-12 py-5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-xs font-black transition-all active:scale-95 uppercase tracking-widest">ENCERRAR</button></div>
+                        </div>
+                    </div>
+                    <div class="glass rounded-[2.5rem] overflow-hidden shadow-2xl border border-slate-800"><div class="px-10 py-5 bg-slate-900/60 border-b border-slate-800 flex justify-between items-center"><div class="flex items-center gap-4"><div class="flex gap-2"><div class="w-2.5 h-2.5 rounded-full bg-slate-700"></div><div class="w-2.5 h-2.5 rounded-full bg-slate-700"></div><div class="w-2.5 h-2.5 rounded-full bg-slate-700"></div></div><p class="text-slate-400 text-[10px] font-black uppercase tracking-widest font-mono ml-4">Saída de logs do sistema</p></div><button onclick="document.getElementById('log-box').innerHTML=''" class="text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest"><i class="fas fa-trash-alt mr-3"></i> Limpar Console</button></div><div id="log-box" class="custom-scroll p-10 h-[400px] overflow-y-auto font-mono text-xs text-slate-400 leading-relaxed whitespace-pre-wrap bg-slate-950/40"></div></div>
+                </div>
+                <div class="lg:col-span-4 space-y-10">
+                    <div class="glass rounded-[2.5rem] border border-slate-800 flex flex-col h-[1000px]">
+                        <div class="p-10 border-b border-slate-800/50 flex items-center justify-between"><div class="flex items-center gap-5"><div class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700"><i class="fas fa-database text-amber-500 text-lg"></i></div><h3 class="font-bold text-xl text-white tracking-tight">Repositório de Modelos</h3></div><span class="text-[11px] bg-slate-800 text-slate-400 px-4 py-1.5 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span></div>
+                        <div class="p-10 border-b border-slate-800/30 bg-blue-600/5"><p class="text-[11px] font-black text-slate-500 uppercase mb-6 tracking-widest">Ingerir GGUF via URL</p><div class="space-y-4"><div class="relative group"><i class="fas fa-link absolute left-5 top-1/2 -translate-y-1/2 text-slate-600 text-sm transition-colors group-focus-within:text-blue-500"></i><input type="text" id="download-url" placeholder="https://huggingface.co/.../modelo.gguf" class="w-full pl-12 pr-5 py-4 bg-slate-900 border border-slate-700 rounded-2xl text-sm text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600"></div><button onclick="downloadModel()" class="w-full py-5 bg-slate-100 hover:bg-white text-slate-950 text-xs font-black rounded-2xl transition-all shadow-xl active:scale-[0.98] uppercase tracking-[0.2em] flex items-center justify-center gap-4"><i class="fas fa-cloud-download-alt text-base"></i> EXECUTAR DOWNLOAD</button></div><div id="download-status" class="mt-8 space-y-4"></div></div>
+                        <div id="model-list-container" class="p-8 flex-1 overflow-y-auto custom-scroll space-y-2">#MODEL_ITEMS#</div>
+                        <div class="p-10 bg-slate-950/40 border-t border-slate-800 rounded-b-[2.5rem]"><div class="flex flex-col gap-4"><div class="flex items-center justify-between"><p class="text-[10px] text-slate-500 font-black uppercase tracking-widest">Interface de API</p><span class="text-[9px] bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded border border-emerald-500/20 uppercase font-black">Ativo</span></div><div class="flex items-center gap-4 bg-slate-900 p-4 rounded-xl border border-slate-800 group"><code id="api-link" class="text-xs text-blue-400 font-mono flex-1 truncate"></code><button onclick="navigator.clipboard.writeText(document.getElementById('api-link').innerText)" class="text-slate-600 hover:text-white transition-colors"><i class="far fa-copy"></i></button></div></div></div>
                     </div>
                 </div>
             </div>
         </div>
-
         <script>
-            let logStream = null;
-            const fixedIp = "#FIXED_IP#";
+            let logStream = null; let startTime = null; const fixedIp = "#FIXED_IP#";
             document.getElementById('chat-link').href = `http://${fixedIp}:8085/`;
             document.getElementById('api-link').innerText = `http://${fixedIp}:8085/v1`;
-
-            function updateTotal() {
-                let sum = 0;
-                document.querySelectorAll('.gpu-weight').forEach(i => sum += parseInt(i.value || 0));
-                const badge = document.getElementById('total-percent');
-                badge.innerText = `TOTAL: ${sum}%`;
-                badge.className = sum === 100 ? 'text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full' : 'text-[10px] font-black bg-red-600 text-white px-3 py-1 rounded-full';
+            function balanceWeights(changedInput) {
+                const weights = Array.from(document.querySelectorAll('.gpu-weight'));
+                const checkedWeights = weights.filter(w => w.closest('.gpu-row').querySelector('.gpu-checkbox').checked);
+                if (checkedWeights.length <= 1) { if (checkedWeights.length === 1) checkedWeights[0].value = 100; updateTotal(); return; }
+                let val = parseInt(changedInput.value) || 0;
+                if (val > 100) { val = 100; changedInput.value = 100; }
+                if (val < 0) { val = 0; changedInput.value = 0; }
+                const otherInputs = checkedWeights.filter(w => w !== changedInput);
+                let remaining = 100 - val;
+                for (let i = 0; i < otherInputs.length; i++) {
+                    if (i === otherInputs.length - 1) { otherInputs[i].value = Math.max(0, remaining); } 
+                    else { let share = Math.min(remaining, Math.round(remaining / otherInputs.length)); otherInputs[i].value = share; remaining -= share; }
+                }
+                updateTotal();
             }
-
+            function updateTotal() { 
+                let sum = 0; 
+                document.querySelectorAll('.gpu-weight').forEach(i => {
+                    const isChecked = i.closest('.gpu-row').querySelector('.gpu-checkbox').checked;
+                    if (isChecked) sum += parseInt(i.value || 0); else i.value = 0;
+                }); 
+                const badge = document.getElementById('total-percent'); badge.innerText = `CARGA TOTAL: ${sum}%`; 
+                badge.className = sum === 100 ? 'text-sm font-black tracking-widest px-6 py-3 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'text-sm font-black tracking-widest px-6 py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20'; 
+            }
             async function updateMetrics() {
                 try {
-                    const res = await fetch('/metrics');
-                    const data = await res.json();
-                    document.getElementById('cpu-val').innerText = data.cpu + '%';
-                    document.getElementById('cpu-bar').style.width = data.cpu + '%';
-                    document.getElementById('ram-val').innerText = data.ram + '%';
-                    document.getElementById('ram-bar').style.width = data.ram + '%';
-                    const container = document.getElementById('gpu-stats-container');
-                    container.innerHTML = data.gpus.map(g => `
-                        <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm transition-all duration-500">
-                            <p class="text-[10px] font-black text-slate-400 uppercase mb-2">GPU ${g.index} Utilization</p>
-                            <div class="flex items-end justify-between"><h3 class="text-2xl font-black">${g.util}%</h3><div class="w-12 h-1 bg-slate-100 rounded-full overflow-hidden"><div class="h-full bg-green-500 transition-all duration-1000" style="width: ${g.util}%"></div></div></div>
-                            <p class="text-[9px] font-bold text-slate-400 mt-2">VRAM: ${g.mem_used} / ${g.mem_total} MB</p>
-                        </div>
-                    `).join('');
+                    const res = await fetch('/metrics'); const data = await res.json();
+                    document.getElementById('cpu-val').innerText = data.cpu + '%'; document.getElementById('cpu-bar').style.width = data.cpu + '%';
+                    document.getElementById('ram-val').innerText = data.ram + '%'; document.getElementById('ram-bar').style.width = data.ram + '%';
+                    data.gpus.forEach(g => {
+                        const row = document.querySelector(`.gpu-row[data-index="${g.index}"]`);
+                        if (row) {
+                            row.querySelector('.gpu-util-val').innerText = g.util + '%'; row.querySelector('.gpu-util-bar').style.width = g.util + '%';
+                            row.querySelector('.gpu-temp-val').innerText = (g.temp || '--') + '°C'; row.querySelector('.gpu-power-val').innerText = (g.power || '--') + 'W';
+                            row.querySelector('.gpu-vram-text').innerText = `${g.mem_used} / ${g.mem_total} MB`; row.querySelector('.gpu-vram-bar').style.width = g.vram_pct + '%';
+                        }
+                    });
                 } catch(e) {}
             }
-
             async function startLogs() {
-                if (logStream) logStream.abort();
-                logStream = new AbortController();
-                const box = document.getElementById('log-box');
+                if (logStream) logStream.abort(); logStream = new AbortController(); const box = document.getElementById('log-box');
                 try {
-                    const response = await fetch('/logs', { signal: logStream.signal });
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
+                    const response = await fetch('/logs', { signal: logStream.signal }); const reader = response.body.getReader(); const decoder = new TextDecoder();
                     while (true) {
-                        const { value, done } = await reader.read();
-                        if (done) break;
-                        box.innerHTML += decoder.decode(value).replace(/error/gi, '<span class="text-red-500 font-bold">ERROR</span>');
-                        box.scrollTop = box.scrollHeight;
+                        const { value, done } = await reader.read(); if (done) break;
+                        const formatted = decoder.decode(value).replace(/error/gi, '<span class="text-red-500 font-black px-1 rounded bg-red-500/10">ERRO</span>').replace(/warn/gi, '<span class="text-amber-500 font-black px-1 rounded bg-amber-500/10">AVISO</span>').replace(/info/gi, '<span class="text-blue-400 font-bold uppercase tracking-tighter">info</span>');
+                        const line = document.createElement('div'); line.className = 'terminal-line mb-2 border-l-2 border-slate-800 pl-4'; line.innerHTML = formatted; box.appendChild(line); box.scrollTop = box.scrollHeight; if (box.childNodes.length > 500) box.removeChild(box.firstChild);
                     }
                 } catch(e) {}
             }
-
+            function updateUptime() { if (!startTime) return; const diff = Math.floor((new Date() - startTime) / 1000); document.getElementById('uptime-val').innerText = `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m ${diff%60}s`; }
             async function updateStatus() {
                 try {
-                    const res = await fetch('/status');
-                    const data = await res.json();
-                    const badge = document.getElementById('status-badge');
-                    const card = document.getElementById('active-card');
+                    const res = await fetch('/status'); const data = await res.json(); const badge = document.getElementById('status-badge'); const card = document.getElementById('active-card');
                     if (data.running) {
-                        badge.className = 'px-5 py-2 rounded-full text-[10px] font-black tracking-widest flex items-center gap-2 bg-green-100 text-green-600';
-                        badge.innerText = 'ONLINE';
-                        card.classList.remove('hidden');
-                        document.getElementById('active-model-name').innerText = data.model;
-                        if (!logStream) startLogs();
+                        if (!startTime) startTime = new Date(); badge.className = 'px-8 py-3 rounded-2xl text-xs font-black tracking-[0.2em] flex items-center gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online'; badge.innerHTML = '<div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE'; card.classList.remove('hidden'); document.getElementById('active-model-name').innerText = data.model; if (!logStream) startLogs(); updateUptime();
                     } else {
-                        badge.className = 'px-5 py-2 rounded-full text-[10px] font-black tracking-widest flex items-center gap-2 bg-slate-100 text-slate-400';
-                        badge.innerText = 'OFFLINE';
-                        card.classList.add('hidden');
-                        if (logStream) { logStream.abort(); logStream = null; }
+                        startTime = null; badge.className = 'px-8 py-3 rounded-2xl text-xs font-black tracking-[0.2em] flex items-center gap-4 glass border-slate-700/50 text-slate-500 uppercase'; badge.innerHTML = '<div class="w-2.5 h-2.5 rounded-full bg-slate-600"></div> OFFLINE'; card.classList.add('hidden'); if (logStream) { logStream.abort(); logStream = null; }
                     }
                 } catch(e) {}
             }
-
-            async function downloadModel() {
-                const urlInput = document.getElementById('download-url');
-                const url = urlInput.value.trim();
-                if (!url) return alert("Por favor, insira a URL do modelo GGUF.");
-                
-                try {
-                    const res = await fetch('/download', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ url })
-                    });
-                    if (res.ok) {
-                        urlInput.value = '';
-                        updateDownloads();
-                    } else {
-                        alert("Erro ao iniciar download.");
-                    }
-                } catch(e) {
-                    alert("Erro de conexão.");
-                }
-            }
-
+            async function setDefaultModel(checkbox, path) { if (checkbox.checked) document.querySelectorAll('.model-default-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; }); try { await fetch('/set_default', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path: checkbox.checked ? path : null }) }); } catch(e) { alert("Erro ao salvar configuração."); } }
+            async function downloadModel() { const url = document.getElementById('download-url').value.trim(); if (!url) return; try { const res = await fetch('/download', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url }) }); if (res.ok) { document.getElementById('download-url').value = ''; updateDownloads(); } } catch(e) {} }
             async function updateDownloads() {
                 try {
-                    const res = await fetch('/downloads');
-                    const data = await res.json();
-                    const container = document.getElementById('download-status');
-                    const entries = Object.entries(data);
-                    
-                    if (entries.length === 0) {
-                        container.innerHTML = '';
-                        return;
-                    }
-
-                    let hasCompleted = false;
-                    container.innerHTML = entries.map(([id, d]) => {
-                        if (d.status === 'completed') hasCompleted = true;
-                        return `
-                        <div class="p-3 bg-white rounded-xl border border-slate-100 shadow-sm">
-                            <div class="flex justify-between items-center mb-2">
-                                <p class="text-[9px] font-black truncate flex-1 mr-2 text-slate-700" title="${d.filename}">${d.filename}</p>
-                                <span class="text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
-                                    d.status === 'completed' ? 'bg-green-100 text-green-600' : 
-                                    d.status === 'failed' ? 'bg-red-100 text-red-600' : 
-                                    'bg-blue-100 text-blue-600'
-                                }">${d.status}</span>
-                            </div>
-                            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                <div class="h-full bg-blue-500 transition-all duration-500" style="width: ${d.progress}%"></div>
-                            </div>
-                            ${d.error ? `<p class="text-[8px] text-red-500 mt-1 font-medium italic">${d.error}</p>` : ''}
-                        </div>
-                        `;
-                    }).join('');
-                    
-                    if (hasCompleted) updateModels();
+                    const res = await fetch('/downloads'); const data = await res.json(); const container = document.getElementById('download-status'); const entries = Object.entries(data); if (entries.length === 0) { container.innerHTML = ''; return; }
+                    container.innerHTML = entries.map(([id, d]) => `<div class="p-5 bg-slate-900 border border-slate-800 rounded-2xl"><div class="flex justify-between items-center mb-4"><p class="text-sm font-bold truncate flex-1 mr-4 text-slate-300 font-mono" title="${d.filename}">${d.filename}</p><span class="text-[10px] font-black uppercase px-3 py-1 rounded ${d.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : d.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}">${d.status === 'completed' ? 'concluído' : d.status === 'failed' ? 'falhou' : 'baixando'}</span></div><div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden"><div class="h-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)] transition-all duration-500" style="width: ${d.progress}%"></div></div></div>`).join(''); if (entries.some(([_, d]) => d.status === 'completed')) updateModels();
                 } catch(e) {}
             }
-
             async function updateModels() {
                 try {
-                    const res = await fetch('/models');
-                    const data = await res.json();
-                    const container = document.getElementById('model-list-container');
-                    container.innerHTML = data.map(m => `
-                        <div class="flex items-center justify-between p-3 mb-2 bg-gray-50 rounded-xl hover:bg-blue-50 transition-all border border-transparent hover:border-blue-100">
-                            <div class="flex-1 min-w-0">
-                                <p class="text-sm font-bold text-gray-800 truncate" title="${m.name}">${m.name}</p>
-                                <p class="text-[9px] text-gray-400 truncate uppercase">${m.dir}</p>
-                            </div>
-                            <button onclick="startModel('${m.path}')" class="ml-3 px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 transition-all shadow-md active:scale-95 uppercase">Iniciar</button>
-                        </div>
-                    `).join('');
+                    const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); document.getElementById('model-count').innerText = `${data.length} UNIDADES`;
+                    document.getElementById('model-list-container').innerHTML = data.map(m => `<div class="group flex items-center justify-between p-5 mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-6"><div class="flex items-center gap-3 mb-2"><i class="fas fa-cube text-blue-400 text-xs"></i><p class="text-base font-bold text-slate-100 truncate" title="${m.name}">${m.name}</p></div><p class="text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-6"><div class="flex flex-col items-center gap-1.5"><span class="text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m.path}')"></div><button onclick="startModel('${m.path}')" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl active:scale-95 flex items-center gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[10px]"></i> CARREGAR</button></div></div>`).join('');
                 } catch(e) {}
             }
-
-            async function startModel(path) {
-                const weights = [];
-                document.querySelectorAll('.gpu-row').forEach(r => {
-                    if (r.querySelector('.gpu-checkbox').checked) {
-                        weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: r.dataset.name });
-                    }
-                });
-                if (!weights.length) return alert("Selecione uma GPU!");
-                const ctxSize = document.getElementById('context-size').value;
-                document.getElementById('status-badge').innerText = 'STARTING...';
-                await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(ctxSize) }) });
-                setTimeout(updateStatus, 3000);
-            }
-
-            async function stopModel() {
-                if (confirm("Parar o servidor?")) await fetch('/stop', {method: 'POST'});
-                setTimeout(updateStatus, 1500);
-            }
-
-            setInterval(updateMetrics, 2000);
-            setInterval(updateStatus, 5000);
-            setInterval(updateDownloads, 3000);
-            updateStatus(); updateMetrics(); updateDownloads(); updateModels();
+            async function startModel(path) { const weights = []; document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-3 text-lg"></i> INICIALIZANDO...'; await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(document.getElementById('context-size').value) }) }); setTimeout(updateStatus, 2000); }
+            async function stopModel() { if (confirm("ENCERRAR PROCESSO?")) { await fetch('/stop', {method: 'POST'}); setTimeout(updateStatus, 1000); } }
+            setInterval(updateMetrics, 2000); setInterval(updateStatus, 3000); setInterval(updateDownloads, 3000);
+            updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal();
         </script>
     </body>
     </html>
     """
-    
-    final_html = html_template.replace("#GPU_ROWS#", gpu_rows)
-    final_html = final_html.replace("#MODEL_ITEMS#", model_items)
-    final_html = final_html.replace("#FIXED_IP#", FIXED_IP)
-    
+    final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", FIXED_IP)
     return final_html
 
 class GPUWeight(BaseModel):
@@ -484,6 +435,20 @@ class StartRequest(BaseModel):
 class DownloadRequest(BaseModel):
     url: str
     filename: Optional[str] = None
+
+class SetDefaultRequest(BaseModel):
+    path: Optional[str] = None
+
+@app.get("/config")
+def get_config():
+    return load_config()
+
+@app.post("/set_default")
+def set_default(req: SetDefaultRequest):
+    config = load_config()
+    config["default_model"] = req.path
+    save_config(config)
+    return {"status": "ok"}
 
 @app.get("/status")
 def get_status():

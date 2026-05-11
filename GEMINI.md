@@ -1,60 +1,66 @@
-# Automanager Llama.cpp - Contexto do Projeto
+# Automanager Llama.cpp - Guia de Manutenção
 
-Este repositório contém um gerenciador web leve baseado em FastAPI para controlar instâncias do servidor `llama-server` (parte do projeto `llama.cpp`). Ele foi projetado para facilitar a execução de modelos GGUF com otimizações específicas para GPUs NVIDIA (especialmente RTX 3090).
+Este documento contém todas as informações críticas necessárias para entender, manter e evoluir o projeto Automanager Llama.cpp.
 
-## 🚀 Visão Geral e Arquitetura
+## 🚀 Arquitetura Técnica
 
-O projeto atua como uma camada de interface (Web UI) e API de controle sobre o binário `llama-server`.
+A aplicação é uma interface de controle baseada em **FastAPI** que gerencia instâncias do **llama-server** (llama.cpp).
 
-- **Tecnologias Principais:** Python 3, FastAPI, Uvicorn, psutil.
-- **Dependências Externas:** `llama.cpp` (compilado com suporte CUDA), drivers NVIDIA e `nvidia-smi`.
-- **Fluxo de Trabalho:**
-    1. O gerenciador escaneia recursivamente o diretório `/media/docker/models` em busca de arquivos `.gguf`.
-    2. Através da interface web moderna (porta 8000), o usuário pode selecionar quais GPUs NVIDIA deseja utilizar e definir a porcentagem de carga (VRAM) para cada uma.
-    3. O gerenciador calcula o `tensor-split` e o `main-gpu` automaticamente.
-    4. O gerenciador inicia o `llama-server` na porta 8085 com configurações de alta performance.
+- **Backend:** Python 3 + FastAPI + Uvicorn.
+- **Frontend:** HTML5 translúcido (Glassmorphism) com Tailwind CSS e Font Awesome.
+- **Motor de IA:** `llama-server` (deve estar no PATH do sistema).
+- **Monitoramento:** `psutil` para sistema e `nvidia-smi` para métricas de GPU em tempo real.
 
-## 🛠️ Comandos Principais
+## 🛠️ Funcionalidades Implementadas
 
-### Executando o Gerenciador
+1.  **Monitoramento em Tempo Real:**
+    *   Uso de CPU e RAM do sistema.
+    *   Uso de GPU (%), Temperatura (°C), Consumo de Energia (W) e VRAM (MB com barra de progresso).
+2.  **Gestão de Modelos:**
+    *   Escaneamento automático de arquivos `.gguf` em `/media/docker/models`.
+    *   Download de novos modelos via URL.
+    *   **Modelo Padrão:** Opção de marcar um modelo como padrão para iniciar automaticamente com o serviço.
+3.  **Configuração de Hardware Dinâmica:**
+    *   Seleção de quais GPUs ativar.
+    *   Distribuição de carga (weights) para cálculo automático de `tensor-split`.
+    *   Ajuste de Janela de Contexto (Tokens).
+4.  **Terminal de Logs:** Visualização em tempo real da saída do `llama-server`.
+
+## 📂 Estrutura de Arquivos e Caminhos
+
+-   **Aplicação Principal:** `/root/automanager-llama.cpp/gemma_manager.py`.
+-   **Configuração Persistente:** `/root/automanager_config.json` (armazena o `default_model`).
+-   **Logs da Aplicação:** `/root/manager.log`.
+-   **Logs do Servidor Llama:** `/root/gemma_server.log`.
+-   **Diretório de Modelos:** `/media/docker/models/`.
+-   **Serviço Systemd:** `/etc/systemd/system/llama-manager.service`.
+
+## ⚙️ Configurações e Comandos
+
+### Gerenciar o Serviço
+Sempre que o código em `gemma_manager.py` for alterado, o serviço deve ser reiniciado:
 ```bash
-python gemma_manager.py
+systemctl restart llama-manager.service
+systemctl status llama-manager.service
 ```
-O painel de controle estará disponível em `http://localhost:8000` com um visual renovado.
 
-## 📝 Funcionalidades da Interface
-
-- **Seleção Dinâmica de GPU:** Checkboxes para ativar/desativar GPUs específicas.
-- **Distribuição de Carga:** Campos de porcentagem para definir quanto do modelo cada GPU processará.
-- **Auto-Balanceamento:** Lógica inteligente para sugerir divisões equilibradas (ex: 95/5 para setups com RTX 3090).
-- **Monitoramento em Tempo Real:** Status visual (Online/Offline) e indicação do modelo ativo.
-
-### Servidor de Modelos (llama-server)
-O servidor é iniciado automaticamente pelo gerenciador, mas também pode ser disparado manualmente via script para testes:
+### Ver Logs do Sistema
 ```bash
-./start_gemma.sh
+journalctl -u llama-manager.service -f
 ```
-A API compatível com OpenAI será servida em `http://<IP_DA_MAQUINA>:8085/v1`.
 
-## 📂 Estrutura de Arquivos Chave
+## 🧠 Lógica de Inicialização do Modelo
 
-- `gemma_manager.py`: Aplicação FastAPI principal. Contém a lógica de descoberta de modelos, monitoramento de processos e a interface HTML embutida.
-- `start_gemma.sh`: Script auxiliar para iniciar manualmente o modelo Gemma com parâmetros otimizados.
-- `README.md`: Documentação básica do projeto.
+Quando um modelo é iniciado, o gerenciador realiza os seguintes passos:
+1.  **Encerra instâncias anteriores:** Executa `pkill -9 llama-server`.
+2.  **Calcula o Tensor Split:** Pega as porcentagens definidas na UI e converte em frações (ex: 0.9500, 0.0500) para o parâmetro `--tensor-split`.
+3.  **Define Main GPU:** A GPU com maior peso é definida como `--main-gpu`.
+4.  **Parâmetros de Performance:** Utiliza sempre `--flash-attn on`, `--mlock` e `-ngl 99` (offload total para GPU).
+5.  **Variáveis de Ambiente:** Configura `PATH` e `LD_LIBRARY_PATH` para incluir o CUDA Toolkit (`/usr/local/cuda`).
 
-## 📝 Convenções e Práticas
+## ⚠️ Pontos de Atenção para Manutenção
 
-- **Logs:**
-    - Logs do gerenciador: `/root/manager.log`
-    - Logs do servidor de modelos: `/root/gemma_server.log`
-- **Gestão de Processos:** O projeto utiliza `pkill -9 llama-server` para garantir que instâncias anteriores sejam encerradas antes de iniciar um novo modelo.
-- **Otimização de GPU:**
-    - Prioridade para RTX 3090 como dispositivo principal.
-    - Suporte a `tensor-split` configurável via UI para balancear carga entre múltiplas GPUs (ex: RTX 3090 + Tesla P100).
-    - Uso obrigatório de `--flash-attn on` e `--mlock` para performance e estabilidade.
-
-## ⚠️ Requisitos de Ambiente
-
-- `llama.cpp` deve estar instalado e o binário `llama-server` acessível no PATH.
-- CUDA Toolkit instalado em `/usr/local/cuda`.
-- Bibliotecas Python: `fastapi`, `uvicorn`, `psutil`, `pydantic`.
+-   **Persistência:** O arquivo `automanager_config.json` é criado na primeira vez que um modelo padrão é definido.
+-   **Segurança:** A API roda em `0.0.0.0:8000`. O servidor Llama roda em `0.0.0.0:8085`.
+-   **Mutual Exclusion:** Na lista de modelos, a lógica de JS garante que apenas um checkbox "Padrão" esteja marcado por vez.
+-   **nvidia-smi:** O backend depende da presença do comando `nvidia-smi` para coletar métricas detalhadas. Se o comando falhar, as métricas de GPU ficarão zeradas.
