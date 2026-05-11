@@ -21,6 +21,7 @@ app = FastAPI(title="Llama.cpp Model Manager")
 
 MODELS_DIR = "/media/docker/models"
 SERVER_LOG_PATH = "/root/gemma_server.log"
+FIXED_IP = "192.168.2.183"
 
 def get_gguf_models():
     files = glob.glob(os.path.join(MODELS_DIR, "**/*.gguf"), recursive=True)
@@ -35,7 +36,6 @@ def get_gpu_info():
         for match in matches:
             idx, name, vram = match
             gpus.append({"index": int(idx), "name": name.strip(), "vram": int(vram)})
-        
         if not gpus:
             smi_output = subprocess.check_output(["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"]).decode()
             for line in smi_output.strip().split("\n"):
@@ -61,35 +61,22 @@ def find_llama_server():
                         break
                 if model_name:
                     return {"running": True, "pid": proc.info['pid'], "model": model_name}
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied): continue
     return {"running": False}
 
 @app.get("/metrics")
 def get_metrics():
     try:
-        # GPU Metrics
-        gpu_output = subprocess.check_output([
-            "nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total",
-            "--format=csv,noheader,nounits"
-        ]).decode()
+        gpu_output = subprocess.check_output(["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"]).decode()
         gpus = []
         for line in gpu_output.strip().split("\n"):
-            idx, util, mem_used, mem_total = line.split(", ")
-            gpus.append({
-                "index": idx,
-                "util": util,
-                "mem_used": mem_used,
-                "mem_total": mem_total
-            })
-        
-        return {
-            "cpu": psutil.cpu_percent(),
-            "ram": psutil.virtual_memory().percent,
-            "gpus": gpus
-        }
-    except:
-        return {"cpu": 0, "ram": 0, "gpus": []}
+            if not line.strip(): continue
+            parts = line.split(", ")
+            if len(parts) == 4:
+                idx, util, mem_used, mem_total = parts
+                gpus.append({"index": idx, "util": util, "mem_used": mem_used, "mem_total": mem_total})
+        return {"cpu": psutil.cpu_percent(), "ram": psutil.virtual_memory().percent, "gpus": gpus}
+    except: return {"cpu": 0, "ram": 0, "gpus": []}
 
 @app.get("/logs")
 def stream_logs():
@@ -99,13 +86,10 @@ def stream_logs():
             return
         with open(SERVER_LOG_PATH, 'r') as f:
             lines = f.readlines()
-            for line in lines[-100:]:
-                yield line
+            for line in lines[-100:]: yield line
             while True:
                 line = f.readline()
-                if not line:
-                    time.sleep(0.5)
-                    continue
+                if not line: time.sleep(0.5); continue
                 yield line
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -113,7 +97,6 @@ def stream_logs():
 def index():
     models = get_gguf_models()
     gpus = get_gpu_info()
-    
     model_items = ""
     for m in models:
         m_name = os.path.basename(m)
@@ -127,11 +110,11 @@ def index():
             <button onclick="startModel('{m}')" class="ml-3 px-4 py-2 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 transition-all shadow-md active:scale-95 uppercase">Iniciar</button>
         </div>
         """
-
     gpu_rows = ""
     for g in gpus:
         is_3090 = "3090" in g['name']
         default_val = "95" if is_3090 else "5"
+        if len(gpus) == 1: default_val = "100"
         gpu_rows += f"""
         <tr class="gpu-row" data-index="{g['index']}" data-name="{g['name']}">
             <td class="px-6 py-3 text-center"><input type="checkbox" checked class="gpu-checkbox w-4 h-4 text-blue-600 rounded"></td>
@@ -146,7 +129,7 @@ def index():
             </td>
         </tr>
         """
-
+    
     html_template = """
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -164,18 +147,16 @@ def index():
     </head>
     <body class="bg-[#f8fafc] min-h-screen text-slate-900 pb-20">
         <div class="max-w-7xl mx-auto px-6 pt-10">
-            <!-- Top Navigation -->
             <nav class="flex items-center justify-between mb-10 bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div class="flex items-center gap-4">
                     <div class="bg-blue-600 p-2.5 rounded-xl shadow-lg shadow-blue-200"><i class="fas fa-bolt text-white"></i></div>
                     <h1 class="text-xl font-extrabold tracking-tight">Llama Manager <span class="text-blue-600">PRO</span></h1>
                 </div>
-                <div id="status-badge" class="px-5 py-2 rounded-full text-[10px] font-black tracking-widest flex items-center gap-2 bg-slate-100 text-slate-400">OFFLINE</div>
+                <div id="status-badge" class="px-5 py-2 rounded-full text-[10px] font-black tracking-widest flex items-center gap-2 bg-slate-100 text-slate-400 uppercase">OFFLINE</div>
             </nav>
 
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div class="lg:col-span-8 space-y-8">
-                    <!-- System Monitor -->
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
                             <p class="text-[10px] font-black text-slate-400 uppercase mb-2">CPU Usage</p>
@@ -188,46 +169,58 @@ def index():
                         <div id="gpu-stats-container" class="contents"></div>
                     </div>
 
-                    <!-- Active Model -->
-                    <div id="active-card" class="bg-slate-900 p-8 rounded-3xl shadow-xl hidden border-b-8 border-blue-600">
+                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden p-6 space-y-6">
+                        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-50 pb-4">
+                             <div>
+                                <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Hardware & Configuração</h3>
+                                <p class="text-xs text-slate-400 font-medium mt-1">Configure o hardware antes de iniciar</p>
+                             </div>
+                             <div class="flex items-center gap-3">
+                                <label class="text-[10px] font-black uppercase text-slate-400">Contexto:</label>
+                                <select id="context-size" class="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-xs font-black focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <option value="2048">2k</option><option value="4096">4k</option><option value="8192">8k</option><option value="16384">16k</option><option value="32768">32k</option><option value="65536" selected>64k (Padrão)</option><option value="98304">96k</option><option value="131072">128k</option><option value="262144">256k</option>
+                                </select>
+                             </div>
+                        </div>
+                        <div class="overflow-x-auto"><table class="w-full text-left"><tbody class="divide-y divide-slate-50">#GPU_ROWS#</tbody></table></div>
+                        <div class="flex justify-end pt-2"><span id="total-percent" class="text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full">TOTAL: 100%</span></div>
+                    </div>
+
+                    <div id="active-card" class="bg-slate-900 p-8 rounded-3xl shadow-xl hidden border-b-8 border-blue-600 transition-all duration-300">
                         <div class="flex items-center justify-between gap-6">
                             <div class="min-w-0">
                                 <p class="text-blue-400 text-[10px] font-black uppercase tracking-widest mb-1">Modelo Ativo</p>
                                 <h2 id="active-model-name" class="text-xl font-black text-white truncate">--</h2>
                             </div>
-                            <button onclick="stopModel()" class="px-8 py-3 bg-red-600 text-white rounded-xl text-xs font-black hover:bg-red-700 transition-all shadow-lg active:scale-95">PARAR SERVIDOR</button>
+                            <div class="flex gap-4">
+                                <a id="chat-link" href="#" target="_blank" class="px-8 py-3 bg-blue-600 text-white rounded-xl text-xs font-black hover:bg-blue-700 transition-all shadow-lg active:scale-95 flex items-center gap-2">
+                                    <i class="fas fa-comments"></i> ACESSAR CHAT
+                                </a>
+                                <button onclick="stopModel()" class="px-8 py-3 bg-red-600/20 text-red-500 rounded-xl text-xs font-black hover:bg-red-600 hover:text-white transition-all shadow-lg active:scale-95 border border-red-600/30 uppercase">Parar</button>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- GPU Config -->
-                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-                        <div class="p-6 border-b border-slate-50 flex items-center justify-between">
-                            <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Hardware NVIDIA</h3>
-                            <span id="total-percent" class="text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full">TOTAL: 100%</span>
-                        </div>
-                        <table class="w-full text-left">
-                            <tbody class="divide-y divide-slate-50">{{gpu_rows}}</tbody>
-                        </table>
-                    </div>
-
-                    <!-- Console -->
                     <div class="bg-slate-900 rounded-3xl overflow-hidden shadow-2xl">
                         <div class="px-6 py-4 bg-slate-800/40 border-b border-slate-800 flex justify-between items-center">
                             <p class="text-white text-[10px] font-black uppercase tracking-widest italic">Terminal Output</p>
-                            <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] text-slate-500 hover:text-white font-bold">CLEAR</button>
+                            <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] text-slate-500 hover:text-white font-bold uppercase">Limpar Console</button>
                         </div>
                         <div id="log-box" class="custom-scroll p-6 h-64 overflow-y-auto font-mono text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap bg-black/20"></div>
                     </div>
                 </div>
 
-                <!-- Models Sidebar -->
                 <div class="lg:col-span-4">
-                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm flex flex-col h-[700px]">
+                    <div class="bg-white rounded-3xl border border-slate-100 shadow-sm flex flex-col h-[850px]">
                         <div class="p-6 border-b border-slate-50 flex items-center gap-3">
                             <i class="fas fa-folder text-amber-400"></i>
                             <h3 class="font-black text-sm uppercase tracking-wider text-slate-500">Modelos Disponíveis</h3>
                         </div>
-                        <div class="p-4 flex-1 overflow-y-auto custom-scroll">{{model_items}}</div>
+                        <div class="p-4 flex-1 overflow-y-auto custom-scroll">#MODEL_ITEMS#</div>
+                        <div class="p-6 bg-slate-50 border-t border-slate-100 rounded-b-2xl text-center">
+                             <p class="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">OpenAI API Endpoint</p>
+                             <p id="api-link" class="text-[10px] text-blue-600 font-mono font-bold"></p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -235,6 +228,9 @@ def index():
 
         <script>
             let logStream = null;
+            const fixedIp = "#FIXED_IP#";
+            document.getElementById('chat-link').href = `http://${fixedIp}:8085/`;
+            document.getElementById('api-link').innerText = `http://${fixedIp}:8085/v1`;
 
             function updateTotal() {
                 let sum = 0;
@@ -252,12 +248,11 @@ def index():
                     document.getElementById('cpu-bar').style.width = data.cpu + '%';
                     document.getElementById('ram-val').innerText = data.ram + '%';
                     document.getElementById('ram-bar').style.width = data.ram + '%';
-
                     const container = document.getElementById('gpu-stats-container');
                     container.innerHTML = data.gpus.map(g => `
-                        <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                            <p class="text-[10px] font-black text-slate-400 uppercase mb-2">GPU ${g.index} Util</p>
-                            <div class="flex items-end justify-between"><h3 class="text-2xl font-black">${g.util}%</h3><div class="w-12 h-1 bg-slate-100 rounded-full overflow-hidden"><div class="h-full bg-green-500" style="width: ${g.util}%"></div></div></div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm transition-all duration-500">
+                            <p class="text-[10px] font-black text-slate-400 uppercase mb-2">GPU ${g.index} Utilization</p>
+                            <div class="flex items-end justify-between"><h3 class="text-2xl font-black">${g.util}%</h3><div class="w-12 h-1 bg-slate-100 rounded-full overflow-hidden"><div class="h-full bg-green-500 transition-all duration-1000" style="width: ${g.util}%"></div></div></div>
                             <p class="text-[9px] font-bold text-slate-400 mt-2">VRAM: ${g.mem_used} / ${g.mem_total} MB</p>
                         </div>
                     `).join('');
@@ -275,7 +270,7 @@ def index():
                     while (true) {
                         const { value, done } = await reader.read();
                         if (done) break;
-                        box.innerHTML += decoder.decode(value).replace(/error/gi, '<span class="text-red-500 font-bold">ERR</span>');
+                        box.innerHTML += decoder.decode(value).replace(/error/gi, '<span class="text-red-500 font-bold">ERROR</span>');
                         box.scrollTop = box.scrollHeight;
                     }
                 } catch(e) {}
@@ -310,13 +305,14 @@ def index():
                     }
                 });
                 if (!weights.length) return alert("Selecione uma GPU!");
+                const ctxSize = document.getElementById('context-size').value;
                 document.getElementById('status-badge').innerText = 'STARTING...';
-                await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights }) });
+                await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(ctxSize) }) });
                 setTimeout(updateStatus, 3000);
             }
 
             async function stopModel() {
-                if (confirm("Stop server?")) await fetch('/stop', {method: 'POST'});
+                if (confirm("Parar o servidor?")) await fetch('/stop', {method: 'POST'});
                 setTimeout(updateStatus, 1500);
             }
 
@@ -327,7 +323,12 @@ def index():
     </body>
     </html>
     """
-    return html_template.replace("{{gpu_rows}}", gpu_rows).replace("{{model_items}}", model_items)
+    
+    final_html = html_template.replace("#GPU_ROWS#", gpu_rows)
+    final_html = final_html.replace("#MODEL_ITEMS#", model_items)
+    final_html = final_html.replace("#FIXED_IP#", FIXED_IP)
+    
+    return final_html
 
 class GPUWeight(BaseModel):
     index: int
@@ -337,6 +338,7 @@ class GPUWeight(BaseModel):
 class StartRequest(BaseModel):
     path: str
     gpu_weights: List[GPUWeight]
+    context_size: int = 65536
 
 @app.get("/status")
 def get_status():
@@ -359,7 +361,12 @@ def start_model(req: StartRequest):
         env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
         env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
         
-        cmd = ["llama-server", "-m", req.path, "-ngl", "99", "--flash-attn", "on", "--host", "0.0.0.0", "--port", "8085", "--tools", "all", "--parallel", "1", "--ctx-size", "32768", "--mlock", "--main-gpu", main_gpu, "--tensor-split", ",".join(split)]
+        cmd = [
+            "llama-server", "-m", req.path, "-ngl", "99", "--flash-attn", "on", 
+            "--host", "0.0.0.0", "--port", "8085", "--tools", "all", 
+            "--parallel", "1", "--ctx-size", str(req.context_size), "--mlock", 
+            "--main-gpu", main_gpu, "--tensor-split", ",".join(split)
+        ]
         
         logging.info(f"START: {' '.join(cmd)}")
         subprocess.Popen(cmd, stdout=open(SERVER_LOG_PATH, "w"), stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
