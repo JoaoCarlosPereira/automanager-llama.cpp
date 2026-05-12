@@ -151,7 +151,7 @@ def find_llama_server():
 
 # Estado global para controle de auto-retry
 last_start_request = None
-recovery_state = {"active": False, "message": ""}
+recovery_state = {"active": False, "failed": False, "message": ""}
 retry_lock = threading.Lock()
 
 def monitor_oom():
@@ -186,6 +186,7 @@ def handle_oom_retry():
             return
         
         recovery_state["active"] = True
+        recovery_state["failed"] = False
         recovery_state["message"] = "OOM detectado. Reajustando pesos..."
         
         req = last_start_request
@@ -193,20 +194,24 @@ def handle_oom_retry():
         if len(weights) <= 1:
             logging.error("OOM em single GPU ou sem pesos. Impossível ajustar.")
             recovery_state["active"] = False
+            recovery_state["failed"] = True
+            recovery_state["message"] = "Capacidade insuficiente (Single GPU)."
             return
 
         # Encontra a GPU com maior peso
         max_w = max(w.weight for w in weights)
-        if max_w <= 10:
-            logging.error("Pesos já estão no mínimo. Falha total.")
+        if max_w <= 15: # Limite mínimo para redução
+            logging.error("Pesos já estão no limite de redistribuição. Falha total.")
             recovery_state["active"] = False
+            recovery_state["failed"] = True
+            recovery_state["message"] = "Incompatível com a capacidade atual."
             return
 
         main_gpu = max(weights, key=lambda x: x.weight)
         other_gpus = [w for w in weights if w != main_gpu]
         
         # Reduz 10% da principal e distribui nos outros
-        reduction = min(10.0, main_gpu.weight - 5.0)
+        reduction = 10.0
         main_gpu.weight -= reduction
         
         share = reduction / len(other_gpus)
@@ -215,10 +220,12 @@ def handle_oom_retry():
         
         logging.info(f"Retentando com novos pesos: {[f'{w.index}:{w.weight}' for w in weights]}")
         execute_start(req)
-        time.sleep(2) # Dá um tempo para o processo subir
-        recovery_state["active"] = False
+        time.sleep(3) # Dá um tempo para o processo subir
+        if recovery_state["active"]: # Se ainda estiver ativo (não falhou no limite acima)
+            recovery_state["active"] = False
 
 def execute_start(req: StartRequest):
+    global recovery_state
     stop_model()
     try:
         all_gpus = get_gpu_info()
@@ -269,12 +276,10 @@ async def startup_event():
                 main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
 
                 for g in gpus:
-                    if len(gpus) == 1:
+                    if g['index'] == main_gpu_idx:
                         val = 100.0
-                    elif g['index'] == main_gpu_idx:
-                        val = 90.0
                     else:
-                        val = 10.0 / (len(gpus) - 1)
+                        val = 0.0
                     weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
                 
                 req = StartRequest(path=default_model, gpu_weights=weights)
@@ -337,7 +342,7 @@ def index():
             <div class="flex-1 min-w-0 mr-4">
                 <div class="flex items-center gap-2 mb-1">
                     <i class="fas fa-cube text-blue-400 text-[10px]"></i>
-                    <p class="text-sm font-bold text-slate-100 truncate" title="{m_name}">{m_name}</p>
+                    <p class="text-sm font-bold text-slate-100 break-all line-clamp-2" title="{m_name}">{m_name}</p>
                 </div>
                 <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
             </div>
@@ -363,12 +368,10 @@ def index():
     main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
     
     for g in gpus:
-        if len(gpus) == 1:
+        if g['index'] == main_gpu_idx:
             default_val = "100"
-        elif g['index'] == main_gpu_idx:
-            default_val = "90"
         else:
-            default_val = str(round(10 / (len(gpus) - 1)))
+            default_val = "0"
         
         gpu_rows += f"""
         <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
@@ -398,7 +401,7 @@ def index():
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="relative">
-                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-20 pl-2 md:pl-3 pr-6 md:pr-8 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
+                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
                     <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
                 </div>
             </td>
@@ -428,7 +431,7 @@ def index():
         </style>
     </head>
     <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
-        <div class="max-w-[1600px] mx-auto px-4 md:px-8 pt-6 md:pt-10">
+        <div class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10">
             <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
                 <div class="flex items-center gap-4 md:gap-6">
                     <div class="bg-blue-600 p-3 rounded-2xl shadow-xl shadow-blue-500/20"><i class="fas fa-brain text-white text-xl md:text-2xl"></i></div>
@@ -446,7 +449,7 @@ def index():
                 </div>
             </header>
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
-                <div class="lg:col-span-8 space-y-6 md:space-y-10">
+                <div class="lg:col-span-7 space-y-6 md:space-y-10">
                     <div class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
                         <div class="glass p-5 rounded-[1.5rem] border-l-4 border-blue-600">
                             <div class="flex justify-between items-start mb-4"><p class="text-[10px] font-black text-slate-500 uppercase tracking-widest font-mono">Processador (Host)</p><i class="fas fa-microchip text-slate-700 text-xs"></i></div>
@@ -496,7 +499,7 @@ def index():
                         <div id="log-box" class="custom-scroll p-6 md:p-10 h-[300px] md:h-[400px] overflow-y-auto font-mono text-[10px] md:text-xs text-slate-400 leading-relaxed whitespace-pre-wrap bg-slate-950/40"></div>
                     </div>
                 </div>
-                <div class="lg:col-span-4 space-y-6 md:space-y-10">
+                <div class="lg:col-span-5 space-y-6 md:space-y-10">
                     <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[900px]">
                         <div class="p-8 border-b border-slate-800/50 flex items-center justify-between"><div class="flex items-center gap-4 md:gap-5"><div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700"><i class="fas fa-database text-amber-500 text-sm md:text-base"></i></div><h3 class="font-bold text-base md:text-lg text-white tracking-tight">Model Repository</h3></div><span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span></div>
                         <div class="p-8 border-b border-slate-800/30 bg-blue-600/5"><p class="text-[10px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p><div class="space-y-3 md:space-y-4"><div class="relative group"><i class="fas fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 text-xs md:text-sm transition-colors group-focus-within:text-blue-500"></i><input type="text" id="download-url" placeholder="https://..." class="w-full pl-10 pr-4 py-3 bg-slate-900 border border-slate-700 rounded-2xl text-xs text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600"></div><button onclick="downloadModel()" class="w-full py-4 bg-slate-100 hover:bg-white text-slate-950 text-[10px] font-black rounded-2xl transition-all shadow-xl active:scale-[0.98] uppercase tracking-[0.2em] flex items-center justify-center gap-3 md:gap-4"><i class="fas fa-cloud-download-alt text-sm"></i> EXECUTAR DOWNLOAD</button></div><div id="download-status" class="mt-6 md:mt-8 space-y-3"></div></div>
@@ -551,6 +554,7 @@ def index():
             }
             async function startLogs() {
                 if (logStream) logStream.abort(); logStream = new AbortController(); const box = document.getElementById('log-box');
+                box.innerHTML = ''; // Limpa a tela ao iniciar novo stream
                 try {
                     const response = await fetch('/logs', { signal: logStream.signal }); const reader = response.body.getReader(); const decoder = new TextDecoder();
                     while (true) {
@@ -579,9 +583,17 @@ def index():
                         });
                     }
 
+                    if (data.recovery && data.recovery.failed) {
+                        badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-red-500/50 text-red-500 uppercase';
+                        badge.innerHTML = `<i class="fas fa-exclamation-triangle mr-1"></i> FALHA: ${data.recovery.message.toUpperCase()}`;
+                        if (logStream) { logStream.abort(); logStream = null; }
+                        return;
+                    }
+
                     if (data.recovery && data.recovery.active) {
                         badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
                         badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
+                        document.getElementById('log-box').innerHTML = ''; // Limpa logs durante realocação
                         return;
                     }
 
@@ -605,7 +617,7 @@ def index():
                     const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); document.getElementById('model-count').innerText = `${data.length} UNIDADES`;
                     document.getElementById('model-list-container').innerHTML = data.map(m => {
                         const m_js = m.path.replace(/\\\\/g, '/');
-                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold text-slate-100 truncate" title="${m.name}">${m.name}</p></div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
+                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold text-slate-100 break-all line-clamp-2" title="${m.name}">${m.name}</p></div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
                     }).join('');
                 } catch(e) {}
             }
@@ -620,7 +632,10 @@ def index():
                     if (res.ok) { updateModels(); } else { const err = await res.json(); alert("Erro ao excluir: " + (err.detail || "Erro desconhecido")); }
                 } catch(e) { alert("Erro de rede ao excluir modelo."); }
             }
-            async function startModel(path) { const weights = []; document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(document.getElementById('context-size').value) }) }); setTimeout(updateStatus, 2000); }
+            async function startModel(path) { 
+                const weights = []; 
+                document.getElementById('log-box').innerHTML = ''; // Limpa logs imediatamente
+                document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseFloat(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(document.getElementById('context-size').value) }) }); setTimeout(updateStatus, 2000); }
             async function stopModel() { if (confirm("ENCERRAR PROCESSO?")) { await fetch('/stop', {method: 'POST'}); setTimeout(updateStatus, 1000); } }
             setInterval(updateMetrics, 2000); setInterval(updateStatus, 3000); setInterval(updateDownloads, 3000);
             updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal();
@@ -666,7 +681,7 @@ def delete_model(req: DeleteRequest):
 def get_status():
     status = find_llama_server()
     status["recovery"] = recovery_state
-    if last_start_request:
+    if last_start_request and (status["running"] or recovery_state["active"]):
         status["current_weights"] = [w.dict() for w in last_start_request.gpu_weights]
     return status
 
@@ -694,7 +709,8 @@ def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
 
 @app.post("/start")
 def start_model(req: StartRequest):
-    global last_start_request
+    global last_start_request, recovery_state
+    recovery_state = {"active": False, "failed": False, "message": ""}
     last_start_request = req
     if execute_start(req):
         return {"message": "Started"}
