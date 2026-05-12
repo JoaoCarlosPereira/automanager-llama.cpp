@@ -31,6 +31,7 @@ class GPUWeight(BaseModel):
     index: int
     weight: float
     name: str
+    active: bool = True
 
 class StartRequest(BaseModel):
     path: str
@@ -47,6 +48,10 @@ class DownloadRequest(BaseModel):
 
 class SetDefaultRequest(BaseModel):
     path: Optional[str] = None
+
+class RenameRequest(BaseModel):
+    path: str
+    new_name: str
 
 def load_config():
     if os.path.exists(CONFIG_PATH):
@@ -147,7 +152,7 @@ def get_gpu_info():
         return []
 
 def find_llama_server():
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
         try:
             name = proc.info['name'] or ""
             cmdline = proc.info['cmdline'] or []
@@ -158,7 +163,12 @@ def find_llama_server():
                         model_name = os.path.basename(cmdline[i+1])
                         break
                 if model_name:
-                    return {"running": True, "pid": proc.info['pid'], "model": model_name}
+                    return {
+                        "running": True, 
+                        "pid": proc.info['pid'], 
+                        "model": model_name,
+                        "start_time": proc.info['create_time']
+                    }
         except (psutil.NoSuchProcess, psutil.AccessDenied): continue
     return {"running": False}
 
@@ -240,12 +250,17 @@ def execute_start(req: StartRequest):
     try:
         all_gpus = get_gpu_info()
         max_idx = max(g['index'] for g in all_gpus) if all_gpus else 0
-        weights_map = {gw.index: gw.weight for gw in req.gpu_weights}
+        
+        # Filtra apenas GPUs ativas para o cálculo
+        active_weights = [gw for gw in req.gpu_weights if gw.active]
+        weights_map = {gw.index: gw.weight for gw in active_weights}
+        
         split = []
         total_user = sum(weights_map.values()) or 1
         for i in range(max_idx + 1):
             split.append(f"{weights_map.get(i, 0)/total_user:.4f}")
         
+        # Main GPU deve ser a de maior peso entre as ATIVAS
         main_gpu = str(max(weights_map, key=weights_map.get)) if weights_map else "0"
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -279,19 +294,34 @@ async def startup_event():
     threading.Thread(target=monitor_oom, daemon=True).start()
     config = load_config()
     default_model = config.get("default_model")
+    model_configs = config.get("model_configs", {})
+    
     if default_model and os.path.exists(default_model):
         if not find_llama_server().get("running"):
             logging.info(f"Auto-start: {default_model}")
             try:
-                gpus = get_gpu_info()
-                weights = []
-                max_vram = max(g['vram'] for g in gpus) if gpus else 0
-                main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
-                for g in gpus:
-                    val = 100.0 if g['index'] == main_gpu_idx else 0.0
-                    weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
+                # Tenta carregar config salva para o modelo padrão
+                saved_cfg = model_configs.get(default_model)
                 
-                req = StartRequest(path=default_model, gpu_weights=weights)
+                if saved_cfg:
+                    weights = [GPUWeight(**w) if isinstance(w, dict) else w for w in saved_cfg.get("gpu_weights", [])]
+                    # Garante que temos todos os campos
+                    for w in weights:
+                        if not hasattr(w, 'active'): w.active = True
+                    
+                    context_size = saved_cfg.get("context_size", 131072)
+                    mmproj_path = saved_cfg.get("mmproj_path")
+                    req = StartRequest(path=default_model, gpu_weights=weights, context_size=context_size, mmproj_path=mmproj_path)
+                else:
+                    gpus = get_gpu_info()
+                    weights = []
+                    max_vram = max(g['vram'] for g in gpus) if gpus else 0
+                    main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
+                    for g in gpus:
+                        val = 100.0 if g['index'] == main_gpu_idx else 0.0
+                        weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
+                    req = StartRequest(path=default_model, gpu_weights=weights)
+                
                 global last_start_request
                 last_start_request = req
                 execute_start(req)
@@ -346,11 +376,26 @@ def index():
         else:
             models.append(item)
 
+    vision_options = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>'
+    for p in projectors:
+        vision_options += f'<option value="{p["path"]}" class="bg-slate-900">{p["name"]}</option>'
+
     gpus = get_gpu_info()
     config = load_config()
     default_model = config.get("default_model")
     model_configs = config.get("model_configs", {})
     
+    # Verifica se há um modelo rodando para pré-popular o UI
+    status = find_llama_server()
+    running_config = None
+    if status.get("running") and last_start_request:
+        running_config = {
+            "path": last_start_request.path,
+            "context_size": last_start_request.context_size,
+            "gpu_weights": {w.index: w for w in last_start_request.gpu_weights},
+            "mmproj_path": last_start_request.mmproj_path
+        }
+
     model_items = ""
     for m in models:
         m_path = m["path"]
@@ -359,38 +404,47 @@ def index():
         m_dir = m["dir"]
         is_default = "checked" if m_path == default_model else ""
         
+        # ID estável baseado no path (deve bater com o do /models)
+        stable_id = f"model-item-{abs(sum(ord(c) << (i % 8) for i, c in enumerate(m_path))) % 1000000}"
+
         # Cache local para o JS inicial
+        initial_cfg_js = ""
         if m_path in model_configs:
-            initial_cfg_js = f"window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};"
-        else:
-            initial_cfg_js = ""
+            initial_cfg_js = f"<script>window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};</script>"
 
         # Se houver config salva, adiciona uma indicação visual
         has_config = "text-blue-400" if m_path in model_configs else "text-slate-100"
         
         model_items += f"""
-        <script>{initial_cfg_js}</script>
-        <div class="group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg">
-            <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="applyModelConfig('{m_js}')" title="Clique para carregar configurações anteriores">
+        {initial_cfg_js}
+        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg" data-path="{m_js}">
+            <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configurações">
                 <div class="flex items-center gap-2 mb-1">
                     <i class="fas fa-cube text-blue-400 text-[10px]"></i>
-                    <p class="text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
-                    { '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' if m_path in model_configs else '' }
+                    <p class="model-name text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
+                    { '<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuração salva disponível"></i>' if m_path in model_configs else '' }
                 </div>
                 <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
             <div class="flex items-center gap-3 md:gap-4">
-                <button onclick="deleteModel('{m_js}')" class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo">
-                    <i class="fas fa-trash-alt text-[10px]"></i>
-                </button>
+                <div class="flex items-center gap-1">
+                    <button onclick="renameModel('{m_js}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all" title="Renomear Modelo">
+                        <i class="fas fa-edit text-[10px]"></i>
+                    </button>
+                    <button onclick="deleteModel('{m_js}')" class="delete-btn w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo">
+                        <i class="fas fa-trash-alt text-[10px]"></i>
+                    </button>
+                </div>
                 <div class="flex flex-col items-center gap-1">
                     <span class="text-[8px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
                     <input type="checkbox" class="model-default-checkbox w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" 
                            {is_default} onclick="setDefaultModel(this, '{m_js}')">
                 </div>
-                <button onclick="startModel('{m_js}')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
-                    <i class="fas fa-play text-[8px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
-                </button>
+                <div class="action-btn-container">
+                    <button onclick="startModel('{m_js}', '{stable_id}')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
+                        <i class="fas fa-play text-[8px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
+                    </button>
+                </div>
             </div>
         </div>
         """
@@ -400,9 +454,17 @@ def index():
     main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
     
     for g in gpus:
-        default_val = "100" if g['index'] == main_gpu_idx else "0"
+        idx = g['index']
+        if running_config and idx in running_config["gpu_weights"]:
+            w_obj = running_config["gpu_weights"][idx]
+            is_checked = "checked" if w_obj.active else ""
+            weight_val = int(w_obj.weight)
+        else:
+            is_checked = "checked"
+            weight_val = 100 if idx == main_gpu_idx else 0
+            
         gpu_rows += f"""
-        <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
+        <tr class="gpu-row group border-b border-slate-800/50" data-index="{idx}">
             <td class="px-3 md:px-6 py-4 md:py-6 text-center">
                 <div class="flex flex-col items-center gap-2">
                     <span class="gpu-util-val text-xs font-black text-blue-400 font-mono">0%</span>
@@ -411,8 +473,8 @@ def index():
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex items-center gap-2 md:gap-4">
-                    <input type="checkbox" checked class="gpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
-                    <div class="flex flex-col"><span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">ID {g['index']}</span><span class="text-sm font-bold text-slate-100 whitespace-nowrap">{g['name']}</span></div>
+                    <input type="checkbox" {is_checked} class="gpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <div class="flex flex-col"><span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">ID {idx}</span><span class="text-sm font-bold text-slate-100 whitespace-nowrap">{g['name']}</span></div>
                 </div>
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
@@ -429,12 +491,28 @@ def index():
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="relative">
-                    <input type="number" value="{default_val}" min="0" max="100" class="gpu-weight w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
+                    <input type="number" value="{weight_val}" min="0" max="100" class="gpu-weight w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all" oninput="balanceWeights(this)">
                     <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
                 </div>
             </td>
         </tr>
         """
+    
+    # Prepara as opções de Vision com a seleção atual se rodando
+    vision_options = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>'
+    for p in projectors:
+        selected = 'selected' if running_config and running_config["mmproj_path"] == p["path"] else ''
+        vision_options += f'<option value="{p["path"]}" class="bg-slate-900" {selected}>{p["name"]}</option>'
+    
+    # Contexto pré-selecionado
+    ctx_2k = 'selected' if running_config and running_config["context_size"] == 2048 else ''
+    ctx_4k = 'selected' if running_config and running_config["context_size"] == 4096 else ''
+    ctx_8k = 'selected' if running_config and running_config["context_size"] == 8192 else ''
+    ctx_16k = 'selected' if running_config and running_config["context_size"] == 16384 else ''
+    ctx_32k = 'selected' if running_config and running_config["context_size"] == 32768 else ''
+    ctx_64k = 'selected' if running_config and running_config["context_size"] == 65536 else ''
+    ctx_128k = 'selected' if (running_config and running_config["context_size"] == 131072) or not running_config else ''
+    ctx_256k = 'selected' if running_config and running_config["context_size"] == 262144 else ''
     
     html_template = """
     <!DOCTYPE html>
@@ -456,6 +534,8 @@ def index():
             .glow-online { animation: pulse-glow 2s infinite; }
             .terminal-line { animation: fadeIn 0.3s ease-out; }
             @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+            .model-item-container.active-selection { border-color: rgba(59, 130, 246, 0.8) !important; background-color: rgba(30, 41, 59, 0.8) !important; box-shadow: 0 0 15px rgba(59, 130, 246, 0.3); }
+            .model-item-container.running-now { border-color: rgba(16, 185, 129, 0.5) !important; background-color: rgba(6, 78, 59, 0.2) !important; }
         </style>
     </head>
     <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
@@ -495,20 +575,20 @@ def index():
                                 <div class="flex items-center gap-2">
                                     <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap">Contexto:</label>
                                     <select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
-                                        <option value="2048" class="bg-slate-900">2K</option>
-                                        <option value="4096" class="bg-slate-900">4K</option>
-                                        <option value="8192" class="bg-slate-900">8K</option>
-                                        <option value="16384" class="bg-slate-900">16K</option>
-                                        <option value="32768" class="bg-slate-900">32K</option>
-                                        <option value="65536" class="bg-slate-900">64K</option>
-                                        <option value="131072" selected class="bg-slate-900">128K</option>
-                                        <option value="262144" class="bg-slate-900">256K</option>
+                                        <option value="2048" class="bg-slate-900" {ctx_2k}>2K</option>
+                                        <option value="4096" class="bg-slate-900" {ctx_4k}>4K</option>
+                                        <option value="8192" class="bg-slate-900" {ctx_8k}>8K</option>
+                                        <option value="16384" class="bg-slate-900" {ctx_16k}>16K</option>
+                                        <option value="32768" class="bg-slate-900" {ctx_32k}>32K</option>
+                                        <option value="65536" class="bg-slate-900" {ctx_64k}>64K</option>
+                                        <option value="131072" class="bg-slate-900" {ctx_128k}>128K</option>
+                                        <option value="262144" class="bg-slate-900" {ctx_256k}>256K</option>
                                     </select>
                                 </div>
                                 <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                     <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-eye text-blue-400 mr-2"></i>Vision:</label>
                                     <select id="mmproj-path" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer max-w-[200px]">
-                                        <option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>
+                                        #VISION_OPTIONS#
                                     </select>
                                 </div>
                              </div>
@@ -559,43 +639,93 @@ def index():
         </div>
         <script>
             let logStream = null; let startTime = null; const fixedIp = "#FIXED_IP#";
-            window.modelConfigs = window.modelConfigs || {}; // Cache global para configs salvas
+            window.modelConfigs = window.modelConfigs || {}; 
+            let currentSelectedModel = null;
+            let currentRunningModelPath = null;
+
             document.getElementById('chat-link').href = `http://${fixedIp}:8085/`;
             document.getElementById('api-link').innerText = `http://${fixedIp}:8085/v1`;
+
+            function resetToDefaults() {
+                document.getElementById('context-size').value = "131072";
+                document.getElementById('mmproj-path').value = "";
+                document.querySelectorAll('.gpu-row').forEach((row, idx) => {
+                    row.querySelector('.gpu-checkbox').checked = true;
+                    // Tenta manter a lógica de maior VRAM ou apenas coloca 100 na primeira se não souber
+                    row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
+                });
+                updateTotal();
+            }
+
+            function selectModel(path, elementId) {
+                currentSelectedModel = path;
+                document.querySelectorAll('.model-item-container').forEach(el => {
+                    el.classList.remove('active-selection');
+                });
+                const selectedEl = document.getElementById(elementId);
+                if (selectedEl) selectedEl.classList.add('active-selection');
+                
+                if (window.modelConfigs[path]) {
+                    applyModelConfig(path);
+                } else {
+                    resetToDefaults();
+                }
+            }
 
             function applyModelConfig(path) {
                 const cfg = window.modelConfigs[path];
                 if (!cfg) return;
                 
+                console.log("Aplicando config para:", path, cfg);
+
                 // Aplica contexto
                 if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
                 
                 // Aplica mmproj
-                if (cfg.mmproj_path !== undefined) document.getElementById('mmproj-path').value = cfg.mmproj_path || "";
+                if (cfg.mmproj_path !== undefined) {
+                    const select = document.getElementById('mmproj-path');
+                    // Verifica se a opção existe, senão adiciona temporariamente ou espera o refresh
+                    let found = false;
+                    for (let i = 0; i < select.options.length; i++) {
+                        if (select.options[i].value === cfg.mmproj_path) {
+                            select.value = cfg.mmproj_path;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && cfg.mmproj_path) {
+                        const opt = document.createElement('option');
+                        opt.value = cfg.mmproj_path;
+                        opt.text = cfg.mmproj_path.split('/').pop() + " (Salvo)";
+                        select.add(opt);
+                        select.value = cfg.mmproj_path;
+                    } else if (!cfg.mmproj_path) {
+                        select.value = "";
+                    }
+                }
                 
-                // Aplica pesos
+                // Aplica pesos e checkboxes
                 if (cfg.gpu_weights) {
                     cfg.gpu_weights.forEach(w => {
                         const row = document.querySelector(`.gpu-row[data-index="${w.index}"]`);
                         if (row) {
                             const cb = row.querySelector('.gpu-checkbox');
                             const input = row.querySelector('.gpu-weight');
-                            cb.checked = w.weight > 0;
+                            cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
                             input.value = Math.round(w.weight);
                         }
                     });
                     updateTotal();
                 }
                 
-                // Feedback visual temporário
-                const nameEl = document.querySelector(`[onclick="applyModelConfig('${path.replace(/\\\\/g, '/')}')"] p`);
+                // Feedback visual na lista
+                const nameEl = document.querySelector(`[data-path="${path}"] .model-name`);
                 if (nameEl) {
-
-                    const originalColor = nameEl.className;
-                    nameEl.className = 'text-sm font-bold text-emerald-400 break-all line-clamp-2';
-                    setTimeout(() => { nameEl.className = originalColor; }, 1000);
+                    nameEl.classList.add('text-emerald-400');
+                    setTimeout(() => { nameEl.classList.remove('text-emerald-400'); }, 1000);
                 }
             }
+
             function balanceWeights(changedInput) {
                 const weights = Array.from(document.querySelectorAll('.gpu-weight'));
                 const checkedWeights = weights.filter(w => w.closest('.gpu-row').querySelector('.gpu-checkbox').checked);
@@ -611,6 +741,7 @@ def index():
                 }
                 updateTotal();
             }
+
             function updateTotal() { 
                 let sum = 0; 
                 document.querySelectorAll('.gpu-weight').forEach(i => {
@@ -620,6 +751,7 @@ def index():
                 const badge = document.getElementById('total-percent'); badge.innerText = `CARGA TOTAL: ${sum}%`; 
                 badge.className = sum === 100 ? 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20'; 
             }
+
             async function updateMetrics() {
                 try {
                     const res = await fetch('/metrics'); const data = await res.json();
@@ -635,6 +767,7 @@ def index():
                     });
                 } catch(e) {}
             }
+
             async function startLogs() {
                 if (logStream) logStream.abort(); logStream = new AbortController(); const box = document.getElementById('log-box');
                 box.innerHTML = '';
@@ -647,80 +780,217 @@ def index():
                     }
                 } catch(e) {}
             }
-            function updateUptime() { if (!startTime) return; const diff = Math.floor((new Date() - startTime) / 1000); document.getElementById('uptime-val').innerText = `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m ${diff%60}s`; }
+
+            function updateUptime(serverStartTime) { 
+                let diff;
+                if (serverStartTime) {
+                    diff = Math.floor(Date.now() / 1000 - serverStartTime);
+                } else if (startTime) {
+                    diff = Math.floor((new Date() - startTime) / 1000);
+                } else {
+                    return;
+                }
+                document.getElementById('uptime-val').innerText = `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m ${diff%60}s`; 
+            }
+            
             async function updateStatus() {
                 try {
-                    const res = await fetch('/status'); const data = await res.json(); const badge = document.getElementById('status-badge'); const card = document.getElementById('active-card');
+                    const res = await fetch('/status'); 
+                    const data = await res.json(); 
+                    const badge = document.getElementById('status-badge'); 
+                    const card = document.getElementById('active-card');
                     
-                    if (data.current_weights) {
-                        data.current_weights.forEach(w => {
-                            const input = document.querySelector(`.gpu-row[data-index="${w.index}"] .gpu-weight`);
-                            if (input && document.activeElement !== input) {
-                                const newWeight = Math.round(w.weight);
-                                if (parseInt(input.value) !== newWeight) {
-                                    input.value = newWeight;
-                                    updateTotal();
+                    if (data.config && data.config.gpu_weights && (!data.recovery || !data.recovery.active)) {
+                        data.config.gpu_weights.forEach(w => {
+                            const row = document.querySelector(`.gpu-row[data-index="${w.index}"]`);
+                            if (row) {
+                                const input = row.querySelector('.gpu-weight');
+                                const cb = row.querySelector('.gpu-checkbox');
+                                if (document.activeElement !== input) {
+                                    const newWeight = Math.round(w.weight);
+                                    if (parseInt(input.value) !== newWeight) {
+                                        input.value = newWeight;
+                                    }
                                 }
+                                if (w.active !== undefined) cb.checked = w.active;
                             }
                         });
+                        updateTotal();
+                        // Também restaura mmproj e context se estiver rodando e nada estiver selecionado
+                        if (data.running && !currentSelectedModel) {
+                            if (data.config.context_size) document.getElementById('context-size').value = data.config.context_size;
+                            if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
+                        }
                     }
 
                     if (data.recovery && data.recovery.failed) {
                         badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-red-500/50 text-red-500 uppercase';
                         badge.innerHTML = `<i class="fas fa-exclamation-triangle mr-1"></i> FALHA: ${data.recovery.message.toUpperCase()}`;
-                        if (logStream) { logStream.abort(); logStream = null; }
                         return;
                     }
 
                     if (data.recovery && data.recovery.active) {
                         badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
                         badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
-                        document.getElementById('log-box').innerHTML = '';
                         return;
                     }
 
                     if (data.running) {
-                        if (!startTime) startTime = new Date(); badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online'; badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE'; card.classList.remove('hidden'); document.getElementById('active-model-name').innerText = data.model; if (!logStream) startLogs(); updateUptime();
+                        badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online'; 
+                        badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE'; 
+                        card.classList.remove('hidden'); 
+                        document.getElementById('active-model-name').innerText = data.model; 
+                        if (!logStream) startLogs(); 
+                        updateUptime(data.start_time);
+                        currentRunningModelPath = data.model_path;
+                        
+                        // Marca seleção na lista se rodando
+                        if (!currentSelectedModel && currentRunningModelPath) {
+                            currentSelectedModel = currentRunningModelPath.replace(/\\\\/g, '/');
+                        }
                     } else {
-                        startTime = null; badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase'; badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE'; card.classList.add('hidden'); if (logStream) { logStream.abort(); logStream = null; }
+                        startTime = null; 
+                        badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase'; 
+                        badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE'; 
+                        card.classList.add('hidden'); 
+                        if (logStream) { logStream.abort(); logStream = null; }
+                        currentRunningModelPath = null;
                     }
-                } catch(e) {}
+                    
+                    // Sincroniza visual da lista de modelos
+                    document.querySelectorAll('.model-item-container').forEach(el => {
+                        const m_js = el.dataset.path;
+                        const actionBtnContainer = el.querySelector('.action-btn-container');
+                        const renameBtn = el.querySelector('.rename-btn');
+                        const deleteBtn = el.querySelector('.delete-btn');
+                        
+                        // Normaliza para comparação robusta
+                        const normalizedM = m_js.replace(/\\\\/g, '/');
+                        const normalizedR = currentRunningModelPath ? currentRunningModelPath.replace(/\\\\/g, '/') : null;
+                        const isRunning = normalizedR && normalizedM === normalizedR;
+                        
+                        if (isRunning) {
+                            el.classList.add('running-now');
+                            if (renameBtn) renameBtn.classList.add('hidden');
+                            if (deleteBtn) deleteBtn.classList.add('hidden');
+                        } else {
+                            el.classList.remove('running-now');
+                            if (renameBtn) renameBtn.classList.remove('hidden');
+                            if (deleteBtn) deleteBtn.classList.remove('hidden');
+                        }
+                        
+                        if (currentSelectedModel === m_js) {
+                            el.classList.add('active-selection');
+                        } else {
+                            el.classList.remove('active-selection');
+                        }
+                        
+                        const newButtonsHtml = getModelButtonsHtml(m_js, el.id, isRunning);
+                        if (actionBtnContainer.innerHTML.trim() !== newButtonsHtml.trim()) {
+                            actionBtnContainer.innerHTML = newButtonsHtml;
+                        }
+                    });
+                } catch(e) { console.error("Error in updateStatus:", e); }
             }
+
             async function setDefaultModel(checkbox, path) { if (checkbox.checked) document.querySelectorAll('.model-default-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; }); try { await fetch('/set_default', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path: checkbox.checked ? path : null }) }); } catch(e) { alert("Erro ao salvar configuração."); } }
+            
             async function downloadModel() { const url = document.getElementById('download-url').value.trim(); if (!url) return; try { const res = await fetch('/download', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url }) }); if (res.ok) { document.getElementById('download-url').value = ''; updateDownloads(); } } catch(e) {} }
+            
             async function updateDownloads() {
                 try {
                     const res = await fetch('/downloads'); const data = await res.json(); const container = document.getElementById('download-status'); const entries = Object.entries(data); if (entries.length === 0) { container.innerHTML = ''; return; }
                     container.innerHTML = entries.map(([id, d]) => `<div class="p-4 md:p-5 bg-slate-900 border border-slate-800 rounded-2xl"><div class="flex justify-between items-center mb-3 md:mb-4"><p class="text-xs md:text-sm font-bold truncate flex-1 mr-3 md:mr-4 text-slate-300 font-mono" title="${d.filename}">${d.filename}</p><span class="text-[8px] md:text-[10px] font-black uppercase px-2 md:px-3 py-0.5 md:py-1 rounded ${d.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : d.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}">${d.status === 'completed' ? 'concluído' : d.status === 'failed' ? 'falhou' : 'baixando'}</span></div><div class="w-full h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden"><div class="h-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)] transition-all duration-500" style="width: ${d.progress}%"></div></div></div>`).join(''); if (entries.some(([_, d]) => d.status === 'completed')) updateModels();
                 } catch(e) {}
             }
+
             async function updateModels() {
                 try {
                     const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); 
                     document.getElementById('model-count').innerText = `${data.models.length} UNIDADES`;
                     
-                    document.getElementById('model-list-container').innerHTML = data.models.map(m => {
+                    // Preserva a seleção atual se possível
+                    const oldContainer = document.getElementById('model-list-container');
+                    
+                    const newHtml = data.models.map(m => {
                         const m_js = m.path.replace(/\\\\/g, '/');
                         if (m.last_config) window.modelConfigs[m.path] = m.last_config;
                         const hasConfigClass = m.last_config ? 'text-blue-400' : 'text-slate-100';
                         const historyIcon = m.last_config ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
+                        const isRunning = currentRunningModelPath && m_js === currentRunningModelPath.replace(/\\\\/g, '/');
+                        const isActive = currentSelectedModel === m_js ? 'active-selection' : '';
+                        const runningClass = isRunning ? 'running-now' : '';
+                        const hashId = m.id;
+                        const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
 
-                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="applyModelConfig('${m_js}')"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold ${hasConfigClass} break-all line-clamp-2" title="${m.name}">${m.name}</p>${historyIcon}</div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
+                        return `<div id="${hashId}" class="model-item-container group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass}" data-path="${m_js}">
+                            <div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
+                                <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2">
+                                    <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i>
+                                    <p class="model-name text-sm md:text-base font-bold ${hasConfigClass} break-all line-clamp-2" title="${m.name}">${m.name}</p>
+                                    ${historyIcon}
+                                </div>
+                                <p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p>
+                            </div>
+                            <div class="flex items-center gap-3 md:gap-6">
+                                <div class="flex items-center gap-1">
+                                    <button onclick="renameModel('${m_js}')" class="rename-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all ${isRunning ? 'hidden' : ''}" title="Renomear Modelo">
+                                        <i class="fas fa-edit text-[10px] md:text-xs"></i>
+                                    </button>
+                                    <button onclick="deleteModel('${m_js}')" class="delete-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all ${isRunning ? 'hidden' : ''}" title="Excluir Modelo">
+                                        <i class="fas fa-trash-alt text-[10px] md:text-xs"></i>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col items-center gap-1 md:gap-1.5">
+                                    <span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
+                                    <input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')">
+                                </div>
+                                <div class="action-btn-container">
+                                    ${buttonsHtml}
+                                </div>
+                            </div>
+                        </div>`;
                     }).join('');
+                    
+                    if (oldContainer.innerHTML !== newHtml) oldContainer.innerHTML = newHtml;
 
                     const projSelect = document.getElementById('mmproj-path');
                     const currentVal = projSelect.value;
-                    projSelect.innerHTML = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>';
+                    let projHtml = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>';
                     data.projectors.forEach(p => {
-                        const opt = document.createElement('option');
-                        opt.value = p.path;
-                        opt.className = 'bg-slate-900';
-                        opt.innerText = p.name;
-                        projSelect.appendChild(opt);
+                        projHtml += `<option value="${p.path}" class="bg-slate-900">${p.name}</option>`;
                     });
-                    if (currentVal) projSelect.value = currentVal;
+                    
+                    // Só atualiza se a lista de opções mudou
+                    if (projSelect.innerHTML.trim() !== projHtml.trim()) {
+                        projSelect.innerHTML = projHtml;
+                        // Tenta restaurar o valor, mas se sumiu (ex: deletado), volta pro auto
+                        projSelect.value = currentVal;
+                        if (projSelect.value !== currentVal) projSelect.value = "";
+                    }
                 } catch(e) {}
             }
+
+            async function renameModel(path) {
+                const currentName = path.split('/').pop().replace('.gguf', '');
+                const newName = prompt("Digite o novo nome para o modelo:", currentName);
+                if (!newName || newName === currentName) return;
+                
+                try {
+                    const res = await fetch('/rename', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ path, new_name: newName })
+                    });
+                    if (res.ok) { 
+                        updateModels(); 
+                    } else { 
+                        const err = await res.json(); 
+                        alert("Erro ao renomear: " + (err.detail || "Erro desconhecido")); 
+                    }
+                } catch(e) { alert("Erro de rede ao renomear modelo."); }
+            }
+
             async function deleteModel(path) {
                 if (!confirm("TEM CERTEZA QUE DESEJA EXCLUIR ESTE MODELO DO DISCO?\\nEsta ação é irreversível.")) return;
                 try {
@@ -732,32 +1002,65 @@ def index():
                     if (res.ok) { updateModels(); } else { const err = await res.json(); alert("Erro ao excluir: " + (err.detail || "Erro desconhecido")); }
                 } catch(e) { alert("Erro de rede ao excluir modelo."); }
             }
-            async function startModel(path) { 
+
+            async function startModel(path, elementId) { 
+                // Se o modelo ainda não está selecionado no UI, seleciona ele agora (o que aplica a config salva)
+                if (currentSelectedModel !== path) {
+                    selectModel(path, elementId);
+                    // Pequeno delay para garantir que os valores do UI foram atualizados antes de ler
+                    await new Promise(r => setTimeout(r, 100));
+                }
+
                 const weights = []; 
                 document.getElementById('log-box').innerHTML = '';
-                document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); 
+                document.querySelectorAll('.gpu-row').forEach(r => { 
+                    const isChecked = r.querySelector('.gpu-checkbox').checked;
+                    weights.push({ 
+                        index: parseInt(r.dataset.index), 
+                        weight: parseInt(r.querySelector('.gpu-weight').value || 0), 
+                        name: "GPU",
+                        active: isChecked
+                    }); 
+                }); 
+                
+                if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU"); 
+                
                 const mmprojPath = document.getElementById('mmproj-path').value;
                 document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; 
-                await fetch('/start', { 
-                    method: 'POST', 
-                    headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({ 
-                        path, 
-                        mmproj_path: mmprojPath || null,
-                        gpu_weights: weights, 
-                        context_size: parseInt(document.getElementById('context-size').value) 
-                    }) 
-                }); 
+                
+                try {
+                    await fetch('/start', { 
+                        method: 'POST', 
+                        headers: {'Content-Type': 'application/json'}, 
+                        body: JSON.stringify({ 
+                            path, 
+                            mmproj_path: mmprojPath || null,
+                            gpu_weights: weights, 
+                            context_size: parseInt(document.getElementById('context-size').value) 
+                        }) 
+                    }); 
+                } catch(e) {
+                    alert("Erro ao iniciar modelo.");
+                }
+                
                 setTimeout(updateStatus, 2000); 
             }
+
             async function stopModel() { if (confirm("ENCERRAR PROCESSO?")) { await fetch('/stop', {method: 'POST'}); setTimeout(updateStatus, 1000); } }
-            setInterval(updateMetrics, 2000); setInterval(updateStatus, 3000); setInterval(updateDownloads, 3000);
+            
+            setInterval(updateMetrics, 2000); 
+            setInterval(updateStatus, 3000); 
+            setInterval(updateDownloads, 3000);
+            setInterval(updateModels, 5000); // Refresh model list periodically
+
             updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal();
         </script>
     </body>
     </html>
     """
-    final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", FIXED_IP)
+    final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", FIXED_IP).replace("#VISION_OPTIONS#", vision_options)
+    for c in ["ctx_2k", "ctx_4k", "ctx_8k", "ctx_16k", "ctx_32k", "ctx_64k", "ctx_128k", "ctx_256k"]:
+        final_html = final_html.replace(f"{{{c}}}", locals()[c])
     return final_html
 
 @app.get("/config")
@@ -788,12 +1091,96 @@ def delete_model(req: DeleteRequest):
         logging.error(f"Erro ao excluir modelo: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/rename")
+def rename_model(req: RenameRequest):
+    if not req.path.startswith(MODELS_DIR):
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    
+    # Verifica se o modelo está rodando
+    status = find_llama_server()
+    if status["running"]:
+        # Se o last_start_request bater ou se o path estiver no cmdline
+        is_running = False
+        if last_start_request and last_start_request.path == req.path:
+            is_running = True
+        else:
+            # Fallback robusto via cmdline
+            for proc in psutil.process_iter(['pid', 'cmdline']):
+                try:
+                    if proc.info['pid'] == status['pid']:
+                        if any(req.path in arg for i, arg in enumerate(proc.info['cmdline'] or [])):
+                            is_running = True
+                        break
+                except: pass
+        
+        if is_running:
+            raise HTTPException(status_code=400, detail="Não é possível renomear um modelo em execução")
+
+    # Prepara novo path
+    dir_name = os.path.dirname(req.path)
+    new_filename = req.new_name
+    if not new_filename.endswith(".gguf"):
+        new_filename += ".gguf"
+    new_path = os.path.join(dir_name, new_filename)
+
+    if os.path.exists(new_path):
+        raise HTTPException(status_code=400, detail="Já existe um arquivo com este nome")
+
+    try:
+        os.rename(req.path, new_path)
+        
+        # Atualiza config se necessário
+        config = load_config()
+        updated = False
+        
+        # Atualiza modelo padrão
+        if config.get("default_model") == req.path:
+            config["default_model"] = new_path
+            updated = True
+            
+        # Atualiza configs de modelo
+        if "model_configs" in config and req.path in config["model_configs"]:
+            config["model_configs"][new_path] = config["model_configs"].pop(req.path)
+            updated = True
+            
+        if updated:
+            save_config(config)
+            
+        logging.info(f"Modelo renomeado: {req.path} -> {new_path}")
+        return {"status": "renamed", "new_path": new_path}
+    except Exception as e:
+        logging.error(f"Erro ao renomear modelo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/status")
 def get_status():
     status = find_llama_server()
     status["recovery"] = recovery_state
-    if last_start_request and (status["running"] or recovery_state["active"]):
-        status["current_weights"] = [w.model_dump() for w in last_start_request.gpu_weights]
+    
+    if status.get("running"):
+        if last_start_request:
+            status["model_path"] = last_start_request.path
+            status["config"] = {
+                "path": last_start_request.path,
+                "context_size": last_start_request.context_size,
+                "gpu_weights": [w.model_dump() if hasattr(w, "model_dump") else w for w in last_start_request.gpu_weights],
+                "mmproj_path": last_start_request.mmproj_path
+            }
+        else:
+            # Tenta encontrar o path completo no cmdline do processo
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['pid'] == status['pid']:
+                        cmdline = proc.info['cmdline']
+                        for i in range(len(cmdline)-1):
+                            if cmdline[i] in ["-m", "--model"]:
+                                status["model_path"] = cmdline[i+1]
+                                break
+                        break
+                except: pass
+    
     return status
 
 @app.get("/models")
@@ -806,7 +1193,10 @@ def list_models():
     
     for f in all_files:
         name = os.path.basename(f).lower()
+        # ID estável baseado no path
+        m_id = f"model-item-{abs(sum(ord(c) << (i % 8) for i, c in enumerate(f))) % 1000000}"
         item = {
+            "id": m_id,
             "path": f,
             "name": os.path.basename(f),
             "dir": os.path.dirname(f).replace(MODELS_DIR, "") or "/",
