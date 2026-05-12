@@ -23,7 +23,7 @@ logging.basicConfig(filename='/root/manager.log', level=logging.INFO,
 app = FastAPI(title="Automanager Llama.cpp")
 
 MODELS_DIR = "/media/docker/models"
-SERVER_LOG_PATH = "/root/gemma_server.log"
+SERVER_LOG_PATH = "/root/llama_server.log"
 FIXED_IP = "192.168.2.183"
 CONFIG_PATH = "/root/automanager_config.json"
 

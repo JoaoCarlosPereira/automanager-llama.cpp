@@ -28,17 +28,17 @@ A aplicação é uma interface de controle baseada em **FastAPI** que gerencia i
 
 ## 📂 Estrutura de Arquivos e Caminhos
 
--   **Aplicação Principal:** `/root/automanager-llama.cpp/gemma_manager.py`.
+-   **Aplicação Principal:** `/root/automanager-llama.cpp/llama_manager.py`.
 -   **Configuração Persistente:** `/root/automanager_config.json` (armazena o `default_model`).
 -   **Logs da Aplicação:** `/root/manager.log`.
--   **Logs do Servidor Llama:** `/root/gemma_server.log`.
+-   **Logs do Servidor Llama:** `/root/llama_server.log`.
 -   **Diretório de Modelos:** `/media/docker/models/`.
 -   **Serviço Systemd:** `/etc/systemd/system/llama-manager.service`.
 
 ## ⚙️ Configurações e Comandos
 
 ### Gerenciar o Serviço
-Sempre que o código em `gemma_manager.py` for alterado, o serviço deve ser reiniciado:
+Sempre que o código em `llama_manager.py` for alterado, o serviço deve ser reiniciado:
 ```bash
 systemctl restart llama-manager.service
 systemctl status llama-manager.service
