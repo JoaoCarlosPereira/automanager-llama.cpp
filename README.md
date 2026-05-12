@@ -1,4 +1,4 @@
-# 🚀 Automanager Llama.cpp PRO
+# 🚀 Automanager Llama.cpp
 
 Um gerenciador web avançado e leve, baseado em **FastAPI**, projetado para orquestrar instâncias do `llama-server` com foco em máxima performance em hardware **NVIDIA Multi-GPU** (especialmente otimizado para setups como RTX 3090 + Tesla P100).
 
