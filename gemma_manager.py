@@ -92,7 +92,9 @@ def get_gguf_models():
 
 def get_gpu_info():
     try:
-        output = subprocess.check_output("llama-server --help 2>&1", shell=True).decode()
+        env = os.environ.copy()
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        output = subprocess.check_output("llama-server --help 2>&1", shell=True, env=env).decode()
         pattern = r"Device (\d+): (.*?), compute capability.*?, VRAM: (\d+) MiB"
         matches = re.findall(pattern, output)
         gpus = []
@@ -513,6 +515,7 @@ def start_model(req: StartRequest):
         
         main_gpu = str(max(weights_map, key=weights_map.get)) if weights_map else "0"
         env = os.environ.copy()
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
         env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
         
