@@ -9,30 +9,31 @@ Um gerenciador web avançado e leve, baseado em **FastAPI**, projetado para orqu
 
 ## 🌟 Funcionalidades Principais
 
-### 1. 🔍 Gestão Inteligente de Modelos
-- **Descoberta Automática:** Varredura recursiva no diretório `/media/docker/models`. Identifica arquivos `.gguf` e os organiza por subdiretórios.
+### 1. 🧠 Auto-Recuperação de Memória (Self-Healing)
+- **Detecção de OOM:** Monitoramento em tempo real dos logs do servidor para detectar erros de "Out of Memory".
+- **Realocação Dinâmica:** Caso um modelo falhe ao carregar, o sistema automaticamente reduz 10% da carga da GPU principal e redistribui para as secundárias, tentando novamente até estabilizar.
+- **Sinalização de Falha:** Indica visualmente quando um modelo é incompatível com a capacidade total de VRAM disponível.
+
+### 2. 🔍 Gestão Inteligente de Modelos
+- **Interface Expandida:** Layout otimizado para telas largas (1800px) com melhor visibilidade para nomes de modelos longos.
 - **Download via URL:** Interface integrada para baixar novos modelos diretamente para o servidor.
 - **Modelo Padrão:** Opção de marcar um modelo como "Padrão" para que ele seja iniciado automaticamente junto com o serviço do sistema.
+- **Exclusão de Disco:** Botão para remover arquivos `.gguf` diretamente pela interface web.
 
-### 2. 🛠️ Controle Total de Hardware (NVIDIA)
+### 3. 🛠️ Controle Total de Hardware (NVIDIA)
 - **Seleção Dinâmica:** Ative ou desative GPUs específicas via checkbox.
-- **Distribuição de Carga (Tensor Split):** Ajuste fino da porcentagem de VRAM que cada GPU deve carregar.
-- **Mapeamento Anti-Inversão:** Utiliza a ordem de detecção interna do `llama.cpp` para garantir que a carga configurada vá exatamente para a placa correta.
-- **Priorização Automática:** Sugere configurações otimizadas baseadas nos pesos definidos.
+- **Distribuição de Carga:** Ajuste fino via interface. Por padrão, inicia com 100% na GPU de maior capacidade.
+- **Mapeamento Anti-Inversão:** Utiliza Device IDs internos do `llama.cpp` para garantir que a carga vá exatamente para a placa correta.
 
-### 3. 📊 Monitoramento Detalhado em Tempo Real
-- **Métricas de Sistema:** Acompanhamento vivo do uso de **CPU** e **Memória RAM**.
-- **Métricas de GPU:** Visualização em tempo real de **Utilização (%)**, **Temperatura (°C)**, **Consumo de Energia (W)** e **VRAM (MB)** com barras de progresso.
-- **Console de Execução:** Streaming de logs em tempo real diretamente na interface web.
+### 4. 📊 Monitoramento em Tempo Real
+- **Feedback Visual:** Status animados como **"ONLINE"**, **"REALOCANDO..."** e **"FALHA CRÍTICA"**.
+- **Métricas de GPU:** Visualização de Utilização (%), Temperatura (°C), Consumo (W) e VRAM (MB) com barras de progresso.
+- **Console de Logs:** Streaming de logs com limpeza automática a cada nova tentativa ou troca de modelo.
 
-### 4. ⚡ Otimização de Performance
-- **Contexto Configurável:** Seleção de janelas de contexto (ex: 2k, 32k, 128k) via interface.
-- **Flash Attention & MLock:** Ativados por padrão para garantir velocidade máxima e estabilidade.
-- **GPU Offloading Total:** Configurado automaticamente para carregar 100% das camadas na VRAM (`-ngl 99`).
-
-### 5. 🔌 Conectividade e Chat
-- **API OpenAI-Compatible:** Servidor fixo na porta `8085/v1`, pronto para integração com ferramentas externas.
-- **Acesso Direto ao Chat:** Botão dedicado para abrir a interface nativa de chat do `llama.cpp`.
+### 5. ⚡ Otimização de Performance
+- **Janela de Contexto:** Suporte nativo até 256k, com **128K** definido como padrão da aplicação.
+- **Flash Attention & MLock:** Ativados por padrão para velocidade máxima e estabilidade.
+- **GPU Offloading Total:** Força o carregamento de 100% das camadas na VRAM (`-ngl 99`).
 
 ---
 
@@ -41,23 +42,23 @@ Um gerenciador web avançado e leve, baseado em **FastAPI**, projetado para orqu
 ### Hardware e Sistema
 - **SO:** Linux (Ubuntu/Debian recomendado).
 - **GPU:** NVIDIA com drivers instalados e `nvidia-smi` acessível.
-- **Binário:** `llama-server` deve estar no PATH ou em local configurado no script.
+- **Binário:** `llama-server` deve estar no PATH ou configurado no código.
 
 ### Software (Python 3.11+)
-- `fastapi`, `uvicorn`, `psutil`, `requests`.
+- `fastapi`, `uvicorn`, `psutil`, `requests`, `pydantic`.
 
 ---
 
-## 🚀 Instalação e Configuração
+## 🚀 Instalação e Gestão
 
 ### 1. Estrutura de Pastas
-O gerenciador busca modelos em: `/media/docker/models/`
+O gerenciador busca modelos recursivamente em: `/media/docker/models/`
 
 ### 2. Configuração Persistente
-As preferências (como o modelo padrão) são salvas em `/root/automanager_config.json`.
+As preferências são salvas em `/root/automanager_config.json`.
 
-### 3. Gestão do Serviço
-O sistema é projetado para rodar como um serviço `systemd`:
+### 3. Comando de Serviço
+O sistema roda como um serviço `systemd`:
 ```bash
 # Reiniciar após alterações no código
 sudo systemctl restart llama-manager.service
@@ -67,10 +68,10 @@ journalctl -u llama-manager.service -f
 
 ---
 
-## ⚠️ Observações de Uso e Solução de Problemas
-- **Personalização:** Muitos caminhos e configurações estão "hardcoded" para o ambiente original. Se for utilizar em outro servidor, verifique as variáveis de caminho dentro de `llama_manager.py`.
-- **Memória:** Contextos muito grandes podem causar falha na inicialização se excederem a VRAM disponível.
-- **GPU Inconsistente:** Se as métricas de GPU não aparecerem, certifique-se de que o comando `nvidia-smi` está funcionando corretamente.
+## ⚠️ Solução de Problemas
+- **FALHA CRÍTICA:** Se esta mensagem aparecer, o modelo+contexto escolhido é grande demais para a soma de VRAM de suas GPUs selecionadas.
+- **Logs não aparecem:** Verifique se o caminho `/root/llama_server.log` tem permissões de escrita.
+- **GPU Inconsistente:** Certifique-se de que o comando `nvidia-smi` está respondendo corretamente.
 
 ---
 *Desenvolvido para automação e alta performance de LLMs locais.*
