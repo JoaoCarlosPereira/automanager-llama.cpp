@@ -139,9 +139,16 @@ async def startup_event():
             try:
                 gpus = get_gpu_info()
                 weights = []
+                max_vram = max(g['vram'] for g in gpus) if gpus else 0
+                main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
+
                 for g in gpus:
-                    is_3090 = "3090" in g['name']
-                    val = 100 if len(gpus) == 1 else (95 if is_3090 else 5)
+                    if len(gpus) == 1:
+                        val = 100
+                    elif g['index'] == main_gpu_idx:
+                        val = 90
+                    else:
+                        val = round(10 / (len(gpus) - 1))
                     weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
                 start_model(StartRequest(path=default_model, gpu_weights=weights))
             except Exception as e:
@@ -191,6 +198,7 @@ def index():
     
     model_items = ""
     for m in models:
+        m_js = m.replace("\\", "/")
         m_name = os.path.basename(m)
         m_dir = os.path.dirname(m).replace(MODELS_DIR, "")
         is_default = "checked" if m == default_model else ""
@@ -204,12 +212,15 @@ def index():
                 <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
             </div>
             <div class="flex items-center gap-3 md:gap-4">
+                <button onclick="deleteModel('{m_js}')" class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo">
+                    <i class="fas fa-trash-alt text-[10px]"></i>
+                </button>
                 <div class="flex flex-col items-center gap-1">
                     <span class="text-[8px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
                     <input type="checkbox" class="model-default-checkbox w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" 
-                           {is_default} onclick="setDefaultModel(this, '{m}')">
+                           {is_default} onclick="setDefaultModel(this, '{m_js}')">
                 </div>
-                <button onclick="startModel('{m}')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
+                <button onclick="startModel('{m_js}')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl active:scale-95 flex items-center gap-2 uppercase tracking-widest shadow-xl">
                     <i class="fas fa-play text-[8px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
                 </button>
             </div>
@@ -217,10 +228,18 @@ def index():
         """
     
     gpu_rows = ""
+    max_vram = max(g['vram'] for g in gpus) if gpus else 0
+    # Encontra o índice da primeira GPU com o máximo de VRAM
+    main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
+    
     for g in gpus:
-        is_3090 = "3090" in g['name']
-        default_val = "95" if is_3090 else "5"
-        if len(gpus) == 1: default_val = "100"
+        if len(gpus) == 1:
+            default_val = "100"
+        elif g['index'] == main_gpu_idx:
+            default_val = "90"
+        else:
+            default_val = str(round(10 / (len(gpus) - 1)))
+        
         gpu_rows += f"""
         <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
             <td class="px-3 md:px-6 py-4 md:py-6 text-center">
@@ -433,8 +452,22 @@ def index():
             async function updateModels() {
                 try {
                     const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); document.getElementById('model-count').innerText = `${data.length} UNIDADES`;
-                    document.getElementById('model-list-container').innerHTML = data.map(m => `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold text-slate-100 truncate" title="${m.name}">${m.name}</p></div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m.path}')"></div><button onclick="startModel('${m.path}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`).join('');
+                    document.getElementById('model-list-container').innerHTML = data.map(m => {
+                        const m_js = m.path.replace(/\\\\/g, '/');
+                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold text-slate-100 truncate" title="${m.name}">${m.name}</p></div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
+                    }).join('');
                 } catch(e) {}
+            }
+            async function deleteModel(path) {
+                if (!confirm("TEM CERTEZA QUE DESEJA EXCLUIR ESTE MODELO DO DISCO?\\nEsta ação é irreversível.")) return;
+                try {
+                    const res = await fetch('/delete', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ path })
+                    });
+                    if (res.ok) { updateModels(); } else { const err = await res.json(); alert("Erro ao excluir: " + (err.detail || "Erro desconhecido")); }
+                } catch(e) { alert("Erro de rede ao excluir modelo."); }
             }
             async function startModel(path) { const weights = []; document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(document.getElementById('context-size').value) }) }); setTimeout(updateStatus, 2000); }
             async function stopModel() { if (confirm("ENCERRAR PROCESSO?")) { await fetch('/stop', {method: 'POST'}); setTimeout(updateStatus, 1000); } }
@@ -457,6 +490,9 @@ class StartRequest(BaseModel):
     gpu_weights: List[GPUWeight]
     context_size: int = 65536
 
+class DeleteRequest(BaseModel):
+    path: str
+
 class DownloadRequest(BaseModel):
     url: str
     filename: Optional[str] = None
@@ -474,6 +510,26 @@ def set_default(req: SetDefaultRequest):
     config["default_model"] = req.path
     save_config(config)
     return {"status": "ok"}
+
+@app.post("/delete")
+def delete_model(req: DeleteRequest):
+    if not req.path.startswith(MODELS_DIR):
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    
+    # Verifica se o modelo está em execução
+    status = find_llama_server()
+    if status["running"] and status["model"] == req.path:
+        stop_model()
+
+    try:
+        os.remove(req.path)
+        logging.info(f"Modelo excluído: {req.path}")
+        return {"status": "deleted"}
+    except Exception as e:
+        logging.error(f"Erro ao excluir modelo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/status")
 def get_status():
@@ -527,7 +583,11 @@ def start_model(req: StartRequest):
         ]
         
         logging.info(f"START: {' '.join(cmd)}")
-        subprocess.Popen(cmd, stdout=open(SERVER_LOG_PATH, "w"), stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
+        # Limpa o arquivo de log antes de iniciar
+        with open(SERVER_LOG_PATH, "w") as f:
+            f.write("")
+            
+        subprocess.Popen(cmd, stdout=open(SERVER_LOG_PATH, "a"), stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
         return {"message": "Started"}
     except Exception as e:
         logging.error(f"Error: {e}")
