@@ -27,6 +27,26 @@ SERVER_LOG_PATH = "/root/llama_server.log"
 FIXED_IP = "192.168.2.183"
 CONFIG_PATH = "/root/automanager_config.json"
 
+class GPUWeight(BaseModel):
+    index: int
+    weight: float
+    name: str
+
+class StartRequest(BaseModel):
+    path: str
+    gpu_weights: List[GPUWeight]
+    context_size: int = 131072
+
+class DeleteRequest(BaseModel):
+    path: str
+
+class DownloadRequest(BaseModel):
+    url: str
+    filename: Optional[str] = None
+
+class SetDefaultRequest(BaseModel):
+    path: Optional[str] = None
+
 def load_config():
     if os.path.exists(CONFIG_PATH):
         try:
@@ -129,8 +149,114 @@ def find_llama_server():
         except (psutil.NoSuchProcess, psutil.AccessDenied): continue
     return {"running": False}
 
+# Estado global para controle de auto-retry
+last_start_request = None
+recovery_state = {"active": False, "message": ""}
+retry_lock = threading.Lock()
+
+def monitor_oom():
+    global last_start_request
+    while True:
+        try:
+            if os.path.exists(SERVER_LOG_PATH):
+                with open(SERVER_LOG_PATH, "r") as f:
+                    # Vai para o final do arquivo e monitora novas linhas
+                    f.seek(0, os.SEEK_END)
+                    while True:
+                        line = f.readline()
+                        if not line:
+                            if not find_llama_server()["running"] and not recovery_state["active"]:
+                                break # Se parou de rodar e não está recuperando, sai do loop interno
+                            time.sleep(1)
+                            continue
+                        
+                        if "out of memory" in line.lower() or "failed to allocate" in line.lower():
+                            logging.warning("OOM detectado no log! Iniciando ajuste de carga...")
+                            handle_oom_retry()
+                            break
+            time.sleep(2)
+        except Exception as e:
+            logging.error(f"Erro no monitor de OOM: {e}")
+            time.sleep(5)
+
+def handle_oom_retry():
+    global last_start_request, recovery_state
+    with retry_lock:
+        if not last_start_request:
+            return
+        
+        recovery_state["active"] = True
+        recovery_state["message"] = "OOM detectado. Reajustando pesos..."
+        
+        req = last_start_request
+        weights = req.gpu_weights
+        if len(weights) <= 1:
+            logging.error("OOM em single GPU ou sem pesos. Impossível ajustar.")
+            recovery_state["active"] = False
+            return
+
+        # Encontra a GPU com maior peso
+        max_w = max(w.weight for w in weights)
+        if max_w <= 10:
+            logging.error("Pesos já estão no mínimo. Falha total.")
+            recovery_state["active"] = False
+            return
+
+        main_gpu = max(weights, key=lambda x: x.weight)
+        other_gpus = [w for w in weights if w != main_gpu]
+        
+        # Reduz 10% da principal e distribui nos outros
+        reduction = min(10.0, main_gpu.weight - 5.0)
+        main_gpu.weight -= reduction
+        
+        share = reduction / len(other_gpus)
+        for og in other_gpus:
+            og.weight += share
+        
+        logging.info(f"Retentando com novos pesos: {[f'{w.index}:{w.weight}' for w in weights]}")
+        execute_start(req)
+        time.sleep(2) # Dá um tempo para o processo subir
+        recovery_state["active"] = False
+
+def execute_start(req: StartRequest):
+    stop_model()
+    try:
+        all_gpus = get_gpu_info()
+        max_idx = max(g['index'] for g in all_gpus) if all_gpus else 0
+        weights_map = {gw.index: gw.weight for gw in req.gpu_weights}
+        split = []
+        total_user = sum(weights_map.values()) or 1
+        for i in range(max_idx + 1):
+            split.append(f"{weights_map.get(i, 0)/total_user:.4f}")
+        
+        main_gpu = str(max(weights_map, key=weights_map.get)) if weights_map else "0"
+        env = os.environ.copy()
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
+        env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
+        
+        cmd = [
+            "llama-server", "-m", req.path, "-ngl", "99", "--flash-attn", "on", 
+            "--host", "0.0.0.0", "--port", "8085", "--tools", "all", 
+            "--parallel", "1", "--ctx-size", str(req.context_size), "--mlock", 
+            "--main-gpu", main_gpu, "--tensor-split", ",".join(split)
+        ]
+        
+        logging.info(f"START EXEC: {' '.join(cmd)}")
+        with open(SERVER_LOG_PATH, "w") as f:
+            f.write("")
+            
+        subprocess.Popen(cmd, stdout=open(SERVER_LOG_PATH, "a"), stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
+        return True
+    except Exception as e:
+        logging.error(f"Execution Error: {e}")
+        return False
+
 @app.on_event("startup")
 async def startup_event():
+    # Inicia thread de monitoramento de log
+    threading.Thread(target=monitor_oom, daemon=True).start()
+    
     config = load_config()
     default_model = config.get("default_model")
     if default_model and os.path.exists(default_model):
@@ -144,13 +270,17 @@ async def startup_event():
 
                 for g in gpus:
                     if len(gpus) == 1:
-                        val = 100
+                        val = 100.0
                     elif g['index'] == main_gpu_idx:
-                        val = 90
+                        val = 90.0
                     else:
-                        val = round(10 / (len(gpus) - 1))
+                        val = 10.0 / (len(gpus) - 1)
                     weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
-                start_model(StartRequest(path=default_model, gpu_weights=weights))
+                
+                req = StartRequest(path=default_model, gpu_weights=weights)
+                global last_start_request
+                last_start_request = req
+                execute_start(req)
             except Exception as e:
                 logging.error(f"Auto-start error: {e}")
 
@@ -330,7 +460,7 @@ def index():
                     <div class="glass rounded-[2rem] overflow-hidden p-6 md:p-8">
                         <div class="flex flex-col md:flex-row md:items-center justify-between gap-6 md:gap-8 mb-8 border-b border-slate-800/50 pb-6">
                              <div><h3 class="font-bold text-lg text-white flex items-center gap-3"><i class="fas fa-microchip text-blue-500"></i>Recursos de GPU & Configuração</h3><p class="text-xs text-slate-500 mt-1 font-medium italic">Monitore e distribua a carga de processamento entre as GPUs</p></div>
-                             <div class="flex items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800"><label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" selected class="bg-slate-900">64K</option><option value="131072" class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
+                             <div class="flex items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800"><label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" class="bg-slate-900">64K</option><option value="131072" selected class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
                         </div>
                         <div class="overflow-x-auto"><table class="w-full text-left"><thead class="text-[9px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest"><tr><th class="px-4 md:px-6 py-4 text-center">Uso</th><th class="px-4 py-4">Dispositivo</th><th class="px-4 py-4">Monitoramento</th><th class="px-4 py-4">VRAM Status</th><th class="px-4 py-4">Distribuição</th></tr></thead><tbody id="gpu-table-body" class="divide-y divide-slate-800/50">#GPU_ROWS#</tbody></table></div>
                         <div class="flex flex-col sm:flex-row justify-between items-center pt-8 gap-4"><div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500"><i class="fas fa-info-circle text-blue-500"></i>Distribua 100% da carga total entre as GPUs selecionadas</div><span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 py-2 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span></div>
@@ -434,6 +564,27 @@ def index():
             async function updateStatus() {
                 try {
                     const res = await fetch('/status'); const data = await res.json(); const badge = document.getElementById('status-badge'); const card = document.getElementById('active-card');
+                    
+                    // Atualiza pesos se houver mudança externa (auto-recovery)
+                    if (data.current_weights) {
+                        data.current_weights.forEach(w => {
+                            const input = document.querySelector(`.gpu-row[data-index="${w.index}"] .gpu-weight`);
+                            if (input && document.activeElement !== input) {
+                                const newWeight = Math.round(w.weight);
+                                if (parseInt(input.value) !== newWeight) {
+                                    input.value = newWeight;
+                                    updateTotal();
+                                }
+                            }
+                        });
+                    }
+
+                    if (data.recovery && data.recovery.active) {
+                        badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
+                        badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
+                        return;
+                    }
+
                     if (data.running) {
                         if (!startTime) startTime = new Date(); badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online'; badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE'; card.classList.remove('hidden'); document.getElementById('active-model-name').innerText = data.model; if (!logStream) startLogs(); updateUptime();
                     } else {
@@ -480,26 +631,6 @@ def index():
     final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", FIXED_IP)
     return final_html
 
-class GPUWeight(BaseModel):
-    index: int
-    weight: int
-    name: str
-
-class StartRequest(BaseModel):
-    path: str
-    gpu_weights: List[GPUWeight]
-    context_size: int = 65536
-
-class DeleteRequest(BaseModel):
-    path: str
-
-class DownloadRequest(BaseModel):
-    url: str
-    filename: Optional[str] = None
-
-class SetDefaultRequest(BaseModel):
-    path: Optional[str] = None
-
 @app.get("/config")
 def get_config():
     return load_config()
@@ -533,7 +664,11 @@ def delete_model(req: DeleteRequest):
 
 @app.get("/status")
 def get_status():
-    return find_llama_server()
+    status = find_llama_server()
+    status["recovery"] = recovery_state
+    if last_start_request:
+        status["current_weights"] = [w.dict() for w in last_start_request.gpu_weights]
+    return status
 
 @app.get("/models")
 def list_models():
@@ -559,39 +694,12 @@ def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
 
 @app.post("/start")
 def start_model(req: StartRequest):
-    stop_model()
-    try:
-        all_gpus = get_gpu_info()
-        max_idx = max(g['index'] for g in all_gpus) if all_gpus else 0
-        weights_map = {gw.index: gw.weight for gw in req.gpu_weights}
-        split = []
-        total_user = sum(weights_map.values()) or 1
-        for i in range(max_idx + 1):
-            split.append(f"{weights_map.get(i, 0)/total_user:.4f}")
-        
-        main_gpu = str(max(weights_map, key=weights_map.get)) if weights_map else "0"
-        env = os.environ.copy()
-        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
-        env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
-        
-        cmd = [
-            "llama-server", "-m", req.path, "-ngl", "99", "--flash-attn", "on", 
-            "--host", "0.0.0.0", "--port", "8085", "--tools", "all", 
-            "--parallel", "1", "--ctx-size", str(req.context_size), "--mlock", 
-            "--main-gpu", main_gpu, "--tensor-split", ",".join(split)
-        ]
-        
-        logging.info(f"START: {' '.join(cmd)}")
-        # Limpa o arquivo de log antes de iniciar
-        with open(SERVER_LOG_PATH, "w") as f:
-            f.write("")
-            
-        subprocess.Popen(cmd, stdout=open(SERVER_LOG_PATH, "a"), stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
+    global last_start_request
+    last_start_request = req
+    if execute_start(req):
         return {"message": "Started"}
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(status_code=500, detail="Erro ao iniciar processo")
 
 @app.post("/stop")
 def stop_model():
