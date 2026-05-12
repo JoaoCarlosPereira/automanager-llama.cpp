@@ -34,6 +34,7 @@ class GPUWeight(BaseModel):
 
 class StartRequest(BaseModel):
     path: str
+    mmproj_path: Optional[str] = None
     gpu_weights: List[GPUWeight]
     context_size: int = 131072
 
@@ -61,6 +62,18 @@ def save_config(config):
             json.dump(config, f)
     except Exception as e:
         logging.error(f"Erro ao salvar config: {e}")
+
+def update_model_config(path, context_size, gpu_weights, mmproj_path=None):
+    config = load_config()
+    if "model_configs" not in config:
+        config["model_configs"] = {}
+    
+    config["model_configs"][path] = {
+        "context_size": context_size,
+        "mmproj_path": mmproj_path,
+        "gpu_weights": [w.model_dump() if hasattr(w, 'model_dump') else w for w in gpu_weights]
+    }
+    save_config(config)
 
 # Estado dos downloads
 downloads = {}
@@ -160,13 +173,12 @@ def monitor_oom():
         try:
             if os.path.exists(SERVER_LOG_PATH):
                 with open(SERVER_LOG_PATH, "r") as f:
-                    # Vai para o final do arquivo e monitora novas linhas
                     f.seek(0, os.SEEK_END)
                     while True:
                         line = f.readline()
                         if not line:
                             if not find_llama_server()["running"] and not recovery_state["active"]:
-                                break # Se parou de rodar e não está recuperando, sai do loop interno
+                                break
                             time.sleep(1)
                             continue
                         
@@ -198,9 +210,8 @@ def handle_oom_retry():
             recovery_state["message"] = "Capacidade insuficiente (Single GPU)."
             return
 
-        # Encontra a GPU com maior peso
         max_w = max(w.weight for w in weights)
-        if max_w <= 15: # Limite mínimo para redução
+        if max_w <= 15:
             logging.error("Pesos já estão no limite de redistribuição. Falha total.")
             recovery_state["active"] = False
             recovery_state["failed"] = True
@@ -210,18 +221,17 @@ def handle_oom_retry():
         main_gpu = max(weights, key=lambda x: x.weight)
         other_gpus = [w for w in weights if w != main_gpu]
         
-        # Reduz 10% da principal e distribui nos outros
         reduction = 10.0
         main_gpu.weight -= reduction
-        
         share = reduction / len(other_gpus)
         for og in other_gpus:
             og.weight += share
         
         logging.info(f"Retentando com novos pesos: {[f'{w.index}:{w.weight}' for w in weights]}")
+        update_model_config(req.path, req.context_size, req.gpu_weights, req.mmproj_path)
         execute_start(req)
-        time.sleep(3) # Dá um tempo para o processo subir
-        if recovery_state["active"]: # Se ainda estiver ativo (não falhou no limite acima)
+        time.sleep(3)
+        if recovery_state["active"]:
             recovery_state["active"] = False
 
 def execute_start(req: StartRequest):
@@ -249,6 +259,11 @@ def execute_start(req: StartRequest):
             "--main-gpu", main_gpu, "--tensor-split", ",".join(split)
         ]
         
+        if req.mmproj_path:
+            cmd.extend(["--mmproj", req.mmproj_path])
+        else:
+            cmd.append("--mmproj-auto")
+            
         logging.info(f"START EXEC: {' '.join(cmd)}")
         with open(SERVER_LOG_PATH, "w") as f:
             f.write("")
@@ -261,9 +276,7 @@ def execute_start(req: StartRequest):
 
 @app.on_event("startup")
 async def startup_event():
-    # Inicia thread de monitoramento de log
     threading.Thread(target=monitor_oom, daemon=True).start()
-    
     config = load_config()
     default_model = config.get("default_model")
     if default_model and os.path.exists(default_model):
@@ -274,12 +287,8 @@ async def startup_event():
                 weights = []
                 max_vram = max(g['vram'] for g in gpus) if gpus else 0
                 main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
-
                 for g in gpus:
-                    if g['index'] == main_gpu_idx:
-                        val = 100.0
-                    else:
-                        val = 0.0
+                    val = 100.0 if g['index'] == main_gpu_idx else 0.0
                     weights.append(GPUWeight(index=g['index'], weight=val, name=g['name']))
                 
                 req = StartRequest(path=default_model, gpu_weights=weights)
@@ -326,25 +335,49 @@ def stream_logs():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    models = get_gguf_models()
+    all_files = get_gguf_models()
+    models = []
+    projectors = []
+    for f in all_files:
+        name = os.path.basename(f).lower()
+        item = {"path": f, "name": os.path.basename(f), "dir": os.path.dirname(f).replace(MODELS_DIR, "") or "/"}
+        if any(x in name for x in ["mmproj", "clip", "vision", "projector"]):
+            projectors.append(item)
+        else:
+            models.append(item)
+
     gpus = get_gpu_info()
     config = load_config()
     default_model = config.get("default_model")
+    model_configs = config.get("model_configs", {})
     
     model_items = ""
     for m in models:
-        m_js = m.replace("\\", "/")
-        m_name = os.path.basename(m)
-        m_dir = os.path.dirname(m).replace(MODELS_DIR, "")
-        is_default = "checked" if m == default_model else ""
+        m_path = m["path"]
+        m_js = m_path.replace("\\", "/")
+        m_name = m["name"]
+        m_dir = m["dir"]
+        is_default = "checked" if m_path == default_model else ""
+        
+        # Cache local para o JS inicial
+        if m_path in model_configs:
+            initial_cfg_js = f"window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};"
+        else:
+            initial_cfg_js = ""
+
+        # Se houver config salva, adiciona uma indicação visual
+        has_config = "text-blue-400" if m_path in model_configs else "text-slate-100"
+        
         model_items += f"""
+        <script>{initial_cfg_js}</script>
         <div class="group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg">
-            <div class="flex-1 min-w-0 mr-4">
+            <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="applyModelConfig('{m_js}')" title="Clique para carregar configurações anteriores">
                 <div class="flex items-center gap-2 mb-1">
                     <i class="fas fa-cube text-blue-400 text-[10px]"></i>
-                    <p class="text-sm font-bold text-slate-100 break-all line-clamp-2" title="{m_name}">{m_name}</p>
+                    <p class="text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
+                    { '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' if m_path in model_configs else '' }
                 </div>
-                <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir or "/"}</p>
+                <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
             <div class="flex items-center gap-3 md:gap-4">
                 <button onclick="deleteModel('{m_js}')" class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo">
@@ -364,15 +397,10 @@ def index():
     
     gpu_rows = ""
     max_vram = max(g['vram'] for g in gpus) if gpus else 0
-    # Encontra o índice da primeira GPU com o máximo de VRAM
     main_gpu_idx = next((g['index'] for g in gpus if g['vram'] == max_vram), -1)
     
     for g in gpus:
-        if g['index'] == main_gpu_idx:
-            default_val = "100"
-        else:
-            default_val = "0"
-        
+        default_val = "100" if g['index'] == main_gpu_idx else "0"
         gpu_rows += f"""
         <tr class="gpu-row group border-b border-slate-800/50" data-index="{g['index']}">
             <td class="px-3 md:px-6 py-4 md:py-6 text-center">
@@ -440,7 +468,7 @@ def index():
                         <p class="text-[10px] text-slate-500 font-mono tracking-wider uppercase">Interface Avançada de Computação Neural</p>
                     </div>
                 </div>
-                <div class="flex items-center gap-4 md:gap-8 w-full md:w-auto justify-center md:justify-end">
+                <div class="flex items-center gap-4 md:gap-8 w-full md:auto justify-center md:justify-end">
                     <div class="hidden sm:flex items-center gap-3 md:gap-5 px-4 md:px-6 py-2 bg-slate-900/50 rounded-xl border border-slate-800">
                         <div class="flex flex-col items-end"><span class="text-[9px] md:text-[10px] text-slate-500 font-black uppercase tracking-tighter">IP do Motor</span><span id="display-ip" class="text-xs font-mono text-blue-400">#FIXED_IP#</span></div>
                         <i class="fas fa-network-wired text-slate-600 text-sm md:text-base"></i>
@@ -463,7 +491,27 @@ def index():
                     <div class="glass rounded-[2rem] overflow-hidden p-6 md:p-8">
                         <div class="flex flex-col md:flex-row md:items-center justify-between gap-6 md:gap-8 mb-8 border-b border-slate-800/50 pb-6">
                              <div><h3 class="font-bold text-lg text-white flex items-center gap-3"><i class="fas fa-microchip text-blue-500"></i>Recursos de GPU & Configuração</h3><p class="text-xs text-slate-500 mt-1 font-medium italic">Monitore e distribua a carga de processamento entre as GPUs</p></div>
-                             <div class="flex items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800"><label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest">Contexto:</label><select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer"><option value="2048" class="bg-slate-900">2K</option><option value="4096" class="bg-slate-900">4K</option><option value="8192" class="bg-slate-900">8K</option><option value="16384" class="bg-slate-900">16K</option><option value="32768" class="bg-slate-900">32K</option><option value="65536" class="bg-slate-900">64K</option><option value="131072" selected class="bg-slate-900">128K</option><option value="262144" class="bg-slate-900">256K</option></select></div>
+                             <div class="flex flex-wrap items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800">
+                                <div class="flex items-center gap-2">
+                                    <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap">Contexto:</label>
+                                    <select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
+                                        <option value="2048" class="bg-slate-900">2K</option>
+                                        <option value="4096" class="bg-slate-900">4K</option>
+                                        <option value="8192" class="bg-slate-900">8K</option>
+                                        <option value="16384" class="bg-slate-900">16K</option>
+                                        <option value="32768" class="bg-slate-900">32K</option>
+                                        <option value="65536" class="bg-slate-900">64K</option>
+                                        <option value="131072" selected class="bg-slate-900">128K</option>
+                                        <option value="262144" class="bg-slate-900">256K</option>
+                                    </select>
+                                </div>
+                                <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                    <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-eye text-blue-400 mr-2"></i>Vision:</label>
+                                    <select id="mmproj-path" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer max-w-[200px]">
+                                        <option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>
+                                    </select>
+                                </div>
+                             </div>
                         </div>
                         <div class="overflow-x-auto"><table class="w-full text-left"><thead class="text-[9px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest"><tr><th class="px-4 md:px-6 py-4 text-center">Uso</th><th class="px-4 py-4">Dispositivo</th><th class="px-4 py-4">Monitoramento</th><th class="px-4 py-4">VRAM Status</th><th class="px-4 py-4">Distribuição</th></tr></thead><tbody id="gpu-table-body" class="divide-y divide-slate-800/50">#GPU_ROWS#</tbody></table></div>
                         <div class="flex flex-col sm:flex-row justify-between items-center pt-8 gap-4"><div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500"><i class="fas fa-info-circle text-blue-500"></i>Distribua 100% da carga total entre as GPUs selecionadas</div><span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 py-2 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span></div>
@@ -511,8 +559,43 @@ def index():
         </div>
         <script>
             let logStream = null; let startTime = null; const fixedIp = "#FIXED_IP#";
+            window.modelConfigs = window.modelConfigs || {}; // Cache global para configs salvas
             document.getElementById('chat-link').href = `http://${fixedIp}:8085/`;
             document.getElementById('api-link').innerText = `http://${fixedIp}:8085/v1`;
+
+            function applyModelConfig(path) {
+                const cfg = window.modelConfigs[path];
+                if (!cfg) return;
+                
+                // Aplica contexto
+                if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
+                
+                // Aplica mmproj
+                if (cfg.mmproj_path !== undefined) document.getElementById('mmproj-path').value = cfg.mmproj_path || "";
+                
+                // Aplica pesos
+                if (cfg.gpu_weights) {
+                    cfg.gpu_weights.forEach(w => {
+                        const row = document.querySelector(`.gpu-row[data-index="${w.index}"]`);
+                        if (row) {
+                            const cb = row.querySelector('.gpu-checkbox');
+                            const input = row.querySelector('.gpu-weight');
+                            cb.checked = w.weight > 0;
+                            input.value = Math.round(w.weight);
+                        }
+                    });
+                    updateTotal();
+                }
+                
+                // Feedback visual temporário
+                const nameEl = document.querySelector(`[onclick="applyModelConfig('${path.replace(/\\\\/g, '/')}')"] p`);
+                if (nameEl) {
+
+                    const originalColor = nameEl.className;
+                    nameEl.className = 'text-sm font-bold text-emerald-400 break-all line-clamp-2';
+                    setTimeout(() => { nameEl.className = originalColor; }, 1000);
+                }
+            }
             function balanceWeights(changedInput) {
                 const weights = Array.from(document.querySelectorAll('.gpu-weight'));
                 const checkedWeights = weights.filter(w => w.closest('.gpu-row').querySelector('.gpu-checkbox').checked);
@@ -554,7 +637,7 @@ def index():
             }
             async function startLogs() {
                 if (logStream) logStream.abort(); logStream = new AbortController(); const box = document.getElementById('log-box');
-                box.innerHTML = ''; // Limpa a tela ao iniciar novo stream
+                box.innerHTML = '';
                 try {
                     const response = await fetch('/logs', { signal: logStream.signal }); const reader = response.body.getReader(); const decoder = new TextDecoder();
                     while (true) {
@@ -569,7 +652,6 @@ def index():
                 try {
                     const res = await fetch('/status'); const data = await res.json(); const badge = document.getElementById('status-badge'); const card = document.getElementById('active-card');
                     
-                    // Atualiza pesos se houver mudança externa (auto-recovery)
                     if (data.current_weights) {
                         data.current_weights.forEach(w => {
                             const input = document.querySelector(`.gpu-row[data-index="${w.index}"] .gpu-weight`);
@@ -593,7 +675,7 @@ def index():
                     if (data.recovery && data.recovery.active) {
                         badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
                         badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
-                        document.getElementById('log-box').innerHTML = ''; // Limpa logs durante realocação
+                        document.getElementById('log-box').innerHTML = '';
                         return;
                     }
 
@@ -614,11 +696,29 @@ def index():
             }
             async function updateModels() {
                 try {
-                    const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); document.getElementById('model-count').innerText = `${data.length} UNIDADES`;
-                    document.getElementById('model-list-container').innerHTML = data.map(m => {
+                    const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]); const data = await res.json(); const cfg = await cfgRes.json(); 
+                    document.getElementById('model-count').innerText = `${data.models.length} UNIDADES`;
+                    
+                    document.getElementById('model-list-container').innerHTML = data.models.map(m => {
                         const m_js = m.path.replace(/\\\\/g, '/');
-                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold text-slate-100 break-all line-clamp-2" title="${m.name}">${m.name}</p></div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
+                        if (m.last_config) window.modelConfigs[m.path] = m.last_config;
+                        const hasConfigClass = m.last_config ? 'text-blue-400' : 'text-slate-100';
+                        const historyIcon = m.last_config ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
+
+                        return `<div class="group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg"><div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="applyModelConfig('${m_js}')"><div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2"><i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i><p class="text-sm md:text-base font-bold ${hasConfigClass} break-all line-clamp-2" title="${m.name}">${m.name}</p>${historyIcon}</div><p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p></div><div class="flex items-center gap-3 md:gap-6"><button onclick="deleteModel('${m_js}')" class="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo"><i class="fas fa-trash-alt text-[10px] md:text-xs"></i></button><div class="flex flex-col items-center gap-1 md:gap-1.5"><span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span><input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')"></div><button onclick="startModel('${m_js}')" class="px-4 md:px-6 py-2 md:py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] md:text-xs font-black rounded-xl active:scale-95 flex items-center gap-2 md:gap-3 uppercase tracking-widest shadow-xl"><i class="fas fa-play text-[8px] md:text-[10px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span></button></div></div>`;
                     }).join('');
+
+                    const projSelect = document.getElementById('mmproj-path');
+                    const currentVal = projSelect.value;
+                    projSelect.innerHTML = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>';
+                    data.projectors.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.path;
+                        opt.className = 'bg-slate-900';
+                        opt.innerText = p.name;
+                        projSelect.appendChild(opt);
+                    });
+                    if (currentVal) projSelect.value = currentVal;
                 } catch(e) {}
             }
             async function deleteModel(path) {
@@ -634,8 +734,22 @@ def index():
             }
             async function startModel(path) { 
                 const weights = []; 
-                document.getElementById('log-box').innerHTML = ''; // Limpa logs imediatamente
-                document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseFloat(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; await fetch('/start', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ path, gpu_weights: weights, context_size: parseInt(document.getElementById('context-size').value) }) }); setTimeout(updateStatus, 2000); }
+                document.getElementById('log-box').innerHTML = '';
+                document.querySelectorAll('.gpu-row').forEach(r => { if (r.querySelector('.gpu-checkbox').checked) weights.push({ index: parseInt(r.dataset.index), weight: parseInt(r.querySelector('.gpu-weight').value || 0), name: "GPU" }); }); if (!weights.length) return alert("SELECIONE UMA GPU"); 
+                const mmprojPath = document.getElementById('mmproj-path').value;
+                document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...'; 
+                await fetch('/start', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({ 
+                        path, 
+                        mmproj_path: mmprojPath || null,
+                        gpu_weights: weights, 
+                        context_size: parseInt(document.getElementById('context-size').value) 
+                    }) 
+                }); 
+                setTimeout(updateStatus, 2000); 
+            }
             async function stopModel() { if (confirm("ENCERRAR PROCESSO?")) { await fetch('/stop', {method: 'POST'}); setTimeout(updateStatus, 1000); } }
             setInterval(updateMetrics, 2000); setInterval(updateStatus, 3000); setInterval(updateDownloads, 3000);
             updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal();
@@ -663,12 +777,9 @@ def delete_model(req: DeleteRequest):
         raise HTTPException(status_code=403, detail="Acesso negado")
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    
-    # Verifica se o modelo está em execução
     status = find_llama_server()
     if status["running"] and status["model"] == req.path:
         stop_model()
-
     try:
         os.remove(req.path)
         logging.info(f"Modelo excluído: {req.path}")
@@ -682,20 +793,31 @@ def get_status():
     status = find_llama_server()
     status["recovery"] = recovery_state
     if last_start_request and (status["running"] or recovery_state["active"]):
-        status["current_weights"] = [w.dict() for w in last_start_request.gpu_weights]
+        status["current_weights"] = [w.model_dump() for w in last_start_request.gpu_weights]
     return status
 
 @app.get("/models")
 def list_models():
-    models = get_gguf_models()
-    result = []
-    for m in models:
-        result.append({
-            "path": m,
-            "name": os.path.basename(m),
-            "dir": os.path.dirname(m).replace(MODELS_DIR, "") or "/"
-        })
-    return result
+    all_files = get_gguf_models()
+    models = []
+    projectors = []
+    config = load_config()
+    model_configs = config.get("model_configs", {})
+    
+    for f in all_files:
+        name = os.path.basename(f).lower()
+        item = {
+            "path": f,
+            "name": os.path.basename(f),
+            "dir": os.path.dirname(f).replace(MODELS_DIR, "") or "/",
+            "last_config": model_configs.get(f)
+        }
+        
+        if any(x in name for x in ["mmproj", "clip", "vision", "projector"]):
+            projectors.append(item)
+        else:
+            models.append(item)
+    return {"models": models, "projectors": projectors}
 
 @app.get("/downloads")
 def get_downloads():
@@ -712,6 +834,7 @@ def start_model(req: StartRequest):
     global last_start_request, recovery_state
     recovery_state = {"active": False, "failed": False, "message": ""}
     last_start_request = req
+    update_model_config(req.path, req.context_size, req.gpu_weights, req.mmproj_path)
     if execute_start(req):
         return {"message": "Started"}
     else:
