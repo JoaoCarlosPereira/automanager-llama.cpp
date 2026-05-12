@@ -1,7 +1,7 @@
 # 🚀 Automanager Llama.cpp
 
 > [!WARNING]
-> **ESTADO BETA:** Este projeto está em fase beta de desenvolvimento. Atualmente, é uma solução altamente personalizada para um ambiente específico (RTX 3090 + Tesla P100) e pode não ser compatível com todas as configurações sem intervenções técnicas ou ajustes manuais. Use por sua conta e risco.
+> **ESTADO ALFA:** Este projeto está em fase alfa de desenvolvimento. Atualmente, é uma solução altamente personalizada para um ambiente específico (RTX 3090 + Tesla P100) e pode não ser compatível com todas as configurações sem intervenções técnicas ou ajustes manuais. Use por sua conta e risco.
 
 Um gerenciador web avançado e leve, baseado em **FastAPI**, projetado para orquestrar instâncias do `llama-server` com foco em máxima performance em hardware **NVIDIA Multi-GPU**.
 
