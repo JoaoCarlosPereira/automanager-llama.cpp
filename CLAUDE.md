@@ -40,7 +40,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | POST | `/set_default` | Set default model with `{path: string|null}` |
 
 ## Server Configuration
-- Fixed IP: `192.168.2.183` (defined as `FIXED_IP` in code)
+- Dynamic IP: The application detects the local IP automatically.
 - llama-server binds to `0.0.0.0:8085`
 - Manager (FastAPI) binds to `0.0.0.0:8000`
 - Default context size: 65536 tokens

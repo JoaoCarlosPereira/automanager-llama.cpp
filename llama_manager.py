@@ -9,6 +9,7 @@ import re
 import uuid
 import threading
 import requests
+import socket
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -24,8 +25,19 @@ app = FastAPI(title="Automanager Llama.cpp")
 
 MODELS_DIR = "/media/docker/models"
 SERVER_LOG_PATH = "/root/llama_server.log"
-FIXED_IP = "192.168.2.183"
 CONFIG_PATH = "/root/automanager_config.json"
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # doesn't even have to be reachable
+        s.connect(('8.8.8.8', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
 class GPUWeight(BaseModel):
     index: int
@@ -513,6 +525,8 @@ def index():
     ctx_64k = 'selected' if running_config and running_config["context_size"] == 65536 else ''
     ctx_128k = 'selected' if (running_config and running_config["context_size"] == 131072) or not running_config else ''
     ctx_256k = 'selected' if running_config and running_config["context_size"] == 262144 else ''
+    ctx_512k = 'selected' if running_config and running_config["context_size"] == 524288 else ''
+    ctx_1m = 'selected' if running_config and running_config["context_size"] == 1048576 else ''
     
     html_template = """
     <!DOCTYPE html>
@@ -583,6 +597,8 @@ def index():
                                         <option value="65536" class="bg-slate-900" {ctx_64k}>64K</option>
                                         <option value="131072" class="bg-slate-900" {ctx_128k}>128K</option>
                                         <option value="262144" class="bg-slate-900" {ctx_256k}>256K</option>
+                                        <option value="524288" class="bg-slate-900" {ctx_512k}>512K</option>
+                                        <option value="1048576" class="bg-slate-900" {ctx_1m}>1M</option>
                                     </select>
                                 </div>
                                 <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
@@ -1058,8 +1074,10 @@ def index():
     </body>
     </html>
     """
-    final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", FIXED_IP).replace("#VISION_OPTIONS#", vision_options)
-    for c in ["ctx_2k", "ctx_4k", "ctx_8k", "ctx_16k", "ctx_32k", "ctx_64k", "ctx_128k", "ctx_256k"]:
+    local_ip = get_local_ip()
+    final_html = html_template.replace("#GPU_ROWS#", gpu_rows).replace("#MODEL_ITEMS#", model_items).replace("#FIXED_IP#", local_ip).replace("#VISION_OPTIONS#", vision_options)
+    for c in ["ctx_2k", "ctx_4k", "ctx_8k", "ctx_16k", "ctx_32k", "ctx_64k", "ctx_128k", "ctx_256k", "ctx_512k", "ctx_1m"]:
+
         final_html = final_html.replace(f"{{{c}}}", locals()[c])
     return final_html
 
