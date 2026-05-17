@@ -156,6 +156,26 @@ def test_api_key_renew_endpoint_returns_new_key_when_authenticated(
     token_manager.renew.assert_called_once_with()
 
 
+def test_change_password_endpoint_uses_auth_manager(authenticated_client):
+    response = authenticated_client.post(
+        "/api/auth/change-password",
+        json={"username": "admin", "password": "new-password"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_change_password_endpoint_rejects_wrong_current_password(authenticated_client):
+    response = authenticated_client.post(
+        "/api/auth/change-password",
+        json={"username": "wrong", "password": "new-password"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Senha atual incorreta"
+
+
 def test_status_endpoint_uses_process_manager_mock(monkeypatch, authenticated_client):
     process_manager = MagicMock()
     process_manager.get_status.return_value = {

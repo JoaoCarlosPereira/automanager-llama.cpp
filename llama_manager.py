@@ -1682,6 +1682,17 @@ def _build_html(
                                     </div>
                                 </div>
                             </div>
+                            <div class="flex flex-col gap-3 border-t border-slate-800 pt-4">
+                                <p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Senha do Administrador</p>
+                                <div class="grid grid-cols-1 gap-3">
+                                    <input type="password" id="current-password" placeholder="Senha atual" autocomplete="current-password" class="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none placeholder:text-slate-600">
+                                    <input type="password" id="new-password" placeholder="Nova senha" autocomplete="new-password" class="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none placeholder:text-slate-600">
+                                    <button onclick="changePassword()" class="w-full py-3 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-[10px] font-black rounded-xl transition-all uppercase tracking-[0.2em]">
+                                        ALTERAR SENHA
+                                    </button>
+                                    <p id="password-change-status" class="text-[10px] font-bold min-h-[1rem]"></p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1730,6 +1741,48 @@ def _build_html(
         async function handleLogout() {{
             try {{ await fetch('/api/auth/logout', {{method: 'POST'}}); }} catch (e) {{}}
             location.reload();
+        }}
+
+        async function changePassword() {{
+            const currentPassword = document.getElementById('current-password').value;
+            const newPassword = document.getElementById('new-password').value;
+            const statusEl = document.getElementById('password-change-status');
+
+            statusEl.textContent = '';
+            statusEl.className = 'text-[10px] font-bold min-h-[1rem]';
+
+            if (!currentPassword || !newPassword) {{
+                statusEl.textContent = 'Informe a senha atual e a nova senha.';
+                statusEl.classList.add('text-amber-500');
+                return;
+            }}
+
+            if (newPassword.length < 6) {{
+                statusEl.textContent = 'A nova senha deve ter pelo menos 6 caracteres.';
+                statusEl.classList.add('text-amber-500');
+                return;
+            }}
+
+            try {{
+                const res = await fetch('/api/auth/change-password', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{username: currentPassword, password: newPassword}}),
+                }});
+                if (res.ok) {{
+                    document.getElementById('current-password').value = '';
+                    document.getElementById('new-password').value = '';
+                    statusEl.textContent = 'Senha alterada com sucesso.';
+                    statusEl.classList.add('text-emerald-500');
+                }} else {{
+                    const err = await res.json();
+                    statusEl.textContent = err.detail || 'Erro ao alterar senha.';
+                    statusEl.classList.add('text-red-500');
+                }}
+            }} catch (e) {{
+                statusEl.textContent = 'Erro de rede ao alterar senha.';
+                statusEl.classList.add('text-red-500');
+            }}
         }}
 
         // ─── Dashboard functions ───
