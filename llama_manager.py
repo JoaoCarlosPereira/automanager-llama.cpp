@@ -49,8 +49,14 @@ DEFAULT_CONTEXT_SIZE = 65536
 # Logging setup
 # ─────────────────────────────────────────────────────────
 
+try:
+    os.makedirs(os.path.dirname(MANAGER_LOG_PATH), exist_ok=True)
+    _manager_log_path = MANAGER_LOG_PATH
+except OSError:
+    _manager_log_path = os.path.join(os.getcwd(), "manager.log")
+
 logging.basicConfig(
-    filename=MANAGER_LOG_PATH,
+    filename=_manager_log_path,
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
@@ -177,6 +183,8 @@ class TokenManager:
         return f"{self.PREFIX}{secrets.token_hex(24)}"
 
     def validate(self, key: str) -> bool:
+        if not isinstance(key, str):
+            return False
         return key.startswith(self.PREFIX) and len(key) >= len(self.PREFIX) + 32
 
     def get_or_create(self) -> str:
