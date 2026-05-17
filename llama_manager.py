@@ -1628,7 +1628,7 @@ def _build_html(
                 </div>
             </div>
             <div class="lg:col-span-5 space-y-6 md:space-y-10">
-                <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[900px]">
+                <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[1100px] xl:h-[1200px]">
                     <div class="p-8 border-b border-slate-800/50 flex items-center justify-between">
                         <div class="flex items-center gap-4 md:gap-5">
                             <div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700">
