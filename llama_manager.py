@@ -1,3 +1,4 @@
+import secrets
 import subprocess
 import os
 import signal
@@ -26,6 +27,31 @@ app = FastAPI(title="Automanager Llama.cpp")
 MODELS_DIR = "/media/docker/models"
 SERVER_LOG_PATH = "/root/llama_server.log"
 CONFIG_PATH = "/root/automanager_config.json"
+
+def generate_token():
+    return f"sk-{secrets.token_hex(24)}"
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                return json.load(f)
+        except: return {}
+    return {}
+
+def save_config(config):
+    try:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(config, f)
+    except Exception as e:
+        logging.error(f"Erro ao salvar config: {e}")
+
+def get_api_token():
+    config = load_config()
+    if "api_token" not in config:
+        config["api_token"] = generate_token()
+        save_config(config)
+    return config["api_token"]
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -279,11 +305,13 @@ def execute_start(req: StartRequest):
         env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
         env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get("LD_LIBRARY_PATH", "")
         
+        token = get_api_token()
         cmd = [
             "llama-server", "-m", req.path, "-ngl", "99", "--flash-attn", "on", 
             "--host", "0.0.0.0", "--port", "8085", "--tools", "all", 
             "--parallel", "1", "--ctx-size", str(req.context_size), "--mlock", 
-            "--main-gpu", main_gpu, "--tensor-split", ",".join(split)
+            "--main-gpu", main_gpu, "--tensor-split", ",".join(split),
+            "--api-key", token
         ]
         
         if req.mmproj_path:
@@ -648,7 +676,36 @@ def index():
                         <div class="p-8 border-b border-slate-800/50 flex items-center justify-between"><div class="flex items-center gap-4 md:gap-5"><div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700"><i class="fas fa-database text-amber-500 text-sm md:text-base"></i></div><h3 class="font-bold text-base md:text-lg text-white tracking-tight">Model Repository</h3></div><span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span></div>
                         <div class="p-8 border-b border-slate-800/30 bg-blue-600/5"><p class="text-[10px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p><div class="space-y-3 md:space-y-4"><div class="relative group"><i class="fas fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-600 text-xs md:text-sm transition-colors group-focus-within:text-blue-500"></i><input type="text" id="download-url" placeholder="https://..." class="w-full pl-10 pr-4 py-3 bg-slate-900 border border-slate-700 rounded-2xl text-xs text-slate-200 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600"></div><button onclick="downloadModel()" class="w-full py-4 bg-slate-100 hover:bg-white text-slate-950 text-[10px] font-black rounded-2xl transition-all shadow-xl active:scale-[0.98] uppercase tracking-[0.2em] flex items-center justify-center gap-3 md:gap-4"><i class="fas fa-cloud-download-alt text-sm"></i> EXECUTAR DOWNLOAD</button></div><div id="download-status" class="mt-6 md:mt-8 space-y-3"></div></div>
                         <div id="model-list-container" class="p-6 flex-1 overflow-y-auto custom-scroll space-y-2">#MODEL_ITEMS#</div>
-                        <div class="p-8 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]"><div class="flex flex-col gap-3"><div class="flex items-center justify-between"><p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Interface de API</p><span class="text-[8px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/20 uppercase font-black">Ativo</span></div><div class="flex items-center gap-3 md:gap-4 bg-slate-900 p-3 rounded-xl border border-slate-800 group"><code id="api-link" class="text-[10px] text-blue-400 font-mono flex-1 truncate"></code><button onclick="navigator.clipboard.writeText(document.getElementById('api-link').innerText)" class="text-slate-600 hover:text-white transition-colors"><i class="far fa-copy"></i></button></div></div></div>
+                        <div class="p-8 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]">
+                            <div class="flex flex-col gap-4">
+                                <div class="flex flex-col gap-2">
+                                    <div class="flex items-center justify-between">
+                                        <p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Endpoint OpenAI API</p>
+                                        <span class="text-[8px] bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/20 uppercase font-black">Ativo</span>
+                                    </div>
+                                    <div class="flex items-center gap-3 md:gap-4 bg-slate-900 p-3 rounded-xl border border-slate-800 group">
+                                        <code id="api-link" class="text-[10px] text-blue-400 font-mono flex-1 truncate"></code>
+                                        <button onclick="navigator.clipboard.writeText(document.getElementById('api-link').innerText)" class="text-slate-600 hover:text-white transition-colors">
+                                            <i class="far fa-copy"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="flex flex-col gap-2">
+                                    <p class="text-[9px] text-slate-500 font-black uppercase tracking-widest">Chave de API (Bearer Token)</p>
+                                    <div class="flex items-center gap-3 md:gap-4 bg-slate-900 p-3 rounded-xl border border-slate-800 group">
+                                        <code id="api-token" class="text-[10px] text-amber-400 font-mono flex-1 truncate">Carregando...</code>
+                                        <div class="flex gap-3">
+                                            <button onclick="renewToken()" class="text-slate-600 hover:text-amber-500 transition-colors" title="Renovar Chave">
+                                                <i class="fas fa-sync-alt"></i>
+                                            </button>
+                                            <button onclick="navigator.clipboard.writeText(document.getElementById('api-token').innerText)" class="text-slate-600 hover:text-white transition-colors" title="Copiar Chave">
+                                                <i class="far fa-copy"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -661,6 +718,26 @@ def index():
 
             document.getElementById('chat-link').href = `http://${fixedIp}:8085/`;
             document.getElementById('api-link').innerText = `http://${fixedIp}:8085/v1`;
+
+            function getModelButtonsHtml(path, elementId, isRunning) {
+                if (isRunning) {
+                    return `<div class="flex items-center gap-3">
+                        <a href="http://${fixedIp}:8085/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+                            <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
+                        </a>
+                        <button onclick="stopModel()" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
+                            ENCERRAR
+                        </button>
+                        <div class="flex items-center gap-2 text-[9px] font-mono text-emerald-400 bg-emerald-500/5 px-3 py-2 rounded-xl border border-emerald-500/10">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <span id="uptime-val">--</span>
+                        </div>
+                    </div>`;
+                }
+                return `<button onclick="startModel('${path}', '${elementId}')" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all">
+                    <i class="fas fa-play text-[9px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
+                </button>`;
+            }
 
             function resetToDefaults() {
                 document.getElementById('context-size').value = "131072";
@@ -809,6 +886,24 @@ def index():
                 document.getElementById('uptime-val').innerText = `${Math.floor(diff/3600)}h ${Math.floor((diff%3600)/60)}m ${diff%60}s`; 
             }
             
+            async function updateToken() {
+                try {
+                    const res = await fetch('/token');
+                    const data = await res.json();
+                    document.getElementById('api-token').innerText = data.token;
+                } catch(e) {}
+            }
+
+            async function renewToken() {
+                if (!confirm("Deseja realmente gerar uma nova chave de API? A chave atual deixará de funcionar na próxima inicialização do modelo.")) return;
+                try {
+                    const res = await fetch('/renew_token', { method: 'POST' });
+                    const data = await res.json();
+                    document.getElementById('api-token').innerText = data.token;
+                    alert("Nova chave gerada com sucesso! Ela será aplicada ao iniciar um modelo.");
+                } catch(e) { alert("Erro ao renovar token."); }
+            }
+
             async function updateStatus() {
                 try {
                     const res = await fetch('/status'); 
@@ -1069,7 +1164,7 @@ def index():
             setInterval(updateDownloads, 3000);
             setInterval(updateModels, 5000); // Refresh model list periodically
 
-            updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal();
+            updateStatus(); updateMetrics(); updateDownloads(); updateModels(); updateTotal(); updateToken();
         </script>
     </body>
     </html>
@@ -1080,6 +1175,18 @@ def index():
 
         final_html = final_html.replace(f"{{{c}}}", locals()[c])
     return final_html
+
+@app.get("/token")
+def get_token_route():
+    return {"token": get_api_token()}
+
+@app.post("/renew_token")
+def renew_token_route():
+    token = generate_token()
+    config = load_config()
+    config["api_token"] = token
+    save_config(config)
+    return {"token": token}
 
 @app.get("/config")
 def get_config():
