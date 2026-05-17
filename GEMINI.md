@@ -2,6 +2,9 @@
 
 Este documento contém todas as informações críticas necessárias para entender, manter e evoluir o projeto Automanager Llama.cpp.
 
+## 📜 Regras de Desenvolvimento
+Para diretrizes técnicas detalhadas, padrões de código e fluxos de trabalho obrigatórios, consulte o arquivo [rules.md](rules.md).
+
 ## 🚀 Arquitetura Técnica
 
 A aplicação é uma interface de controle baseada em **FastAPI** que gerencia instâncias do **llama-server** (llama.cpp).

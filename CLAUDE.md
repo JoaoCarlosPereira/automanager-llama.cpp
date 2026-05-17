@@ -8,6 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Manage as systemd service: `systemctl restart llama-manager.service` / `systemctl status llama-manager.service`
 - View service logs: `journalctl -u llama-manager.service -f`
 
+## Development Rules
+For detailed technical guidelines, coding standards, and mandatory workflows, please refer to the [rules.md](rules.md) file.
+
 ## Architecture & Structure
 - **Core Logic**: `llama_manager.py` is a FastAPI application that acts as a control plane for `llama-server`.
 - **Process Management**: It manages `llama-server` instances using `subprocess.Popen` and `pkill -9`.
