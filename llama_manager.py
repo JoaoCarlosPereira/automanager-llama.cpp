@@ -72,6 +72,7 @@ class GPUWeight(BaseModel):
     weight: float
     name: str
     active: bool = True
+    is_main: bool = False
 
 
 class StartRequest(BaseModel):
@@ -79,6 +80,7 @@ class StartRequest(BaseModel):
     mmproj_path: Optional[str] = None
     gpu_weights: List[GPUWeight]
     context_size: int = DEFAULT_CONTEXT_SIZE
+    split_mode: str = "layer"
 
 
 class DeleteRequest(BaseModel):
@@ -429,6 +431,7 @@ class ProcessManager:
                                 status["config"] = {
                                     "path": self._last_request.path,
                                     "context_size": self._last_request.context_size,
+                                    "split_mode": self._last_request.split_mode,
                                     "gpu_weights": [
                                         w.model_dump()
                                         if hasattr(w, "model_dump")
@@ -474,6 +477,7 @@ class ProcessManager:
         gpu_weights: List[GPUWeight],
         context_size: int,
         mmproj_path: Optional[str] = None,
+        split_mode: str = "layer",
     ) -> dict:
         """Start llama-server with given configuration."""
         # Stop any existing process first
@@ -498,8 +502,13 @@ class ProcessManager:
                 for i in range(max_idx + 1)
             ]
 
-            # Main GPU = highest weight among active
-            main_gpu = str(max(weights_map, key=weights_map.get))
+            # Main GPU selection
+            main_gpu_obj = next((w for w in active_weights if w.is_main), None)
+            if main_gpu_obj:
+                main_gpu = str(main_gpu_obj.index)
+            else:
+                # Fallback to highest weight among active
+                main_gpu = str(max(weights_map, key=weights_map.get))
 
             # Build command
             api_token = self.token_mgr.get_or_create()
@@ -515,6 +524,7 @@ class ProcessManager:
                 "--ctx-size", str(context_size),
                 "--mlock",
                 "--main-gpu", main_gpu,
+                "--split-mode", split_mode,
                 "--tensor-split", ",".join(split),
                 "--api-key", api_token,
             ]
@@ -1106,6 +1116,7 @@ async def start_model(
         {
             "context_size": req.context_size,
             "mmproj_path": req.mmproj_path,
+            "split_mode": req.split_mode,
             "gpu_weights": [
                 w.model_dump() for w in req.gpu_weights
             ],
@@ -1116,6 +1127,7 @@ async def start_model(
         gpu_weights=req.gpu_weights,
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
+        split_mode=req.split_mode,
     )
 
 
@@ -1246,6 +1258,7 @@ async def index(request: Request):
     gpu_rows = ""
     for g in gpus:
         idx = g["index"]
+        is_main = False
         if (
             status.get("running")
             and status.get("config", {}).get("gpu_weights")
@@ -1264,15 +1277,21 @@ async def index(request: Request):
                         else ""
                     )
                     weight_val = int(w_obj.get("weight", 0))
+                    is_main = w_obj.get("is_main", False)
                 else:
                     is_checked = "checked"
                     weight_val = 100 if idx == main_gpu_idx else 0
+                    is_main = (idx == main_gpu_idx)
             else:
                 is_checked = "checked"
                 weight_val = 100 if idx == main_gpu_idx else 0
+                is_main = (idx == main_gpu_idx)
         else:
             is_checked = "checked"
             weight_val = 100 if idx == main_gpu_idx else 0
+            is_main = (idx == main_gpu_idx)
+
+        main_checked = "checked" if is_main else ""
 
         gpu_rows += f"""
         <tr class="gpu-row group border-b border-slate-800/50" data-index="{idx}">
@@ -1283,6 +1302,9 @@ async def index(request: Request):
                         <div class="gpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div>
                     </div>
                 </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6 text-center">
+                <input type="radio" name="main-gpu-radio" {main_checked} class="gpu-main-radio w-4 h-4 bg-slate-900 border-slate-700 rounded-full text-blue-600 cursor-pointer" title="Definir como GPU Principal">
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex items-center gap-2 md:gap-4">
@@ -1557,6 +1579,13 @@ def _build_html(
                                     {vision_options}
                                 </select>
                             </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-layer-group text-blue-400 mr-2"></i>Split:</label>
+                                <select id="split-mode" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
+                                    <option value="layer">Layer (Sqn)</option>
+                                    <option value="row">Row (Par)</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                     <div class="overflow-x-auto">
@@ -1564,6 +1593,7 @@ def _build_html(
                             <thead class="text-[9px] md:text-[10px] font-black text-slate-500 uppercase tracking-widest">
                                 <tr>
                                     <th class="px-4 md:px-6 py-4 text-center">Uso</th>
+                                    <th class="px-4 py-4 text-center">Principal</th>
                                     <th class="px-4 py-4">Dispositivo</th>
                                     <th class="px-4 py-4">Monitoramento</th>
                                     <th class="px-4 py-4">VRAM Status</th>
@@ -1817,9 +1847,11 @@ def _build_html(
         function resetToDefaults() {{
             document.getElementById('context-size').value = "{DEFAULT_CONTEXT_SIZE}"; // 65536
             document.getElementById('mmproj-path').value = "";
+            document.getElementById('split-mode').value = "layer";
             document.querySelectorAll('.gpu-row').forEach((row, idx) => {{
                 row.querySelector('.gpu-checkbox').checked = true;
                 row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
+                row.querySelector('.gpu-main-radio').checked = (idx === 0);
             }});
             updateTotal();
         }}
@@ -1842,6 +1874,7 @@ def _build_html(
             const cfg = window.modelConfigs[path];
             if (!cfg) return;
             if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
+            if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
             if (cfg.mmproj_path !== undefined) {{
                 const select = document.getElementById('mmproj-path');
                 let found = false;
@@ -1868,8 +1901,10 @@ def _build_html(
                     if (row) {{
                         const cb = row.querySelector('.gpu-checkbox');
                         const input = row.querySelector('.gpu-weight');
+                        const radio = row.querySelector('.gpu-main-radio');
                         cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
                         input.value = Math.round(w.weight);
+                        if (w.is_main) radio.checked = true;
                     }}
                 }});
                 updateTotal();
@@ -2230,15 +2265,18 @@ def _build_html(
             document.getElementById('log-box').innerHTML = '';
             document.querySelectorAll('.gpu-row').forEach(r => {{
                 const isChecked = r.querySelector('.gpu-checkbox').checked;
+                const isMain = r.querySelector('.gpu-main-radio').checked;
                 weights.push({{
                     index: parseInt(r.dataset.index),
                     weight: parseInt(r.querySelector('.gpu-weight').value || 0),
                     name: "GPU",
                     active: isChecked,
+                    is_main: isMain,
                 }});
             }});
             if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU");
             const mmprojPath = document.getElementById('mmproj-path').value;
+            const splitMode = document.getElementById('split-mode').value;
             document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
             try {{
                 await fetch('/start', {{
@@ -2249,6 +2287,7 @@ def _build_html(
                         mmproj_path: mmprojPath || null,
                         gpu_weights: weights,
                         context_size: parseInt(document.getElementById('context-size').value),
+                        split_mode: splitMode,
                     }}),
                 }});
             }} catch (e) {{
