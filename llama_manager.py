@@ -8,6 +8,7 @@ tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 import os
 import socket
 import threading
+import time
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
@@ -18,7 +19,7 @@ from typing import Optional
 
 from config_manager import ConfigManager, TokenManager, AuthManager, DEFAULT_CONTEXT_SIZE
 from gpu_manager import GPUManager
-from log_manager import LogManager
+from log_manager import LogManager, logger
 from process_manager import ProcessManager, OOMWatchdog
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
