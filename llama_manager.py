@@ -5,6 +5,7 @@ FastAPI application that orchestrates llama-server instances with multi-GPU
 tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 """
 
+import json
 import os
 import socket
 import threading
