@@ -1,5 +1,7 @@
 # 🚀 Automanager Llama.cpp
 
+**Languages:** [English](README.md) · [Português (BR)](README.pt-BR.md)
+
 **A FastAPI control plane for orchestrating `llama-server` on NVIDIA multi-GPU Linux hosts.**
 
 [![Status](https://img.shields.io/badge/status-alpha-orange)](https://github.com)
@@ -57,7 +59,7 @@
 | **Log streaming** | SSE console tail of `llama-server` output | Stable |
 | **Session + API key auth** | Cookie sessions and Bearer token for API clients | Stable |
 | **Quick-Install** | Idempotent `installer/setup.sh` (venv, systemd, health check) | Stable |
-| **Modular codebase** | Domain logic split across focused modules (`config_manager`, `log_manager`, orchestration in `llama_manager.py`) | In progress |
+| **Modular codebase** | Domain logic in focused modules; `llama_manager.py` is the composition root (routes + UI) | Stable |
 
 Default inference settings include **Flash Attention**, **mlock**, full GPU layer offload (`-ngl 99`), and a default context window of **65536** tokens (`DEFAULT_CONTEXT_SIZE`).
 
@@ -92,16 +94,18 @@ Automanager is a **control plane** (FastAPI on port **8000**) that manages a sin
            /media/docker/models/*.gguf
 ```
 
-**Modular layout (post-refactor):**
+**Modular layout:**
 
 | Module | Responsibility |
 |--------|----------------|
-| `llama_manager.py` | FastAPI app, routes, `ProcessManager`, `GPUDetector`, `ModelScanner`, embedded UI |
+| `llama_manager.py` | FastAPI app, routes, auth wiring, embedded dashboard UI |
 | `config_manager.py` | JSON config, API keys, admin auth |
-| `log_manager.py` | Manager logging setup, server log paths, SSE streaming |
+| `gpu_manager.py` | GPU detection, tensor split, `CUDA_VISIBLE_DEVICES` |
+| `process_manager.py` | `llama-server` subprocess, OOM watchdog |
+| `model_manager.py` | Model scan, rename/delete, URL downloads |
+| `log_manager.py` | Rotating logs under `logs/`, SSE streaming |
+| `schemas.py` | Pydantic request/response models |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
-
-Target end state (ADR-001): further extraction into `gpu_manager.py`, `process_manager.py`, and `ui_renderer.py` with `llama_manager.py` as a thin composition root.
 
 ---
 
@@ -220,9 +224,9 @@ journalctl -u llama-manager.service -f
 | **Default context** | `65536` tokens (`DEFAULT_CONTEXT_SIZE`) |
 | **Models directory** | `/media/docker/models` (`MODELS_DIR`) |
 | **Main config** | `/root/automanager_config.json` (default model, per-model GPU/context settings, auth) |
-| **Manager log** | `/root/manager.log` (fallback: `./manager.log`) |
-| **Server log** | `/root/llama_server.log` (SSE `/logs`; project `logs/` used as refactor lands) |
-| **Project logs dir** | `./logs/` (created by installer and at runtime) |
+| **Manager log** | `./logs/manager.log` (also mirrored to `/root/manager.log` when writable) |
+| **Server log** | `./logs/server.log` (also mirrored to `/root/llama_server.log` when writable) |
+| **Log rotation** | 10 MB per file, 3 backups (`RotatingFileHandler`) |
 
 Change `MODELS_DIR` and paths in `llama_manager.py` constants if your layout differs.
 
@@ -266,13 +270,18 @@ Unit tests cover config/token helpers, GPU scanning, and OOM watchdog behavior; 
 
 ```
 automanager-llama.cpp/
-├── llama_manager.py      # FastAPI app, routes, core services
+├── llama_manager.py      # FastAPI app, routes, UI
 ├── config_manager.py     # Config, tokens, auth
+├── gpu_manager.py        # GPU detection and tensor split
+├── process_manager.py    # Subprocess + OOM watchdog
+├── model_manager.py      # Models and downloads
 ├── log_manager.py        # Logging and SSE
+├── schemas.py            # Pydantic models
 ├── installer/setup.sh    # Quick-Install
+├── static/js/            # Dashboard assets (e.g. Pac-Man background)
+├── logs/                 # Runtime logs (gitignored)
 ├── requirements.txt
 ├── tests/
-├── design/               # Static design reference (not served by default)
 └── start_llama.sh        # Example manual llama-server launch
 ```
 
