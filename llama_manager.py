@@ -6,1007 +6,57 @@ tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 """
 
 import os
-import re
-import sys
-import json
-import uuid
-import time
-import glob
-import secrets
-import logging
 import socket
-import signal
-import hashlib
-import subprocess
 import threading
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Set
-from datetime import datetime
 
-import psutil
-import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from typing import Optional
 
-# ─────────────────────────────────────────────────────────
-# Configuration constants
-# ─────────────────────────────────────────────────────────
-
-MODELS_DIR = "/media/docker/models"
-SERVER_LOG_PATH = "/root/llama_server.log"
-MANAGER_LOG_PATH = "/root/manager.log"
-CONFIG_PATH = "/root/automanager_config.json"
-MODEL_SETTINGS_PATH = "/root/model_settings.json"
-LLAMA_SERVER_BIN = "llama-server"
-SERVER_PORT = 8085
-MANAGER_PORT = 8000
-DEFAULT_CONTEXT_SIZE = 65536
-
-# ─────────────────────────────────────────────────────────
-# Logging setup
-# ─────────────────────────────────────────────────────────
-
-try:
-    os.makedirs(os.path.dirname(MANAGER_LOG_PATH), exist_ok=True)
-    _manager_log_path = MANAGER_LOG_PATH
-except OSError:
-    _manager_log_path = os.path.join(os.getcwd(), "manager.log")
-
-logging.basicConfig(
-    filename=_manager_log_path,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+from config_manager import ConfigManager, TokenManager, AuthManager, DEFAULT_CONTEXT_SIZE
+from gpu_manager import GPUManager
+from log_manager import LogManager
+from process_manager import ProcessManager, OOMWatchdog
+from model_manager import ModelScanner, DownloadManager
+from schemas import (
+    GPUWeight,
+    StartRequest,
+    DeleteRequest,
+    DownloadRequest,
+    SetDefaultRequest,
+    RenameRequest,
+    LoginRequest,
 )
-logger = logging.getLogger("automanager")
+from gpu_manager import GPUDetector
+from model_manager import ModelScanner
+from config_manager import ConfigManager, TokenManager
 
-# ─────────────────────────────────────────────────────────
-# Pydantic models
-# ─────────────────────────────────────────────────────────
+MANAGER_PORT = 8000
 
-
-class GPUWeight(BaseModel):
-    index: int
-    weight: float
-    name: str
-    active: bool = True
-    is_main: bool = False
-
-
-class StartRequest(BaseModel):
-    path: str
-    mmproj_path: Optional[str] = None
-    gpu_weights: List[GPUWeight]
-    context_size: int = DEFAULT_CONTEXT_SIZE
-    split_mode: str = "layer"
-
-
-class DeleteRequest(BaseModel):
-    path: str
-
-
-class DownloadRequest(BaseModel):
-    url: str
-    filename: Optional[str] = None
-
-
-class SetDefaultRequest(BaseModel):
-    path: Optional[str] = None
-
-
-class RenameRequest(BaseModel):
-    path: str
-    new_name: str
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-# ─────────────────────────────────────────────────────────
-# ConfigManager (Step 1)
-# Atomic JSON file persistence — no external database
-# ─────────────────────────────────────────────────────────
-
-
-class ConfigManager:
-    """Thread-safe JSON config manager with atomic writes."""
-
-    def __init__(self, config_path: str = CONFIG_PATH):
-        self.config_path = config_path
-        self._lock = threading.Lock()
-
-    def load(self) -> dict:
-        with self._lock:
-            if os.path.exists(self.config_path):
-                try:
-                    with open(self.config_path, "r") as f:
-                        return json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    return {}
-            return {}
-
-    def save(self, data: dict) -> None:
-        with self._lock:
-            tmp_path = self.config_path + ".tmp"
-            try:
-                with open(tmp_path, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp_path, self.config_path)
-            except Exception as e:
-                logger.error(f"Config save error: {e}")
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-
-    def get_model_settings(self, model_path: str) -> dict:
-        config = self.load()
-        return config.get("model_configs", {}).get(model_path, {})
-
-    def update_model_settings(self, model_path: str, settings: dict) -> None:
-        config = self.load()
-        if "model_configs" not in config:
-            config["model_configs"] = {}
-        config["model_configs"][model_path] = {
-            "context_size": settings.get("context_size", DEFAULT_CONTEXT_SIZE),
-            "mmproj_path": settings.get("mmproj_path"),
-            "gpu_weights": settings.get("gpu_weights"),
-            "last_started": datetime.utcnow().isoformat(),
-        }
-        self.save(config)
-
-    def set_default_model(self, path: Optional[str]) -> None:
-        config = self.load()
-        config["default_model"] = path
-        self.save(config)
-
-    def get_default_model(self) -> Optional[str]:
-        return self.load().get("default_model")
-
-
-# ─────────────────────────────────────────────────────────
-# TokenManager (Step 2)
-# Generates and validates OpenAI-style API keys
-# ─────────────────────────────────────────────────────────
-
-
-class TokenManager:
-    """Manages global API token in sk-... format."""
-
-    PREFIX = "sk-"
-    TOKEN_LENGTH = 32
-
-    def __init__(self, config_manager: ConfigManager):
-        self.config = config_manager
-
-    def generate(self) -> str:
-        return f"{self.PREFIX}{secrets.token_hex(24)}"
-
-    def validate(self, key: str) -> bool:
-        if not isinstance(key, str):
-            return False
-        return key.startswith(self.PREFIX) and len(key) >= len(self.PREFIX) + 32
-
-    def get_or_create(self) -> str:
-        config = self.config.load()
-        if "api_token" not in config or not self.validate(config["api_token"]):
-            config["api_token"] = self.generate()
-            self.config.save(config)
-        return config["api_token"]
-
-    def renew(self) -> str:
-        config = self.config.load()
-        config["api_token"] = self.generate()
-        self.config.save(config)
-        return config["api_token"]
-
-
-# ─────────────────────────────────────────────────────────
-# AuthManager (Step 3)
-# Form-based login sessions + API key middleware
-# ─────────────────────────────────────────────────────────
-
-
-class AuthManager:
-    """Handles UI login (form-based sessions) and API key auth."""
-
-    def __init__(self, config_manager: ConfigManager, token_manager: TokenManager):
-        self.config = config_manager
-        self.token_mgr = token_manager
-        self._sessions: Dict[str, datetime] = {}
-        self._lock = threading.Lock()
-        self._init_admin_password()
-
-    def _init_admin_password(self) -> None:
-        """Initialize admin password hash if not present."""
-        config = self.config.load()
-        if "admin_password_hash" not in config:
-            # Default password: "admin" — force user to change on first login
-            config["admin_password_hash"] = self._hash_password("admin")
-            self.config.save(config)
-
-    @staticmethod
-    def _hash_password(password: str) -> str:
-        """Simple SHA-256 hash — in production, use bcrypt via passlib."""
-        return hashlib.sha256(password.encode()).hexdigest()
-
-    def authenticate(self, username: str, password: str) -> Optional[str]:
-        """Returns session token on success, None on failure."""
-        config = self.config.load()
-        expected_hash = config.get("admin_password_hash", "")
-        actual_hash = hashlib.sha256(password.encode()).hexdigest()
-        if actual_hash != expected_hash:
-            logger.warning(f"Failed login attempt for user: {username}")
-            return None
-        session_token = secrets.token_urlsafe(32)
-        with self._lock:
-            self._sessions[session_token] = datetime.utcnow()
-        return session_token
-
-    def verify_session(self, session_token: str) -> bool:
-        with self._lock:
-            if session_token in self._sessions:
-                # Extend session
-                self._sessions[session_token] = datetime.utcnow()
-                return True
-            return False
-
-    def logout(self, session_token: str) -> None:
-        with self._lock:
-            self._sessions.pop(session_token, None)
-
-    def verify_api_key(self, credentials: HTTPAuthorizationCredentials) -> bool:
-        return self.token_mgr.validate(credentials.credentials)
-
-    def change_password(self, old_password: str, new_password: str) -> bool:
-        config = self.config.load()
-        current_hash = hashlib.sha256(old_password.encode()).hexdigest()
-        if config.get("admin_password_hash") != current_hash:
-            return False
-        config["admin_password_hash"] = self._hash_password(new_password)
-        self.config.save(config)
-        return True
-
-
-# ─────────────────────────────────────────────────────────
-# GPUDetector (Step 4)
-# Parses nvidia-smi for GPU metrics
-# ─────────────────────────────────────────────────────────
-
-
-class GPUDetector:
-    """Detects GPUs and parses metrics from nvidia-smi."""
-
-    def detect_gpus(self) -> List[Dict[str, Any]]:
-        """Detect GPUs using llama-server --help first, fallback to nvidia-smi."""
-        try:
-            env = os.environ.copy()
-            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            output = subprocess.check_output(
-                f"{LLAMA_SERVER_BIN} --help 2>&1",
-                shell=True, env=env, timeout=10,
-            ).decode()
-            pattern = r"Device (\d+): (.*?), compute capability.*?, VRAM: (\d+) MiB"
-            matches = re.findall(pattern, output)
-            gpus = []
-            for match in matches:
-                idx, name, vram = match
-                gpus.append({
-                    "index": int(idx),
-                    "name": name.strip(),
-                    "vram": int(vram),
-                })
-            if gpus:
-                return gpus
-        except Exception:
-            pass
-
-        # Fallback to nvidia-smi
-        try:
-            output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=index,name,memory.total",
-                 "--format=csv,noheader,nounits"],
-                timeout=10,
-            ).decode()
-            gpus = []
-            for line in output.strip().split("\n"):
-                if not line.strip():
-                    continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 3:
-                    gpus.append({
-                        "index": int(parts[0]),
-                        "name": parts[1],
-                        "vram": int(parts[2]),
-                    })
-            return gpus
-        except Exception as e:
-            logger.error(f"GPU detection error: {e}")
-            return []
-
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get real-time hardware metrics."""
-        try:
-            output = subprocess.check_output(
-                ["nvidia-smi",
-                 "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
-                 "temperature.gpu,power.draw",
-                 "--format=csv,noheader,nounits"],
-                timeout=10,
-            ).decode()
-            gpus = []
-            for line in output.strip().split("\n"):
-                if not line.strip():
-                    continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 6:
-                    mem_used = float(parts[2])
-                    mem_total = float(parts[3])
-                    gpus.append({
-                        "index": int(parts[0]),
-                        "util": parts[1],
-                        "mem_used": parts[2],
-                        "mem_total": parts[3],
-                        "vram_pct": round(
-                            (mem_used / mem_total) * 100, 1
-                        ) if mem_total > 0 else 0,
-                        "temp": parts[4],
-                        "power": parts[5].split(".")[0] if "." in parts[5] else parts[5],
-                    })
-            return {
-                "cpu": psutil.cpu_percent(interval=0.1),
-                "ram": psutil.virtual_memory().percent,
-                "gpus": gpus,
-            }
-        except Exception as e:
-            logger.error(f"Metrics error: {e}")
-            return {"cpu": 0, "ram": 0, "gpus": []}
-
-
-# ─────────────────────────────────────────────────────────
-# ProcessManager (Step 5)
-# Manages llama-server lifecycle via subprocess
-# ─────────────────────────────────────────────────────────
-
-
-class ProcessManager:
-    """Manages llama-server process lifecycle."""
-
-    def __init__(
-        self, config_manager: ConfigManager, token_manager: TokenManager
-    ):
-        self.config = config_manager
-        self.token_mgr = token_manager
-        self._current_process: Optional[subprocess.Popen] = None
-        self._last_request: Optional[StartRequest] = None
-        self._lock = threading.Lock()
-        self._recovery_state = {
-            "active": False,
-            "failed": False,
-            "message": "",
-        }
-
-    @property
-    def recovery_state(self) -> dict:
-        with self._lock:
-            return dict(self._recovery_state)
-
-    @recovery_state.setter
-    def recovery_state(self, state: dict) -> None:
-        with self._lock:
-            self._recovery_state = state
-
-    def get_status(self) -> dict:
-        """Check if llama-server is running."""
-        status = {"running": False, "recovery": self.recovery_state}
-        for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
-            try:
-                name = proc.info["name"] or ""
-                cmdline = proc.info["cmdline"] or []
-                if "llama-server" in name or (
-                    cmdline and "llama-server" in cmdline[0]
-                ):
-                    model_name = None
-                    model_path = None
-                    for i in range(len(cmdline) - 1):
-                        if cmdline[i] in ["-m", "--model"]:
-                            model_name = os.path.basename(cmdline[i + 1])
-                            model_path = cmdline[i + 1]
-                            break
-                    if model_name:
-                        status.update(
-                            {
-                                "running": True,
-                                "pid": proc.info["pid"],
-                                "model": model_name,
-                                "model_path": model_path,
-                                "start_time": proc.info["create_time"],
-                            }
-                        )
-                        # Attach last known config
-                        with self._lock:
-                            if self._last_request:
-                                status["config"] = {
-                                    "path": self._last_request.path,
-                                    "context_size": self._last_request.context_size,
-                                    "split_mode": self._last_request.split_mode,
-                                    "gpu_weights": [
-                                        w.model_dump()
-                                        if hasattr(w, "model_dump")
-                                        else w
-                                        for w in self._last_request.gpu_weights
-                                    ],
-                                    "mmproj_path": self._last_request.mmproj_path,
-                                }
-                        return status
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        return status
-
-    def stop(self) -> dict:
-        """Stop running llama-server."""
-        subprocess.run(["pkill", "-9", LLAMA_SERVER_BIN], check=False)
-        with self._lock:
-            if self._current_process:
-                try:
-                    os.killpg(
-                        os.getpgid(self._current_process.pid), signal.SIGKILL
-                    )
-                except (ProcessLookupError, OSError):
-                    pass
-                self._current_process = None
-            self._last_request = None
-        self.recovery_state = {
-            "active": False,
-            "failed": False,
-            "message": "",
-        }
-        # Clear server log
-        try:
-            open(SERVER_LOG_PATH, "w").close()
-        except OSError:
-            pass
-        logger.info("llama-server stopped")
-        return {"message": "Stopped"}
-
-    def start(
-        self,
-        model_path: str,
-        gpu_weights: List[GPUWeight],
-        context_size: int,
-        mmproj_path: Optional[str] = None,
-        split_mode: str = "layer",
-    ) -> dict:
-        """Start llama-server with given configuration."""
-        # Stop any existing process first
-        self.stop()
-
-        with self._lock:
-            # Build tensor split from weights
-            active_weights = [w for w in gpu_weights if w.active]
-            if not active_weights:
-                raise HTTPException(
-                    status_code=400, detail="SELECIONE PELO MENOS UMA GPU"
-                )
-
-            weights_map = {w.index: w.weight for w in active_weights}
-            total = sum(weights_map.values()) or 1
-
-            # Build split array for all GPUs
-            all_gpus = GPUDetector().detect_gpus()
-            max_idx = max((g["index"] for g in all_gpus), default=0)
-            split = [
-                f"{weights_map.get(i, 0) / total:.4f}"
-                for i in range(max_idx + 1)
-            ]
-
-            # Main GPU selection
-            main_gpu_obj = next((w for w in active_weights if w.is_main), None)
-            if main_gpu_obj:
-                main_gpu = str(main_gpu_obj.index)
-            else:
-                # Fallback to highest weight among active
-                main_gpu = str(max(weights_map, key=weights_map.get))
-
-            # Build command
-            api_token = self.token_mgr.get_or_create()
-            cmd = [
-                LLAMA_SERVER_BIN,
-                "-m", model_path,
-                "-ngl", "99",
-                "--flash-attn", "on",
-                "--host", "0.0.0.0",
-                "--port", str(SERVER_PORT),
-                "--tools", "all",
-                "--parallel", "1",
-                "--ctx-size", str(context_size),
-                "--mlock",
-                "--main-gpu", main_gpu,
-                "--split-mode", split_mode,
-                "--tensor-split", ",".join(split),
-                "--api-key", api_token,
-            ]
-
-            if mmproj_path and os.path.exists(mmproj_path):
-                cmd.extend(["--mmproj", mmproj_path])
-            else:
-                cmd.append("--mmproj-auto")
-
-            # Setup environment
-            env = os.environ.copy()
-            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            env["PATH"] = "/usr/local/cuda/bin:" + env.get("PATH", "")
-            env["LD_LIBRARY_PATH"] = "/usr/local/cuda/lib64:" + env.get(
-                "LD_LIBRARY_PATH", ""
-            )
-
-            # Clear log file
-            try:
-                with open(SERVER_LOG_PATH, "w") as f:
-                    f.write("")
-            except OSError as e:
-                logger.error(f"Failed to clear log: {e}")
-
-            logger.info(f"START: {' '.join(cmd)}")
-
-            try:
-                self._current_process = subprocess.Popen(
-                    cmd,
-                    stdout=open(SERVER_LOG_PATH, "a"),
-                    stderr=subprocess.STDOUT,
-                    preexec_fn=os.setsid,
-                    env=env,
-                )
-                self._last_request = StartRequest(
-                    path=model_path,
-                    mmproj_path=mmproj_path,
-                    gpu_weights=gpu_weights,
-                    context_size=context_size,
-                )
-                return {
-                    "message": "Started",
-                    "pid": self._current_process.pid,
-                }
-            except Exception as e:
-                logger.error(f"Start error: {e}")
-                raise HTTPException(
-                    status_code=500, detail=f"Erro ao iniciar: {e}"
-                )
-
-
-# ─────────────────────────────────────────────────────────
-# OOMWatchdog (Step 6)
-# Background thread that detects OOM and auto-recovers
-# ─────────────────────────────────────────────────────────
-
-
-class OOMWatchdog(threading.Thread):
-    """
-    Background watchdog that monitors llama_server.log for OOM errors.
-    Uses conservative recovery: reduces overloaded GPU by 10%.
-    Falls back to 50/50 split after 3 consecutive OOMs.
-    """
-
-    OOM_PATTERNS = re.compile(
-        r"(?i)(out of memory|cuda error|malloc failed|c10\.Error)"
-    )
-    REDUCTION_PCT = 10.0
-    MAX_CONSECUTIVE_OOM = 3
-    SILENCE_TIMEOUT = 30  # seconds
-
-    def __init__(
-        self,
-        process_manager: ProcessManager,
-        config_manager: ConfigManager,
-        gpu_detector: GPUDetector,
-    ):
-        super().__init__(daemon=True)
-        self.process_manager = process_manager
-        self.config = config_manager
-        self.gpu_detector = gpu_detector
-        self._consecutive_oom = 0
-        self._last_oom_time = 0.0
-        self._stopping = False
-        self._lock = threading.Lock()
-
-    def run(self) -> None:
-        logger.info("OOMWatchdog started")
-        while not self._stopping:
-            try:
-                if os.path.exists(SERVER_LOG_PATH):
-                    self._check_log()
-                time.sleep(5)
-            except Exception as e:
-                logger.error(f"Watchdog error: {e}")
-                time.sleep(5)
-
-    def _check_log(self) -> None:
-        try:
-            with open(SERVER_LOG_PATH, "r") as f:
-                f.seek(0, os.SEEK_END)
-                while True:
-                    line = f.readline()
-                    if not line:
-                        break
-                    if self.OOM_PATTERNS.search(line):
-                        self._handle_oom()
-                        break
-        except OSError:
-            pass
-
-    def _handle_oom(self) -> None:
-        now = time.time()
-        with self._lock:
-            # Reset if too much time since last OOM
-            if now - self._last_oom_time > self.SILENCE_TIMEOUT:
-                self._consecutive_oom = 0
-            self._consecutive_oom += 1
-            self._last_oom_time = now
-            consecutive = self._consecutive_oom
-
-        logger.warning(f"OOM detected! Consecutive: {consecutive}")
-
-        pm = self.process_manager
-        with pm._lock:
-            req = pm._last_request
-            if not req:
-                return
-
-        if consecutive >= self.MAX_CONSECUTIVE_OOM:
-            # Fallback to 50/50 split
-            logger.warning(
-                "Max OOM reached. Applying 50/50 fallback split."
-            )
-            pm.recovery_state = {
-                "active": True,
-                "failed": False,
-                "message": "OOM repetido. Divisao 50/50.",
-            }
-            # Equal weights for all active GPUs
-            new_weights = [
-                GPUWeight(
-                    index=w.index,
-                    weight=50.0 if w.active else 0.0,
-                    name=w.name,
-                    active=w.active,
-                )
-                for w in req.gpu_weights
-            ]
-        else:
-            # Conservative reduction: 10% from highest weighted GPU
-            pm.recovery_state = {
-                "active": True,
-                "failed": False,
-                "message": "OOM detectado. Reduzindo carga...",
-            }
-            weights = list(req.gpu_weights)
-            active = [w for w in weights if w.active]
-            if len(active) <= 1:
-                pm.recovery_state = {
-                    "active": False,
-                    "failed": True,
-                    "message": "Single GPU ou sem pesos.",
-                }
-                return
-            main_gpu = max(active, key=lambda w: w.weight)
-            other_gpus = [w for w in active if w != main_gpu]
-            main_gpu.weight -= self.REDUCTION_PCT
-            share = self.REDUCTION_PCT / len(other_gpus) if other_gpus else 0
-            for og in other_gpus:
-                og.weight += share
-            new_weights = weights
-
-        # Update model config and restart
-        self.config.update_model_settings(
-            req.path,
-            {
-                "context_size": req.context_size,
-                "mmproj_path": req.mmproj_path,
-                "gpu_weights": [
-                    w.model_dump() for w in new_weights
-                ],
-            },
-        )
-
-        logger.info(
-            f"Recovery: {[f'{w.index}:{w.weight:.1f}' for w in new_weights]}"
-        )
-        try:
-            pm.start(
-                model_path=req.path,
-                gpu_weights=new_weights,
-                context_size=req.context_size,
-                mmproj_path=req.mmproj_path,
-            )
-        except Exception as e:
-            logger.error(f"Recovery start failed: {e}")
-
-        with pm._lock:
-            pm._last_request = req
-
-        # Reset recovery state after delay
-        time.sleep(3)
-        pm.recovery_state = {
-            "active": False,
-            "failed": False,
-            "message": "",
-        }
-
-    def stop(self) -> None:
-        self._stopping = True
-
-
-# ─────────────────────────────────────────────────────────
-# ModelScanner (Step 7)
-# Discovers .gguf and .mmproj files in models directory
-# ─────────────────────────────────────────────────────────
-
-
-class ModelScanner:
-    """Scans models directory for .gguf and .mmproj files."""
-
-    def scan(self) -> dict:
-        """Scan for models and classify by type."""
-        models = []
-        projectors = []
-        try:
-            for root, _dirs, files in os.walk(MODELS_DIR):
-                for f in files:
-                    full_path = os.path.join(root, f)
-                    name_lower = f.lower()
-                    item = {
-                        "path": full_path,
-                        "name": f,
-                        "dir": os.path.relpath(root, MODELS_DIR) or "/",
-                    }
-                    if any(
-                        x in name_lower
-                        for x in ["mmproj", "clip", "vision", "projector"]
-                    ):
-                        projectors.append(item)
-                    else:
-                        models.append(item)
-        except OSError as e:
-            logger.error(f"Scan error: {e}")
-
-        # Attach saved configs
-        config = ConfigManager().load()
-        model_configs = config.get("model_configs", {})
-        for m in models:
-            m["last_config"] = model_configs.get(m["path"])
-        for p in projectors:
-            p["last_config"] = model_configs.get(p["path"])
-
-        # Auto-detect mmproj candidates for each model
-        for m in models:
-            base_name = os.path.splitext(m["name"])[0]
-            candidates = []
-            for proj in projectors:
-                proj_base = os.path.splitext(proj["name"])[0]
-                if proj_base == base_name or base_name in proj_base:
-                    candidates.append(proj["path"])
-            m["mmproj_candidates"] = candidates
-            m["auto_mmproj"] = candidates[0] if candidates else None
-
-        return {"models": models, "projectors": projectors}
-
-    def rename_model(self, old_path: str, new_name: str) -> str:
-        """Rename a model file."""
-        if not old_path.startswith(MODELS_DIR):
-            raise HTTPException(status_code=403, detail="Acesso negado")
-        if not os.path.exists(old_path):
-            raise HTTPException(
-                status_code=404, detail="Arquivo nao encontrado"
-            )
-
-        # Check if currently running
-        pm = process_manager
-        status = pm.get_status()
-        if status["running"]:
-            normalized_old = old_path.replace("\\", "/")
-            normalized_run = (
-                status.get("model_path", "").replace("\\", "/")
-            )
-            if normalized_old == normalized_run:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Impossivel renomear modelo em execucao",
-                )
-
-        # Build new path
-        dir_name = os.path.dirname(old_path)
-        if not new_name.endswith(".gguf"):
-            new_name += ".gguf"
-        new_path = os.path.join(dir_name, new_name)
-
-        if os.path.exists(new_path):
-            raise HTTPException(
-                status_code=400, detail="Ja existe um arquivo com este nome"
-            )
-
-        os.rename(old_path, new_path)
-
-        # Update config references
-        config = ConfigManager()
-        data = config.load()
-        updated = False
-
-        if data.get("default_model") == old_path:
-            data["default_model"] = new_path
-            updated = True
-
-        if "model_configs" in data and old_path in data["model_configs"]:
-            data["model_configs"][new_path] = data["model_configs"].pop(
-                old_path
-            )
-            updated = True
-
-        if updated:
-            config.save(data)
-
-        logger.info(f"Renamed: {old_path} -> {new_path}")
-        return new_path
-
-    def delete_model(self, file_path: str) -> None:
-        """Delete a model file."""
-        if not file_path.startswith(MODELS_DIR):
-            raise HTTPException(status_code=403, detail="Acesso negado")
-        if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=404, detail="Arquivo nao encontrado"
-            )
-
-        # Check if running — stop if needed
-        pm = process_manager
-        status = pm.get_status()
-        if status["running"]:
-            normalized = file_path.replace("\\", "/")
-            normalized_run = status.get("model_path", "").replace("\\", "/")
-            if normalized == normalized_run:
-                pm.stop()
-
-        os.remove(file_path)
-        logger.info(f"Deleted: {file_path}")
-
-
-# ─────────────────────────────────────────────────────────
-# DownloadManager (Step 8)
-# Background HTTP downloads with progress tracking
-# ─────────────────────────────────────────────────────────
-
-
-class DownloadManager:
-    """Manages model downloads with progress tracking."""
-
-    def __init__(self):
-        self._downloads: Dict[str, dict] = {}
-        self._downloads_queue: List[tuple] = []
-        self._lock = threading.Lock()
-
-    def start_download(self, url: str, filename: Optional[str] = None) -> str:
-        """Start a background download. Returns download_id."""
-        download_id = str(uuid.uuid4())
-        if not filename:
-            filename = url.split("/")[-1].split("?")[0]
-            if not filename.endswith(".gguf"):
-                filename += ".gguf"
-
-        model_name_folder = filename.replace(".gguf", "")
-        model_specific_dir = os.path.join(MODELS_DIR, model_name_folder)
-        os.makedirs(model_specific_dir, exist_ok=True)
-        path = os.path.join(model_specific_dir, filename)
-
-        # Handle conflicts
-        if os.path.exists(path):
-            base, ext = os.path.splitext(filename)
-            filename = f"{base}_{int(time.time())}{ext}"
-            path = os.path.join(model_specific_dir, filename)
-
-        with self._lock:
-            self._downloads[download_id] = {
-                "filename": filename,
-                "path": path,
-                "url": url,
-                "status": "downloading",
-                "progress": 0,
-            }
-
-        with self._lock:
-            self._downloads_queue.append(
-                (download_id, url, filename, path)
-            )
-        return download_id
-
-    def get_progress(self) -> dict:
-        with self._lock:
-            return dict(self._downloads)
-
-    def _do_download(
-        self, download_id: str, url: str, filename: str, path: str
-    ) -> None:
-        try:
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
-            total_size = int(
-                response.headers.get("content-length", 0)
-            )
-            downloaded = 0
-            with open(path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192 * 4):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            with self._lock:
-                                if download_id in self._downloads:
-                                    self._downloads[download_id][
-                                        "progress"
-                                    ] = round(
-                                        (downloaded / total_size) * 100, 2
-                                    )
-            with self._lock:
-                if download_id in self._downloads:
-                    self._downloads[download_id]["status"] = "completed"
-                    self._downloads[download_id]["progress"] = 100
-            logger.info(f"Download completed: {filename}")
-        except Exception as e:
-            logger.error(f"Download error {download_id}: {e}")
-            with self._lock:
-                if download_id in self._downloads:
-                    self._downloads[download_id]["status"] = "failed"
-                    self._downloads[download_id]["error"] = str(e)
-
-
-# ─────────────────────────────────────────────────────────
-# SSEStreamer (Step 9)
-# Streams llama_server.log to browser via Server-Sent Events
-# ─────────────────────────────────────────────────────────
-
-
-class SSEStreamer:
-    """Streams server log via SSE with 500-line cap."""
-
-    @staticmethod
-    def stream() -> StreamingResponse:
-        def generate():
-            if not os.path.exists(SERVER_LOG_PATH):
-                yield "data: Arquivo de log nao encontrado.\n\n"
-                return
-            with open(SERVER_LOG_PATH, "r") as f:
-                lines = f.readlines()
-                for line in lines[-500:]:
-                    yield f"data: {line}"
-                while True:
-                    line = f.readline()
-                    if not line:
-                        time.sleep(0.5)
-                        continue
-                    yield f"data: {line}"
-
-        return StreamingResponse(
-            generate(), media_type="text/event-stream"
-        )
-
-
-# ─────────────────────────────────────────────────────────
-# Application initialization
-# ─────────────────────────────────────────────────────────
-
-app = FastAPI(title="Automanager Llama.cpp")
-
-# Service singletons
+# Initialize logging and services
+log_manager = LogManager()
 config_manager = ConfigManager()
 token_manager = TokenManager(config_manager)
 auth_manager = AuthManager(config_manager, token_manager)
-gpu_detector = GPUDetector()
-process_manager = ProcessManager(config_manager, token_manager)
-model_scanner = ModelScanner()
+gpu_manager = GPUManager()
+gpu_detector = gpu_manager
+process_manager = ProcessManager(
+    config_manager, token_manager, gpu_manager, log_manager
+)
+model_scanner = ModelScanner(config_manager, process_manager)
 download_mgr = DownloadManager()
 oom_watchdog = OOMWatchdog(
-    process_manager, config_manager, gpu_detector
+    process_manager, config_manager, gpu_manager, log_manager
 )
+
+app = FastAPI(title="Automanager Llama.cpp")
+
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # Security scheme for API key
 security = HTTPBearer(auto_error=False)
@@ -1141,7 +191,7 @@ async def stop_model(_auth: str = Depends(get_current_auth)):
 
 @app.get("/metrics")
 async def get_metrics(_auth: str = Depends(get_current_auth)):
-    return gpu_detector.get_metrics()
+    return gpu_manager.get_metrics()
 
 
 # --- Model Management ---
@@ -1204,7 +254,7 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 
 @app.get("/logs")
 async def stream_logs():
-    return SSEStreamer.stream()
+    return log_manager.stream_logs()
 
 
 # --- Configuration ---
@@ -1244,7 +294,7 @@ async def index(request: Request):
     models_data = model_scanner.scan()
     models = models_data["models"]
     projectors = models_data["projectors"]
-    gpus = gpu_detector.detect_gpus()
+    gpus = gpu_manager.detect_gpus()
     config = config_manager.load()
     default_model = config.get("default_model")
     model_configs = config.get("model_configs", {})
@@ -1503,9 +553,16 @@ def _build_html(
         @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(5px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         .model-item-container.active-selection {{ border-color: rgba(59, 130, 246, 0.8) !important; background-color: rgba(30, 41, 59, 0.8) !important; box-shadow: 0 0 15px rgba(59, 130, 246, 0.3); }}
         .model-item-container.running-now {{ border-color: rgba(16, 185, 129, 0.5) !important; background-color: rgba(6, 78, 59, 0.2) !important; }}
+        #pacman-background {{ position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 0; opacity: 0.35; pointer-events: none; }}
+        #dashboard {{ position: relative; z-index: 1; }}
+        .btn-gradient {{ background: linear-gradient(135deg, #1e30f3 0%, #e21e80 100%); }}
+        .text-gradient {{ background: linear-gradient(315deg, #1e30f3 0%, #e21e80 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .metric-dimmed {{ opacity: 0.45; filter: grayscale(0.4); }}
+        @media (prefers-reduced-motion: reduce) {{ #pacman-background {{ display: none; }} }}
     </style>
 </head>
 <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
+    <canvas id="pacman-background" aria-hidden="true"></canvas>
     {login_overlay}
     <div id="dashboard" class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10" style="display: {'block' if is_authenticated else 'none'};">
         <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
@@ -1534,7 +591,7 @@ def _build_html(
         </header>
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
             <div class="lg:col-span-7 space-y-6 md:space-y-10">
-                <div class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
+                <div id="metrics-panel" class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
                     <div class="glass p-5 rounded-[1.5rem] border-l-4 border-blue-600">
                         <div class="flex justify-between items-start mb-4">
                             <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest font-mono">Processador (Host)</p>
@@ -1631,7 +688,7 @@ def _build_html(
                             </div>
                         </div>
                         <div class="flex flex-col sm:flex-row gap-4 md:gap-6 w-full lg:w-auto">
-                            <a id="chat-link" href="#" target="_blank" class="px-6 md:px-10 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-[10px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-3 md:gap-4 uppercase tracking-widest whitespace-nowrap">
+                            <a id="chat-link" href="#" target="_blank" class="px-6 md:px-10 py-4 btn-gradient text-white rounded-2xl text-[10px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-3 md:gap-4 uppercase tracking-widest whitespace-nowrap pointer-events-none opacity-40" aria-disabled="true">
                                 <i class="fas fa-comments text-sm"></i> ABRIR CHAT
                             </a>
                             <button onclick="stopModel()" class="px-6 md:px-10 py-4 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[10px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
@@ -1958,6 +1015,11 @@ def _build_html(
             try {{
                 const res = await fetch('/metrics');
                 const data = await res.json();
+                const metricsPanel = document.getElementById('metrics-panel');
+                if (metricsPanel) {{
+                    if (!currentRunningModelPath) metricsPanel.classList.add('metric-dimmed');
+                    else metricsPanel.classList.remove('metric-dimmed');
+                }}
                 document.getElementById('cpu-val').innerText = data.cpu + '%';
                 document.getElementById('cpu-bar').style.width = data.cpu + '%';
                 document.getElementById('ram-val').innerText = data.ram + '%';
@@ -2074,6 +1136,11 @@ def _build_html(
                     if (!currentSelectedModel && currentRunningModelPath) {{
                         currentSelectedModel = currentRunningModelPath.replace(/\\\\\\\\/g, '/');
                     }}
+                    const chatLink = document.getElementById('chat-link');
+                    if (chatLink) {{
+                        chatLink.classList.remove('pointer-events-none', 'opacity-40');
+                        chatLink.setAttribute('aria-disabled', 'false');
+                    }}
                 }} else {{
                     startTime = null;
                     badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase';
@@ -2081,6 +1148,11 @@ def _build_html(
                     card.classList.add('hidden');
                     if (logStream) {{ logStream.abort(); logStream = null; }}
                     currentRunningModelPath = null;
+                    const chatLinkOff = document.getElementById('chat-link');
+                    if (chatLinkOff) {{
+                        chatLinkOff.classList.add('pointer-events-none', 'opacity-40');
+                        chatLinkOff.setAttribute('aria-disabled', 'true');
+                    }}
                 }}
 
                 document.querySelectorAll('.model-item-container').forEach(el => {{
@@ -2308,6 +1380,7 @@ def _build_html(
         setInterval(updateDownloads, 3000);
         setInterval(updateModels, 5000);
     </script>
+    <script src="/static/js/pacman_bg.js"></script>
 </body>
 </html>"""
 
@@ -2341,7 +1414,7 @@ async def startup_event():
                     context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
                     mmproj_path = saved_cfg.get("mmproj_path")
                 else:
-                    gpus = gpu_detector.detect_gpus()
+                    gpus = gpu_manager.detect_gpus()
                     weights = []
                     max_vram = max((g["vram"] for g in gpus), default=0)
                     main_gpu_idx = next(

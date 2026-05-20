@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from llama_manager import AuthManager, ConfigManager, TokenManager
+from config_manager import AuthManager, ConfigManager, TokenManager
 
 
 @pytest.fixture

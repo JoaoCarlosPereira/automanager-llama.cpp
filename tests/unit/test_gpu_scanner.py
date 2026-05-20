@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llama_manager import GPUDetector, ModelScanner
+from gpu_manager import GPUDetector, GPUManager
+from model_manager import ModelScanner
 
 
 class TestGPUDetectorDetectGpus:
@@ -15,7 +16,7 @@ class TestGPUDetectorDetectGpus:
         )
 
         with patch(
-            "llama_manager.subprocess.check_output",
+            "gpu_manager.subprocess.check_output",
             side_effect=[b"", smi_output.encode()],
         ) as mock_check_output:
             result = detector.detect_gpus()
@@ -38,7 +39,7 @@ class TestGPUDetectorDetectGpus:
         detector = GPUDetector()
 
         with patch(
-            "llama_manager.subprocess.check_output",
+            "gpu_manager.subprocess.check_output",
             side_effect=[b"", b"\n\n"],
         ):
             result = detector.detect_gpus()
@@ -49,7 +50,7 @@ class TestGPUDetectorDetectGpus:
         detector = GPUDetector()
 
         with patch(
-            "llama_manager.subprocess.check_output",
+            "gpu_manager.subprocess.check_output",
             side_effect=subprocess.CalledProcessError(1, "nvidia-smi"),
         ):
             result = detector.detect_gpus()
@@ -67,13 +68,13 @@ class TestGPUDetectorGetMetrics:
         virtual_memory = MagicMock(percent=37.5)
 
         with patch(
-            "llama_manager.subprocess.check_output",
+            "gpu_manager.subprocess.check_output",
             return_value=smi_output.encode(),
         ) as mock_check_output, patch(
-            "llama_manager.psutil.cpu_percent",
+            "gpu_manager.psutil.cpu_percent",
             return_value=12.3,
         ) as mock_cpu_percent, patch(
-            "llama_manager.psutil.virtual_memory",
+            "gpu_manager.psutil.virtual_memory",
             return_value=virtual_memory,
         ):
             result = detector.get_metrics()
@@ -117,7 +118,7 @@ class TestGPUDetectorGetMetrics:
         detector = GPUDetector()
 
         with patch(
-            "llama_manager.subprocess.check_output",
+            "gpu_manager.subprocess.check_output",
             side_effect=subprocess.CalledProcessError(1, "nvidia-smi"),
         ):
             result = detector.get_metrics()
@@ -155,11 +156,15 @@ class TestModelScannerScan:
         ]:
             file_path.write_text("", encoding="utf-8")
 
-        with patch("llama_manager.MODELS_DIR", str(models_dir)), patch(
-            "llama_manager.ConfigManager",
+        with patch("model_manager.MODELS_DIR", str(models_dir)), patch(
+            "model_manager.ConfigManager",
             config_manager_cls,
         ):
-            result = ModelScanner().scan()
+            result = ModelScanner(
+                config_manager_cls.return_value,
+                MagicMock(),
+                models_dir=str(models_dir),
+            ).scan()
 
         model_names = {item["name"] for item in result["models"]}
         projector_names = {item["name"] for item in result["projectors"]}
@@ -202,11 +207,15 @@ class TestModelScannerScan:
             }
         }
 
-        with patch("llama_manager.MODELS_DIR", str(models_dir)), patch(
-            "llama_manager.ConfigManager",
+        with patch("model_manager.MODELS_DIR", str(models_dir)), patch(
+            "model_manager.ConfigManager",
             config_manager_cls,
         ):
-            result = ModelScanner().scan()
+            result = ModelScanner(
+                config_manager_cls.return_value,
+                MagicMock(),
+                models_dir=str(models_dir),
+            ).scan()
 
         assert result["models"][0]["last_config"] == {"context_size": 4096}
         assert result["projectors"][0]["last_config"] == {
@@ -218,10 +227,14 @@ class TestModelScannerScan:
         tmp_path,
         config_manager_cls,
     ):
-        with patch("llama_manager.MODELS_DIR", str(tmp_path)), patch(
-            "llama_manager.ConfigManager",
+        with patch(
+            "model_manager.ConfigManager",
             config_manager_cls,
         ):
-            result = ModelScanner().scan()
+            result = ModelScanner(
+                config_manager_cls.return_value,
+                MagicMock(),
+                models_dir=str(tmp_path),
+            ).scan()
 
         assert result == {"models": [], "projectors": []}

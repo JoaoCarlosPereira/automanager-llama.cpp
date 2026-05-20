@@ -200,7 +200,7 @@ def test_metrics_endpoint_uses_gpu_detector_mock(monkeypatch, authenticated_clie
         "ram": 45.0,
         "gpus": [{"index": 0, "utilization": 7, "memory_used": 1024}],
     }
-    monkeypatch.setattr(llama_manager, "gpu_detector", gpu_detector)
+    monkeypatch.setattr(llama_manager, "gpu_manager", gpu_detector)
 
     response = authenticated_client.get("/metrics")
 

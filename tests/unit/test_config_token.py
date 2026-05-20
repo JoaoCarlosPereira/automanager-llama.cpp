@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from llama_manager import ConfigManager, TokenManager
+from config_manager import ConfigManager, TokenManager
 
 
 @pytest.fixture

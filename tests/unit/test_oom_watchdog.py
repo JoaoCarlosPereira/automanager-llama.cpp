@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llama_manager import GPUWeight, OOMWatchdog, StartRequest
+from schemas import GPUWeight, StartRequest
+from process_manager import OOMWatchdog
 
 
 def _make_watchdog(process_manager=None, config_manager=None):
@@ -23,7 +24,8 @@ def _make_watchdog(process_manager=None, config_manager=None):
     return OOMWatchdog(
         process_manager=process_manager,
         config_manager=config_manager,
-        gpu_detector=MagicMock(),
+        gpu_manager=MagicMock(),
+        log_manager=MagicMock(),
     )
 
 
@@ -64,9 +66,9 @@ def test_oom_patterns_ignore_normal_lines(line):
 def test_consecutive_oom_count_increments_within_timeout():
     watchdog = _make_watchdog()
 
-    with patch("llama_manager.time.time", return_value=1000.0):
+    with patch("process_manager.time.time", return_value=1000.0):
         watchdog._handle_oom()
-    with patch("llama_manager.time.time", return_value=1005.0):
+    with patch("process_manager.time.time", return_value=1005.0):
         watchdog._handle_oom()
 
     assert watchdog._consecutive_oom == 2
@@ -76,9 +78,9 @@ def test_consecutive_oom_count_increments_within_timeout():
 def test_consecutive_oom_count_resets_after_timeout():
     watchdog = _make_watchdog()
 
-    with patch("llama_manager.time.time", return_value=1000.0):
+    with patch("process_manager.time.time", return_value=1000.0):
         watchdog._handle_oom()
-    with patch("llama_manager.time.time", return_value=1031.0):
+    with patch("process_manager.time.time", return_value=1031.0):
         watchdog._handle_oom()
 
     assert watchdog._consecutive_oom == 1
@@ -98,8 +100,8 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
     )
     process_manager._last_request = request
 
-    with patch("llama_manager.time.time", return_value=1000.0), patch(
-        "llama_manager.time.sleep", return_value=None
+    with patch("process_manager.time.time", return_value=1000.0), patch(
+        "process_manager.time.sleep", return_value=None
     ):
         watchdog._handle_oom()
 
@@ -115,18 +117,21 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "weight": 70.0,
             "name": "main",
             "active": True,
+            "is_main": False,
         },
         {
             "index": 1,
             "weight": 15.0,
             "name": "secondary-1",
             "active": True,
+            "is_main": False,
         },
         {
             "index": 2,
             "weight": 15.0,
             "name": "secondary-2",
             "active": True,
+            "is_main": False,
         },
     ]
     process_manager.start.assert_called_once_with(
@@ -134,6 +139,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
         gpu_weights=request.gpu_weights,
         context_size=request.context_size,
         mmproj_path=request.mmproj_path,
+        split_mode=request.split_mode,
     )
 
 
@@ -152,8 +158,8 @@ def test_fallback_after_three_consecutive_ooms_sets_active_gpus_to_50():
     watchdog._consecutive_oom = 2
     watchdog._last_oom_time = 1000.0
 
-    with patch("llama_manager.time.time", return_value=1005.0), patch(
-        "llama_manager.time.sleep", return_value=None
+    with patch("process_manager.time.time", return_value=1005.0), patch(
+        "process_manager.time.sleep", return_value=None
     ):
         watchdog._handle_oom()
 
