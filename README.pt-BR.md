@@ -32,7 +32,7 @@
 1. **Clone** o repositório no seu servidor Linux:
 
    ```bash
-   git clone <url-do-repositorio> automanager-llama.cpp
+   git clone https://github.com/JoaoCarlosPereira/automanager-llama.cpp.git automanager-llama.cpp
    cd automanager-llama.cpp
    ```
 
