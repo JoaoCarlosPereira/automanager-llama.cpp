@@ -18,7 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 
-from config_manager import ConfigManager, TokenManager, AuthManager, DEFAULT_CONTEXT_SIZE
+from config_manager import (
+    ConfigManager,
+    TokenManager,
+    AuthManager,
+    DEFAULT_CONTEXT_SIZE,
+    DEFAULT_PARALLEL_SLOTS,
+)
 from gpu_manager import GPUManager
 from log_manager import LogManager, logger
 from process_manager import ProcessManager, OOMWatchdog
@@ -167,6 +173,7 @@ async def start_model(
         req.path,
         {
             "context_size": req.context_size,
+            "parallel_slots": req.parallel_slots,
             "mmproj_path": req.mmproj_path,
             "split_mode": req.split_mode,
             "gpu_weights": [
@@ -180,6 +187,7 @@ async def start_model(
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
         split_mode=req.split_mode,
+        parallel_slots=req.parallel_slots,
     )
 
 
@@ -633,6 +641,11 @@ def _build_html(
                                 </select>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Requisições simultâneas (--parallel)"><i class="fas fa-clone text-blue-400 mr-2"></i>Slots:</label>
+                                <input type="number" id="parallel-slots" value="{DEFAULT_PARALLEL_SLOTS}" min="1" max="64"
+                                       class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center">
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-eye text-blue-400 mr-2"></i>Vision:</label>
                                 <select id="mmproj-path" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer max-w-[200px]">
                                     {vision_options}
@@ -905,6 +918,7 @@ def _build_html(
 
         function resetToDefaults() {{
             document.getElementById('context-size').value = "{DEFAULT_CONTEXT_SIZE}"; // 65536
+            document.getElementById('parallel-slots').value = "{DEFAULT_PARALLEL_SLOTS}";
             document.getElementById('mmproj-path').value = "";
             document.getElementById('split-mode').value = "layer";
             document.querySelectorAll('.gpu-row').forEach((row, idx) => {{
@@ -933,6 +947,7 @@ def _build_html(
             const cfg = window.modelConfigs[path];
             if (!cfg) return;
             if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
+            if (cfg.parallel_slots) document.getElementById('parallel-slots').value = cfg.parallel_slots;
             if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
             if (cfg.mmproj_path !== undefined) {{
                 const select = document.getElementById('mmproj-path');
@@ -1111,6 +1126,7 @@ def _build_html(
                     updateTotal();
                     if (data.running && !currentSelectedModel) {{
                         if (data.config.context_size) document.getElementById('context-size').value = data.config.context_size;
+                        if (data.config.parallel_slots) document.getElementById('parallel-slots').value = data.config.parallel_slots;
                         if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
                     }}
                 }}
@@ -1351,6 +1367,8 @@ def _build_html(
             if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU");
             const mmprojPath = document.getElementById('mmproj-path').value;
             const splitMode = document.getElementById('split-mode').value;
+            const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || {DEFAULT_PARALLEL_SLOTS}));
+            document.getElementById('parallel-slots').value = parallelSlots;
             document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
             try {{
                 await fetch('/start', {{
@@ -1361,6 +1379,7 @@ def _build_html(
                         mmproj_path: mmprojPath || null,
                         gpu_weights: weights,
                         context_size: parseInt(document.getElementById('context-size').value),
+                        parallel_slots: parallelSlots,
                         split_mode: splitMode,
                     }}),
                 }});
@@ -1414,7 +1433,9 @@ async def startup_event():
                         if not hasattr(w, "active"):
                             w.active = True
                     context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
+                    parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
                     mmproj_path = saved_cfg.get("mmproj_path")
+                    split_mode = saved_cfg.get("split_mode", "layer")
                 else:
                     gpus = gpu_manager.detect_gpus()
                     weights = []
@@ -1432,13 +1453,17 @@ async def startup_event():
                             )
                         )
                     context_size = DEFAULT_CONTEXT_SIZE
+                    parallel_slots = DEFAULT_PARALLEL_SLOTS
                     mmproj_path = None
+                    split_mode = "layer"
 
                 process_manager.start(
                     model_path=default_model,
                     gpu_weights=weights,
                     context_size=context_size,
                     mmproj_path=mmproj_path,
+                    split_mode=split_mode,
+                    parallel_slots=parallel_slots,
                 )
             except Exception as e:
                 logger.error(f"Auto-start error: {e}")
