@@ -635,7 +635,7 @@ def _build_html(
                         </div>
                         <div class="flex flex-wrap items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800">
                             <div class="flex items-center gap-2">
-                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap">Contexto:</label>
+                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap" title="Tokens por slot (--ctx-size / --parallel no llama-server)">Contexto/slot:</label>
                                 <select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
                                     {ctx_opts}
                                 </select>
