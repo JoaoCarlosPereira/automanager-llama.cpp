@@ -22,6 +22,16 @@ SERVER_PORT = 8085
 logger = logging.getLogger("automanager")
 
 
+def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
+    """
+    llama-server divides --ctx-size by --parallel (per-slot context).
+    Pass the product so each slot receives the requested context_size.
+    """
+    slots = max(1, parallel_slots)
+    ctx = max(1, context_size)
+    return ctx * slots
+
+
 class ProcessManager:
     """Manages llama-server process lifecycle."""
 
@@ -156,6 +166,7 @@ class ProcessManager:
             main_gpu = "0"
 
         api_token = self.token_mgr.get_or_create()
+        server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
         cmd = [
             LLAMA_SERVER_BIN,
             "-m",
@@ -173,7 +184,7 @@ class ProcessManager:
             "--parallel",
             str(parallel_slots),
             "--ctx-size",
-            str(context_size),
+            str(server_ctx_size),
             "--mlock",
             "--main-gpu",
             main_gpu,
@@ -199,7 +210,10 @@ class ProcessManager:
         )
 
         self.log_manager.clear_server_log()
-        logger.info(f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible})")
+        logger.info(
+            f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
+            f"ctx_per_slot={context_size}, server_ctx={server_ctx_size})"
+        )
 
         try:
             log_file = self.log_manager.open_server_log_append()
