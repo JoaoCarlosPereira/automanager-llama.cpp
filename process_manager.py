@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from config_manager import ConfigManager
 from gpu_manager import GPUManager, LLAMA_SERVER_BIN
 from log_manager import LogManager
-from schemas import GPUWeight, StartRequest
+from schemas import DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
 from config_manager import TokenManager
 
 SERVER_PORT = 8085
@@ -86,6 +86,7 @@ class ProcessManager:
                                 status["config"] = {
                                     "path": self._last_request.path,
                                     "context_size": self._last_request.context_size,
+                                    "parallel_slots": self._last_request.parallel_slots,
                                     "split_mode": self._last_request.split_mode,
                                     "gpu_weights": [
                                         w.model_dump()
@@ -128,6 +129,7 @@ class ProcessManager:
         context_size: int,
         mmproj_path: Optional[str] = None,
         split_mode: str = "layer",
+        parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
     ) -> dict:
         self.stop()
 
@@ -169,7 +171,7 @@ class ProcessManager:
             "--tools",
             "all",
             "--parallel",
-            "1",
+            str(parallel_slots),
             "--ctx-size",
             str(context_size),
             "--mlock",
@@ -214,6 +216,7 @@ class ProcessManager:
                     mmproj_path=mmproj_path,
                     gpu_weights=gpu_weights,
                     context_size=context_size,
+                    parallel_slots=parallel_slots,
                     split_mode=split_mode,
                 )
                 return {
@@ -336,6 +339,7 @@ class OOMWatchdog(threading.Thread):
             req.path,
             {
                 "context_size": req.context_size,
+                "parallel_slots": req.parallel_slots,
                 "mmproj_path": req.mmproj_path,
                 "gpu_weights": [w.model_dump() for w in new_weights],
             },
@@ -348,6 +352,7 @@ class OOMWatchdog(threading.Thread):
                 context_size=req.context_size,
                 mmproj_path=req.mmproj_path,
                 split_mode=req.split_mode,
+                parallel_slots=req.parallel_slots,
             )
         except Exception as e:
             logger.error(f"Recovery start failed: {e}")
