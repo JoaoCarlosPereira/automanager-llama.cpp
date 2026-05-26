@@ -14,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 CONFIG_PATH = "/root/automanager_config.json"
 MANAGER_LOG_PATH = "/root/manager.log"
 DEFAULT_CONTEXT_SIZE = 65536
+DEFAULT_PARALLEL_SLOTS = 1
 
 logger = logging.getLogger("automanager")
 
@@ -57,6 +58,7 @@ class ConfigManager:
             config["model_configs"] = {}
         config["model_configs"][model_path] = {
             "context_size": settings.get("context_size", DEFAULT_CONTEXT_SIZE),
+            "parallel_slots": settings.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
             "mmproj_path": settings.get("mmproj_path"),
             "gpu_weights": settings.get("gpu_weights"),
             "split_mode": settings.get("split_mode", "layer"),
