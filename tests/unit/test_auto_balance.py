@@ -8,6 +8,8 @@ import pytest
 from auto_balance import (
     TARGET_VRAM_PCT,
     AutoBalancePlanner,
+    AutoBalanceProber,
+    FAILURE_HARDWARE_CAPACITY,
     MIN_MAIN_WEIGHT,
     READY_PATTERNS,
 )
@@ -96,6 +98,28 @@ def test_ready_patterns(line):
 
 def test_target_vram_threshold():
     assert TARGET_VRAM_PCT >= 90
+
+
+def test_build_hardware_capacity_failure_includes_context():
+    request = _make_request(
+        [GPUWeight(index=0, weight=100, name="RTX", active=True, is_main=True)]
+    )
+    request.path = "/models/huge-model.gguf"
+    request.context_size = 32768
+    request.parallel_slots = 2
+
+    msg, failure = AutoBalanceProber.build_hardware_capacity_failure(
+        request,
+        [{"index": 0, "name": "RTX 3090", "vram": 24576}],
+        [0],
+        {0: 24576},
+    )
+
+    assert "huge-model.gguf" in msg
+    assert failure["code"] == FAILURE_HARDWARE_CAPACITY
+    assert failure["total_vram_mb"] == 24576
+    assert failure["context_size"] == 32768
+    assert len(failure["suggestions"]) >= 2
 
 
 def test_oom_watchdog_skips_during_auto_balance():

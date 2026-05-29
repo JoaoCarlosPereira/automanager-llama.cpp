@@ -178,7 +178,7 @@ class ProcessManager:
             prober = AutoBalanceProber(
                 self, self.config, self.gpu_manager, self.log_manager
             )
-            success, gpu_weights, message = prober.discover(request)
+            success, gpu_weights, message, failure = prober.discover(request)
             if success:
                 saved_weights = [w.model_dump() for w in gpu_weights]
                 self.config.update_model_settings(
@@ -191,6 +191,8 @@ class ProcessManager:
                         "gpu_weights": saved_weights,
                         "auto_balance": False,
                         "auto_balance_profile": True,
+                        "hardware_incapable": False,
+                        "hardware_incapable_message": None,
                     },
                 )
                 self.recovery_state = {
@@ -202,11 +204,35 @@ class ProcessManager:
                     "gpu_weights": saved_weights,
                 }
             else:
+                hardware_exceeded = bool(
+                    failure
+                    and failure.get("code") == "hardware_capacity_exceeded"
+                )
+                existing = self.config.get_model_settings(request.path)
+                failure_settings = {
+                    "context_size": request.context_size,
+                    "parallel_slots": request.parallel_slots,
+                    "mmproj_path": request.mmproj_path
+                    or existing.get("mmproj_path"),
+                    "split_mode": request.split_mode,
+                    "gpu_weights": existing.get("gpu_weights")
+                    or [w.model_dump() for w in request.gpu_weights],
+                    "auto_balance": False,
+                    "auto_balance_profile": False,
+                }
+                if hardware_exceeded:
+                    failure_settings["hardware_incapable"] = True
+                    failure_settings["hardware_incapable_message"] = message
+                self.config.update_model_settings(
+                    request.path, failure_settings
+                )
                 self.recovery_state = {
                     "active": False,
                     "failed": True,
                     "message": message,
                     "auto_balance": False,
+                    "hardware_capacity_exceeded": hardware_exceeded,
+                    "failure_details": failure,
                 }
         except Exception as exc:
             logger.exception(f"Auto-balance error: {exc}")
@@ -216,6 +242,8 @@ class ProcessManager:
                 "failed": True,
                 "message": f"Erro no auto-balance: {exc}",
                 "auto_balance": False,
+                "hardware_capacity_exceeded": False,
+                "failure_details": None,
             }
         finally:
             with self._lock:

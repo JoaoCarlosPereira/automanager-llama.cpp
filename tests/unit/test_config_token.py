@@ -68,6 +68,45 @@ def test_config_update_model_settings(config_manager):
     assert "last_started" in saved
 
 
+def test_config_hardware_incapable_persisted_and_cleared(config_manager):
+    model_path = "/models/huge.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {
+            "context_size": 65536,
+            "hardware_incapable": True,
+            "hardware_incapable_message": "VRAM insuficiente",
+        },
+    )
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["hardware_incapable"] is True
+    assert saved["hardware_incapable_message"] == "VRAM insuficiente"
+
+    config_manager.update_model_settings(
+        model_path,
+        {"hardware_incapable": False, "hardware_incapable_message": None},
+    )
+    cleared = config_manager.get_model_settings(model_path)
+    assert cleared["hardware_incapable"] is False
+    assert cleared.get("hardware_incapable_message") is None
+
+
+def test_config_partial_update_preserves_hardware_incapable(config_manager):
+    model_path = "/models/huge.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {
+            "hardware_incapable": True,
+            "hardware_incapable_message": "Nao cabe",
+        },
+    )
+    config_manager.update_model_settings(model_path, {"context_size": 32768})
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["hardware_incapable"] is True
+    assert saved["hardware_incapable_message"] == "Nao cabe"
+    assert saved["context_size"] == 32768
+
+
 def test_config_set_and_get_default_model(config_manager):
     model_path = "/models/default.gguf"
     config_manager.set_default_model(model_path)

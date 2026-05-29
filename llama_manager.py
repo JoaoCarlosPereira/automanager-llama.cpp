@@ -44,6 +44,20 @@ from config_manager import ConfigManager, TokenManager
 
 MANAGER_PORT = 8000
 
+CONTEXT_PRESETS = [
+    (2048, "2K"),
+    (4096, "4K"),
+    (8192, "8K"),
+    (16384, "16K"),
+    (32768, "32K"),
+    (65536, "64K"),
+    (131072, "128K"),
+    (262144, "256K"),
+    (524288, "512K"),
+    (1048576, "1M"),
+]
+CONTEXT_PRESET_VALUES = [v for v, _ in CONTEXT_PRESETS]
+
 # Initialize logging and services
 log_manager = LogManager()
 config_manager = ConfigManager()
@@ -449,27 +463,31 @@ async def index(request: Request):
     for p in projectors:
         vision_options += f'<option value="{p["path"]}" class="bg-slate-900">{p["name"]}</option>'
 
-    # Context options
+    # Context options (presets + manual via "Personalizado")
+    running_ctx = (
+        status.get("config", {}).get("context_size")
+        if status.get("running")
+        else None
+    )
+    use_custom_ctx = (
+        running_ctx is not None and running_ctx not in CONTEXT_PRESET_VALUES
+    )
     ctx_opts = ""
-    for val, label in [
-        (2048, "2K"),
-        (4096, "4K"),
-        (8192, "8K"),
-        (16384, "16K"),
-        (32768, "32K"),
-        (65536, "64K"),
-        (131072, "128K"),
-        (262144, "256K"),
-        (524288, "512K"),
-        (1048576, "1M"),
-    ]:
-        selected = "selected" if (
-            status.get("running")
-            and status.get("config", {}).get("context_size") == val
-        ) else ""
-        if not selected and val == DEFAULT_CONTEXT_SIZE:
-            selected = "selected"
+    for val, label in CONTEXT_PRESETS:
+        if use_custom_ctx:
+            selected = ""
+        elif running_ctx is not None:
+            selected = "selected" if running_ctx == val else ""
+        else:
+            selected = "selected" if val == DEFAULT_CONTEXT_SIZE else ""
         ctx_opts += f'<option value="{val}" class="bg-slate-900" {selected}>{label}</option>'
+    custom_selected = "selected" if use_custom_ctx else ""
+    ctx_opts += (
+        f'<option value="custom" class="bg-slate-900" {custom_selected}>'
+        "Personalizado</option>"
+    )
+    custom_ctx_value = running_ctx if use_custom_ctx else ""
+    custom_ctx_class = "" if use_custom_ctx else "hidden"
 
     # Model items
     model_items = ""
@@ -485,16 +503,29 @@ async def index(request: Request):
             initial_cfg_js = (
                 f"<script>window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};</script>"
             )
+        m_cfg = model_configs.get(m_path, {})
         has_config = "text-blue-400" if m_path in model_configs else "text-slate-100"
+        hardware_incapable = bool(m_cfg.get("hardware_incapable"))
+        incapable_row_class = (
+            "border-red-500/40 bg-red-950/20" if hardware_incapable else ""
+        )
+        incapable_badge = (
+            '<span class="shrink-0 text-[8px] font-black uppercase tracking-wider '
+            'text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30" '
+            'title="Incompativel com o hardware atual (auto balance)">Incapaz</span>'
+            if hardware_incapable
+            else ""
+        )
 
         model_items += f"""
         {initial_cfg_js}
-        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg" data-path="{m_js}">
+        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{"true" if hardware_incapable else "false"}">
             <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
-                <div class="flex items-center gap-2 mb-1">
+                <div class="flex items-center gap-2 mb-1 flex-wrap">
                     <i class="fas fa-cube text-blue-400 text-[10px]"></i>
                     <p class="model-name text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
-                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs else ''}
+                    {incapable_badge}
+                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs and not hardware_incapable else ''}
                 </div>
                 <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
@@ -672,9 +703,14 @@ def _build_html(
                         <div class="flex flex-wrap items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800">
                             <div class="flex items-center gap-2">
                                 <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap" title="Tokens por slot (--ctx-size / --parallel no llama-server)">Contexto/slot:</label>
-                                <select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
+                                <select id="context-size" onchange="onContextSizePresetChange()" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
                                     {ctx_opts}
                                 </select>
+                                <input type="number" id="context-size-custom" value="{custom_ctx_value}"
+                                       class="{custom_ctx_class} w-28 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center"
+                                       min="512" step="256" placeholder="tokens"
+                                       title="Valor manual de contexto (tokens por slot)"
+                                       oninput="onContextSizeCustomInput()">
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Requisições simultâneas (--parallel)"><i class="fas fa-clone text-blue-400 mr-2"></i>Slots:</label>
@@ -726,6 +762,23 @@ def _build_html(
                             </label>
                         </div>
                         <span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span>
+                    </div>
+                    <div id="auto-balance-capacity-alert" class="hidden mt-6 p-5 md:p-6 rounded-2xl border border-red-500/40 bg-red-950/40">
+                        <div class="flex gap-4 items-start">
+                            <div class="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0">
+                                <i class="fas fa-microchip text-red-400"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-[10px] font-black uppercase tracking-widest text-red-400 mb-2">Modelo além da capacidade do hardware</p>
+                                <p id="auto-balance-capacity-msg" class="text-xs md:text-sm text-red-100/90 leading-relaxed"></p>
+                                <ul id="auto-balance-capacity-details" class="mt-3 text-[10px] text-slate-400 space-y-1"></ul>
+                                <p class="mt-3 text-[10px] font-black uppercase tracking-wider text-slate-500">Sugestões</p>
+                                <ul id="auto-balance-capacity-suggestions" class="mt-1 text-[10px] text-slate-400 space-y-1 list-disc list-inside"></ul>
+                            </div>
+                            <button type="button" onclick="hideAutoBalanceCapacityAlert()" class="text-slate-500 hover:text-white shrink-0 p-1" title="Fechar">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] border border-blue-500/30 hidden transition-all duration-700">
@@ -849,6 +902,53 @@ def _build_html(
         let startTime = null;
         const fixedIp = "{local_ip}";
         window.modelConfigs = window.modelConfigs || {{}};
+        const CONTEXT_PRESET_VALUES = {json.dumps(CONTEXT_PRESET_VALUES)};
+        const DEFAULT_CONTEXT_SIZE_UI = {DEFAULT_CONTEXT_SIZE};
+
+        function syncContextSizeCustomVisibility() {{
+            const sel = document.getElementById('context-size');
+            const custom = document.getElementById('context-size-custom');
+            if (!sel || !custom) return;
+            custom.classList.toggle('hidden', sel.value !== 'custom');
+            if (sel.value === 'custom' && !custom.value) custom.focus();
+        }}
+
+        function onContextSizePresetChange() {{
+            syncContextSizeCustomVisibility();
+        }}
+
+        function onContextSizeCustomInput() {{
+            const sel = document.getElementById('context-size');
+            if (sel && sel.value !== 'custom') sel.value = 'custom';
+            syncContextSizeCustomVisibility();
+        }}
+
+        function getContextSize() {{
+            const sel = document.getElementById('context-size');
+            if (!sel) return DEFAULT_CONTEXT_SIZE_UI;
+            if (sel.value === 'custom') {{
+                const n = parseInt(document.getElementById('context-size-custom')?.value, 10);
+                if (!Number.isFinite(n) || n < 512) return null;
+                return n;
+            }}
+            const preset = parseInt(sel.value, 10);
+            return Number.isFinite(preset) ? preset : DEFAULT_CONTEXT_SIZE_UI;
+        }}
+
+        function setContextSize(value) {{
+            const sel = document.getElementById('context-size');
+            const custom = document.getElementById('context-size-custom');
+            if (!sel || !custom) return;
+            const n = parseInt(value, 10);
+            if (!Number.isFinite(n)) return;
+            if (CONTEXT_PRESET_VALUES.includes(n)) {{
+                sel.value = String(n);
+            }} else {{
+                sel.value = 'custom';
+                custom.value = String(n);
+            }}
+            syncContextSizeCustomVisibility();
+        }}
         let currentSelectedModel = null;
         let currentRunningModelPath = null;
         let manualGpuOverride = false;
@@ -969,6 +1069,70 @@ def _build_html(
             statusPollIntervalMs = ms;
             if (statusPollTimer) clearInterval(statusPollTimer);
             statusPollTimer = setInterval(updateStatus, ms);
+        }}
+
+        function hideAutoBalanceCapacityAlert() {{
+            const el = document.getElementById('auto-balance-capacity-alert');
+            if (el) el.classList.add('hidden');
+        }}
+
+        function showAutoBalanceCapacityAlert(recovery) {{
+            const el = document.getElementById('auto-balance-capacity-alert');
+            const msgEl = document.getElementById('auto-balance-capacity-msg');
+            const detailsEl = document.getElementById('auto-balance-capacity-details');
+            const suggEl = document.getElementById('auto-balance-capacity-suggestions');
+            if (!el || !msgEl) return;
+
+            const d = recovery.failure_details || {{}};
+            msgEl.textContent = recovery.message || (
+                'O modelo excede a capacidade de memória das GPUs disponíveis.'
+            );
+
+            if (detailsEl) {{
+                const rows = [];
+                if (d.model) rows.push(`<li><span class="text-slate-300">Modelo:</span> ${{d.model}}</li>`);
+                if (d.total_vram_gb != null) rows.push(
+                    `<li><span class="text-slate-300">VRAM total (GPUs ativas):</span> ~${{d.total_vram_gb}} GB`
+                );
+                if (d.context_size) rows.push(
+                    `<li><span class="text-slate-300">Contexto / slot:</span> ${{d.context_size}} tokens`
+                );
+                if (d.parallel_slots) rows.push(
+                    `<li><span class="text-slate-300">Slots paralelos:</span> ${{d.parallel_slots}}</li>`
+                );
+                if (Array.isArray(d.gpus) && d.gpus.length) {{
+                    const gpuTxt = d.gpus.map(g =>
+                        `GPU ${{g.index}} (${{g.name}}): ${{g.vram_mb}} MB`
+                    ).join(' · ');
+                    rows.push(`<li><span class="text-slate-300">GPUs testadas:</span> ${{gpuTxt}}</li>`);
+                }}
+                detailsEl.innerHTML = rows.join('');
+            }}
+
+            if (suggEl) {{
+                const tips = Array.isArray(d.suggestions) ? d.suggestions : [
+                    'Reduza contexto ou use quantização menor',
+                    'Escolha um modelo menor',
+                ];
+                suggEl.innerHTML = tips.map(t => `<li>${{t}}</li>`).join('');
+            }}
+
+            el.classList.remove('hidden');
+            el.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+        }}
+
+        function modelIncapableBadgeHtml(incapable) {{
+            if (!incapable) return '';
+            return '<span class="shrink-0 text-[8px] font-black uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30" title="Incompativel com o hardware atual (auto balance)">Incapaz</span>';
+        }}
+
+        function modelIncapableRowClass(incapable) {{
+            return incapable ? 'border-red-500/40 bg-red-950/20' : '';
+        }}
+
+        function isModelHardwareIncapable(path) {{
+            const cfg = window.modelConfigs[path];
+            return !!(cfg && cfg.hardware_incapable);
         }}
 
         function updateAutoBalanceProfileBadge(hasProfile) {{
@@ -1099,6 +1263,7 @@ def _build_html(
         // ─── Dashboard functions ───
         function initDashboard() {{
             bindGpuManualListeners();
+            syncContextSizeCustomVisibility();
             updateStatus();
             updateMetrics();
             updateDownloads();
@@ -1127,7 +1292,7 @@ def _build_html(
         }}
 
         function resetToDefaults() {{
-            document.getElementById('context-size').value = "{DEFAULT_CONTEXT_SIZE}"; // 65536
+            setContextSize(DEFAULT_CONTEXT_SIZE_UI);
             document.getElementById('parallel-slots').value = "{DEFAULT_PARALLEL_SLOTS}";
             document.getElementById('mmproj-path').value = "";
             document.getElementById('split-mode').value = "layer";
@@ -1162,7 +1327,7 @@ def _build_html(
         function applyModelConfig(path) {{
             const cfg = window.modelConfigs[path];
             if (!cfg) return;
-            if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
+            if (cfg.context_size) setContextSize(cfg.context_size);
             if (cfg.parallel_slots) document.getElementById('parallel-slots').value = cfg.parallel_slots;
             if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
             if (cfg.mmproj_path !== undefined) {{
@@ -1334,7 +1499,7 @@ def _build_html(
                 if (maySyncWeights) {{
                     applyGpuWeightsToUI(weightsToApply, autoBalancing);
                     if (data.running && !currentSelectedModel && data.config) {{
-                        if (data.config.context_size) document.getElementById('context-size').value = data.config.context_size;
+                        if (data.config.context_size) setContextSize(data.config.context_size);
                         if (data.config.parallel_slots) document.getElementById('parallel-slots').value = data.config.parallel_slots;
                         if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
                     }}
@@ -1345,6 +1510,7 @@ def _build_html(
                     autoBalancePending = false;
                     const abToggle = document.getElementById('auto-balance-toggle');
                     if (!data.recovery.failed) {{
+                        hideAutoBalanceCapacityAlert();
                         if (abToggle) abToggle.checked = false;
                         const finalWeights = data.recovery.gpu_weights
                             || (data.config && data.config.gpu_weights);
@@ -1361,13 +1527,31 @@ def _build_html(
                             }});
                         }}
                         updateAutoBalanceProfileBadge(true);
+                        updateModels();
+                    }} else if (data.recovery.hardware_capacity_exceeded) {{
+                        showAutoBalanceCapacityAlert(data.recovery);
+                        alert(data.recovery.message || 'Modelo além da capacidade do hardware.');
+                        if (currentSelectedModel) {{
+                            window.modelConfigs[currentSelectedModel] =
+                                window.modelConfigs[currentSelectedModel] || {{}};
+                            window.modelConfigs[currentSelectedModel].hardware_incapable = true;
+                            window.modelConfigs[currentSelectedModel].hardware_incapable_message =
+                                data.recovery.message;
+                        }}
+                        updateModels();
                     }}
                 }}
 
                 if (data.recovery && data.recovery.failed) {{
                     autoBalancePending = false;
                     badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-red-500/50 text-red-500 uppercase';
-                    badge.innerHTML = `<i class="fas fa-exclamation-triangle mr-1"></i> FALHA: ${{data.recovery.message.toUpperCase()}}`;
+                    if (data.recovery.hardware_capacity_exceeded) {{
+                        showAutoBalanceCapacityAlert(data.recovery);
+                        badge.innerHTML = '<i class="fas fa-exclamation-triangle mr-1"></i> HARDWARE INSUFICIENTE';
+                        updateModels();
+                    }} else {{
+                        badge.innerHTML = `<i class="fas fa-exclamation-triangle mr-1"></i> FALHA: ${{(data.recovery.message || 'erro').toUpperCase()}}`;
+                    }}
                     return;
                 }}
 
@@ -1504,18 +1688,22 @@ def _build_html(
                 const newHtml = data.models.map(m => {{
                     const m_js = m.path.replace(/\\\\\\\\/g, '/');
                     if (m.last_config) window.modelConfigs[m.path] = m.last_config;
-                    const hasConfigClass = m.last_config ? 'text-blue-400' : 'text-slate-100';
-                    const historyIcon = m.last_config ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
+                    const incapable = !!(m.last_config && m.last_config.hardware_incapable);
+                    const hasConfigClass = m.last_config && !incapable ? 'text-blue-400' : 'text-slate-100';
+                    const incapableBadge = modelIncapableBadgeHtml(incapable);
+                    const incapableRow = modelIncapableRowClass(incapable);
+                    const historyIcon = m.last_config && !incapable ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
                     const isRunning = currentRunningModelPath && m_js === currentRunningModelPath.replace(/\\\\\\\\/g, '/');
                     const isActive = currentSelectedModel === m_js ? 'active-selection' : '';
                     const runningClass = isRunning ? 'running-now' : '';
                     const hashId = m.id;
                     const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
-                    return `<div id="${{hashId}}" class="model-item-container group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${{isActive}} ${{runningClass}}" data-path="${{m_js}}">
+                    return `<div id="${{hashId}}" class="model-item-container group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${{isActive}} ${{runningClass}} ${{incapableRow}}" data-path="${{m_js}}" data-hardware-incapable="${{incapable}}">
                         <div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="selectModel('${{m_js}}', '${{hashId}}')">
-                            <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2">
+                            <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2 flex-wrap">
                                 <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i>
                                 <p class="model-name text-sm md:text-base font-bold ${{hasConfigClass}} break-all line-clamp-2" title="${{m.name}}">${{m.name}}</p>
+                                ${{incapableBadge}}
                                 ${{historyIcon}}
                             </div>
                             <p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${{m.dir}}</p>
@@ -1586,6 +1774,17 @@ def _build_html(
         }}
 
         async function startModel(path, elementId) {{
+            if (isModelHardwareIncapable(path)) {{
+                const cfg = window.modelConfigs[path] || {{}};
+                const detail = cfg.hardware_incapable_message
+                    ? `\\n\\n${{cfg.hardware_incapable_message}}`
+                    : '';
+                if (!confirm(
+                    'Este modelo está marcado como INCOMPATÍVEL com o hardware após auto balance.'
+                    + detail
+                    + '\\n\\nDeseja tentar carregar mesmo assim?'
+                )) return;
+            }}
             if (currentSelectedModel !== path) {{
                 selectModel(path, elementId);
                 await new Promise(r => setTimeout(r, 100));
@@ -1614,6 +1813,11 @@ def _build_html(
             document.getElementById('status-badge').innerHTML = autoBalance && !manualGpuOverride
                 ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
                 : '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
+            const contextSize = getContextSize();
+            if (contextSize === null) {{
+                alert('Informe um tamanho de contexto válido (mínimo 512 tokens) em Personalizado.');
+                return;
+            }}
             try {{
                 const res = await fetch('/start', {{
                     method: 'POST',
@@ -1622,7 +1826,7 @@ def _build_html(
                         path,
                         mmproj_path: mmprojPath || null,
                         gpu_weights: weights,
-                        context_size: parseInt(document.getElementById('context-size').value),
+                        context_size: contextSize,
                         parallel_slots: parallelSlots,
                         split_mode: splitMode,
                         auto_balance: autoBalance,
@@ -1638,6 +1842,7 @@ def _build_html(
                 if (startData.probing) {{
                     manualGpuOverride = false;
                     autoBalancePending = true;
+                    hideAutoBalanceCapacityAlert();
                 }} else if (manualGpuOverride) {{
                     manualGpuOverride = false;
                     if (window.modelConfigs[path]) {{

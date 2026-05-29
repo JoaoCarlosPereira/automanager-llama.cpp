@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from schemas import GPUWeight
 
@@ -26,6 +27,7 @@ PROBE_TIMEOUT_SEC = 180
 POLL_INTERVAL_SEC = 1.0
 VRAM_SETTLE_SEC = 4.0
 TARGET_VRAM_PCT = 93.0
+FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 
 
 class AutoBalancePlanner:
@@ -268,6 +270,54 @@ class AutoBalancePlanner:
 class AutoBalanceProber:
     """Finds a feasible split, then maximizes VRAM use per GPU (main first)."""
 
+    @staticmethod
+    def build_hardware_capacity_failure(
+        request,
+        all_gpus: List[dict],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+        reason: str = "no_feasible_split",
+    ) -> Tuple[str, Dict[str, Any]]:
+        model_name = os.path.basename(request.path)
+        total_vram_mb = sum(vram_by_index.get(i, 0) for i in active_indices)
+        total_gb = total_vram_mb / 1024.0
+        gpu_rows = []
+        for idx in active_indices:
+            name = next(
+                (g["name"] for g in all_gpus if g["index"] == idx),
+                f"GPU {idx}",
+            )
+            vram_mb = vram_by_index.get(idx, 0)
+            gpu_rows.append(
+                {"index": idx, "name": name, "vram_mb": vram_mb}
+            )
+
+        message = (
+            f'Não foi possível carregar "{model_name}" em nenhuma divisão testada '
+            f"entre as GPUs selecionadas. O modelo excede a capacidade do hardware "
+            f"atual (~{total_gb:.1f} GB de VRAM em {len(active_indices)} GPU(s)) "
+            f"com contexto {request.context_size} e {request.parallel_slots} slot(s)."
+        )
+
+        failure: Dict[str, Any] = {
+            "code": FAILURE_HARDWARE_CAPACITY,
+            "reason": reason,
+            "model": model_name,
+            "model_path": request.path,
+            "context_size": request.context_size,
+            "parallel_slots": request.parallel_slots,
+            "total_vram_mb": total_vram_mb,
+            "total_vram_gb": round(total_gb, 2),
+            "gpus": gpu_rows,
+            "suggestions": [
+                "Use quantização menor (ex.: Q4_K_M, Q3_K_S)",
+                "Reduza o contexto por slot ou o número de slots paralelos",
+                "Desmarque Fixar em GPUs ou reduza percentuais fixados",
+                "Escolha um modelo menor compatível com este hardware",
+            ],
+        }
+        return message, failure
+
     def __init__(self, process_manager, config_manager, gpu_manager, log_manager):
         self.process_manager = process_manager
         self.config = config_manager
@@ -275,15 +325,17 @@ class AutoBalanceProber:
         self.log_manager = log_manager
         self.planner = AutoBalancePlanner()
 
-    def discover(self, request) -> Tuple[bool, List[GPUWeight], str]:
+    def discover(
+        self, request
+    ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
         all_gpus = self.gpu_manager.detect_gpus()
         if not all_gpus:
-            return False, request.gpu_weights, "Nenhuma GPU detectada."
+            return False, request.gpu_weights, "Nenhuma GPU detectada.", None
 
         vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
         active_indices = [w.index for w in request.gpu_weights if w.active]
         if not active_indices:
-            return False, request.gpu_weights, "Selecione pelo menos uma GPU."
+            return False, request.gpu_weights, "Selecione pelo menos uma GPU.", None
 
         main_weight = next((w for w in request.gpu_weights if w.is_main), None)
         main_index = (
@@ -302,7 +354,17 @@ class AutoBalanceProber:
         )
         initial_map = self.planner.apply_pins(
             initial_map, pinned_map, spill_order, active_indices, vram_by_index
-        ) or initial_map
+        )
+        if initial_map is None:
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="pinned_weights_exceed_100",
+            )
+            return False, request.gpu_weights, msg, failure
+
         self._set_progress(
             0,
             "Iniciando auto-balance...",
@@ -324,11 +386,14 @@ class AutoBalanceProber:
         )
         if feasible is None:
             self.process_manager.stop()
-            return (
-                False,
-                request.gpu_weights,
-                "Auto-balance falhou: modelo nao coube nas GPUs disponiveis.",
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="no_feasible_split",
             )
+            return False, request.gpu_weights, msg, failure
 
         attempt += 1
         self._set_progress(
@@ -361,7 +426,7 @@ class AutoBalanceProber:
             f"{vram_summary}"
         )
         logger.info(f"Auto-balance success: {msg}")
-        return True, gpu_weights, msg
+        return True, gpu_weights, msg, None
 
     def _find_feasible_split(
         self,

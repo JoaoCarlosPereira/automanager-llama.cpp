@@ -56,16 +56,24 @@ class ConfigManager:
         config = self.load()
         if "model_configs" not in config:
             config["model_configs"] = {}
-        config["model_configs"][model_path] = {
-            "context_size": settings.get("context_size", DEFAULT_CONTEXT_SIZE),
-            "parallel_slots": settings.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
-            "mmproj_path": settings.get("mmproj_path"),
-            "gpu_weights": settings.get("gpu_weights"),
-            "split_mode": settings.get("split_mode", "layer"),
-            "auto_balance": settings.get("auto_balance", False),
-            "auto_balance_profile": settings.get("auto_balance_profile", False),
+        prev = config["model_configs"].get(model_path, {})
+        merged = {**prev, **settings}
+        entry = {
+            "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
+            "parallel_slots": merged.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
+            "mmproj_path": merged.get("mmproj_path"),
+            "gpu_weights": merged.get("gpu_weights"),
+            "split_mode": merged.get("split_mode", "layer"),
+            "auto_balance": merged.get("auto_balance", False),
+            "auto_balance_profile": merged.get("auto_balance_profile", False),
+            "hardware_incapable": merged.get("hardware_incapable", False),
             "last_started": datetime.utcnow().isoformat(),
         }
+        if "hardware_incapable_message" in merged:
+            entry["hardware_incapable_message"] = merged["hardware_incapable_message"]
+        elif prev.get("hardware_incapable_message") and not entry["hardware_incapable"]:
+            entry["hardware_incapable_message"] = None
+        config["model_configs"][model_path] = entry
         self.save(config)
 
     def set_default_model(self, path: Optional[str]) -> None:
