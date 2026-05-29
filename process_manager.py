@@ -72,7 +72,10 @@ class ProcessManager:
             self._recovery_state = state
 
     def get_status(self) -> dict:
-        status = {"running": False, "recovery": self.recovery_state}
+        recovery = self.recovery_state
+        status = {"running": False, "recovery": recovery}
+        if recovery.get("auto_balance") and recovery.get("gpu_weights"):
+            status["config"] = {"gpu_weights": recovery["gpu_weights"]}
         for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
             try:
                 name = proc.info["name"] or ""
@@ -177,6 +180,7 @@ class ProcessManager:
             )
             success, gpu_weights, message = prober.discover(request)
             if success:
+                saved_weights = [w.model_dump() for w in gpu_weights]
                 self.config.update_model_settings(
                     request.path,
                     {
@@ -184,10 +188,8 @@ class ProcessManager:
                         "parallel_slots": request.parallel_slots,
                         "mmproj_path": request.mmproj_path,
                         "split_mode": request.split_mode,
-                        "gpu_weights": [
-                            w.model_dump() for w in gpu_weights
-                        ],
-                        "auto_balance": True,
+                        "gpu_weights": saved_weights,
+                        "auto_balance": False,
                         "auto_balance_profile": True,
                     },
                 )
@@ -196,6 +198,8 @@ class ProcessManager:
                     "failed": False,
                     "message": message,
                     "auto_balance": False,
+                    "auto_balance_completed": True,
+                    "gpu_weights": saved_weights,
                 }
             else:
                 self.recovery_state = {

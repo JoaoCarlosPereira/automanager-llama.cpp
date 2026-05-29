@@ -297,6 +297,20 @@ class AutoBalanceProber:
         spill_order = self.planner.spill_order(main_index, active_indices)
         pinned_map = self.planner.pinned_map_from_request(request.gpu_weights)
         attempt = 0
+        initial_map = self.planner.weights_for_active_count(
+            spill_order, vram_by_index, 1
+        )
+        initial_map = self.planner.apply_pins(
+            initial_map, pinned_map, spill_order, active_indices, vram_by_index
+        ) or initial_map
+        self._set_progress(
+            0,
+            "Iniciando auto-balance...",
+            weight_map=initial_map,
+            all_gpus=all_gpus,
+            main_index=main_index,
+            pinned_map=pinned_map,
+        )
 
         feasible, active_count, attempt = self._find_feasible_split(
             request,
@@ -315,6 +329,16 @@ class AutoBalanceProber:
                 request.gpu_weights,
                 "Auto-balance falhou: modelo nao coube nas GPUs disponiveis.",
             )
+
+        attempt += 1
+        self._set_progress(
+            attempt,
+            "Fase 1 concluida — maximizando VRAM por GPU",
+            weight_map=feasible,
+            all_gpus=all_gpus,
+            main_index=main_index,
+            pinned_map=pinned_map,
+        )
 
         optimized, attempt = self._maximize_vram_per_gpu(
             request,
@@ -365,7 +389,14 @@ class AutoBalanceProber:
         while attempt < max_attempts:
             attempt += 1
             label = self.planner.format_weights(weight_map, spill_order)
-            self._set_progress(attempt, f"Fase 1 — encaixar modelo: {label}")
+            self._set_progress(
+                attempt,
+                f"Fase 1 — encaixar modelo: {label}",
+                weight_map=weight_map,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+            )
 
             outcome = self._probe_start(
                 request, weight_map, main_index, all_gpus, attempt
@@ -453,6 +484,10 @@ class AutoBalanceProber:
                 self._set_progress(
                     attempt,
                     f"Fase 2 — maximizar {gpu_name}: testando {mid}%",
+                    weight_map=trial,
+                    all_gpus=all_gpus,
+                    main_index=main_index,
+                    pinned_map=pinned_map,
                 )
 
                 outcome = self._probe_start(
@@ -474,6 +509,20 @@ class AutoBalanceProber:
                 lo = mid + 1
 
             optimized = best
+            gpu_name = next(
+                (g["name"] for g in all_gpus if g["index"] == target_idx),
+                f"GPU{target_idx}",
+            )
+            attempt += 1
+            self._set_progress(
+                attempt,
+                f"Fase 2 — {gpu_name} ajustada: {optimized.get(target_idx, 0)}% "
+                f"(VRAM {best_vram:.0f}%)",
+                weight_map=optimized,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+            )
             logger.info(
                 f"Auto-balance GPU {target_idx}: weight={optimized.get(target_idx)}% "
                 f"vram={best_vram:.1f}%"
@@ -523,14 +572,30 @@ class AutoBalanceProber:
             parts.append(f"GPU{idx} VRAM {pct:.0f}%")
         return "; ".join(parts)
 
-    def _set_progress(self, attempt: int, message: str) -> None:
-        self.process_manager.recovery_state = {
+    def _set_progress(
+        self,
+        attempt: int,
+        message: str,
+        *,
+        weight_map: Optional[Dict[int, int]] = None,
+        all_gpus: Optional[List[dict]] = None,
+        main_index: Optional[int] = None,
+        pinned_map: Optional[Dict[int, int]] = None,
+    ) -> None:
+        state = {
             "active": True,
             "failed": False,
             "message": message,
             "auto_balance": True,
             "attempt": attempt,
         }
+        if weight_map is not None and all_gpus is not None and main_index is not None:
+            pinned_indices = set((pinned_map or {}).keys())
+            weights = self.planner.to_gpu_weights(
+                all_gpus, weight_map, main_index, pinned_indices
+            )
+            state["gpu_weights"] = [w.model_dump() for w in weights]
+        self.process_manager.recovery_state = state
 
     def _wait_for_outcome(self) -> str:
         path = self.log_manager.get_server_log_path()
