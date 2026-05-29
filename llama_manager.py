@@ -486,7 +486,7 @@ async def index(request: Request):
         f'<option value="custom" class="bg-slate-900" {custom_selected}>'
         "Personalizado</option>"
     )
-    custom_ctx_value = running_ctx if use_custom_ctx else ""
+    custom_ctx_value = str(running_ctx) if use_custom_ctx else ""
     custom_ctx_class = "" if use_custom_ctx else "hidden"
 
     # Model items
@@ -516,10 +516,11 @@ async def index(request: Request):
             if hardware_incapable
             else ""
         )
+        incapable_attr = "true" if hardware_incapable else "false"
 
         model_items += f"""
         {initial_cfg_js}
-        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{"true" if hardware_incapable else "false"}">
+        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{incapable_attr}">
             <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
                 <div class="flex items-center gap-2 mb-1 flex-wrap">
                     <i class="fas fa-cube text-blue-400 text-[10px]"></i>
@@ -561,6 +562,8 @@ async def index(request: Request):
         model_items=model_items,
         vision_options=vision_options,
         ctx_opts=ctx_opts,
+        custom_ctx_value=custom_ctx_value,
+        custom_ctx_class=custom_ctx_class,
         local_ip=local_ip,
         api_token=api_token,
         is_authenticated=is_authenticated,
@@ -573,6 +576,8 @@ def _build_html(
     model_items: str,
     vision_options: str,
     ctx_opts: str,
+    custom_ctx_value: str,
+    custom_ctx_class: str,
     local_ip: str,
     api_token: str,
     is_authenticated: bool,
