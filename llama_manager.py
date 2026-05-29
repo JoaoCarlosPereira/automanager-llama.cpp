@@ -167,18 +167,66 @@ async def start_model(
         "active": False,
         "failed": False,
         "message": "",
+        "auto_balance": False,
     }
-    # Save model config
+
+    base_settings = {
+        "context_size": req.context_size,
+        "parallel_slots": req.parallel_slots,
+        "mmproj_path": req.mmproj_path,
+        "split_mode": req.split_mode,
+        "auto_balance": req.auto_balance,
+    }
+
+    if req.manual_gpu_override:
+        config_manager.update_model_settings(
+            req.path,
+            {
+                **base_settings,
+                "gpu_weights": [w.model_dump() for w in req.gpu_weights],
+                "auto_balance_profile": False,
+            },
+        )
+        return process_manager.start(
+            model_path=req.path,
+            gpu_weights=req.gpu_weights,
+            context_size=req.context_size,
+            mmproj_path=req.mmproj_path,
+            split_mode=req.split_mode,
+            parallel_slots=req.parallel_slots,
+        )
+
+    if req.auto_balance:
+        saved = config_manager.get_model_settings(req.path)
+        if saved.get("auto_balance_profile") and saved.get("gpu_weights"):
+            weights = [
+                GPUWeight(**w) if isinstance(w, dict) else w
+                for w in saved["gpu_weights"]
+            ]
+            config_manager.update_model_settings(
+                req.path,
+                {
+                    **base_settings,
+                    "gpu_weights": [w.model_dump() for w in weights],
+                    "auto_balance_profile": True,
+                },
+            )
+            return process_manager.start(
+                model_path=req.path,
+                gpu_weights=weights,
+                context_size=req.context_size,
+                mmproj_path=req.mmproj_path,
+                split_mode=req.split_mode,
+                parallel_slots=req.parallel_slots,
+            )
+        return process_manager.start_auto_balance(req)
+
     config_manager.update_model_settings(
         req.path,
         {
-            "context_size": req.context_size,
-            "parallel_slots": req.parallel_slots,
-            "mmproj_path": req.mmproj_path,
-            "split_mode": req.split_mode,
-            "gpu_weights": [
-                w.model_dump() for w in req.gpu_weights
-            ],
+            **base_settings,
+            "gpu_weights": [w.model_dump() for w in req.gpu_weights],
+            "auto_balance_profile": False,
         },
     )
     return process_manager.start(
@@ -338,18 +386,22 @@ async def index(request: Request):
                     )
                     weight_val = int(w_obj.get("weight", 0))
                     is_main = w_obj.get("is_main", False)
+                    pin_checked = "checked" if w_obj.get("pinned") else ""
                 else:
                     is_checked = "checked"
                     weight_val = 100 if idx == main_gpu_idx else 0
                     is_main = (idx == main_gpu_idx)
+                    pin_checked = ""
             else:
                 is_checked = "checked"
                 weight_val = 100 if idx == main_gpu_idx else 0
                 is_main = (idx == main_gpu_idx)
+                pin_checked = ""
         else:
             is_checked = "checked"
             weight_val = 100 if idx == main_gpu_idx else 0
             is_main = (idx == main_gpu_idx)
+            pin_checked = ""
 
         main_checked = "checked" if is_main else ""
 
@@ -399,11 +451,17 @@ async def index(request: Request):
                 </div>
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
-                <div class="relative">
-                    <input type="number" value="{weight_val}" min="0" max="100"
-                           class="gpu-weight w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
-                           oninput="balanceWeights(this)">
-                    <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                <div class="flex items-center gap-2 md:gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer shrink-0" title="Fixar % — o auto balance nao altera esta GPU">
+                        <input type="checkbox" {pin_checked} class="gpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
+                        <span class="text-[8px] font-black text-slate-500 uppercase tracking-wider hidden md:inline">Fixar</span>
+                    </label>
+                    <div class="relative">
+                        <input type="number" value="{weight_val}" min="0" max="100"
+                               class="gpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
+                               oninput="balanceWeights(this)">
+                        <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                    </div>
                 </div>
             </td>
         </tr>"""
@@ -678,9 +736,16 @@ def _build_html(
                         </table>
                     </div>
                     <div class="flex flex-col sm:flex-row justify-between items-center pt-8 gap-4">
-                        <div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500">
-                            <i class="fas fa-info-circle text-blue-500"></i>
-                            Distribua 100% da carga total entre as GPUs selecionadas
+                        <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                            <div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500">
+                                <i class="fas fa-info-circle text-blue-500"></i>
+                                Distribua 100% da carga total entre as GPUs selecionadas
+                            </div>
+                            <label class="flex items-center gap-3 cursor-pointer select-none bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800 hover:border-blue-500/30 transition-all">
+                                <input type="checkbox" id="auto-balance-toggle" class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                                <span class="text-[10px] md:text-xs font-black uppercase tracking-widest text-slate-300">Auto Balance</span>
+                                <span id="auto-balance-badge" class="hidden text-[9px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20">Salvo</span>
+                            </label>
                         </div>
                         <span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span>
                     </div>
@@ -808,6 +873,7 @@ def _build_html(
         window.modelConfigs = window.modelConfigs || {{}};
         let currentSelectedModel = null;
         let currentRunningModelPath = null;
+        let manualGpuOverride = false;
 
         document.getElementById('chat-link').href = `http://${{fixedIp}}:8085/`;
         document.getElementById('api-link').innerText = `http://${{fixedIp}}:8085/v1`;
@@ -887,8 +953,140 @@ def _build_html(
             }}
         }}
 
+        function markManualGpuChange() {{
+            manualGpuOverride = true;
+            const badge = document.getElementById('auto-balance-badge');
+            if (badge) badge.classList.add('hidden');
+        }}
+
+        function updateAutoBalanceProfileBadge(hasProfile) {{
+            const badge = document.getElementById('auto-balance-badge');
+            if (!badge) return;
+            let show = !!hasProfile;
+            if (hasProfile === undefined && currentSelectedModel) {{
+                const cfg = window.modelConfigs[currentSelectedModel];
+                show = !!(cfg && cfg.auto_balance_profile);
+            }}
+            badge.classList.toggle('hidden', !show);
+        }}
+
+        function bindGpuManualListeners() {{
+            document.querySelectorAll('.gpu-weight').forEach(el => {{
+                el.addEventListener('input', markManualGpuChange);
+            }});
+            document.querySelectorAll('.gpu-checkbox').forEach(el => {{
+                el.addEventListener('change', () => {{
+                    markManualGpuChange();
+                    redistributeUnpinnedWeights(null);
+                }});
+            }});
+            document.querySelectorAll('.gpu-main-radio').forEach(el => {{
+                el.addEventListener('change', markManualGpuChange);
+            }});
+            document.querySelectorAll('.gpu-pin').forEach(el => {{
+                el.addEventListener('change', () => onGpuPinToggle(el));
+            }});
+            document.querySelectorAll('.gpu-pin:checked').forEach(pin => {{
+                pin.closest('.gpu-row')?.querySelector('.gpu-weight')
+                    ?.classList.add('ring-2', 'ring-amber-500/40');
+            }});
+        }}
+
+        function onGpuPinToggle(pinCheckbox) {{
+            markManualGpuChange();
+            const row = pinCheckbox.closest('.gpu-row');
+            const weightInput = row?.querySelector('.gpu-weight');
+            if (weightInput) {{
+                if (pinCheckbox.checked) {{
+                    weightInput.classList.add('ring-2', 'ring-amber-500/40');
+                }} else {{
+                    weightInput.classList.remove('ring-2', 'ring-amber-500/40');
+                }}
+            }}
+            redistributeUnpinnedWeights(weightInput);
+        }}
+
+        function redistributeUnpinnedWeights(changedInput) {{
+            const rows = Array.from(document.querySelectorAll('.gpu-row'))
+                .filter(r => r.querySelector('.gpu-checkbox').checked);
+            const pinnedRows = rows.filter(r => r.querySelector('.gpu-pin').checked);
+            const unpinnedRows = rows.filter(r => !r.querySelector('.gpu-pin').checked);
+
+            if (rows.length === 0) {{
+                updateTotal();
+                return;
+            }}
+            if (rows.length === 1) {{
+                rows[0].querySelector('.gpu-weight').value = 100;
+                updateTotal();
+                return;
+            }}
+
+            const pinnedSum = pinnedRows.reduce(
+                (s, r) => s + (parseInt(r.querySelector('.gpu-weight').value, 10) || 0), 0
+            );
+
+            if (unpinnedRows.length === 0) {{
+                updateTotal();
+                return;
+            }}
+
+            if (unpinnedRows.length === 1) {{
+                unpinnedRows[0].querySelector('.gpu-weight').value = Math.max(0, 100 - pinnedSum);
+                updateTotal();
+                return;
+            }}
+
+            const changedRow = changedInput?.closest('.gpu-row');
+            const changedIsPinned = changedRow && changedRow.querySelector('.gpu-pin').checked;
+
+            if (changedIsPinned || !changedInput) {{
+                let remaining = Math.max(0, 100 - pinnedSum);
+                for (let i = 0; i < unpinnedRows.length; i++) {{
+                    const input = unpinnedRows[i].querySelector('.gpu-weight');
+                    if (i === unpinnedRows.length - 1) {{
+                        input.value = remaining;
+                    }} else {{
+                        const share = Math.min(
+                            remaining,
+                            Math.max(0, Math.round(remaining / (unpinnedRows.length - i)))
+                        );
+                        input.value = share;
+                        remaining -= share;
+                    }}
+                }}
+                updateTotal();
+                return;
+            }}
+
+            let val = parseInt(changedInput.value, 10) || 0;
+            const maxForChanged = Math.max(0, 100 - pinnedSum);
+            if (val > maxForChanged) {{ val = maxForChanged; changedInput.value = val; }}
+            if (val < 0) {{ val = 0; changedInput.value = 0; }}
+
+            const otherUnpinned = unpinnedRows.filter(
+                r => r.querySelector('.gpu-weight') !== changedInput
+            );
+            let remaining = maxForChanged - val;
+            for (let i = 0; i < otherUnpinned.length; i++) {{
+                const input = otherUnpinned[i].querySelector('.gpu-weight');
+                if (i === otherUnpinned.length - 1) {{
+                    input.value = Math.max(0, remaining);
+                }} else {{
+                    const share = Math.min(
+                        remaining,
+                        Math.max(0, Math.round(remaining / (otherUnpinned.length - i)))
+                    );
+                    input.value = share;
+                    remaining -= share;
+                }}
+            }}
+            updateTotal();
+        }}
+
         // ─── Dashboard functions ───
         function initDashboard() {{
+            bindGpuManualListeners();
             updateStatus();
             updateMetrics();
             updateDownloads();
@@ -921,11 +1119,17 @@ def _build_html(
             document.getElementById('parallel-slots').value = "{DEFAULT_PARALLEL_SLOTS}";
             document.getElementById('mmproj-path').value = "";
             document.getElementById('split-mode').value = "layer";
+            const toggle = document.getElementById('auto-balance-toggle');
+            if (toggle) toggle.checked = false;
             document.querySelectorAll('.gpu-row').forEach((row, idx) => {{
                 row.querySelector('.gpu-checkbox').checked = true;
                 row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
                 row.querySelector('.gpu-main-radio').checked = (idx === 0);
+                const pin = row.querySelector('.gpu-pin');
+                if (pin) pin.checked = false;
+                row.querySelector('.gpu-weight')?.classList.remove('ring-2', 'ring-amber-500/40');
             }});
+            markManualGpuChange();
             updateTotal();
         }}
 
@@ -969,6 +1173,10 @@ def _build_html(
                     select.value = "";
                 }}
             }}
+            const abToggle = document.getElementById('auto-balance-toggle');
+            if (abToggle) abToggle.checked = !!cfg.auto_balance;
+            updateAutoBalanceProfileBadge(cfg.auto_balance_profile);
+            manualGpuOverride = false;
             if (cfg.gpu_weights) {{
                 cfg.gpu_weights.forEach(w => {{
                     const row = document.querySelector(`.gpu-row[data-index="${{w.index}}"]`);
@@ -976,9 +1184,15 @@ def _build_html(
                         const cb = row.querySelector('.gpu-checkbox');
                         const input = row.querySelector('.gpu-weight');
                         const radio = row.querySelector('.gpu-main-radio');
+                        const pin = row.querySelector('.gpu-pin');
                         cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
                         input.value = Math.round(w.weight);
                         if (w.is_main) radio.checked = true;
+                        if (pin) {{
+                            pin.checked = !!w.pinned;
+                            if (w.pinned) input.classList.add('ring-2', 'ring-amber-500/40');
+                            else input.classList.remove('ring-2', 'ring-amber-500/40');
+                        }}
                     }}
                 }});
                 updateTotal();
@@ -991,27 +1205,7 @@ def _build_html(
         }}
 
         function balanceWeights(changedInput) {{
-            const weights = Array.from(document.querySelectorAll('.gpu-weight'));
-            const checkedWeights = weights.filter(w => w.closest('.gpu-row').querySelector('.gpu-checkbox').checked);
-            if (checkedWeights.length <= 1) {{
-                if (checkedWeights.length === 1) checkedWeights[0].value = 100;
-                updateTotal();
-                return;
-            }}
-            let val = parseInt(changedInput.value) || 0;
-            if (val > 100) {{ val = 100; changedInput.value = 100; }}
-            if (val < 0) {{ val = 0; changedInput.value = 0; }}
-            const otherInputs = checkedWeights.filter(w => w !== changedInput);
-            let remaining = 100 - val;
-            for (let i = 0; i < otherInputs.length; i++) {{
-                if (i === otherInputs.length - 1) {{ otherInputs[i].value = Math.max(0, remaining); }}
-                else {{
-                    let share = Math.min(remaining, Math.round(remaining / otherInputs.length));
-                    otherInputs[i].value = share;
-                    remaining -= share;
-                }}
-            }}
-            updateTotal();
+            redistributeUnpinnedWeights(changedInput);
         }}
 
         function updateTotal() {{
@@ -1110,17 +1304,30 @@ def _build_html(
                 const badge = document.getElementById('status-badge');
                 const card = document.getElementById('active-card');
 
+                if (data.running && data.config && data.config.path) {{
+                    window.modelConfigs[data.config.path] = window.modelConfigs[data.config.path] || {{}};
+                    Object.assign(window.modelConfigs[data.config.path], data.config);
+                    if (currentSelectedModel === data.config.path) {{
+                        updateAutoBalanceProfileBadge(data.config.auto_balance_profile);
+                    }}
+                }}
+
                 if (data.config && data.config.gpu_weights && (!data.recovery || !data.recovery.active)) {{
                     data.config.gpu_weights.forEach(w => {{
                         const row = document.querySelector(`.gpu-row[data-index="${{w.index}}"]`);
                         if (row) {{
                             const input = row.querySelector('.gpu-weight');
                             const cb = row.querySelector('.gpu-checkbox');
-                            if (document.activeElement !== input) {{
+                            const isPinned = row.querySelector('.gpu-pin')?.checked;
+                            if (!isPinned && document.activeElement !== input) {{
                                 const newWeight = Math.round(w.weight);
-                                if (parseInt(input.value) !== newWeight) input.value = newWeight;
+                                if (parseInt(input.value, 10) !== newWeight) input.value = newWeight;
                             }}
                             if (w.active !== undefined) cb.checked = w.active;
+                            if (w.pinned !== undefined && row.querySelector('.gpu-pin')) {{
+                                row.querySelector('.gpu-pin').checked = !!w.pinned;
+                                if (w.pinned) input.classList.add('ring-2', 'ring-amber-500/40');
+                            }}
                         }}
                     }});
                     updateTotal();
@@ -1139,7 +1346,12 @@ def _build_html(
 
                 if (data.recovery && data.recovery.active) {{
                     badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
-                    badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
+                    if (data.recovery.auto_balance) {{
+                        const msg = data.recovery.message || 'calibrando GPUs...';
+                        badge.innerHTML = `<i class="fas fa-sync animate-spin mr-1"></i> AUTO BALANCE: ${{msg.toUpperCase()}}`;
+                    }} else {{
+                        badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
+                    }}
                     return;
                 }}
 
@@ -1357,21 +1569,26 @@ def _build_html(
                 const isChecked = r.querySelector('.gpu-checkbox').checked;
                 const isMain = r.querySelector('.gpu-main-radio').checked;
                 weights.push({{
-                    index: parseInt(r.dataset.index),
-                    weight: parseInt(r.querySelector('.gpu-weight').value || 0),
+                    index: parseInt(r.dataset.index, 10),
+                    weight: parseInt(r.querySelector('.gpu-weight').value || 0, 10),
                     name: "GPU",
                     active: isChecked,
                     is_main: isMain,
+                    pinned: r.querySelector('.gpu-pin')?.checked || false,
                 }});
             }});
             if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU");
+            if (!weights.some(w => w.is_main)) return alert("DEFINA A GPU PRINCIPAL (coluna Principal)");
             const mmprojPath = document.getElementById('mmproj-path').value;
             const splitMode = document.getElementById('split-mode').value;
             const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || {DEFAULT_PARALLEL_SLOTS}));
+            const autoBalance = document.getElementById('auto-balance-toggle').checked;
             document.getElementById('parallel-slots').value = parallelSlots;
-            document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
+            document.getElementById('status-badge').innerHTML = autoBalance && !manualGpuOverride
+                ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
+                : '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
             try {{
-                await fetch('/start', {{
+                const res = await fetch('/start', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{
@@ -1381,8 +1598,32 @@ def _build_html(
                         context_size: parseInt(document.getElementById('context-size').value),
                         parallel_slots: parallelSlots,
                         split_mode: splitMode,
+                        auto_balance: autoBalance,
+                        manual_gpu_override: manualGpuOverride,
                     }}),
                 }});
+                if (!res.ok) {{
+                    const err = await res.json();
+                    alert("Erro ao iniciar: " + (err.detail || "Erro desconhecido"));
+                    return;
+                }}
+                const startData = await res.json();
+                if (startData.probing) {{
+                    manualGpuOverride = false;
+                }} else if (!manualGpuOverride && autoBalance) {{
+                    manualGpuOverride = false;
+                    if (window.modelConfigs[path]) {{
+                        window.modelConfigs[path].auto_balance = true;
+                        window.modelConfigs[path].auto_balance_profile = true;
+                    }}
+                    updateAutoBalanceProfileBadge(true);
+                }} else if (manualGpuOverride) {{
+                    manualGpuOverride = false;
+                    if (window.modelConfigs[path]) {{
+                        window.modelConfigs[path].auto_balance_profile = false;
+                    }}
+                    updateAutoBalanceProfileBadge(false);
+                }}
             }} catch (e) {{
                 alert("Erro ao iniciar modelo.");
             }}

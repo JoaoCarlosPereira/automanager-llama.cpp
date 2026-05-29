@@ -12,11 +12,10 @@ from typing import List, Optional
 import psutil
 from fastapi import HTTPException
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, TokenManager
 from gpu_manager import GPUManager, LLAMA_SERVER_BIN
 from log_manager import LogManager
 from schemas import DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
-from config_manager import TokenManager
 
 SERVER_PORT = 8085
 logger = logging.getLogger("automanager")
@@ -53,7 +52,14 @@ class ProcessManager:
             "active": False,
             "failed": False,
             "message": "",
+            "auto_balance": False,
         }
+        self._auto_balance_active = False
+
+    @property
+    def auto_balance_active(self) -> bool:
+        with self._lock:
+            return self._auto_balance_active
 
     @property
     def recovery_state(self) -> dict:
@@ -123,14 +129,93 @@ class ProcessManager:
                     pass
                 self._current_process = None
             self._last_request = None
-        self.recovery_state = {
-            "active": False,
-            "failed": False,
-            "message": "",
-        }
+        if not self.auto_balance_active:
+            self.recovery_state = {
+                "active": False,
+                "failed": False,
+                "message": "",
+                "auto_balance": False,
+            }
         self.log_manager.clear_server_log()
         logger.info("llama-server stopped")
         return {"message": "Stopped"}
+
+    def start_auto_balance(self, request: StartRequest) -> dict:
+        """Start progressive GPU discovery in a background thread."""
+        with self._lock:
+            if self._auto_balance_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auto-balance ja esta em andamento.",
+                )
+
+        thread = threading.Thread(
+            target=self._run_auto_balance,
+            args=(request,),
+            daemon=True,
+            name="auto-balance",
+        )
+        thread.start()
+        self.recovery_state = {
+            "active": True,
+            "failed": False,
+            "message": "Iniciando auto-balance...",
+            "auto_balance": True,
+            "attempt": 0,
+        }
+        return {"message": "Auto-balance em andamento", "probing": True}
+
+    def _run_auto_balance(self, request: StartRequest) -> None:
+        from auto_balance import AutoBalanceProber
+
+        with self._lock:
+            self._auto_balance_active = True
+
+        try:
+            prober = AutoBalanceProber(
+                self, self.config, self.gpu_manager, self.log_manager
+            )
+            success, gpu_weights, message = prober.discover(request)
+            if success:
+                self.config.update_model_settings(
+                    request.path,
+                    {
+                        "context_size": request.context_size,
+                        "parallel_slots": request.parallel_slots,
+                        "mmproj_path": request.mmproj_path,
+                        "split_mode": request.split_mode,
+                        "gpu_weights": [
+                            w.model_dump() for w in gpu_weights
+                        ],
+                        "auto_balance": True,
+                        "auto_balance_profile": True,
+                    },
+                )
+                self.recovery_state = {
+                    "active": False,
+                    "failed": False,
+                    "message": message,
+                    "auto_balance": False,
+                }
+            else:
+                self.recovery_state = {
+                    "active": False,
+                    "failed": True,
+                    "message": message,
+                    "auto_balance": False,
+                }
+        except Exception as exc:
+            logger.exception(f"Auto-balance error: {exc}")
+            self.stop()
+            self.recovery_state = {
+                "active": False,
+                "failed": True,
+                "message": f"Erro no auto-balance: {exc}",
+                "auto_balance": False,
+            }
+        finally:
+            with self._lock:
+                self._auto_balance_active = False
 
     def start(
         self,
@@ -296,6 +381,10 @@ class OOMWatchdog(threading.Thread):
             pass
 
     def _handle_oom(self) -> None:
+        if self.process_manager.auto_balance_active:
+            logger.info("OOM ignored during auto-balance probing")
+            return
+
         now = time.time()
         with self._lock:
             if now - self._last_oom_time > self.SILENCE_TIMEOUT:
@@ -316,6 +405,7 @@ class OOMWatchdog(threading.Thread):
                 "active": True,
                 "failed": False,
                 "message": "OOM repetido. Divisao 50/50.",
+                "auto_balance": False,
             }
             new_weights = [
                 GPUWeight(
@@ -331,6 +421,7 @@ class OOMWatchdog(threading.Thread):
                 "active": True,
                 "failed": False,
                 "message": "OOM detectado. Reduzindo carga...",
+                "auto_balance": False,
             }
             weights = list(req.gpu_weights)
             active = [w for w in weights if w.active]
@@ -339,6 +430,7 @@ class OOMWatchdog(threading.Thread):
                     "active": False,
                     "failed": True,
                     "message": "Single GPU ou sem pesos.",
+                    "auto_balance": False,
                 }
                 return
             main_gpu = max(active, key=lambda w: w.weight)
@@ -376,6 +468,7 @@ class OOMWatchdog(threading.Thread):
             "active": False,
             "failed": False,
             "message": "",
+            "auto_balance": False,
         }
 
     def stop(self) -> None:

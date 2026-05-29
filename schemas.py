@@ -11,6 +11,7 @@ class GPUWeight(BaseModel):
     name: str
     active: bool = True
     is_main: bool = False
+    pinned: bool = False
 
 
 class StartRequest(BaseModel):
@@ -20,6 +21,8 @@ class StartRequest(BaseModel):
     context_size: int = DEFAULT_CONTEXT_SIZE
     parallel_slots: int = Field(default=DEFAULT_PARALLEL_SLOTS, ge=1, le=64)
     split_mode: str = "layer"
+    auto_balance: bool = False
+    manual_gpu_override: bool = False
 
 
 class DeleteRequest(BaseModel):

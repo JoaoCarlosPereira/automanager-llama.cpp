@@ -62,6 +62,8 @@ class ConfigManager:
             "mmproj_path": settings.get("mmproj_path"),
             "gpu_weights": settings.get("gpu_weights"),
             "split_mode": settings.get("split_mode", "layer"),
+            "auto_balance": settings.get("auto_balance", False),
+            "auto_balance_profile": settings.get("auto_balance_profile", False),
             "last_started": datetime.utcnow().isoformat(),
         }
         self.save(config)

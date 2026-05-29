@@ -1,0 +1,599 @@
+"""Progressive GPU weight discovery and VRAM maximization for auto-balance."""
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+from typing import Dict, List, Optional, Set, Tuple
+
+from schemas import GPUWeight
+
+logger = logging.getLogger("automanager")
+
+READY_PATTERNS = re.compile(
+    r"(?i)(listening on|http server listening|server listening|"
+    r"model loaded|loaded model|main loop)"
+)
+OOM_PATTERNS = re.compile(
+    r"(?i)(out of memory|cuda error|malloc failed|c10\.Error)"
+)
+
+MAIN_REDUCTION_STEP = 5
+MIN_MAIN_WEIGHT = 10
+MIN_GPU_WEIGHT = 0
+PROBE_TIMEOUT_SEC = 180
+POLL_INTERVAL_SEC = 1.0
+VRAM_SETTLE_SEC = 4.0
+TARGET_VRAM_PCT = 93.0
+
+
+class AutoBalancePlanner:
+    """Builds and adjusts weight maps (main-first spill, sum=100)."""
+
+    @staticmethod
+    def spill_order(main_index: int, active_indices: List[int]) -> List[int]:
+        ordered = [main_index]
+        for idx in sorted(active_indices):
+            if idx != main_index:
+                ordered.append(idx)
+        return ordered
+
+    @staticmethod
+    def weights_for_active_count(
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+        active_count: int,
+    ) -> Dict[int, int]:
+        subset = spill_order[:active_count]
+        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in subset)
+        weights: Dict[int, int] = {}
+        remaining = 100
+        for pos, idx in enumerate(subset):
+            if pos == len(subset) - 1:
+                weights[idx] = remaining
+            else:
+                vram = max(1, vram_by_index.get(idx, 1))
+                share = int(round(100 * vram / total_vram))
+                share = max(1, min(share, remaining - (len(subset) - pos - 1)))
+                weights[idx] = share
+                remaining -= share
+        return weights
+
+    @staticmethod
+    def reduce_main_weight(
+        weights: Dict[int, int],
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+    ) -> Optional[Dict[int, int]]:
+        main_idx = spill_order[0]
+        main_w = weights.get(main_idx, 0)
+        if main_w <= MIN_MAIN_WEIGHT:
+            return None
+
+        new_weights = dict(weights)
+        freed = min(MAIN_REDUCTION_STEP, main_w - MIN_MAIN_WEIGHT)
+        new_weights[main_idx] = main_w - freed
+
+        others = [i for i in spill_order if i in new_weights and i != main_idx]
+        if not others:
+            return None
+
+        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in others)
+        distributed = 0
+        for pos, idx in enumerate(others):
+            if pos == len(others) - 1:
+                add = freed - distributed
+            else:
+                vram = max(1, vram_by_index.get(idx, 1))
+                add = int(round(freed * vram / total_vram))
+                add = max(0, min(add, freed - distributed))
+            new_weights[idx] = new_weights.get(idx, 0) + add
+            distributed += add
+        return new_weights
+
+    @staticmethod
+    def active_subset(weight_map: Dict[int, int]) -> List[int]:
+        return [idx for idx, w in weight_map.items() if w > 0]
+
+    @staticmethod
+    def pinned_map_from_request(gpu_weights: List[GPUWeight]) -> Dict[int, int]:
+        return {
+            int(w.index): int(w.weight)
+            for w in gpu_weights
+            if w.active and w.pinned
+        }
+
+    @staticmethod
+    def distribute_unpinned(
+        pinned_map: Dict[int, int],
+        unpinned_indices: List[int],
+        vram_by_index: Dict[int, int],
+        spill_order: List[int],
+    ) -> Optional[Dict[int, int]]:
+        """Keep pinned weights; split remainder across unpinned GPUs (sum=100)."""
+        pinned_total = sum(pinned_map.values())
+        if pinned_total > 100:
+            return None
+        if not unpinned_indices:
+            return dict(pinned_map) if pinned_total == 100 else None
+
+        remainder = 100 - pinned_total
+        if len(unpinned_indices) == 1:
+            return {**pinned_map, unpinned_indices[0]: remainder}
+
+        result = dict(pinned_map)
+        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in unpinned_indices)
+        ordered = sorted(unpinned_indices, key=lambda i: spill_order.index(i))
+        left = remainder
+        for pos, idx in enumerate(ordered):
+            if pos == len(ordered) - 1:
+                result[idx] = left
+            else:
+                vram = max(1, vram_by_index.get(idx, 1))
+                share = int(round(remainder * vram / total_vram))
+                share = max(0, min(share, left))
+                result[idx] = share
+                left -= share
+        if sum(result.values()) != 100:
+            result[ordered[-1]] += 100 - sum(result.values())
+        return result
+
+    @staticmethod
+    def apply_pins(
+        weight_map: Dict[int, int],
+        pinned_map: Dict[int, int],
+        spill_order: List[int],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+    ) -> Optional[Dict[int, int]]:
+        if not pinned_map:
+            return weight_map
+        unpinned = [i for i in active_indices if i not in pinned_map]
+        merged = dict(weight_map)
+        merged.update(pinned_map)
+        return AutoBalancePlanner.distribute_unpinned(
+            pinned_map, unpinned, vram_by_index, spill_order
+        )
+
+    @staticmethod
+    def max_weight_for_gpu(
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+        target_idx: int,
+        pinned_map: Optional[Dict[int, int]] = None,
+    ) -> int:
+        """Upper bound for target weight while keeping spill-priority donors."""
+        pinned_map = pinned_map or {}
+        if target_idx in pinned_map:
+            return pinned_map[target_idx]
+
+        active = AutoBalancePlanner.active_subset(weight_map)
+        if target_idx not in active:
+            return 0
+
+        pinned_total = sum(pinned_map.get(i, 0) for i in active if i in pinned_map)
+        locked_before = sum(
+            weight_map.get(i, 0)
+            for i in active
+            if i != target_idx
+            and i not in pinned_map
+            and spill_order.index(i) < spill_order.index(target_idx)
+        )
+        return max(
+            weight_map.get(target_idx, 0),
+            100 - pinned_total - locked_before,
+        )
+
+    @staticmethod
+    def set_target_weight(
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+        target_idx: int,
+        new_weight: int,
+        pinned_map: Optional[Dict[int, int]] = None,
+    ) -> Optional[Dict[int, int]]:
+        """
+        Set target GPU weight; take slack from later spill GPUs first (down to 0).
+        GPUs earlier in spill order than target are not reduced.
+        Pinned GPUs are never modified.
+        """
+        pinned_map = pinned_map or {}
+        if target_idx in pinned_map:
+            return None
+
+        active = AutoBalancePlanner.active_subset(weight_map)
+        if target_idx not in active:
+            return None
+
+        new_weight = max(MIN_GPU_WEIGHT, min(100, new_weight))
+        trial = {i: weight_map.get(i, 0) for i in active}
+        delta = new_weight - trial[target_idx]
+        trial[target_idx] = new_weight
+
+        if delta == 0:
+            return trial if sum(trial.values()) == 100 else None
+
+        if delta > 0:
+            donors = sorted(
+                [i for i in active if i != target_idx],
+                key=lambda i: spill_order.index(i),
+                reverse=True,
+            )
+            need = delta
+            for donor in donors:
+                if donor in pinned_map:
+                    continue
+                if spill_order.index(donor) <= spill_order.index(target_idx):
+                    continue
+                take = min(trial[donor], need)
+                trial[donor] -= take
+                need -= take
+                if need == 0:
+                    break
+            if need > 0:
+                return None
+        else:
+            receivers = sorted(
+                [i for i in active if i != target_idx],
+                key=lambda i: spill_order.index(i),
+                reverse=True,
+            )
+            give = -delta
+            for recv in receivers:
+                if recv in pinned_map:
+                    continue
+                if spill_order.index(recv) <= spill_order.index(target_idx):
+                    continue
+                trial[recv] += give
+                give = 0
+                break
+            if give > 0:
+                return None
+
+        if sum(trial.values()) != 100:
+            return None
+        return trial
+
+    @staticmethod
+    def format_weights(weight_map: Dict[int, int], spill_order: List[int]) -> str:
+        parts = [
+            f"GPU{idx}={weight_map.get(idx, 0)}%"
+            for idx in spill_order
+            if weight_map.get(idx, 0) > 0
+        ]
+        return ", ".join(parts)
+
+
+class AutoBalanceProber:
+    """Finds a feasible split, then maximizes VRAM use per GPU (main first)."""
+
+    def __init__(self, process_manager, config_manager, gpu_manager, log_manager):
+        self.process_manager = process_manager
+        self.config = config_manager
+        self.gpu_manager = gpu_manager
+        self.log_manager = log_manager
+        self.planner = AutoBalancePlanner()
+
+    def discover(self, request) -> Tuple[bool, List[GPUWeight], str]:
+        all_gpus = self.gpu_manager.detect_gpus()
+        if not all_gpus:
+            return False, request.gpu_weights, "Nenhuma GPU detectada."
+
+        vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
+        active_indices = [w.index for w in request.gpu_weights if w.active]
+        if not active_indices:
+            return False, request.gpu_weights, "Selecione pelo menos uma GPU."
+
+        main_weight = next((w for w in request.gpu_weights if w.is_main), None)
+        main_index = (
+            main_weight.index
+            if main_weight
+            else max(active_indices, key=lambda i: vram_by_index.get(i, 0))
+        )
+        if main_index not in active_indices:
+            main_index = active_indices[0]
+
+        spill_order = self.planner.spill_order(main_index, active_indices)
+        pinned_map = self.planner.pinned_map_from_request(request.gpu_weights)
+        attempt = 0
+
+        feasible, active_count, attempt = self._find_feasible_split(
+            request,
+            all_gpus,
+            main_index,
+            spill_order,
+            vram_by_index,
+            pinned_map,
+            active_indices,
+            attempt,
+        )
+        if feasible is None:
+            self.process_manager.stop()
+            return (
+                False,
+                request.gpu_weights,
+                "Auto-balance falhou: modelo nao coube nas GPUs disponiveis.",
+            )
+
+        optimized, attempt = self._maximize_vram_per_gpu(
+            request,
+            all_gpus,
+            main_index,
+            spill_order,
+            feasible,
+            vram_by_index,
+            pinned_map,
+            attempt,
+        )
+
+        pinned_indices: Set[int] = set(pinned_map.keys())
+        gpu_weights = self.planner.to_gpu_weights(
+            all_gpus, optimized, main_index, pinned_indices
+        )
+        vram_summary = self._vram_summary(optimized, spill_order)
+        msg = (
+            f"Balance otimizado ({self.planner.format_weights(optimized, spill_order)}). "
+            f"{vram_summary}"
+        )
+        logger.info(f"Auto-balance success: {msg}")
+        return True, gpu_weights, msg
+
+    def _find_feasible_split(
+        self,
+        request,
+        all_gpus: List[dict],
+        main_index: int,
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        active_indices: List[int],
+        attempt: int,
+    ) -> Tuple[Optional[Dict[int, int]], int, int]:
+        max_active = len(spill_order)
+        active_count = 1
+        weight_map = self.planner.weights_for_active_count(
+            spill_order, vram_by_index, active_count
+        )
+        weight_map = self.planner.apply_pins(
+            weight_map, pinned_map, spill_order, active_indices, vram_by_index
+        )
+        if weight_map is None:
+            return None, active_count, attempt
+        max_attempts = max_active * 25
+
+        while attempt < max_attempts:
+            attempt += 1
+            label = self.planner.format_weights(weight_map, spill_order)
+            self._set_progress(attempt, f"Fase 1 — encaixar modelo: {label}")
+
+            outcome = self._probe_start(
+                request, weight_map, main_index, all_gpus, attempt
+            )
+            if outcome == "ready":
+                return dict(weight_map), active_count, attempt
+
+            if outcome == "oom" or outcome in ("timeout", "crashed"):
+                if active_count < max_active:
+                    active_count += 1
+                    weight_map = self.planner.weights_for_active_count(
+                        spill_order, vram_by_index, active_count
+                    )
+                    weight_map = self.planner.apply_pins(
+                        weight_map,
+                        pinned_map,
+                        spill_order,
+                        active_indices,
+                        vram_by_index,
+                    )
+                    if weight_map is None:
+                        return None, active_count, attempt
+                    continue
+                if spill_order[0] in pinned_map:
+                    return None, active_count, attempt
+                reduced = self.planner.reduce_main_weight(
+                    weight_map, spill_order, vram_by_index
+                )
+                if reduced is None:
+                    return None, active_count, attempt
+                weight_map = self.planner.apply_pins(
+                    reduced, pinned_map, spill_order, active_indices, vram_by_index
+                )
+                if weight_map is None:
+                    return None, active_count, attempt
+
+        return None, active_count, attempt
+
+    def _maximize_vram_per_gpu(
+        self,
+        request,
+        all_gpus: List[dict],
+        main_index: int,
+        spill_order: List[int],
+        weight_map: Dict[int, int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        attempt: int,
+    ) -> Tuple[Dict[int, int], int]:
+        """For each GPU in spill order, binary-search max weight until VRAM ~full."""
+        optimized = dict(weight_map)
+        active_ordered = [
+            idx for idx in spill_order if optimized.get(idx, 0) > 0
+        ]
+
+        for target_idx in active_ordered:
+            if target_idx in pinned_map:
+                logger.info(
+                    f"Auto-balance GPU {target_idx}: fixada em "
+                    f"{pinned_map[target_idx]}% (ignorada na fase 2)"
+                )
+                continue
+
+            lo = optimized.get(target_idx, 0)
+            hi = self.planner.max_weight_for_gpu(
+                optimized, spill_order, target_idx, pinned_map
+            )
+            best = dict(optimized)
+            best_vram = 0.0
+
+            while lo <= hi:
+                mid = (lo + hi + 1) // 2
+                trial = self.planner.set_target_weight(
+                    optimized, spill_order, target_idx, mid, pinned_map
+                )
+                if trial is None:
+                    hi = mid - 1
+                    continue
+
+                attempt += 1
+                gpu_name = next(
+                    (g["name"] for g in all_gpus if g["index"] == target_idx),
+                    f"GPU{target_idx}",
+                )
+                self._set_progress(
+                    attempt,
+                    f"Fase 2 — maximizar {gpu_name}: testando {mid}%",
+                )
+
+                outcome = self._probe_start(
+                    request, trial, main_index, all_gpus, attempt
+                )
+                if outcome != "ready":
+                    hi = mid - 1
+                    continue
+
+                time.sleep(VRAM_SETTLE_SEC)
+                vram_pct = self._get_vram_pct(target_idx)
+                if vram_pct >= best_vram:
+                    best = trial
+                    best_vram = vram_pct
+
+                if vram_pct >= TARGET_VRAM_PCT:
+                    break
+
+                lo = mid + 1
+
+            optimized = best
+            logger.info(
+                f"Auto-balance GPU {target_idx}: weight={optimized.get(target_idx)}% "
+                f"vram={best_vram:.1f}%"
+            )
+
+        return optimized, attempt
+
+    def _probe_start(
+        self,
+        request,
+        weight_map: Dict[int, int],
+        main_index: int,
+        all_gpus: List[dict],
+        attempt: int,
+    ) -> str:
+        gpu_weights = self.planner.to_gpu_weights(all_gpus, weight_map, main_index)
+        self.process_manager.stop()
+        try:
+            self.process_manager.start(
+                model_path=request.path,
+                gpu_weights=gpu_weights,
+                context_size=request.context_size,
+                mmproj_path=request.mmproj_path,
+                split_mode=request.split_mode,
+                parallel_slots=request.parallel_slots,
+            )
+        except Exception as exc:
+            logger.error(f"Auto-balance start failed: {exc}")
+            return "crashed"
+        return self._wait_for_outcome()
+
+    def _get_vram_pct(self, gpu_index: int) -> float:
+        metrics = self.gpu_manager.get_metrics()
+        for gpu in metrics.get("gpus", []):
+            if gpu.get("index") == gpu_index:
+                return float(gpu.get("vram_pct", 0))
+        return 0.0
+
+    def _vram_summary(
+        self, weight_map: Dict[int, int], spill_order: List[int]
+    ) -> str:
+        parts = []
+        for idx in spill_order:
+            if weight_map.get(idx, 0) <= 0:
+                continue
+            pct = self._get_vram_pct(idx)
+            parts.append(f"GPU{idx} VRAM {pct:.0f}%")
+        return "; ".join(parts)
+
+    def _set_progress(self, attempt: int, message: str) -> None:
+        self.process_manager.recovery_state = {
+            "active": True,
+            "failed": False,
+            "message": message,
+            "auto_balance": True,
+            "attempt": attempt,
+        }
+
+    def _wait_for_outcome(self) -> str:
+        path = self.log_manager.get_server_log_path()
+        deadline = time.time() + PROBE_TIMEOUT_SEC
+        last_pos = 0
+
+        while time.time() < deadline:
+            if not self._process_alive():
+                return "crashed"
+
+            chunk, last_pos = self._read_log_since(path, last_pos)
+            if chunk:
+                if OOM_PATTERNS.search(chunk):
+                    return "oom"
+                if READY_PATTERNS.search(chunk):
+                    return "ready"
+
+            time.sleep(POLL_INTERVAL_SEC)
+
+        return "timeout"
+
+    def _process_alive(self) -> bool:
+        with self.process_manager._lock:
+            proc = self.process_manager._current_process
+        if proc is None:
+            return False
+        return proc.poll() is None
+
+    @staticmethod
+    def _read_log_since(path: str, offset: int) -> Tuple[str, int]:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                chunk = f.read()
+                return chunk, f.tell()
+        except OSError:
+            return "", offset
+
+
+# Bind helper on planner for to_gpu_weights (unchanged)
+def _to_gpu_weights(
+    all_gpus: List[dict],
+    weight_map: Dict[int, int],
+    main_index: int,
+    pinned_indices: Optional[Set[int]] = None,
+) -> List[GPUWeight]:
+    pinned_indices = pinned_indices or set()
+    result: List[GPUWeight] = []
+    for gpu in all_gpus:
+        idx = gpu["index"]
+        weight = int(weight_map.get(idx, 0))
+        active = weight > 0
+        result.append(
+            GPUWeight(
+                index=idx,
+                weight=float(weight),
+                name=gpu.get("name", f"GPU {idx}"),
+                active=active,
+                is_main=(idx == main_index),
+                pinned=(idx in pinned_indices),
+            )
+        )
+    return result
+
+
+AutoBalancePlanner.to_gpu_weights = staticmethod(_to_gpu_weights)
