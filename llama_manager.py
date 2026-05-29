@@ -57,6 +57,18 @@ CONTEXT_PRESETS = [
     (1048576, "1M"),
 ]
 CONTEXT_PRESET_VALUES = [v for v, _ in CONTEXT_PRESETS]
+# Custom context input is in K (100 → 100_000 tokens)
+CONTEXT_K_MULTIPLIER = 1000
+
+
+def context_tokens_to_k(tokens: int) -> str:
+    """Convert token count to K for the custom input (100 → '100')."""
+    k = tokens / CONTEXT_K_MULTIPLIER
+    if k == int(k):
+        return str(int(k))
+    rounded = round(k, 3)
+    return str(int(rounded)) if rounded == int(rounded) else str(rounded)
+
 
 # Initialize logging and services
 log_manager = LogManager()
@@ -234,6 +246,11 @@ async def start_model(
 @app.post("/stop")
 async def stop_model(_auth: str = Depends(get_current_auth)):
     return process_manager.stop()
+
+
+@app.post("/auto-balance/cancel")
+async def cancel_auto_balance(_auth: str = Depends(get_current_auth)):
+    return process_manager.cancel_auto_balance()
 
 
 # --- Hardware Metrics ---
@@ -486,7 +503,9 @@ async def index(request: Request):
         f'<option value="custom" class="bg-slate-900" {custom_selected}>'
         "Personalizado</option>"
     )
-    custom_ctx_value = str(running_ctx) if use_custom_ctx else ""
+    custom_ctx_value = (
+        context_tokens_to_k(running_ctx) if use_custom_ctx else ""
+    )
     custom_ctx_class = "" if use_custom_ctx else "hidden"
 
     # Model items
@@ -711,11 +730,14 @@ def _build_html(
                                 <select id="context-size" onchange="onContextSizePresetChange()" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
                                     {ctx_opts}
                                 </select>
-                                <input type="number" id="context-size-custom" value="{custom_ctx_value}"
-                                       class="{custom_ctx_class} w-28 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center"
-                                       min="512" step="256" placeholder="tokens"
-                                       title="Valor manual de contexto (tokens por slot)"
-                                       oninput="onContextSizeCustomInput()">
+                                <div class="relative {custom_ctx_class}" id="context-size-custom-wrap">
+                                    <input type="number" id="context-size-custom" value="{custom_ctx_value}"
+                                           class="w-20 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl pl-3 pr-7 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center"
+                                           min="1" step="1" placeholder="K"
+                                           title="Contexto em K (ex.: 100 = 100K tokens por slot)"
+                                           oninput="onContextSizeCustomInput()">
+                                    <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-500 pointer-events-none">K</span>
+                                </div>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Requisições simultâneas (--parallel)"><i class="fas fa-clone text-blue-400 mr-2"></i>Slots:</label>
@@ -765,6 +787,11 @@ def _build_html(
                                 <span class="text-[10px] md:text-xs font-black uppercase tracking-widest text-slate-300">Auto Balance</span>
                                 <span id="auto-balance-badge" class="hidden text-[9px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20">Salvo</span>
                             </label>
+                            <button type="button" id="auto-balance-cancel-btn" onclick="cancelAutoBalance()"
+                                    class="hidden px-4 py-2.5 rounded-xl border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-widest transition-all"
+                                    title="Interromper calibracao de GPUs">
+                                <i class="fas fa-stop mr-2"></i>Cancelar balance
+                            </button>
                         </div>
                         <span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span>
                     </div>
@@ -909,13 +936,23 @@ def _build_html(
         window.modelConfigs = window.modelConfigs || {{}};
         const CONTEXT_PRESET_VALUES = {json.dumps(CONTEXT_PRESET_VALUES)};
         const DEFAULT_CONTEXT_SIZE_UI = {DEFAULT_CONTEXT_SIZE};
+        const CONTEXT_K_MULTIPLIER = {CONTEXT_K_MULTIPLIER};
 
         function syncContextSizeCustomVisibility() {{
             const sel = document.getElementById('context-size');
+            const wrap = document.getElementById('context-size-custom-wrap');
             const custom = document.getElementById('context-size-custom');
-            if (!sel || !custom) return;
-            custom.classList.toggle('hidden', sel.value !== 'custom');
-            if (sel.value === 'custom' && !custom.value) custom.focus();
+            if (!sel || !wrap || !custom) return;
+            const show = sel.value === 'custom';
+            wrap.classList.toggle('hidden', !show);
+            if (show && !custom.value) custom.focus();
+        }}
+
+        function tokensToContextK(tokens) {{
+            const k = tokens / CONTEXT_K_MULTIPLIER;
+            if (Number.isInteger(k)) return String(k);
+            const rounded = Math.round(k * 1000) / 1000;
+            return Number.isInteger(rounded) ? String(rounded) : String(rounded);
         }}
 
         function onContextSizePresetChange() {{
@@ -932,9 +969,9 @@ def _build_html(
             const sel = document.getElementById('context-size');
             if (!sel) return DEFAULT_CONTEXT_SIZE_UI;
             if (sel.value === 'custom') {{
-                const n = parseInt(document.getElementById('context-size-custom')?.value, 10);
-                if (!Number.isFinite(n) || n < 512) return null;
-                return n;
+                const k = parseFloat(document.getElementById('context-size-custom')?.value);
+                if (!Number.isFinite(k) || k < 1) return null;
+                return Math.round(k * CONTEXT_K_MULTIPLIER);
             }}
             const preset = parseInt(sel.value, 10);
             return Number.isFinite(preset) ? preset : DEFAULT_CONTEXT_SIZE_UI;
@@ -950,7 +987,7 @@ def _build_html(
                 sel.value = String(n);
             }} else {{
                 sel.value = 'custom';
-                custom.value = String(n);
+                custom.value = tokensToContextK(n);
             }}
             syncContextSizeCustomVisibility();
         }}
@@ -1074,6 +1111,33 @@ def _build_html(
             statusPollIntervalMs = ms;
             if (statusPollTimer) clearInterval(statusPollTimer);
             statusPollTimer = setInterval(updateStatus, ms);
+        }}
+
+        function syncAutoBalanceCancelButton(autoBalancing) {{
+            const btn = document.getElementById('auto-balance-cancel-btn');
+            if (btn) btn.classList.toggle('hidden', !autoBalancing);
+        }}
+
+        async function cancelAutoBalance() {{
+            const btn = document.getElementById('auto-balance-cancel-btn');
+            if (btn) {{
+                btn.disabled = true;
+                btn.classList.add('opacity-50');
+            }}
+            try {{
+                const res = await fetch('/auto-balance/cancel', {{ method: 'POST' }});
+                if (!res.ok) {{
+                    const err = await res.json().catch(() => ({{}}));
+                    alert(err.detail || 'Nao foi possivel cancelar o auto balance.');
+                }}
+            }} catch (e) {{
+                alert('Erro de rede ao cancelar auto balance.');
+            }} finally {{
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50');
+                }}
+            }}
         }}
 
         function hideAutoBalanceCapacityAlert() {{
@@ -1495,6 +1559,7 @@ def _build_html(
                 }}
 
                 const autoBalancing = !!(data.recovery && data.recovery.active && data.recovery.auto_balance);
+                syncAutoBalanceCancelButton(autoBalancing);
                 const weightsToApply = autoBalancing && data.recovery.gpu_weights
                     ? data.recovery.gpu_weights
                     : (data.config && data.config.gpu_weights ? data.config.gpu_weights : null);
@@ -1513,8 +1578,14 @@ def _build_html(
 
                 if (autoBalancePending && data.recovery && !data.recovery.active) {{
                     autoBalancePending = false;
+                    syncAutoBalanceCancelButton(false);
                     const abToggle = document.getElementById('auto-balance-toggle');
-                    if (!data.recovery.failed) {{
+                    if (data.recovery.cancelled) {{
+                        hideAutoBalanceCapacityAlert();
+                        if (abToggle) abToggle.checked = false;
+                        badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-500/50 text-slate-400 uppercase';
+                        badge.innerHTML = '<i class="fas fa-ban mr-1"></i> AUTO BALANCE CANCELADO';
+                    }} else if (!data.recovery.failed) {{
                         hideAutoBalanceCapacityAlert();
                         if (abToggle) abToggle.checked = false;
                         const finalWeights = data.recovery.gpu_weights
@@ -1549,6 +1620,7 @@ def _build_html(
 
                 if (data.recovery && data.recovery.failed) {{
                     autoBalancePending = false;
+                    syncAutoBalanceCancelButton(false);
                     badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-red-500/50 text-red-500 uppercase';
                     if (data.recovery.hardware_capacity_exceeded) {{
                         showAutoBalanceCapacityAlert(data.recovery);
@@ -1820,7 +1892,7 @@ def _build_html(
                 : '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
             const contextSize = getContextSize();
             if (contextSize === null) {{
-                alert('Informe um tamanho de contexto válido (mínimo 512 tokens) em Personalizado.');
+                alert('Informe um contexto válido em K (mínimo 1). Ex.: 100 = 100K tokens por slot.');
                 return;
             }}
             try {{
@@ -1847,6 +1919,7 @@ def _build_html(
                 if (startData.probing) {{
                     manualGpuOverride = false;
                     autoBalancePending = true;
+                    syncAutoBalanceCancelButton(true);
                     hideAutoBalanceCapacityAlert();
                 }} else if (manualGpuOverride) {{
                     manualGpuOverride = false;

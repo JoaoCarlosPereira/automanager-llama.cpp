@@ -7,6 +7,7 @@ import pytest
 
 from auto_balance import (
     TARGET_VRAM_PCT,
+    AutoBalanceCancelled,
     AutoBalancePlanner,
     AutoBalanceProber,
     FAILURE_HARDWARE_CAPACITY,
@@ -136,3 +137,13 @@ def test_oom_watchdog_skips_during_auto_balance():
 
     config_manager.update_model_settings.assert_not_called()
     process_manager.start.assert_not_called()
+
+
+def test_prober_raises_when_cancel_requested():
+    process_manager = MagicMock()
+    process_manager.auto_balance_cancel_requested = True
+    prober = AutoBalanceProber(
+        process_manager, MagicMock(), MagicMock(), MagicMock()
+    )
+    with pytest.raises(AutoBalanceCancelled):
+        prober._raise_if_cancelled()

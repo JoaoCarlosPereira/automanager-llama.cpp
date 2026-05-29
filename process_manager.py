@@ -55,11 +55,17 @@ class ProcessManager:
             "auto_balance": False,
         }
         self._auto_balance_active = False
+        self._auto_balance_cancel = False
 
     @property
     def auto_balance_active(self) -> bool:
         with self._lock:
             return self._auto_balance_active
+
+    @property
+    def auto_balance_cancel_requested(self) -> bool:
+        with self._lock:
+            return self._auto_balance_cancel
 
     @property
     def recovery_state(self) -> dict:
@@ -143,6 +149,19 @@ class ProcessManager:
         logger.info("llama-server stopped")
         return {"message": "Stopped"}
 
+    def cancel_auto_balance(self) -> dict:
+        """Request cancellation of the running auto-balance probe loop."""
+        with self._lock:
+            if not self._auto_balance_active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Nenhum auto-balance em andamento.",
+                )
+            self._auto_balance_cancel = True
+        self.stop()
+        logger.info("Auto-balance cancel requested by user")
+        return {"message": "Cancelando auto-balance..."}
+
     def start_auto_balance(self, request: StartRequest) -> dict:
         """Start progressive GPU discovery in a background thread."""
         with self._lock:
@@ -151,6 +170,7 @@ class ProcessManager:
                     status_code=409,
                     detail="Auto-balance ja esta em andamento.",
                 )
+            self._auto_balance_cancel = False
 
         thread = threading.Thread(
             target=self._run_auto_balance,
@@ -169,7 +189,7 @@ class ProcessManager:
         return {"message": "Auto-balance em andamento", "probing": True}
 
     def _run_auto_balance(self, request: StartRequest) -> None:
-        from auto_balance import AutoBalanceProber
+        from auto_balance import AutoBalanceCancelled, AutoBalanceProber
 
         with self._lock:
             self._auto_balance_active = True
@@ -234,6 +254,16 @@ class ProcessManager:
                     "hardware_capacity_exceeded": hardware_exceeded,
                     "failure_details": failure,
                 }
+        except AutoBalanceCancelled:
+            self.stop()
+            self.recovery_state = {
+                "active": False,
+                "failed": False,
+                "cancelled": True,
+                "message": "Auto-balance cancelado.",
+                "auto_balance": False,
+            }
+            logger.info("Auto-balance cancelled")
         except Exception as exc:
             logger.exception(f"Auto-balance error: {exc}")
             self.stop()
@@ -248,6 +278,7 @@ class ProcessManager:
         finally:
             with self._lock:
                 self._auto_balance_active = False
+                self._auto_balance_cancel = False
 
     def start(
         self,

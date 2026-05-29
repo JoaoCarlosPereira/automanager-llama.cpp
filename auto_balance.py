@@ -30,6 +30,10 @@ TARGET_VRAM_PCT = 93.0
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 
 
+class AutoBalanceCancelled(Exception):
+    """Raised when the user cancels an in-progress auto-balance run."""
+
+
 class AutoBalancePlanner:
     """Builds and adjusts weight maps (main-first spill, sum=100)."""
 
@@ -325,6 +329,10 @@ class AutoBalanceProber:
         self.log_manager = log_manager
         self.planner = AutoBalancePlanner()
 
+    def _raise_if_cancelled(self) -> None:
+        if self.process_manager.auto_balance_cancel_requested:
+            raise AutoBalanceCancelled()
+
     def discover(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
@@ -373,6 +381,7 @@ class AutoBalanceProber:
             main_index=main_index,
             pinned_map=pinned_map,
         )
+        self._raise_if_cancelled()
 
         feasible, active_count, attempt = self._find_feasible_split(
             request,
@@ -384,6 +393,7 @@ class AutoBalanceProber:
             active_indices,
             attempt,
         )
+        self._raise_if_cancelled()
         if feasible is None:
             self.process_manager.stop()
             msg, failure = self.build_hardware_capacity_failure(
@@ -415,6 +425,7 @@ class AutoBalanceProber:
             pinned_map,
             attempt,
         )
+        self._raise_if_cancelled()
 
         pinned_indices: Set[int] = set(pinned_map.keys())
         gpu_weights = self.planner.to_gpu_weights(
@@ -452,6 +463,7 @@ class AutoBalanceProber:
         max_attempts = max_active * 25
 
         while attempt < max_attempts:
+            self._raise_if_cancelled()
             attempt += 1
             label = self.planner.format_weights(weight_map, spill_order)
             self._set_progress(
@@ -466,6 +478,8 @@ class AutoBalanceProber:
             outcome = self._probe_start(
                 request, weight_map, main_index, all_gpus, attempt
             )
+            if outcome == "cancelled":
+                raise AutoBalanceCancelled()
             if outcome == "ready":
                 return dict(weight_map), active_count, attempt
 
@@ -518,6 +532,7 @@ class AutoBalanceProber:
         ]
 
         for target_idx in active_ordered:
+            self._raise_if_cancelled()
             if target_idx in pinned_map:
                 logger.info(
                     f"Auto-balance GPU {target_idx}: fixada em "
@@ -533,6 +548,7 @@ class AutoBalanceProber:
             best_vram = 0.0
 
             while lo <= hi:
+                self._raise_if_cancelled()
                 mid = (lo + hi + 1) // 2
                 trial = self.planner.set_target_weight(
                     optimized, spill_order, target_idx, mid, pinned_map
@@ -558,6 +574,8 @@ class AutoBalanceProber:
                 outcome = self._probe_start(
                     request, trial, main_index, all_gpus, attempt
                 )
+                if outcome == "cancelled":
+                    raise AutoBalanceCancelled()
                 if outcome != "ready":
                     hi = mid - 1
                     continue
@@ -603,6 +621,8 @@ class AutoBalanceProber:
         all_gpus: List[dict],
         attempt: int,
     ) -> str:
+        if self.process_manager.auto_balance_cancel_requested:
+            return "cancelled"
         gpu_weights = self.planner.to_gpu_weights(all_gpus, weight_map, main_index)
         self.process_manager.stop()
         try:
@@ -668,6 +688,9 @@ class AutoBalanceProber:
         last_pos = 0
 
         while time.time() < deadline:
+            if self.process_manager.auto_balance_cancel_requested:
+                self.process_manager.stop()
+                return "cancelled"
             if not self._process_alive():
                 return "crashed"
 
