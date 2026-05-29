@@ -732,7 +732,7 @@ def _build_html(
                                 </select>
                                 <div class="relative {custom_ctx_class}" id="context-size-custom-wrap">
                                     <input type="number" id="context-size-custom" value="{custom_ctx_value}"
-                                           class="w-20 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl pl-3 pr-7 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center"
+                                           class="w-28 min-w-[7rem] bg-slate-800 border border-slate-700 text-slate-300 rounded-xl pl-3 pr-8 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center tabular-nums"
                                            min="1" step="1" placeholder="K"
                                            title="Contexto em K (ex.: 100 = 100K tokens por slot)"
                                            oninput="onContextSizeCustomInput()">
