@@ -633,6 +633,7 @@ class AutoBalanceProber:
                 mmproj_path=request.mmproj_path,
                 split_mode=request.split_mode,
                 parallel_slots=request.parallel_slots,
+                batch_size=request.batch_size,
             )
         except Exception as exc:
             logger.error(f"Auto-balance start failed: {exc}")

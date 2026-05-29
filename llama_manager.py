@@ -24,12 +24,14 @@ from config_manager import (
     AuthManager,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
+    DEFAULT_BATCH_SIZE,
 )
 from gpu_manager import GPUManager
 from log_manager import LogManager, logger
 from process_manager import ProcessManager, OOMWatchdog
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
+    BATCH_SIZE_PRESETS,
     GPUWeight,
     StartRequest,
     DeleteRequest,
@@ -199,6 +201,7 @@ async def start_model(
     base_settings = {
         "context_size": req.context_size,
         "parallel_slots": req.parallel_slots,
+        "batch_size": req.batch_size,
         "mmproj_path": req.mmproj_path,
         "split_mode": req.split_mode,
         "auto_balance": req.auto_balance,
@@ -220,6 +223,7 @@ async def start_model(
             mmproj_path=req.mmproj_path,
             split_mode=req.split_mode,
             parallel_slots=req.parallel_slots,
+            batch_size=req.batch_size,
         )
 
     if req.auto_balance:
@@ -240,6 +244,7 @@ async def start_model(
         mmproj_path=req.mmproj_path,
         split_mode=req.split_mode,
         parallel_slots=req.parallel_slots,
+        batch_size=req.batch_size,
     )
 
 
@@ -508,6 +513,21 @@ async def index(request: Request):
     )
     custom_ctx_class = "" if use_custom_ctx else "hidden"
 
+    running_batch = (
+        status.get("config", {}).get("batch_size")
+        if status.get("running")
+        else None
+    )
+    batch_opts = ""
+    for val in BATCH_SIZE_PRESETS:
+        if running_batch is not None:
+            selected = "selected" if running_batch == val else ""
+        else:
+            selected = "selected" if val == DEFAULT_BATCH_SIZE else ""
+        batch_opts += (
+            f'<option value="{val}" class="bg-slate-900" {selected}>{val}</option>'
+        )
+
     # Model items
     model_items = ""
     for m in models:
@@ -583,6 +603,7 @@ async def index(request: Request):
         ctx_opts=ctx_opts,
         custom_ctx_value=custom_ctx_value,
         custom_ctx_class=custom_ctx_class,
+        batch_opts=batch_opts,
         local_ip=local_ip,
         api_token=api_token,
         is_authenticated=is_authenticated,
@@ -597,6 +618,7 @@ def _build_html(
     ctx_opts: str,
     custom_ctx_value: str,
     custom_ctx_class: str,
+    batch_opts: str,
     local_ip: str,
     api_token: str,
     is_authenticated: bool,
@@ -726,7 +748,7 @@ def _build_html(
                         </div>
                         <div class="flex flex-wrap items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800">
                             <div class="flex items-center gap-2">
-                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap" title="Tokens por slot (--ctx-size / --parallel no llama-server)">Contexto/slot:</label>
+                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap" title="Tokens por slot (--ctx-size / --parallel no llama-server)">Contexto:</label>
                                 <select id="context-size" onchange="onContextSizePresetChange()" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
                                     {ctx_opts}
                                 </select>
@@ -743,6 +765,12 @@ def _build_html(
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Requisições simultâneas (--parallel)"><i class="fas fa-clone text-blue-400 mr-2"></i>Slots:</label>
                                 <input type="number" id="parallel-slots" value="{DEFAULT_PARALLEL_SLOTS}" min="1" max="64"
                                        class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center">
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tamanho do batch de prefill (--batch-size)"><i class="fas fa-boxes-stacked text-violet-400 mr-2"></i>Batch:</label>
+                                <select id="batch-size" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[5.5rem]">
+                                    {batch_opts}
+                                </select>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-eye text-blue-400 mr-2"></i>Vision:</label>
@@ -1363,6 +1391,7 @@ def _build_html(
         function resetToDefaults() {{
             setContextSize(DEFAULT_CONTEXT_SIZE_UI);
             document.getElementById('parallel-slots').value = "{DEFAULT_PARALLEL_SLOTS}";
+            document.getElementById('batch-size').value = "{DEFAULT_BATCH_SIZE}";
             document.getElementById('mmproj-path').value = "";
             document.getElementById('split-mode').value = "layer";
             const toggle = document.getElementById('auto-balance-toggle');
@@ -1398,6 +1427,7 @@ def _build_html(
             if (!cfg) return;
             if (cfg.context_size) setContextSize(cfg.context_size);
             if (cfg.parallel_slots) document.getElementById('parallel-slots').value = cfg.parallel_slots;
+            if (cfg.batch_size) document.getElementById('batch-size').value = cfg.batch_size;
             if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
             if (cfg.mmproj_path !== undefined) {{
                 const select = document.getElementById('mmproj-path');
@@ -1571,6 +1601,7 @@ def _build_html(
                     if (data.running && !currentSelectedModel && data.config) {{
                         if (data.config.context_size) setContextSize(data.config.context_size);
                         if (data.config.parallel_slots) document.getElementById('parallel-slots').value = data.config.parallel_slots;
+                        if (data.config.batch_size) document.getElementById('batch-size').value = data.config.batch_size;
                         if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
                     }}
                 }}
@@ -1885,6 +1916,7 @@ def _build_html(
             const mmprojPath = document.getElementById('mmproj-path').value;
             const splitMode = document.getElementById('split-mode').value;
             const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || {DEFAULT_PARALLEL_SLOTS}));
+            const batchSize = parseInt(document.getElementById('batch-size').value, 10) || {DEFAULT_BATCH_SIZE};
             const autoBalance = document.getElementById('auto-balance-toggle').checked;
             document.getElementById('parallel-slots').value = parallelSlots;
             document.getElementById('status-badge').innerHTML = autoBalance && !manualGpuOverride
@@ -1905,6 +1937,7 @@ def _build_html(
                         gpu_weights: weights,
                         context_size: contextSize,
                         parallel_slots: parallelSlots,
+                        batch_size: batchSize,
                         split_mode: splitMode,
                         auto_balance: autoBalance,
                         manual_gpu_override: manualGpuOverride,
@@ -1979,6 +2012,7 @@ async def startup_event():
                             w.active = True
                     context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
                     parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
+                    batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
                     mmproj_path = saved_cfg.get("mmproj_path")
                     split_mode = saved_cfg.get("split_mode", "layer")
                 else:
@@ -1999,6 +2033,7 @@ async def startup_event():
                         )
                     context_size = DEFAULT_CONTEXT_SIZE
                     parallel_slots = DEFAULT_PARALLEL_SLOTS
+                    batch_size = DEFAULT_BATCH_SIZE
                     mmproj_path = None
                     split_mode = "layer"
 
@@ -2009,6 +2044,7 @@ async def startup_event():
                     mmproj_path=mmproj_path,
                     split_mode=split_mode,
                     parallel_slots=parallel_slots,
+                    batch_size=batch_size,
                 )
             except Exception as e:
                 logger.error(f"Auto-start error: {e}")

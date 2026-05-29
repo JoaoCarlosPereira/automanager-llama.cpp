@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from config_manager import ConfigManager, TokenManager
 from gpu_manager import GPUManager, LLAMA_SERVER_BIN
 from log_manager import LogManager
-from schemas import DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
+from schemas import DEFAULT_BATCH_SIZE, DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
 
 SERVER_PORT = 8085
 logger = logging.getLogger("automanager")
@@ -112,6 +112,7 @@ class ProcessManager:
                                     "path": self._last_request.path,
                                     "context_size": self._last_request.context_size,
                                     "parallel_slots": self._last_request.parallel_slots,
+                                    "batch_size": self._last_request.batch_size,
                                     "split_mode": self._last_request.split_mode,
                                     "gpu_weights": [
                                         w.model_dump()
@@ -206,6 +207,7 @@ class ProcessManager:
                     {
                         "context_size": request.context_size,
                         "parallel_slots": request.parallel_slots,
+                        "batch_size": request.batch_size,
                         "mmproj_path": request.mmproj_path,
                         "split_mode": request.split_mode,
                         "gpu_weights": saved_weights,
@@ -232,6 +234,7 @@ class ProcessManager:
                 failure_settings = {
                     "context_size": request.context_size,
                     "parallel_slots": request.parallel_slots,
+                    "batch_size": request.batch_size,
                     "mmproj_path": request.mmproj_path
                     or existing.get("mmproj_path"),
                     "split_mode": request.split_mode,
@@ -288,6 +291,7 @@ class ProcessManager:
         mmproj_path: Optional[str] = None,
         split_mode: str = "layer",
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> dict:
         self.stop()
 
@@ -333,6 +337,8 @@ class ProcessManager:
             str(parallel_slots),
             "--ctx-size",
             str(server_ctx_size),
+            "--batch-size",
+            str(batch_size),
             "--mlock",
             "--main-gpu",
             main_gpu,
@@ -360,7 +366,8 @@ class ProcessManager:
         self.log_manager.clear_server_log()
         logger.info(
             f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
-            f"ctx_per_slot={context_size}, server_ctx={server_ctx_size})"
+            f"ctx_per_slot={context_size}, server_ctx={server_ctx_size}, "
+            f"batch_size={batch_size})"
         )
 
         try:
@@ -379,6 +386,7 @@ class ProcessManager:
                     gpu_weights=gpu_weights,
                     context_size=context_size,
                     parallel_slots=parallel_slots,
+                    batch_size=batch_size,
                     split_mode=split_mode,
                 )
                 return {
@@ -509,6 +517,7 @@ class OOMWatchdog(threading.Thread):
             {
                 "context_size": req.context_size,
                 "parallel_slots": req.parallel_slots,
+                "batch_size": req.batch_size,
                 "mmproj_path": req.mmproj_path,
                 "gpu_weights": [w.model_dump() for w in new_weights],
             },
@@ -522,6 +531,7 @@ class OOMWatchdog(threading.Thread):
                 mmproj_path=req.mmproj_path,
                 split_mode=req.split_mode,
                 parallel_slots=req.parallel_slots,
+                batch_size=req.batch_size,
             )
         except Exception as e:
             logger.error(f"Recovery start failed: {e}")

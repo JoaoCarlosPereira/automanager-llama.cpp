@@ -145,6 +145,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
         mmproj_path=request.mmproj_path,
         split_mode=request.split_mode,
         parallel_slots=request.parallel_slots,
+        batch_size=request.batch_size,
     )
 
 

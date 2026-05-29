@@ -15,6 +15,7 @@ CONFIG_PATH = "/root/automanager_config.json"
 MANAGER_LOG_PATH = "/root/manager.log"
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
+DEFAULT_BATCH_SIZE = 2048
 
 logger = logging.getLogger("automanager")
 
@@ -61,6 +62,7 @@ class ConfigManager:
         entry = {
             "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
             "parallel_slots": merged.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
+            "batch_size": merged.get("batch_size", DEFAULT_BATCH_SIZE),
             "mmproj_path": merged.get("mmproj_path"),
             "gpu_weights": merged.get("gpu_weights"),
             "split_mode": merged.get("split_mode", "layer"),
