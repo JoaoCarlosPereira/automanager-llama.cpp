@@ -231,3 +231,34 @@ def test_models_endpoint_uses_model_scanner_mock(monkeypatch, authenticated_clie
     assert response.status_code == 200
     assert response.json() == model_scanner.scan.return_value
     model_scanner.scan.assert_called_once_with()
+
+
+def test_start_auto_balance_takes_priority_over_manual_override(
+    monkeypatch, authenticated_client
+):
+    process_manager = MagicMock()
+    process_manager.start_auto_balance.return_value = {
+        "message": "Auto-balance em andamento",
+        "probing": True,
+    }
+    process_manager.start.return_value = {"message": "Started"}
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", MagicMock())
+
+    response = authenticated_client.post(
+        "/start",
+        json={
+            "path": "/media/docker/models/model.gguf",
+            "gpu_weights": [
+                {"index": 0, "weight": 100.0, "name": "GPU-0", "active": True}
+            ],
+            "context_size": 4096,
+            "auto_balance": True,
+            "manual_gpu_override": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["probing"] is True
+    process_manager.start_auto_balance.assert_called_once()
+    process_manager.start.assert_not_called()

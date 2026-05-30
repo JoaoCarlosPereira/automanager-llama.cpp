@@ -207,6 +207,9 @@ async def start_model(
         "auto_balance": req.auto_balance,
     }
 
+    if req.auto_balance:
+        return process_manager.start_auto_balance(req)
+
     if req.manual_gpu_override:
         config_manager.update_model_settings(
             req.path,
@@ -225,9 +228,6 @@ async def start_model(
             parallel_slots=req.parallel_slots,
             batch_size=req.batch_size,
         )
-
-    if req.auto_balance:
-        return process_manager.start_auto_balance(req)
 
     config_manager.update_model_settings(
         req.path,
@@ -1919,7 +1919,7 @@ def _build_html(
             const batchSize = parseInt(document.getElementById('batch-size').value, 10) || {DEFAULT_BATCH_SIZE};
             const autoBalance = document.getElementById('auto-balance-toggle').checked;
             document.getElementById('parallel-slots').value = parallelSlots;
-            document.getElementById('status-badge').innerHTML = autoBalance && !manualGpuOverride
+            document.getElementById('status-badge').innerHTML = autoBalance
                 ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
                 : '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
             const contextSize = getContextSize();
@@ -1940,7 +1940,7 @@ def _build_html(
                         batch_size: batchSize,
                         split_mode: splitMode,
                         auto_balance: autoBalance,
-                        manual_gpu_override: manualGpuOverride,
+                        manual_gpu_override: autoBalance ? false : manualGpuOverride,
                     }}),
                 }});
                 if (!res.ok) {{
@@ -1954,7 +1954,7 @@ def _build_html(
                     autoBalancePending = true;
                     syncAutoBalanceCancelButton(true);
                     hideAutoBalanceCapacityAlert();
-                }} else if (manualGpuOverride) {{
+                }} else if (!autoBalance && manualGpuOverride) {{
                     manualGpuOverride = false;
                     if (window.modelConfigs[path]) {{
                         window.modelConfigs[path].auto_balance_profile = false;
