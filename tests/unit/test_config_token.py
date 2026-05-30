@@ -118,6 +118,21 @@ def test_config_clear_default_model(config_manager):
     assert config_manager.get_default_model() is None
 
 
+def test_auth_session_expires_after_idle(auth_manager):
+    from datetime import datetime, timedelta
+
+    from config_manager import SESSION_IDLE_SECONDS
+
+    token = auth_manager.authenticate("admin", "admin")
+    assert token is not None
+    assert auth_manager.verify_session(token) is True
+
+    stale = datetime.utcnow() - timedelta(seconds=SESSION_IDLE_SECONDS + 1)
+    auth_manager._sessions[token] = stale
+    assert auth_manager.verify_session(token) is False
+    assert token not in auth_manager._sessions
+
+
 def test_token_generate_format(token_manager):
     token = token_manager.generate()
     assert token.startswith("sk-")

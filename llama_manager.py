@@ -633,10 +633,9 @@ def _build_html(
 ) -> str:
     """Build the full HTML template."""
 
-    login_overlay = ""
-    if not is_authenticated:
-        login_overlay = """
-        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center" style="background: radial-gradient(circle at 50% 0%, #1e3a8a 0%, #020617 100%);">
+    login_overlay_style = "none" if is_authenticated else "flex"
+    login_overlay = f"""
+        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto" style="display: {login_overlay_style};">
             <div class="glass p-8 md:p-10 rounded-3xl border border-slate-700/50 w-full max-w-md mx-4">
                 <div class="flex flex-col items-center mb-8">
                     <div class="bg-blue-600 p-4 rounded-2xl shadow-xl shadow-blue-500/20 mb-4">
@@ -1033,6 +1032,73 @@ def _build_html(
         let currentRunningModelPath = null;
         let manualGpuOverride = false;
         let autoBalancePending = false;
+        let sessionExpiredHandled = false;
+        let metricsTimer = null;
+        let downloadsTimer = null;
+        let modelsTimer = null;
+
+        function stopDashboardPolling() {{
+            if (statusPollTimer) {{
+                clearInterval(statusPollTimer);
+                statusPollTimer = null;
+            }}
+            if (metricsTimer) {{
+                clearInterval(metricsTimer);
+                metricsTimer = null;
+            }}
+            if (downloadsTimer) {{
+                clearInterval(downloadsTimer);
+                downloadsTimer = null;
+            }}
+            if (modelsTimer) {{
+                clearInterval(modelsTimer);
+                modelsTimer = null;
+            }}
+            if (logStream) {{
+                logStream.abort();
+                logStream = null;
+            }}
+            syncAutoBalanceCancelButton(false);
+        }}
+
+        function startDashboardPolling() {{
+            stopDashboardPolling();
+            metricsTimer = setInterval(updateMetrics, 2000);
+            ensureStatusPolling(false);
+            downloadsTimer = setInterval(updateDownloads, 3000);
+            modelsTimer = setInterval(updateModels, 5000);
+        }}
+
+        function handleSessionExpired(message) {{
+            if (sessionExpiredHandled) return;
+            sessionExpiredHandled = true;
+            autoBalancePending = false;
+            stopDashboardPolling();
+            const dashboard = document.getElementById('dashboard');
+            const overlay = document.getElementById('login-overlay');
+            if (dashboard) dashboard.style.display = 'none';
+            if (overlay) overlay.style.display = 'flex';
+            const errEl = document.getElementById('login-error');
+            if (errEl) {{
+                errEl.textContent = message || 'Sessao expirada. Faca login novamente.';
+                errEl.classList.remove('hidden');
+                errEl.classList.remove('text-red-500');
+                errEl.classList.add('text-amber-500');
+            }}
+        }}
+
+        async function apiFetch(url, options) {{
+            const res = await fetch(url, options);
+            if (res.status === 401) {{
+                let detail = 'Sessao expirada. Faca login novamente.';
+                try {{
+                    const body = await res.clone().json();
+                    if (body && body.detail) detail = body.detail;
+                }} catch (e) {{}}
+                handleSessionExpired(detail);
+            }}
+            return res;
+        }}
 
         document.getElementById('chat-link').href = `http://${{fixedIp}}:8085/`;
         document.getElementById('api-link').innerText = `http://${{fixedIp}}:8085/v1`;
@@ -1049,9 +1115,18 @@ def _build_html(
                     body: JSON.stringify({{username, password}}),
                 }});
                 if (res.ok) {{
+                    sessionExpiredHandled = false;
+                    const errEl = document.getElementById('login-error');
+                    if (errEl) {{
+                        errEl.textContent = '';
+                        errEl.classList.add('hidden');
+                        errEl.classList.remove('text-amber-500');
+                        errEl.classList.add('text-red-500');
+                    }}
                     document.getElementById('login-overlay').style.display = 'none';
                     document.getElementById('dashboard').style.display = 'block';
                     initDashboard();
+                    startDashboardPolling();
                 }} else {{
                     const err = await res.json();
                     const el = document.getElementById('login-error');
@@ -1510,7 +1585,8 @@ def _build_html(
 
         async function updateMetrics() {{
             try {{
-                const res = await fetch('/metrics');
+                const res = await apiFetch('/metrics');
+                if (sessionExpiredHandled || !res.ok) return;
                 const data = await res.json();
                 const metricsPanel = document.getElementById('metrics-panel');
                 if (metricsPanel) {{
@@ -1585,7 +1661,8 @@ def _build_html(
 
         async function updateStatus() {{
             try {{
-                const res = await fetch('/status');
+                const res = await apiFetch('/status');
+                if (sessionExpiredHandled || !res.ok) return;
                 const data = await res.json();
                 const badge = document.getElementById('status-badge');
                 const card = document.getElementById('active-card');
@@ -1774,7 +1851,8 @@ def _build_html(
 
         async function updateDownloads() {{
             try {{
-                const res = await fetch('/downloads');
+                const res = await apiFetch('/downloads');
+                if (sessionExpiredHandled || !res.ok) return;
                 const data = await res.json();
                 const container = document.getElementById('download-status');
                 const entries = Object.entries(data);
@@ -1798,7 +1876,11 @@ def _build_html(
 
         async function updateModels() {{
             try {{
-                const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]);
+                const [res, cfgRes] = await Promise.all([
+                    apiFetch('/models'),
+                    apiFetch('/config'),
+                ]);
+                if (sessionExpiredHandled || !res.ok || !cfgRes.ok) return;
                 const data = await res.json();
                 const cfg = await cfgRes.json();
                 document.getElementById('model-count').innerText = `${{data.models.length}} UNIDADES`;
@@ -1938,7 +2020,7 @@ def _build_html(
                 return;
             }}
             try {{
-                const res = await fetch('/start', {{
+                const res = await apiFetch('/start', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify({{
@@ -1954,6 +2036,7 @@ def _build_html(
                     }}),
                 }});
                 if (!res.ok) {{
+                    if (sessionExpiredHandled) return;
                     const err = await res.json();
                     alert("Erro ao iniciar: " + (err.detail || "Erro desconhecido"));
                     return;
@@ -1979,15 +2062,15 @@ def _build_html(
 
         async function stopModel() {{
             if (confirm("ENCERRAR PROCESSO?")) {{
-                await fetch('/stop', {{method: 'POST'}});
-                setTimeout(updateStatus, 1000);
+                const res = await apiFetch('/stop', {{method: 'POST'}});
+                if (!sessionExpiredHandled && res.ok) setTimeout(updateStatus, 1000);
             }}
         }}
 
-        setInterval(updateMetrics, 2000);
-        ensureStatusPolling(false);
-        setInterval(updateDownloads, 3000);
-        setInterval(updateModels, 5000);
+        if (document.getElementById('dashboard').style.display !== 'none') {{
+            initDashboard();
+            startDashboardPolling();
+        }}
     </script>
     <script src="/static/js/pacman_bg.js"></script>
 </body>

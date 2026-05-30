@@ -6,7 +6,7 @@ import logging
 import hashlib
 import secrets
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
@@ -15,6 +15,7 @@ CONFIG_PATH = "/root/automanager_config.json"
 MANAGER_LOG_PATH = "/root/manager.log"
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
+SESSION_IDLE_SECONDS = 86400  # 24h without activity
 DEFAULT_BATCH_SIZE = 2048
 
 logger = logging.getLogger("automanager")
@@ -156,11 +157,16 @@ class AuthManager:
 
     def verify_session(self, session_token: str) -> bool:
         with self._lock:
-            if session_token in self._sessions:
-                # Extend session
-                self._sessions[session_token] = datetime.utcnow()
-                return True
-            return False
+            last_seen = self._sessions.get(session_token)
+            if last_seen is None:
+                return False
+            idle = (datetime.utcnow() - last_seen).total_seconds()
+            if idle > SESSION_IDLE_SECONDS:
+                del self._sessions[session_token]
+                logger.info("Session expired due to inactivity")
+                return False
+            self._sessions[session_token] = datetime.utcnow()
+            return True
 
     def logout(self, session_token: str) -> None:
         with self._lock:
