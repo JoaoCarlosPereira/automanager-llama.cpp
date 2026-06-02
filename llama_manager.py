@@ -8,13 +8,11 @@ tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 import json
 import os
 import socket
-import subprocess
-import sys
 import threading
 import time
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -146,214 +144,8 @@ def optional_auth(request: Request) -> Optional[str]:
 
 
 # ─────────────────────────────────────────────────────────
-# WebSocket Terminal (interactive Ubuntu/bash shell)
-# ─────────────────────────────────────────────────────────
-
-_terminal_sessions: dict = {}
-
-
-@app.websocket("/ws/terminal")
-async def websocket_terminal(websocket: WebSocket):
-    """WebSocket endpoint for an interactive bash/Ubuntu terminal session."""
-    await websocket.accept()
-
-    # Auth via session_token query param
-    session_token = None
-    if hasattr(websocket, "query_params"):
-        session_token = websocket.query_params.get("session_token")
-    if not session_token or not auth_manager.verify_session(session_token):
-        await websocket.close(code=4001, reason="Unauthenticated")
-        return
-
-    # pty/termios are Linux-only
-    try:
-        import pty  # noqa: F401
-        import termios  # noqa: F401
-    except ImportError:
-        await websocket.send_text(
-            json.dumps({
-                "error": "Terminal nao disponivel nesta plataforma (Windows). "
-                "O terminal requer Linux com suporte a pty/termios."
-            })
-        )
-        await websocket.close(code=4003, reason="Terminal not available on this platform")
-        return
-
-    _relay_terminal(websocket)
-
-
-def _relay_terminal(websocket: WebSocket):
-    """Spawn a bash shell via pty and relay I/O with the WebSocket client."""
-    import pty
-    import select
-
-    env = os.environ.copy()
-    env["TERM"] = "xterm-256color"
-    env["LANG"] = "pt_BR.UTF-8"
-    env["LC_ALL"] = "pt_BR.UTF-8"
-
-    shell = os.environ.get("SHELL", "/bin/bash")
-    if not os.path.isfile(shell):
-        shell = "/bin/bash"
-
-    pid, fd = pty.fork()
-
-    if pid == 0:
-        # Child process
-        os.setsid()
-        os.execve(shell, [shell], env)
-
-    session_id = id(websocket)
-    _terminal_sessions[session_id] = {"pid": pid, "fd": fd, "shell": shell}
-
-    try:
-        while True:
-            try:
-                rlist, _, _ = select.select([fd], [], [], 1.0)
-            except (ValueError, OSError):
-                break
-
-            # Read from pty → send to WebSocket
-            if fd in rlist:
-                try:
-                    output = os.read(fd, 65536)
-                except OSError:
-                    break
-                if not output:
-                    break
-                try:
-                    websocket.send_bytes(output)
-                except WebSocketDisconnect:
-                    break
-
-            # Read from WebSocket → write to pty
-            try:
-                data = websocket.receive_bytes()
-            except WebSocketDisconnect:
-                break
-            try:
-                os.write(fd, data)
-            except OSError:
-                break
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        _terminal_sessions.pop(session_id, None)
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
-
-# ─────────────────────────────────────────────────────────
 # API Endpoints
 # ─────────────────────────────────────────────────────────
-
-# --- System / Update ---
-
-
-@app.post("/api/system/update")
-async def system_update(_auth: str = Depends(get_current_auth)):
-    """Perform git pull in the app directory and restart systemd service if changes detected."""
-    import subprocess
-
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    result = {"status": "failed", "steps": []}
-
-    try:
-        # Step 1: Check if there are changes to pull
-        result["steps"].append("Verificando atualizações...")
-        pull_proc = subprocess.run(
-            ["git", "fetch", "origin"],
-            cwd=app_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if pull_proc.returncode != 0:
-            result["steps"].append(f"Erro no git fetch: {pull_proc.stderr.strip()}")
-            return result
-
-        # Check for divergence
-        diff_proc = subprocess.run(
-            ["git", "diff", "--compact-summary", "HEAD..origin/HEAD"],
-            cwd=app_dir,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        has_changes = diff_proc.returncode == 1 and bool(diff_proc.stdout.strip())
-        # git diff returns 1 if there are changes, 0 if identical
-
-        if not has_changes:
-            result["status"] = "up-to-date"
-            result["steps"].append("Já está na versão mais recente.")
-            return result
-
-        diff_summary = diff_proc.stdout.strip()
-        result["steps"].append(f"Atualizações encontradas:\n{diff_summary}")
-
-        # Step 2: Pull changes
-        result["steps"].append("Baixando atualizações...")
-        pull_proc = subprocess.run(
-            ["git", "pull", "origin"],
-            cwd=app_dir,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if pull_proc.returncode != 0:
-            result["steps"].append(f"Erro no git pull: {pull_proc.stderr.strip()}")
-            return result
-
-        pull_output = pull_proc.stdout.strip()
-        result["steps"].append(f"Pull concluído:\n{pull_output}")
-        result["status"] = "restart"
-
-    except subprocess.TimeoutExpired:
-        result["steps"].append("Operação git expirou (timeout).")
-    except Exception as e:
-        result["steps"].append(f"Erro inesperado: {str(e)}")
-
-    return result
-
-
-@app.post("/api/system/restart")
-async def system_restart(_auth: str = Depends(get_current_auth)):
-    """Manually restart the llama-manager systemd service."""
-    import subprocess
-
-    result = {"status": "failed", "steps": []}
-
-    try:
-        result["steps"].append("Reiniciando serviço...")
-        proc = subprocess.run(
-            ["sudo", "systemctl", "restart", "llama-manager.service"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if proc.returncode != 0:
-            result["steps"].append(f"Erro: {proc.stderr.strip()}")
-            return result
-
-        result["status"] = "ok"
-        result["steps"].append("Serviço reiniciado com sucesso.")
-
-    except subprocess.TimeoutExpired:
-        result["steps"].append("Operação expirou (timeout).")
-    except FileNotFoundError:
-        result["steps"].append("systemctl não encontrado. Execute em um sistema systemd.")
-    except Exception as e:
-        result["steps"].append(f"Erro inesperado: {str(e)}")
-
-    return result
-
 
 # --- Authentication ---
 
@@ -879,9 +671,6 @@ def _build_html(
     <link rel="shortcut icon" href="/favicon.ico">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
         :root {{ --bg-deep: #020617; --card-bg: rgba(15, 23, 42, 0.6); }}
@@ -901,8 +690,6 @@ def _build_html(
         .btn-gradient {{ background: linear-gradient(135deg, #1e30f3 0%, #e21e80 100%); }}
         .text-gradient {{ background: linear-gradient(315deg, #1e30f3 0%, #e21e80 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
         .metric-dimmed {{ opacity: 0.45; filter: grayscale(0.4); }}
-        .terminal-tab-btn {{ transition: all 0.2s ease; }}
-        .update-spinner {{ width: 24px; height: 24px; border-width: 2px; }}
         @media (prefers-reduced-motion: reduce) {{ #pacman-background {{ display: none; }} }}
     </style>
 </head>
@@ -931,12 +718,6 @@ def _build_html(
                 </div>
                 <button onclick="handleLogout()" class="text-slate-500 hover:text-white transition-colors" title="Sair">
                     <i class="fas fa-sign-out-alt"></i>
-                </button>
-                <button onclick="openUpdateModal(); performUpdate();" id="update-btn"
-                    class="px-4 py-2 bg-slate-800 hover:bg-blue-600/20 border border-slate-700 hover:border-blue-500/50 text-slate-400 hover:text-blue-400 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 active:scale-95"
-                    title="Atualizar aplicação (git pull + restart)">
-                    <i class="fas fa-sync-alt"></i>
-                    <span class="hidden md:inline">Atualizar</span>
                 </button>
             </div>
         </header>
@@ -1097,32 +878,20 @@ def _build_html(
                     </div>
                 </div>
                 <div class="glass rounded-[2rem] overflow-hidden shadow-2xl border border-slate-800">
-                    <!-- Terminal tabs -->
-                    <div class="px-6 md:px-10 py-4 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between">
-                        <div class="flex items-center gap-4 md:gap-6">
-                            <div class="flex items-center gap-3">
-                                <button onclick="switchTerminalTab('logs')" id="tab-logs"
-                                    class="px-4 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border terminal-tab-btn bg-blue-600 text-white border-blue-600">
-                                    <i class="fas fa-terminal mr-2"></i>Logs
-                                </button>
-                                <button onclick="switchTerminalTab('terminal')" id="tab-terminal"
-                                    class="px-4 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all border terminal-tab-btn bg-slate-800 text-slate-400 border-slate-700">
-                                    <i class="fas fa-terminal mr-2"></i>Terminal
-                                </button>
+                    <div class="px-6 md:px-10 py-4 bg-slate-900/60 border-b border-slate-800 flex justify-between items-center">
+                        <div class="flex items-center gap-3 md:gap-4">
+                            <div class="flex gap-1.5 md:gap-2">
+                                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
+                                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
+                                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
                             </div>
+                            <p class="text-slate-400 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono ml-2 md:ml-4">Saída de logs do sistema</p>
                         </div>
-                        <button onclick="clearTerminal()" class="text-[9px] md:text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest">
-                            <i class="fas fa-trash-alt mr-2"></i>Limpar
+                        <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] md:text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest">
+                            <i class="fas fa-trash-alt mr-2"></i> Limpar
                         </button>
                     </div>
-                    <!-- Logs tab content -->
-                    <div id="panel-logs" class="h-[300px] md:h-[400px] overflow-hidden relative">
-                        <div id="log-box" class="custom-scroll absolute inset-0 p-6 md:p-10 overflow-y-auto font-mono text-[10px] md:text-xs text-slate-400 leading-relaxed whitespace-pre-wrap bg-slate-950/40"></div>
-                    </div>
-                    <!-- Terminal tab content -->
-                    <div id="panel-terminal" class="h-[300px] md:h-[400px] overflow-hidden relative bg-[#0c0c0c] hidden">
-                        <div id="terminal-box" class="absolute inset-0"></div>
-                    </div>
+                    <div id="log-box" class="custom-scroll p-6 md:p-10 h-[300px] md:h-[400px] overflow-y-auto font-mono text-[10px] md:text-xs text-slate-400 leading-relaxed whitespace-pre-wrap bg-slate-950/40"></div>
                 </div>
             </div>
             <div class="lg:col-span-5 space-y-6 md:space-y-10">
@@ -1196,90 +965,15 @@ def _build_html(
                 </div>
             </div>
         </div>
-
-        <!-- Update Modal -->
-        <div id="update-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden">
-            <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="closeUpdateModal()"></div>
-            <div class="relative glass p-8 md:p-10 rounded-3xl border border-slate-700/50 w-full max-w-lg mx-4 shadow-2xl z-10">
-                <button onclick="closeUpdateModal()" class="absolute top-4 right-4 text-slate-500 hover:text-white transition-colors">
-                    <i class="fas fa-times text-lg"></i>
-                </button>
-                <div class="flex items-center gap-4 mb-6">
-                    <div class="bg-blue-600 p-4 rounded-2xl shadow-xl shadow-blue-500/20">
-                        <i class="fas fa-sync-alt text-white text-xl"></i>
-                    </div>
-                    <div>
-                        <h3 class="text-xl font-bold text-white">Atualizar Aplicação</h3>
-                        <p class="text-xs text-slate-500 mt-1">Git pull + reiniciar serviço</p>
-                    </div>
-                </div>
-
-                <!-- Step: Check for updates -->
-                <div id="update-step-check" class="mb-6 hidden">
-                    <div class="flex items-center gap-3 mb-3">
-                        <div class="update-spinner w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                        <span class="text-sm font-bold text-blue-400">Verificando atualizações...</span>
-                    </div>
-                </div>
-
-                <!-- Step: Pull updates -->
-                <div id="update-step-pull" class="mb-6 hidden">
-                    <div class="flex items-center gap-3 mb-3">
-                        <div class="update-spinner w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
-                        <span class="text-sm font-bold text-emerald-400">Baixando atualizações...</span>
-                    </div>
-                </div>
-
-                <!-- Step: Restart -->
-                <div id="update-step-restart" class="mb-6 hidden">
-                    <div class="flex items-center gap-3 mb-3">
-                        <div class="update-spinner w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
-                        <span class="text-sm font-bold text-amber-400">Reiniciando serviço...</span>
-                    </div>
-                </div>
-
-                <!-- Update log -->
-                <div id="update-log" class="mb-6 bg-slate-950/60 rounded-2xl border border-slate-800 p-4 max-h-60 overflow-y-auto custom-scroll font-mono text-[11px] text-slate-400 leading-relaxed whitespace-pre-wrap"></div>
-
-                <!-- Actions -->
-                <div id="update-actions" class="flex gap-3 hidden">
-                    <button onclick="performRestart()" id="restart-btn" class="flex-1 py-3 bg-amber-600 hover:bg-amber-500 text-white text-sm font-black rounded-xl transition-all uppercase tracking-widest flex items-center justify-center gap-2">
-                        <i class="fas fa-redo"></i> Reiniciar Serviço
-                    </button>
-                    <button onclick="closeUpdateModal()" class="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-black rounded-xl transition-all uppercase tracking-widest">
-                        Fechar
-                    </button>
-                </div>
-
-                <!-- Already up-to-date message -->
-                <div id="update-ready" class="hidden">
-                    <div class="flex items-center justify-center gap-3 py-4 text-emerald-400">
-                        <i class="fas fa-check-circle text-2xl"></i>
-                        <span class="text-sm font-black uppercase tracking-widest">Já está atualizado</span>
-                    </div>
-                    <button onclick="closeUpdateModal()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-black rounded-xl transition-all uppercase tracking-widest">
-                        Fechar
-                    </button>
-                </div>
-            </div>
-        </div>
     </div>
     <script>
         let logStream = null;
         let startTime = null;
-        let terminalSessionId = null;
-        let terminalConnected = false;
-        let currentTerminalTab = 'logs';
         const fixedIp = "{local_ip}";
         window.modelConfigs = window.modelConfigs || {{}};
         const CONTEXT_PRESET_VALUES = {json.dumps(CONTEXT_PRESET_VALUES)};
         const DEFAULT_CONTEXT_SIZE_UI = {DEFAULT_CONTEXT_SIZE};
         const CONTEXT_K_MULTIPLIER = {CONTEXT_K_MULTIPLIER};
-        let xtermTerm = null;
-        let xtermFitAddon = null;
-        let terminalWs = null;
-        let terminalReconnectTimeout = null;
-        let currentSessionToken = null;
 
         function syncContextSizeCustomVisibility() {{
             const sel = document.getElementById('context-size');
@@ -1367,110 +1061,6 @@ def _build_html(
             syncAutoBalanceCancelButton(false);
         }}
 
-        // ───────── Update Modal ─────────
-
-        function openUpdateModal() {{
-            const modal = document.getElementById('update-modal');
-            modal.classList.remove('hidden');
-            resetUpdateModal();
-        }}
-
-        function closeUpdateModal() {{
-            const modal = document.getElementById('update-modal');
-            modal.classList.add('hidden');
-            resetUpdateModal();
-        }}
-
-        function resetUpdateModal() {{
-            ['update-step-check', 'update-step-pull', 'update-step-restart', 'update-actions', 'update-ready'].forEach(id => {{
-                document.getElementById(id).classList.add('hidden');
-            }});
-            document.getElementById('update-log').innerHTML = '';
-        }}
-
-        function addLogMessage(msg) {{
-            const logEl = document.getElementById('update-log');
-            const line = document.createElement('div');
-            line.className = 'mb-1 text-slate-400';
-            line.textContent = msg;
-            logEl.appendChild(line);
-            logEl.scrollTop = logEl.scrollHeight;
-        }}
-
-        async function performUpdate() {{
-            const checkStep = document.getElementById('update-step-check');
-            const pullStep = document.getElementById('update-step-pull');
-            const restartStep = document.getElementById('update-step-restart');
-            const actionsDiv = document.getElementById('update-actions');
-            const readyDiv = document.getElementById('update-ready');
-
-            resetUpdateModal();
-            checkStep.classList.remove('hidden');
-            addLogMessage('> Verificando atualizações no repositório...');
-
-            try {{
-                const res = await fetch('/api/system/update', {{ method: 'POST' }});
-                const data = await res.json();
-
-                // Remove check step
-                checkStep.classList.add('hidden');
-
-                if (data.status === 'up-to-date') {{
-                    addLogMessage(data.steps.join('\n'));
-                    readyDiv.classList.remove('hidden');
-                    return;
-                }}
-
-                if (data.status === 'failed') {{
-                    addLogMessage(data.steps.join('\n'));
-                    actionsDiv.classList.remove('hidden');
-                    return;
-                }}
-
-                // status === 'restart' — show pull output then ask for restart
-                pullStep.classList.remove('hidden');
-                addLogMessage(data.steps.join('\n'));
-                setTimeout(() => {{
-                    pullStep.classList.add('hidden');
-                    restartStep.classList.remove('hidden');
-                    actionsDiv.classList.remove('hidden');
-                }}, 1000);
-
-            }} catch (e) {{
-                checkStep.classList.add('hidden');
-                addLogMessage('Erro de rede: ' + e.message);
-                actionsDiv.classList.remove('hidden');
-            }}
-        }}
-
-        async function performRestart() {{
-            const restartStep = document.getElementById('update-step-restart');
-            const actionsDiv = document.getElementById('update-actions');
-            const readyDiv = document.getElementById('update-ready');
-
-            actionsDiv.classList.add('hidden');
-            restartStep.classList.remove('hidden');
-            addLogMessage('> Reiniciando serviço llama-manager.service...');
-
-            try {{
-                const res = await fetch('/api/system/restart', {{ method: 'POST' }});
-                const data = await res.json();
-                addLogMessage(data.steps.join('\n'));
-
-                restartStep.classList.add('hidden');
-                readyDiv.classList.remove('hidden');
-
-                if (data.status === 'ok') {{
-                    addLogMessage('\n✅ Serviço reiniciado com sucesso. Recarregando página em 5 segundos...');
-                    setTimeout(() => location.reload(), 5000);
-                }}
-            }} catch (e) {{
-                addLogMessage('Erro de rede: ' + e.message);
-                restartStep.classList.add('hidden');
-                actionsDiv.classList.remove('hidden');
-            }}
-        }}
-
         function startDashboardPolling() {{
             stopDashboardPolling();
             metricsTimer = setInterval(updateMetrics, 2000);
@@ -1537,15 +1127,6 @@ def _build_html(
                     document.getElementById('dashboard').style.display = 'block';
                     initDashboard();
                     startDashboardPolling();
-                    // Capture session token for WebSocket terminal
-                    const cookies = document.cookie.split(';');
-                    for (const c of cookies) {{
-                        const [name, ...rest] = c.trim().split('=');
-                        if (name.trim() === 'session_token') {{
-                            currentSessionToken = rest.join('=');
-                            break;
-                        }}
-                    }}
                 }} else {{
                     const err = await res.json();
                     const el = document.getElementById('login-error');
@@ -1560,10 +1141,6 @@ def _build_html(
         }}
 
         async function handleLogout() {{
-            // Close terminal WebSocket
-            if (terminalWs) {{ terminalWs.close(); terminalWs = null; }}
-            if (terminalReconnectTimeout) {{ clearTimeout(terminalReconnectTimeout); terminalReconnectTimeout = null; }}
-            if (xtermTerm) {{ xtermTerm.dispose(); xtermTerm = null; }}
             try {{ await fetch('/api/auth/logout', {{method: 'POST'}}); }} catch (e) {{}}
             location.reload();
         }}
@@ -2058,169 +1635,6 @@ def _build_html(
                     if (box.childNodes.length > 500) box.removeChild(box.firstChild);
                 }}
             }} catch (e) {{}}
-        }}
-
-        // ───────── Terminal ─────────
-
-        function switchTerminalTab(tab) {{
-            currentTerminalTab = tab;
-            const logsPanel = document.getElementById('panel-logs');
-            const termPanel = document.getElementById('panel-terminal');
-            const tabLogs = document.getElementById('tab-logs');
-            const tabTerminal = document.getElementById('tab-terminal');
-
-            if (tab === 'logs') {{
-                logsPanel.classList.remove('hidden');
-                termPanel.classList.add('hidden');
-                tabLogs.classList.add('bg-blue-600', 'text-white', 'border-blue-600');
-                tabLogs.classList.remove('bg-slate-800', 'text-slate-400', 'border-slate-700');
-                tabTerminal.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
-                tabTerminal.classList.add('bg-slate-800', 'text-slate-400', 'border-slate-700');
-            }} else {{
-                logsPanel.classList.add('hidden');
-                termPanel.classList.remove('hidden');
-                tabTerminal.classList.add('bg-blue-600', 'text-white', 'border-blue-600');
-                tabTerminal.classList.remove('bg-slate-800', 'text-slate-400', 'border-slate-700');
-                tabLogs.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
-                tabLogs.classList.add('bg-slate-800', 'text-slate-400', 'border-slate-700');
-
-                if (!xtermTerm) {{
-                    initTerminal();
-                }} else if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {{
-                    fitTerminal();
-                }}
-            }}
-        }}
-
-        async function initTerminal() {{
-            if (!window.Terminal) {{
-                document.getElementById('terminal-box').innerHTML = '<p class="p-4 text-red-400 text-xs font-mono">xterm.js n\'carregou. Verifique a conex\'ao com a internet.</p>';
-                return;
-            }}
-            if (!currentSessionToken) {{
-                const cookies = document.cookie.split(';');
-                for (const c of cookies) {{
-                    const [name, ...rest] = c.trim().split('=');
-                    if (name.trim() === 'session_token') {{
-                        currentSessionToken = rest.join('=');
-                        break;
-                    }}
-                }}
-            }}
-            if (!currentSessionToken) {{
-                document.getElementById('terminal-box').innerHTML = '<p class="p-4 text-amber-400 text-xs font-mono">Nao autenticado. Necessario fazer login.</p>';
-                return;
-            }}
-
-            const termDiv = document.getElementById('terminal-box');
-            termDiv.innerHTML = '';
-
-            xtermTerm = new Terminal({{
-                cursorBlink: true,
-                fontSize: 13,
-                fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
-                theme: {{
-                    background: '#0c0c0c',
-                    foreground: '#d4d4d4',
-                    cursor: '#aeafaf',
-                    selectionBackground: '#264f78',
-                    black: '#0c0c0c',
-                    red: '#ff5f56',
-                    green: '#27c93f',
-                    yellow: '#ddb000',
-                    blue: '#4196ff',
-                    magenta: '#ff5f56',
-                    cyan: '#00d9ff',
-                    white: '#d4d4d4',
-                    brightBlack: '#7c7c7c',
-                    brightRed: '#ff5f56',
-                    brightGreen: '#27c93f',
-                    brightYellow: '#ddb000',
-                    brightBlue: '#4196ff',
-                    brightMagenta: '#ff5f56',
-                    brightCyan: '#00d9ff',
-                    brightWhite: '#d4d4d4',
-                }},
-                allowProposedApi: true,
-            }});
-
-            xtermFitAddon = new FitAddon.FitAddon();
-            xtermTerm.loadAddon(xtermFitAddon);
-
-            xtermTerm.open(termDiv);
-            fitTerminal();
-
-            // Connect WebSocket
-            connectTerminal();
-        }}
-
-        function connectTerminal() {{
-            if (terminalWs && terminalWs.readyState !== WebSocket.CLOSED) {{
-                terminalWs.close();
-            }}
-            if (terminalReconnectTimeout) {{
-                clearTimeout(terminalReconnectTimeout);
-                terminalReconnectTimeout = null;
-            }}
-
-            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${{protocol}}//{{location.host}}/ws/terminal?session_token={{currentSessionToken}}`;
-            terminalWs = new WebSocket(wsUrl);
-
-            terminalWs.onopen = function() {{
-                terminalConnected = true;
-                xtermTerm.focus();
-                fitTerminal();
-            }};
-
-            terminalWs.onmessage = function(event) {{
-                if (typeof event.data === 'string') {{
-                    xtermTerm.write(event.data);
-                }} else {{
-                    xtermTerm.write(new Uint8Array(event.data));
-                }}
-            }};
-
-            terminalWs.onclose = function() {{
-                terminalConnected = false;
-                if (currentTerminalTab === 'terminal') {{
-                    xtermTerm.write('\r\n\x1b[31m[Conexao encerrada. Tentando reconectar...]\x1b[0m\r\n');
-                }}
-                terminalReconnectTimeout = setTimeout(connectTerminal, 3000);
-            }};
-
-            terminalWs.onerror = function() {{
-                terminalWs.close();
-            }};
-
-            xtermTerm.onData(function(data) {{
-                if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {{
-                    terminalWs.send(data);
-                }}
-            }});
-
-            xtermTerm.onBinary(function(data) {{
-                if (terminalWs && terminalWs.readyState === WebSocket.OPEN) {{
-                    terminalWs.send(data);
-                }}
-            }});
-        }}
-
-        function fitTerminal() {{
-            if (xtermTerm && xtermFitAddon) {{
-                try {{
-                    xtermFitAddon.fit();
-                }} catch(e) {{}}
-            }}
-        }}
-
-        function clearTerminal() {{
-            if (currentTerminalTab === 'logs') {{
-                const logBox = document.getElementById('log-box');
-                if (logBox) logBox.innerHTML = '';
-            }} else {{
-                if (xtermTerm) xtermTerm.clear();
-            }}
         }}
 
         function updateUptime(serverStartTime) {{
