@@ -316,6 +316,12 @@ async def get_downloads(_auth: str = Depends(get_current_auth)):
     return download_mgr.get_progress()
 
 
+@app.post("/downloads/clear")
+async def clear_downloads(_auth: str = Depends(get_current_auth)):
+    download_mgr.clear_completed()
+    return {"status": "cleared"}
+
+
 # --- API Key Management ---
 
 

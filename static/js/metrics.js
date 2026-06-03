@@ -176,6 +176,19 @@ export function ensureStatusPolling(fast) {
     state.statusPollTimer = setInterval(updateStatus, ms);
 }
 
+function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatSpeed(bps) {
+    if (!bps || bps <= 0) return '--';
+    return formatBytes(bps) + '/s';
+}
+
 export async function updateDownloads() {
     try {
         const res = await apiFetch('/downloads');
@@ -184,20 +197,70 @@ export async function updateDownloads() {
         const container = document.getElementById('download-status');
         const entries = Object.entries(data);
         if (entries.length === 0) { container.innerHTML = ''; return; }
-        container.innerHTML = entries.map(([id, d]) => `
-            <div class="p-4 md:p-5 bg-slate-900 border border-slate-800 rounded-2xl">
-                <div class="flex justify-between items-center mb-3 md:mb-4">
-                    <p class="text-xs md:text-sm font-bold truncate flex-1 mr-3 md:mr-4 text-slate-300 font-mono" title="${d.filename}">${d.filename}</p>
-                    <span class="text-[8px] md:text-[10px] font-black uppercase px-2 md:px-3 py-0.5 md:py-1 rounded ${d.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : d.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}">
-                        ${d.status === 'completed' ? 'concluído' : d.status === 'failed' ? 'falhou' : 'baixando'}
-                    </span>
+
+        const hasCompleted = entries.some(([_, d]) => d.status === 'completed');
+        const hasActive = entries.some(([_, d]) => d.status === 'downloading');
+
+        let html = '';
+        for (const [id, d] of entries) {
+            const statusClass = d.status === 'completed'
+                ? 'bg-emerald-500/10 text-emerald-500'
+                : d.status === 'failed'
+                    ? 'bg-red-500/10 text-red-500'
+                    : 'bg-blue-500/10 text-blue-500';
+            const statusLabel = d.status === 'completed'
+                ? 'Concluído'
+                : d.status === 'failed'
+                    ? 'Falhou'
+                    : 'Baixando';
+
+            const progressColor = d.status === 'failed'
+                ? 'bg-red-500'
+                : d.status === 'completed'
+                    ? 'bg-emerald-500'
+                    : 'bg-blue-500';
+            const progressShadow = d.status === 'downloading'
+                ? 'shadow-[0_0_10px_rgba(37,99,235,0.5)]'
+                : '';
+
+            html += `
+                <div class="p-4 md:p-5 bg-slate-900 border border-slate-800 rounded-2xl">
+                    <div class="flex justify-between items-center mb-3 md:mb-4">
+                        <p class="text-xs md:text-sm font-bold truncate flex-1 mr-3 md:mr-4 text-slate-300 font-mono" title="${d.filename}">${d.filename}</p>
+                        <span class="text-[8px] md:text-[10px] font-black uppercase px-2 md:px-3 py-0.5 md:py-1 rounded ${statusClass}">
+                            ${statusLabel}
+                        </span>
+                    </div>
+                    <div class="flex justify-between items-center mb-2 text-[10px] md:text-xs font-mono">
+                        <span class="text-slate-500">${d.progress.toFixed(1)}%</span>
+                        <span class="text-blue-400">${d.status === 'downloading' ? formatSpeed(d.speed_bps) : (d.total_bytes ? formatBytes(d.total_bytes) : '--')}/${d.total_bytes ? formatBytes(d.downloaded_bytes || d.total_bytes) : '--'}</span>
+                    </div>
+                    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="h-full ${progressColor} ${progressShadow} transition-all duration-500" style="width: ${d.progress}%"></div>
+                    </div>
                 </div>
-                <div class="w-full h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden">
-                    <div class="h-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)] transition-all duration-500" style="width: ${d.progress}%"></div>
-                </div>
-            </div>
-        `).join('');
-        if (entries.some(([_, d]) => d.status === 'completed')) window.updateModels();
+            `;
+        }
+
+        if (hasCompleted) {
+            html += `
+                <button onclick="clearCompletedDownloads()" class="mt-4 w-full py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-blue-500/40 text-slate-400 hover:text-blue-400 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2">
+                    <i class="fas fa-broom text-[10px]"></i> Limpar Downloads Concluídos
+                </button>
+            `;
+        }
+
+        container.innerHTML = html;
+
+        if (hasCompleted) window.updateModels();
+    } catch (e) {}
+}
+
+export async function clearCompletedDownloads() {
+    if (!confirm('Remover downloads concluídos da exibição?')) return;
+    try {
+        const res = await apiFetch('/downloads/clear', { method: 'POST' });
+        if (res.ok) window.updateDownloads();
     } catch (e) {}
 }
 

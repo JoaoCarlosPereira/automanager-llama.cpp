@@ -768,7 +768,7 @@ describe('updateDownloads', () => {
 
         await updateDownloads();
 
-        expect(document.getElementById('download-status').innerHTML).toContain('falhou');
+        expect(document.getElementById('download-status').innerHTML).toContain('Falhou');
         expect(window.updateModels).not.toHaveBeenCalled();
     });
 
@@ -785,8 +785,8 @@ describe('updateDownloads', () => {
 
         const html = document.getElementById('download-status').innerHTML;
         expect(html).toContain('model.gguf');
-        expect(html).toContain('concluído');
-        expect(html).toContain('baixando');
+        expect(html).toContain('Concluído');
+        expect(html).toContain('Baixando');
         expect(window.updateModels).toHaveBeenCalled();
     });
 

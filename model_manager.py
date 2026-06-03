@@ -174,6 +174,10 @@ class DownloadManager:
                 "url": url,
                 "status": "downloading",
                 "progress": 0,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "speed_bps": 0,
+                "start_time": time.time(),
             }
             self._downloads_queue.append(
                 (download_id, url, filename, path)
@@ -184,6 +188,18 @@ class DownloadManager:
         with self._lock:
             return dict(self._downloads)
 
+    def clear_completed(self) -> int:
+        """Remove completed downloads from memory. Returns count cleared."""
+        with self._lock:
+            to_remove = [
+                did
+                for did, d in self._downloads.items()
+                if d.get("status") == "completed"
+            ]
+            for did in to_remove:
+                del self._downloads[did]
+            return len(to_remove)
+
     def _do_download(
         self, download_id: str, url: str, filename: str, path: str
     ) -> None:
@@ -192,14 +208,21 @@ class DownloadManager:
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
+            start_time = time.time()
             with open(path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192 * 4):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if total_size > 0:
-                            with self._lock:
-                                if download_id in self._downloads:
+                        now = time.time()
+                        elapsed = now - start_time
+                        speed_bps = downloaded / elapsed if elapsed > 0 else 0
+                        with self._lock:
+                            if download_id in self._downloads:
+                                self._downloads[download_id]["downloaded_bytes"] = downloaded
+                                self._downloads[download_id]["total_bytes"] = total_size
+                                self._downloads[download_id]["speed_bps"] = speed_bps
+                                if total_size > 0:
                                     self._downloads[download_id][
                                         "progress"
                                     ] = round(
@@ -209,6 +232,7 @@ class DownloadManager:
                 if download_id in self._downloads:
                     self._downloads[download_id]["status"] = "completed"
                     self._downloads[download_id]["progress"] = 100
+                    self._downloads[download_id]["speed_bps"] = 0
             logger.info(f"Download completed: {filename}")
         except Exception as e:
             logger.error(f"Download error {download_id}: {e}")

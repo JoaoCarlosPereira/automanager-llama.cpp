@@ -7,7 +7,7 @@ import {
     hideAutoBalanceCapacityAlert, } from './gpu.js';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
-    updateDownloads,
+    updateDownloads, clearCompletedDownloads,
 } from './metrics.js';
 import {
     initDashboard, getModelButtonsHtml, selectModel, applyModelConfig, setDefaultModel,
@@ -47,6 +47,7 @@ win.updateStatus = updateStatus;
 win.downloadModel = downloadModel;
 win.updateMetrics = updateMetrics;
 win.updateDownloads = updateDownloads;
+win.clearCompletedDownloads = clearCompletedDownloads;
 
 document.getElementById('chat-link').href = `http://${window.fixedIp}:8085/`;
 document.getElementById('api-link').innerText = `http://${window.fixedIp}:8085/v1`;
