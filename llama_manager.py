@@ -343,6 +343,57 @@ async def stream_logs():
     return log_manager.stream_logs()
 
 
+# --- System Management ---
+
+
+@app.post("/api/system/shutdown")
+async def system_shutdown(
+    _auth: str = Depends(get_current_auth),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Shut down the entire system."""
+    background_tasks.add_task(_execute_shutdown)
+    return {"status": "shutdown_initiated", "message": "Desligamento do sistema iniciado"}
+
+
+@app.post("/api/system/update")
+async def system_update(
+    _auth: str = Depends(get_current_auth),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Pull latest code via git and restart the service."""
+    background_tasks.add_task(_execute_update)
+    return {"status": "update_initiated", "message": "Atualização e reinício do serviço iniciado"}
+
+
+def _execute_shutdown():
+    """Execute poweroff command."""
+    logger.info("Solicitado desligamento do sistema")
+    try:
+        os.system("poweroff")
+    except Exception as e:
+        logger.error(f"Erro ao desligar: {e}")
+
+
+def _execute_update():
+    """Pull latest code and restart llama-manager service."""
+    logger.info("Solicitada atualização do sistema")
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        # Git pull
+        result = os.system(f'cd "{app_dir}" && git pull')
+        if result != 0:
+            logger.error(f"Git pull falhou com codigo {result}")
+        # Restart service
+        result = os.system("sudo systemctl restart llama-manager.service")
+        if result != 0:
+            logger.error(f"Systemctl restart falhou com codigo {result}")
+        else:
+            logger.info("Servico reiniciado com sucesso")
+    except Exception as e:
+        logger.error(f"Erro na atualizacao: {e}")
+
+
 # --- Configuration ---
 
 
@@ -721,6 +772,14 @@ def _build_html(
                 </div>
                 <div id="status-badge" class="px-6 md:px-8 py-2 md:py-2.5 rounded-xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 glass border-slate-700/50 text-slate-500 uppercase transition-all duration-500">
                     <div class="w-2 h-2 rounded-full bg-slate-600"></div>OFFLINE
+                </div>
+                <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                    <button onclick="handleUpdate()" class="px-3 py-2 bg-amber-600/10 hover:bg-amber-600/20 text-amber-500 border border-amber-500/30 rounded-xl text-[10px] font-black hover:tracking-widest transition-all uppercase" title="Atualizar codigo e reiniciar servico">
+                        <i class="fas fa-sync-alt text-[9px]"></i> <span class="hidden lg:inline">ATUALIZAR</span>
+                    </button>
+                    <button onclick="handleShutdown()" class="px-3 py-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-xl text-[10px] font-black hover:tracking-widest transition-all uppercase" title="Desligar o sistema">
+                        <i class="fas fa-power-off text-[9px]"></i> <span class="hidden lg:inline">DESLIGAR</span>
+                    </button>
                 </div>
                 <button onclick="handleLogout()" class="text-slate-500 hover:text-white transition-colors" title="Sair">
                     <i class="fas fa-sign-out-alt"></i>
