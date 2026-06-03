@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { handleLogin, handleLogout, changePassword, apiFetch } from './auth.js';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js';
 import { cancelAutoBalance } from './gpu.js';
 import {
     syncContextSizeCustomVisibility, onContextSizePresetChange, onContextSizeCustomInput,
@@ -23,6 +23,8 @@ win.stopDashboardPolling = stopDashboardPolling;
 win.handleLogin = handleLogin;
 win.handleLogout = handleLogout;
 win.changePassword = changePassword;
+win.handleShutdown = handleShutdown;
+win.handleUpdate = handleUpdate;
 win.apiFetch = apiFetch;
 win.cancelAutoBalance = cancelAutoBalance;
 win.onContextSizePresetChange = onContextSizePresetChange;
