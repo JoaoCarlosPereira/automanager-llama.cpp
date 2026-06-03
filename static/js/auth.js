@@ -122,3 +122,33 @@ export async function changePassword() {
 
 export function showAlert(msg) { alert(msg); }
 export function showConfirm(msg) { return confirm(msg); }
+
+export async function handleShutdown() {
+    if (!confirm('DESLIGAR O SISTEMA?\nO servidor sera desligado imediatamente.')) return;
+    try {
+        const res = await apiFetch('/api/system/shutdown', {method: 'POST'});
+        if (res.ok) {
+            alert('Comando de desligamento enviado. O sistema sera desligado em breve.');
+        } else {
+            const err = await res.json();
+            alert('Erro ao desligar: ' + (err.detail || 'Erro desconhecido'));
+        }
+    } catch (e) {
+        alert('Erro de rede ao desligar.');
+    }
+}
+
+export async function handleUpdate() {
+    if (!confirm('ATUALIZAR E REINICIAR?\nO servidor atualizara o codigo e sera reiniciado.')) return;
+    try {
+        const res = await apiFetch('/api/system/update', {method: 'POST'});
+        if (res.ok) {
+            alert('Comando de atualizacao enviado. O servidor sera reiniciado em breve.');
+        } else {
+            const err = await res.json();
+            alert('Erro ao atualizar: ' + (err.detail || 'Erro desconhecido'));
+        }
+    } catch (e) {
+        alert('Erro de rede ao atualizar.');
+    }
+}
