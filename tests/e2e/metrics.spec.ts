@@ -59,5 +59,5 @@ test('download progresso aparece apos iniciar download', async ({ page }) => {
   const status = page.locator('#download-status');
   await expect(status).not.toBeEmpty();
   await expect(status.locator('.h-full.bg-blue-500')).toBeVisible();
-  await expect(status).toContainText('baixando');
+  await expect(status).toContainText('Baixando');
 });
