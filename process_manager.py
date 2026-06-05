@@ -358,8 +358,7 @@ class ProcessManager:
         else:
             cmd.append("--mmproj-auto")
 
-        if thinking_enabled:
-            cmd.append("--thinking")
+        cmd.extend(["--reasoning", "on" if thinking_enabled else "off"])
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
