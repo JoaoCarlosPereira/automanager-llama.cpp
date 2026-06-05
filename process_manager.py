@@ -31,6 +31,18 @@ def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
     return ctx * slots
 
 
+def reasoning_cli_args(thinking_enabled: bool) -> List[str]:
+    """
+    Build llama-server flags for reasoning/thinking mode.
+
+    --reasoning off alone may not disable thinking on all models (e.g. Qwen3);
+    --reasoning-budget 0 forces the sampler to end thinking immediately.
+    """
+    if thinking_enabled:
+        return ["--reasoning", "on"]
+    return ["--reasoning", "off", "--reasoning-budget", "0"]
+
+
 class ProcessManager:
     """Manages llama-server process lifecycle."""
 
@@ -121,6 +133,9 @@ class ProcessManager:
                                         for w in self._last_request.gpu_weights
                                     ],
                                     "mmproj_path": self._last_request.mmproj_path,
+                                    "thinking_enabled": (
+                                        self._last_request.thinking_enabled
+                                    ),
                                 }
                         return status
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -358,7 +373,7 @@ class ProcessManager:
         else:
             cmd.append("--mmproj-auto")
 
-        cmd.extend(["--reasoning", "on" if thinking_enabled else "off"])
+        cmd.extend(reasoning_cli_args(thinking_enabled))
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -372,7 +387,7 @@ class ProcessManager:
         logger.info(
             f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
             f"ctx_per_slot={context_size}, server_ctx={server_ctx_size}, "
-            f"batch_size={batch_size})"
+            f"batch_size={batch_size}, thinking_enabled={thinking_enabled})"
         )
 
         try:
@@ -393,6 +408,7 @@ class ProcessManager:
                     parallel_slots=parallel_slots,
                     batch_size=batch_size,
                     split_mode=split_mode,
+                    thinking_enabled=thinking_enabled,
                 )
                 return {
                     "message": "Started",
@@ -524,6 +540,7 @@ class OOMWatchdog(threading.Thread):
                 "parallel_slots": req.parallel_slots,
                 "batch_size": req.batch_size,
                 "mmproj_path": req.mmproj_path,
+                "thinking_enabled": req.thinking_enabled,
                 "gpu_weights": [w.model_dump() for w in new_weights],
             },
         )

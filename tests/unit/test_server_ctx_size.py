@@ -2,7 +2,7 @@
 
 import pytest
 
-from process_manager import compute_server_ctx_size
+from process_manager import compute_server_ctx_size, reasoning_cli_args
 
 
 @pytest.mark.parametrize(
@@ -23,3 +23,16 @@ def test_compute_server_ctx_size_multiplies_by_parallel_slots(
 
 def test_compute_server_ctx_size_clamps_invalid_inputs():
     assert compute_server_ctx_size(0, 0) == 1
+
+
+def test_reasoning_cli_args_enabled():
+    assert reasoning_cli_args(True) == ["--reasoning", "on"]
+
+
+def test_reasoning_cli_args_disabled_forces_zero_budget():
+    assert reasoning_cli_args(False) == [
+        "--reasoning",
+        "off",
+        "--reasoning-budget",
+        "0",
+    ]

@@ -7,6 +7,7 @@ const mockHideAutoBalanceCapacityAlert = jest.fn();
 const mockShowAutoBalanceCapacityAlert = jest.fn();
 const mockUpdateAutoBalanceProfileBadge = jest.fn();
 const mockSyncAutoBalanceCancelButton = jest.fn();
+const mockUpdateThinkingBadge = jest.fn();
 
 jest.unstable_mockModule('./gpu.js', () => ({
     applyGpuWeightsToUI: mockApplyGpuWeightsToUI,
@@ -16,6 +17,7 @@ jest.unstable_mockModule('./gpu.js', () => ({
     showAutoBalanceCapacityAlert: mockShowAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge: mockUpdateAutoBalanceProfileBadge,
     syncAutoBalanceCancelButton: mockSyncAutoBalanceCancelButton,
+    updateThinkingBadge: mockUpdateThinkingBadge,
 }));
 
 const auth = await import('./auth.js');

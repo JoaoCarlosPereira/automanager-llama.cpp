@@ -1093,6 +1093,7 @@ async def startup_event():
                     batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
                     mmproj_path = saved_cfg.get("mmproj_path")
                     split_mode = saved_cfg.get("split_mode", "layer")
+                    thinking_enabled = saved_cfg.get("thinking_enabled", True)
                 else:
                     gpus = gpu_manager.detect_gpus()
                     weights = []
@@ -1114,6 +1115,7 @@ async def startup_event():
                     batch_size = DEFAULT_BATCH_SIZE
                     mmproj_path = None
                     split_mode = "layer"
+                    thinking_enabled = True
 
                 process_manager.start(
                     model_path=default_model,
@@ -1123,6 +1125,7 @@ async def startup_event():
                     split_mode=split_mode,
                     parallel_slots=parallel_slots,
                     batch_size=batch_size,
+                    thinking_enabled=thinking_enabled,
                 )
             except Exception as e:
                 logger.error(f"Auto-start error: {e}")

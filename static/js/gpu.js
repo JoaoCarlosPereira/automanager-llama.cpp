@@ -321,6 +321,11 @@ export function resetToDefaults() {
     document.getElementById('split-mode').value = "layer";
     const toggle = document.getElementById('auto-balance-toggle');
     if (toggle) toggle.checked = false;
+    const thinkingToggle = document.getElementById('thinking-toggle');
+    if (thinkingToggle) {
+        thinkingToggle.checked = true;
+        updateThinkingBadge(true);
+    }
     document.querySelectorAll('.gpu-row').forEach((row, idx) => {
         row.querySelector('.gpu-checkbox').checked = true;
         row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
