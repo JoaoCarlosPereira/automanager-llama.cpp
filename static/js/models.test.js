@@ -62,6 +62,8 @@ function setupGpuControls() {
         <input id="batch-size" value="512" />
         <input id="auto-balance-toggle" type="checkbox" />
         <input id="auto-balance-badge" class="hidden" />
+        <input id="thinking-toggle" type="checkbox" checked />
+        <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
     `);
 }
 

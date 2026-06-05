@@ -210,6 +210,7 @@ class ProcessManager:
                         "batch_size": request.batch_size,
                         "mmproj_path": request.mmproj_path,
                         "split_mode": request.split_mode,
+                        "thinking_enabled": request.thinking_enabled,
                         "gpu_weights": saved_weights,
                         "auto_balance": False,
                         "auto_balance_profile": True,
@@ -238,6 +239,7 @@ class ProcessManager:
                     "mmproj_path": request.mmproj_path
                     or existing.get("mmproj_path"),
                     "split_mode": request.split_mode,
+                    "thinking_enabled": request.thinking_enabled,
                     "gpu_weights": existing.get("gpu_weights")
                     or [w.model_dump() for w in request.gpu_weights],
                     "auto_balance": False,
@@ -292,6 +294,7 @@ class ProcessManager:
         split_mode: str = "layer",
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        thinking_enabled: bool = True,
     ) -> dict:
         self.stop()
 
@@ -354,6 +357,9 @@ class ProcessManager:
             cmd.extend(["--mmproj", mmproj_path])
         else:
             cmd.append("--mmproj-auto")
+
+        if thinking_enabled:
+            cmd.append("--thinking")
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -532,6 +538,7 @@ class OOMWatchdog(threading.Thread):
                 split_mode=req.split_mode,
                 parallel_slots=req.parallel_slots,
                 batch_size=req.batch_size,
+                thinking_enabled=req.thinking_enabled,
             )
         except Exception as e:
             logger.error(f"Recovery start failed: {e}")

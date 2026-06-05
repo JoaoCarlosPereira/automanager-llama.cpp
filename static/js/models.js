@@ -6,12 +6,21 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
+    updateThinkingBadge,
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
 
 export function initDashboard() {
     bindGpuManualListeners();
     syncContextSizeCustomVisibility();
+
+    const thinkingToggle = document.getElementById('thinking-toggle');
+    if (thinkingToggle) {
+        thinkingToggle.addEventListener('change', () => {
+            updateThinkingBadge(thinkingToggle.checked);
+        });
+    }
+
     window.updateStatus();
     window.updateMetrics();
     window.updateDownloads();
@@ -83,6 +92,11 @@ export function applyModelConfig(path) {
     const abToggle = document.getElementById('auto-balance-toggle');
     if (abToggle) abToggle.checked = !!cfg.auto_balance;
     updateAutoBalanceProfileBadge(cfg.auto_balance_profile);
+    const thinkingToggle = document.getElementById('thinking-toggle');
+    if (thinkingToggle) {
+        thinkingToggle.checked = cfg.thinking_enabled !== false;
+        updateThinkingBadge(cfg.thinking_enabled !== false);
+    }
     state.manualGpuOverride = false;
     if (cfg.gpu_weights) {
         cfg.gpu_weights.forEach(w => {
@@ -276,6 +290,8 @@ export async function startModel(path, elementId) {
     const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || window.__constants.DEFAULT_PARALLEL_SLOTS));
     const batchSize = parseInt(document.getElementById('batch-size').value, 10) || window.__constants.DEFAULT_BATCH_SIZE;
     const autoBalance = document.getElementById('auto-balance-toggle').checked;
+    const thinkingToggle = document.getElementById('thinking-toggle');
+    const thinkingEnabled = thinkingToggle ? thinkingToggle.checked : true;
     document.getElementById('parallel-slots').value = parallelSlots;
     document.getElementById('status-badge').innerHTML = autoBalance
         ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
@@ -299,6 +315,7 @@ export async function startModel(path, elementId) {
                 split_mode: splitMode,
                 auto_balance: autoBalance,
                 manual_gpu_override: autoBalance ? false : state.manualGpuOverride,
+                thinking_enabled: thinkingEnabled,
             }),
         });
         if (!res.ok) {

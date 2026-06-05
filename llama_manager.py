@@ -213,6 +213,7 @@ async def start_model(
         "mmproj_path": req.mmproj_path,
         "split_mode": req.split_mode,
         "auto_balance": req.auto_balance,
+        "thinking_enabled": req.thinking_enabled,
     }
 
     if req.auto_balance:
@@ -235,6 +236,7 @@ async def start_model(
             split_mode=req.split_mode,
             parallel_slots=req.parallel_slots,
             batch_size=req.batch_size,
+            thinking_enabled=req.thinking_enabled,
         )
 
     config_manager.update_model_settings(
@@ -253,6 +255,7 @@ async def start_model(
         split_mode=req.split_mode,
         parallel_slots=req.parallel_slots,
         batch_size=req.batch_size,
+        thinking_enabled=req.thinking_enabled,
     )
 
 
@@ -858,6 +861,13 @@ def _build_html(
                                     <option value="layer">Layer (Sqn)</option>
                                     <option value="row">Row (Par)</option>
                                 </select>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-brain text-violet-400 mr-2"></i>Thinking:</label>
+                                <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-violet-500/30 transition-all">
+                                    <input type="checkbox" id="thinking-toggle" checked class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer">
+                                    <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
+                                </label>
                             </div>
                         </div>
                     </div>

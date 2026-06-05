@@ -26,6 +26,7 @@ class StartRequest(BaseModel):
     split_mode: str = "layer"
     auto_balance: bool = False
     manual_gpu_override: bool = False
+    thinking_enabled: bool = True
 
 
 class DeleteRequest(BaseModel):

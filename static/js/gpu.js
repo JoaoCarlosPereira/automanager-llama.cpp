@@ -337,3 +337,13 @@ export function modelIncapableBadgeHtml(incapable) {
     if (!incapable) return '';
     return '<span class="shrink-0 text-[8px] font-black uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30" title="Incompativel com o hardware atual (auto balance)">Incapaz</span>';
 }
+
+export function updateThinkingBadge(enabled) {
+    const badge = document.getElementById('thinking-badge');
+    if (!badge) return;
+    const isOn = enabled !== false;
+    badge.innerText = isOn ? 'ON' : 'OFF';
+    badge.className = isOn
+        ? 'text-[9px] font-black uppercase tracking-wider text-violet-400'
+        : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
+}
