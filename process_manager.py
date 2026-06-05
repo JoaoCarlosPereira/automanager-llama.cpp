@@ -1,5 +1,6 @@
 """llama-server process lifecycle and OOM watchdog."""
 
+import json
 import os
 import re
 import time
@@ -35,12 +36,30 @@ def reasoning_cli_args(thinking_enabled: bool) -> List[str]:
     """
     Build llama-server flags for reasoning/thinking mode.
 
-    --reasoning off alone may not disable thinking on all models (e.g. Qwen3);
-    --reasoning-budget 0 forces the sampler to end thinking immediately.
+    Qwen3.x and Gemma4 read enable_thinking from the Jinja chat template;
+    --reasoning off / --reasoning-budget 0 alone are not enough on those models.
     """
+    kwargs = json.dumps(
+        {"enable_thinking": thinking_enabled},
+        separators=(",", ":"),
+    )
     if thinking_enabled:
-        return ["--reasoning", "on"]
-    return ["--reasoning", "off", "--reasoning-budget", "0"]
+        return [
+            "--jinja",
+            "--reasoning",
+            "on",
+            "--chat-template-kwargs",
+            kwargs,
+        ]
+    return [
+        "--jinja",
+        "--reasoning",
+        "off",
+        "--reasoning-budget",
+        "0",
+        "--chat-template-kwargs",
+        kwargs,
+    ]
 
 
 class ProcessManager:
