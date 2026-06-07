@@ -25,6 +25,8 @@ from schemas import GPUWeight
 
 # Default layer count used when model metadata cannot be read.
 DEFAULT_TOTAL_LAYERS = 32
+# llama-server clamps -ngl to the model layer count; use a high value for "all GPU".
+ALL_GPU_LAYERS = 999
 
 LLAMA_SERVER_BIN = "llama-server"
 logger = logging.getLogger("automanager")
@@ -383,6 +385,20 @@ class GPUManager(GPUDetector):
         """True when the user enabled CPU offload with weight > 0."""
         return GPUManager.sum_active_weight(gpu_weights, "cpu") > 0
 
+    @staticmethod
+    def normalize_gpu_weights(gpu_weights: List[GPUWeight]) -> List[GPUWeight]:
+        """Drop stale weight on inactive devices; keep active plan intact."""
+        normalized: List[GPUWeight] = []
+        for w in gpu_weights:
+            data = w.model_dump() if hasattr(w, "model_dump") else dict(w)
+            if data.get("device") not in ("gpu", "cpu"):
+                data["device"] = "gpu"
+            if not data.get("active", True) or float(data.get("weight", 0) or 0) <= 0:
+                data["active"] = False
+                data["weight"] = 0.0
+            normalized.append(GPUWeight(**data))
+        return normalized
+
     def compute_tensor_split(self, gpu_weights: List[GPUWeight]) -> List[str]:
         """Relative split among active GPUs; preserves user % ratios."""
         active = self.active_gpus_with_weight(gpu_weights)
@@ -412,14 +428,17 @@ class GPUManager(GPUDetector):
             n_gpu_layers = max(
                 0, min(total_layers, int(round(gpu_pct / 100.0 * total_layers)))
             )
+            n_cpu_layers = max(0, total_layers - n_gpu_layers)
         elif active_gpus:
-            n_gpu_layers = total_layers
+            n_gpu_layers = ALL_GPU_LAYERS
+            n_cpu_layers = 0
         else:
             n_gpu_layers = 0
+            n_cpu_layers = total_layers
 
         return OffloadPlan(
             n_gpu_layers=n_gpu_layers,
-            n_cpu_layers=max(0, total_layers - n_gpu_layers),
+            n_cpu_layers=n_cpu_layers,
             gpu_pct=gpu_pct,
             cpu_pct=cpu_pct,
             tensor_split=self.compute_tensor_split(gpu_weights),

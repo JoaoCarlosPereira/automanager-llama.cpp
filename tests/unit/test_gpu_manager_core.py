@@ -2,7 +2,7 @@
 
 import pytest
 
-from gpu_manager import GPUManager
+from gpu_manager import GPUManager, ALL_GPU_LAYERS
 from schemas import GPUWeight
 
 
@@ -16,13 +16,13 @@ def gpu_mgr():
 
 def test_compute_n_gpu_layers_single_gpu_100(gpu_mgr):
     weights = [GPUWeight(index=0, weight=100, name="A", device="gpu")]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_single_gpu_70(gpu_mgr):
     weights = [GPUWeight(index=0, weight=70, name="A", device="gpu")]
     # Sem CPU ativa: 100% das layers vão para GPU
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_single_gpu_70_with_cpu_inactive(gpu_mgr):
@@ -30,12 +30,12 @@ def test_compute_n_gpu_layers_single_gpu_70_with_cpu_inactive(gpu_mgr):
         GPUWeight(index=0, weight=70, name="A", device="gpu", active=True),
         GPUWeight(index=-1, weight=30, name="C", device="cpu", active=False),
     ]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_single_gpu_50(gpu_mgr):
     weights = [GPUWeight(index=0, weight=50, name="A", device="gpu")]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_two_gpus_sum_100(gpu_mgr):
@@ -43,7 +43,7 @@ def test_compute_n_gpu_layers_two_gpus_sum_100(gpu_mgr):
         GPUWeight(index=0, weight=70, name="A", device="gpu"),
         GPUWeight(index=1, weight=30, name="B", device="gpu"),
     ]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_gpu_plus_cpu(gpu_mgr):
@@ -79,12 +79,12 @@ def test_compute_n_gpu_layers_zero_weight_ignored(gpu_mgr):
 def test_compute_n_gpu_layers_clamped_to_total(gpu_mgr):
     weights = [GPUWeight(index=0, weight=120, name="A", device="gpu")]
     # > 100% shouldn't exceed total_layers
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_small_model(gpu_mgr):
     weights = [GPUWeight(index=0, weight=50, name="A", device="gpu")]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_large_model_70b_80_layers(gpu_mgr):
@@ -112,7 +112,7 @@ def test_compute_n_gpu_layers_10_layers_rounding_up(gpu_mgr):
 
 def test_compute_n_gpu_layers_10_layers_no_cpu_offload(gpu_mgr):
     weights = [GPUWeight(index=0, weight=33, name="A", device="gpu")]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == 10
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_10_layers_rounding_boundary(gpu_mgr):

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_manager import GPUManager, DEFAULT_TOTAL_LAYERS
+from gpu_manager import GPUManager, DEFAULT_TOTAL_LAYERS, ALL_GPU_LAYERS
 from schemas import GPUWeight
 
 
@@ -154,10 +154,10 @@ def _captured_cmd(pm, gpu_weights=None):
 def test_start_uses_dynamic_ngl_all_gpu_100(
     gpu_mgr, pm, mock_config, mock_token, mock_log_mgr
 ):
-    """Single GPU at 100% with 32 total layers => n_gpu_layers = 32, so -ngl is '32'."""
+    """Single GPU at 100% with CPU offload off => -ngl is ALL_GPU_LAYERS."""
     cmd = _captured_cmd(pm)
     ngl_idx = cmd.index("-ngl")
-    assert cmd[ngl_idx + 1] == "32"
+    assert cmd[ngl_idx + 1] == str(ALL_GPU_LAYERS)
 
 
 def test_start_uses_dynamic_ngl_gpu_70_plus_cpu_30(
@@ -197,8 +197,8 @@ def test_start_backward_compat_no_device_field(
 
     cmd = _captured_cmd(pm)
     ngl_idx = cmd.index("-ngl")
-    # 100% GPU on a 32-layer model => 32
-    assert cmd[ngl_idx + 1] == "32"
+    # 100% GPU on a 32-layer model => ALL_GPU_LAYERS
+    assert cmd[ngl_idx + 1] == str(ALL_GPU_LAYERS)
 
 
 def test_start_dynamic_ngl_two_gpus_50_50(
@@ -211,7 +211,7 @@ def test_start_dynamic_ngl_two_gpus_50_50(
     ]
     cmd = _captured_cmd(pm, weights)
     ngl_idx = cmd.index("-ngl")
-    assert cmd[ngl_idx + 1] == "32"
+    assert cmd[ngl_idx + 1] == str(ALL_GPU_LAYERS)
 
 
 def test_start_dynamic_ngl_large_model(
@@ -269,8 +269,7 @@ def test_start_clamps_ngl_to_total_layers(
     ]
     cmd = _captured_cmd(pm, weights)
     ngl_idx = cmd.index("-ngl")
-    # 200% would be 64 layers, but clamped to 32
-    assert cmd[ngl_idx + 1] == "32"
+    assert cmd[ngl_idx + 1] == str(ALL_GPU_LAYERS)
 
 
 def test_start_inactive_gpu_weight_ignored(
@@ -283,7 +282,7 @@ def test_start_inactive_gpu_weight_ignored(
     ]
     cmd = _captured_cmd(pm, weights)
     ngl_idx = cmd.index("-ngl")
-    assert cmd[ngl_idx + 1] == "32"
+    assert cmd[ngl_idx + 1] == str(ALL_GPU_LAYERS)
 
 
 def test_start_zero_gpu_weight(gpu_mgr, pm, mock_config, mock_token, mock_log_mgr):

@@ -1219,9 +1219,7 @@ async def startup_event():
                         GPUWeight(**w) if isinstance(w, dict) else w
                         for w in saved_cfg["gpu_weights"]
                     ]
-                    for w in weights:
-                        if not hasattr(w, "active"):
-                            w.active = True
+                    weights = gpu_manager.normalize_gpu_weights(weights)
                     context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
                     parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
                     batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)

@@ -372,6 +372,8 @@ class ProcessManager:
     ) -> dict:
         self.stop()
 
+        gpu_weights = self.gpu_manager.normalize_gpu_weights(gpu_weights)
+
         has_active_cpu = any(
             w.active and w.device == "cpu" for w in gpu_weights
         )

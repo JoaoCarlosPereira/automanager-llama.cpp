@@ -1,7 +1,7 @@
 """Garante que a configuração de GPU/CPU respeite a UI: CPU desmarcada => 100% layers na GPU.
 
 Contrato:
-- CPU inativa (unchecked) ou com peso 0: ``compute_n_gpu_layers`` devolve ``total_layers``.
+- CPU inativa (unchecked) ou com peso 0: ``-ngl`` usa ``ALL_GPU_LAYERS`` (999).
 - CPU ativa com peso > 0: fração GPU controla ``-ngl``; restante vai para CPU.
 - Sem CPU ativa: pesos das GPUs ativas devem somar ~100% (``validate_gpu_weights``).
 - ``ProcessManager.start`` deve passar ``-ngl`` igual a ``total_layers`` quando CPU desmarcada.
@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from auto_balance import AutoBalanceProber
-from gpu_manager import GPUManager
+from gpu_manager import GPUManager, ALL_GPU_LAYERS
 from process_manager import ProcessManager
 from schemas import GPUWeight
 from tests.unit.test_oom_watchdog import _make_request
@@ -117,7 +117,7 @@ def _ngl_from_cmd(cmd):
 def test_compute_n_gpu_layers_cpu_inactive_offloads_all_to_gpu(
     gpu_mgr, total_layers, gpu_weights
 ):
-    assert gpu_mgr.compute_n_gpu_layers(gpu_weights, total_layers=total_layers) == total_layers
+    assert gpu_mgr.compute_n_gpu_layers(gpu_weights, total_layers=total_layers) == ALL_GPU_LAYERS
 
 
 def test_compute_n_gpu_layers_cpu_checked_zero_weight_still_full_gpu(gpu_mgr):
@@ -126,7 +126,7 @@ def test_compute_n_gpu_layers_cpu_checked_zero_weight_still_full_gpu(gpu_mgr):
         GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=0, name="CPU", active=True, device="cpu"),
     ]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == ALL_GPU_LAYERS
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def test_start_cpu_unchecked_passes_full_ngl(pm):
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
     ]
     cmd = _capture_start_cmd(pm, weights, total_layers=32)
-    assert _ngl_from_cmd(cmd) == 32
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
 
 
 def test_start_cpu_unchecked_large_model_full_ngl(pm):
@@ -192,7 +192,28 @@ def test_start_cpu_unchecked_large_model_full_ngl(pm):
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
     ]
     cmd = _capture_start_cmd(pm, weights, total_layers=80)
-    assert _ngl_from_cmd(cmd) == 80
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
+
+
+def test_start_cpu_unchecked_uses_all_gpu_layers_when_detection_fails(pm):
+    """Regressão: fallback de 32 layers não pode deixar camadas na CPU."""
+    weights = [
+        GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
+    ]
+    cmd = _capture_start_cmd(pm, weights, total_layers=32)
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
+
+
+def test_normalize_gpu_weights_clears_inactive_cpu_weight(gpu_mgr):
+    weights = gpu_mgr.normalize_gpu_weights([
+        GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=30, name="CPU", active=False, device="cpu"),
+    ])
+    cpu = next(w for w in weights if w.device == "cpu")
+    assert cpu.active is False
+    assert cpu.weight == 0.0
+    assert gpu_mgr.cpu_offload_active(weights) is False
 
 
 def test_start_cpu_unchecked_partial_gpu_sum_rejected(pm):
@@ -236,7 +257,7 @@ def test_compute_offload_plan_gpu_only_preserves_absolute_ratios(gpu_mgr):
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
     ]
     plan = gpu_mgr.compute_offload_plan(weights, total_layers=60)
-    assert plan.n_gpu_layers == 60
+    assert plan.n_gpu_layers == ALL_GPU_LAYERS
     assert plan.n_cpu_layers == 0
     assert plan.cpu_pct == 0.0
     assert plan.tensor_split == ["0.8000", "0.2000"]
@@ -250,7 +271,7 @@ def test_compute_offload_plan_inactive_gpu_excluded_from_tensor_split(gpu_mgr):
     ]
     plan = gpu_mgr.compute_offload_plan(weights, total_layers=32)
     assert plan.tensor_split == ["1.0000"]
-    assert plan.n_gpu_layers == 32
+    assert plan.n_gpu_layers == ALL_GPU_LAYERS
 
 
 def test_resolve_main_gpu_index_ignores_cpu_entry(gpu_mgr):
@@ -299,7 +320,7 @@ def test_start_gpu_only_tensor_split_matches_user_percentages(pm):
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
     ]
     cmd = _capture_start_cmd(pm, weights, total_layers=32)
-    assert _ngl_from_cmd(cmd) == 32
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
     assert _tensor_split_from_cmd(cmd) == ["0.6000", "0.4000"]
     assert _main_gpu_from_cmd(cmd) == "1"
 

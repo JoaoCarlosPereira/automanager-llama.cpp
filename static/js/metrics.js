@@ -31,7 +31,8 @@ export async function updateStatus() {
         const maySyncWeights = weightsToApply && (
             autoBalancing || !data.recovery || !data.recovery.active
         );
-        if (maySyncWeights) {
+        const userEditedGpuPlan = state.manualGpuOverride && !autoBalancing;
+        if (maySyncWeights && !userEditedGpuPlan) {
             applyGpuWeightsToUI(weightsToApply, autoBalancing);
             if (data.running && !state.currentSelectedModel && data.config) {
                 if (data.config.context_size) setContextSize(data.config.context_size);
