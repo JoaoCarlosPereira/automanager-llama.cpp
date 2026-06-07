@@ -7,6 +7,7 @@ import {
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
     updateThinkingBadge, updateMtpBadge, validateDeviceWeights,
+    collectDeviceWeightsFromUI,
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
 
@@ -268,36 +269,8 @@ export async function startModel(path, elementId) {
         selectModel(path, elementId);
         await new Promise(r => setTimeout(r, 100));
     }
-    const weights = [];
     document.getElementById('log-box').innerHTML = '';
-    document.querySelectorAll('.gpu-row').forEach(r => {
-        const isChecked = r.querySelector('.gpu-checkbox').checked;
-        const isMain = r.querySelector('.gpu-main-radio').checked;
-        const gpuName = r.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'GPU';
-        weights.push({
-            index: parseInt(r.dataset.index, 10),
-            weight: parseInt(r.querySelector('.gpu-weight').value || 0, 10),
-            name: gpuName,
-            active: isChecked,
-            is_main: isMain,
-            pinned: r.querySelector('.gpu-pin')?.checked || false,
-            device: 'gpu',
-        });
-    });
-    const cpuRow = document.querySelector('.cpu-row');
-    if (cpuRow) {
-        const cpuChecked = cpuRow.querySelector('.cpu-checkbox')?.checked ?? false;
-        const cpuName = cpuRow.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'CPU';
-        weights.push({
-            index: -1,
-            weight: parseInt(cpuRow.querySelector('.cpu-weight')?.value || 0, 10),
-            name: cpuName,
-            active: cpuChecked,
-            is_main: false,
-            pinned: cpuRow.querySelector('.cpu-pin')?.checked || false,
-            device: 'cpu',
-        });
-    }
+    const weights = collectDeviceWeightsFromUI();
     const weightValidation = validateDeviceWeights(weights);
     if (!weightValidation.ok) {
         return alert(weightValidation.message);

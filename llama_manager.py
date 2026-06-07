@@ -585,6 +585,31 @@ async def index(request: Request):
     cpu_name_display = cpu_info.name if cpu_info.name else "CPU Desconhecido"
     cpu_ram_total = cpu_info.ram_total_mb if cpu_info.ram_total_mb else 0
     cpu_ram_used = cpu_info.ram_used_mb if cpu_info.ram_used_mb else 0
+    cpu_checked = ""
+    cpu_weight_val = 0
+    cpu_pin_checked = ""
+    if (
+        status.get("running")
+        and status.get("config", {}).get("gpu_weights")
+    ):
+        w_list = status["config"]["gpu_weights"]
+        if isinstance(w_list, list):
+            cpu_obj = next(
+                (
+                    w
+                    for w in w_list
+                    if isinstance(w, dict)
+                    and (
+                        w.get("device") == "cpu"
+                        or w.get("index") == -1
+                    )
+                ),
+                None,
+            )
+            if cpu_obj:
+                cpu_checked = "checked" if cpu_obj.get("active", False) else ""
+                cpu_weight_val = int(cpu_obj.get("weight", 0))
+                cpu_pin_checked = "checked" if cpu_obj.get("pinned") else ""
     cpu_rows = f"""
         <tr id="cpu-row" class="cpu-row group border-b border-slate-800/50" data-index="cpu">
             <td class="px-3 md:px-6 py-4 md:py-6 text-center">
@@ -600,7 +625,7 @@ async def index(request: Request):
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex items-center gap-2 md:gap-4">
-                    <input type="checkbox" checked class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <input type="checkbox" {cpu_checked} class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
                     <div class="flex flex-col">
                         <span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">CPU</span>
                         <span class="text-sm font-bold text-slate-100 whitespace-nowrap">{cpu_name_display}</span>
@@ -633,11 +658,11 @@ async def index(request: Request):
             <td class="px-2 md:px-4 py-4 md:py-6">
                 <div class="flex items-center gap-2 md:gap-3">
                     <label class="flex items-center gap-1.5 cursor-pointer shrink-0" title="Fixar % — o auto balance nao altera esta CPU">
-                        <input type="checkbox" class="cpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
+                        <input type="checkbox" {cpu_pin_checked} class="cpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
                         <span class="text-[8px] font-black text-slate-500 uppercase tracking-wider hidden md:inline">Fixar</span>
                     </label>
                     <div class="relative">
-                        <input type="number" value="0" min="0" max="100"
+                        <input type="number" value="{cpu_weight_val}" min="0" max="100"
                                class="cpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
                                oninput="balanceWeights(this)">
                         <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>

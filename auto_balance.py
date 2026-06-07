@@ -553,7 +553,11 @@ class AutoBalanceProber:
             return False, request.gpu_weights, "Nenhuma GPU detectada.", None
 
         vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
-        active_indices = [w.index for w in request.gpu_weights if w.active]
+        active_indices = [
+            w.index
+            for w in request.gpu_weights
+            if w.active and w.device == "gpu"
+        ]
         if not active_indices:
             return False, request.gpu_weights, "Selecione pelo menos uma GPU.", None
 

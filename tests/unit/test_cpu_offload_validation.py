@@ -150,8 +150,20 @@ def test_start_with_active_cpu_rejects_cpu_only(pm):
     assert "gpu" in exc.value.detail.lower()
 
 
+def test_start_without_active_cpu_rejects_partial_gpu_sum(pm):
+    """GPU-only path must still sum active GPU weights to ~100%."""
+    weights = [
+        GPUWeight(index=0, weight=70, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
+    ]
+    with pytest.raises(HTTPException) as exc:
+        _start_with_weights(pm, weights)
+    assert exc.value.status_code == 400
+    assert "100" in exc.value.detail
+
+
 def test_start_without_active_cpu_skips_full_validate_weights(pm):
-    """GPU-only path still uses validate_gpu_weights (no sum enforcement)."""
+    """GPU-only path uses validate_gpu_weights (sum must be ~100%)."""
     weights = [
         GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),

@@ -21,13 +21,21 @@ def test_compute_n_gpu_layers_single_gpu_100(gpu_mgr):
 
 def test_compute_n_gpu_layers_single_gpu_70(gpu_mgr):
     weights = [GPUWeight(index=0, weight=70, name="A", device="gpu")]
-    # 70% of 32 = 22.4 → rounds to 22
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 22
+    # Sem CPU ativa: 100% das layers vão para GPU
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
+
+
+def test_compute_n_gpu_layers_single_gpu_70_with_cpu_inactive(gpu_mgr):
+    weights = [
+        GPUWeight(index=0, weight=70, name="A", device="gpu", active=True),
+        GPUWeight(index=-1, weight=30, name="C", device="cpu", active=False),
+    ]
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
 
 
 def test_compute_n_gpu_layers_single_gpu_50(gpu_mgr):
     weights = [GPUWeight(index=0, weight=50, name="A", device="gpu")]
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 16
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
 
 
 def test_compute_n_gpu_layers_two_gpus_sum_100(gpu_mgr):
@@ -76,8 +84,7 @@ def test_compute_n_gpu_layers_clamped_to_total(gpu_mgr):
 
 def test_compute_n_gpu_layers_small_model(gpu_mgr):
     weights = [GPUWeight(index=0, weight=50, name="A", device="gpu")]
-    # 7B model → 32 layers
-    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 16
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=32) == 32
 
 
 def test_compute_n_gpu_layers_large_model_70b_80_layers(gpu_mgr):
@@ -95,14 +102,24 @@ def test_compute_n_gpu_layers_empty_list(gpu_mgr):
 
 
 def test_compute_n_gpu_layers_10_layers_rounding_up(gpu_mgr):
-    weights = [GPUWeight(index=0, weight=33, name="A", device="gpu")]
-    # 33% of 10 = 3.3 → rounds to 3
+    weights = [
+        GPUWeight(index=0, weight=33, name="A", device="gpu"),
+        GPUWeight(index=-1, weight=67, name="C", device="cpu", active=True),
+    ]
+    # 33% of 10 = 3.3 → rounds to 3 (offload CPU ativo)
     assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == 3
 
 
+def test_compute_n_gpu_layers_10_layers_no_cpu_offload(gpu_mgr):
+    weights = [GPUWeight(index=0, weight=33, name="A", device="gpu")]
+    assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == 10
+
+
 def test_compute_n_gpu_layers_10_layers_rounding_boundary(gpu_mgr):
-    weights = [GPUWeight(index=0, weight=50, name="A", device="gpu")]
-    # 50% of 10 = 5.0 → 5
+    weights = [
+        GPUWeight(index=0, weight=50, name="A", device="gpu"),
+        GPUWeight(index=-1, weight=50, name="C", device="cpu", active=True),
+    ]
     assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == 5
 
 

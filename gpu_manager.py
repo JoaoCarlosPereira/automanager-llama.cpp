@@ -7,7 +7,17 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+
+
+class OffloadPlan(NamedTuple):
+    """Resolved layer/tensor split from active device weights."""
+
+    n_gpu_layers: int
+    n_cpu_layers: int
+    gpu_pct: float
+    cpu_pct: float
+    tensor_split: List[str]
 
 import psutil
 
@@ -349,48 +359,113 @@ class GPUManager(GPUDetector):
         "405b": 126,
     }
 
+    @staticmethod
+    def active_gpus_with_weight(gpu_weights: List[GPUWeight]) -> List[GPUWeight]:
+        """Active GPU entries with weight > 0, preserving request order."""
+        return [
+            w
+            for w in gpu_weights
+            if w.active and w.device == "gpu" and w.weight > 0
+        ]
+
+    @staticmethod
+    def sum_active_weight(
+        gpu_weights: List[GPUWeight], device: Optional[str] = None
+    ) -> float:
+        """Sum weights for active devices, optionally filtered by device type."""
+        devices = [w for w in gpu_weights if w.active]
+        if device:
+            devices = [w for w in devices if w.device == device]
+        return sum(w.weight for w in devices)
+
+    @staticmethod
+    def cpu_offload_active(gpu_weights: List[GPUWeight]) -> bool:
+        """True when the user enabled CPU offload with weight > 0."""
+        return GPUManager.sum_active_weight(gpu_weights, "cpu") > 0
+
     def compute_tensor_split(self, gpu_weights: List[GPUWeight]) -> List[str]:
-        active = [w for w in gpu_weights if w.active and w.weight > 0 and w.device == "gpu"]
+        """Relative split among active GPUs; preserves user % ratios."""
+        active = self.active_gpus_with_weight(gpu_weights)
         if not active:
             return []
         total = sum(w.weight for w in active) or 1.0
         return [f"{w.weight / total:.4f}" for w in active]
 
+    def compute_offload_plan(
+        self, gpu_weights: List[GPUWeight], total_layers: int = 32
+    ) -> OffloadPlan:
+        """Resolve ``-ngl``, CPU share and ``--tensor-split`` from active weights.
+
+        Active devices must represent the user's distribution (sum ~100%).
+        When CPU offload is off (CPU inactive or 0%), all layers go to GPU(s)
+        and GPU weights map directly to ``--tensor-split``.
+        When CPU offload is on, GPU weight sum sets the GPU layer fraction and
+        CPU weight sum sets the remainder; GPU weights still control the split
+        ratio among cards for the offloaded GPU layers.
+        """
+        total_layers = max(1, total_layers)
+        gpu_pct = self.sum_active_weight(gpu_weights, "gpu")
+        cpu_pct = self.sum_active_weight(gpu_weights, "cpu")
+        active_gpus = self.active_gpus_with_weight(gpu_weights)
+
+        if self.cpu_offload_active(gpu_weights):
+            n_gpu_layers = max(
+                0, min(total_layers, int(round(gpu_pct / 100.0 * total_layers)))
+            )
+        elif active_gpus:
+            n_gpu_layers = total_layers
+        else:
+            n_gpu_layers = 0
+
+        return OffloadPlan(
+            n_gpu_layers=n_gpu_layers,
+            n_cpu_layers=max(0, total_layers - n_gpu_layers),
+            gpu_pct=gpu_pct,
+            cpu_pct=cpu_pct,
+            tensor_split=self.compute_tensor_split(gpu_weights),
+        )
+
     def get_visible_devices(self, gpu_weights: List[GPUWeight]) -> Optional[str]:
-        active = [w for w in gpu_weights if w.active and w.weight > 0 and w.device == "gpu"]
+        active = self.active_gpus_with_weight(gpu_weights)
         if not active:
             return None
         return ",".join(str(w.index) for w in active)
+
+    def resolve_main_gpu_index(
+        self, gpu_weights: List[GPUWeight]
+    ) -> str:
+        """Index of main GPU within the active GPU list (for ``--main-gpu``)."""
+        active_gpus = self.active_gpus_with_weight(gpu_weights)
+        if not active_gpus:
+            return "0"
+        main_gpu_obj = next((w for w in active_gpus if w.is_main), None)
+        if not main_gpu_obj:
+            return "0"
+        for i, w in enumerate(active_gpus):
+            if w.index == main_gpu_obj.index:
+                return str(i)
+        return "0"
 
     def validate_gpu_weights(self, gpu_weights: List[GPUWeight]) -> Tuple[bool, str]:
         active = [w for w in gpu_weights if w.active and w.weight > 0 and w.device == "gpu"]
         if not active:
             return False, "No active GPUs selected. Enable at least one GPU with weight > 0."
+
+        has_active_cpu = any(w.active and w.device == "cpu" for w in gpu_weights)
+        if not has_active_cpu:
+            gpu_total = self.sum_active_weight(gpu_weights, "gpu")
+            if abs(gpu_total - 100.0) > 1.0:
+                return False, (
+                    f"Pesos das GPUs ativas somam {gpu_total:.1f}% (esperado ~100%). "
+                    "Ajuste os pesos para somar 100% ou ative a CPU para offload."
+                )
         return True, ""
 
     def compute_n_gpu_layers(
         self, gpu_weights: List[GPUWeight], total_layers: int = 32
     ) -> int:
-        """Return the number of layers to offload to GPU based on weight sum.
-
-        The sum of all active ``device="gpu"`` weights represents the fraction
-        of the model to place on GPU.  The remainder falls to CPU.
-
-        Examples::
-
-            >>> weights = [GPUWeight(index=0, weight=70, name="A", device="gpu"),
-            ...            GPUWeight(index=0, weight=30, name="C", device="cpu")]
-            >>> mgr.compute_n_gpu_layers(weights, total_layers=32)  # 70% → 22
-            22
-
-        :param gpu_weights: list of GPUWeight (may include CPU entries).
-        :param total_layers: total number of transformer layers in the model.
-        :returns: integer number of layers, clamped to ``[0, total_layers]``.
-        """
-        gpu_pct = sum(
-            w.weight for w in gpu_weights if w.active and w.device == "gpu"
-        )
-        return max(0, min(total_layers, int(round(gpu_pct / 100.0 * total_layers))))
+        """Return GPU layer count derived from :meth:`compute_offload_plan`."""
+        return self.compute_offload_plan(gpu_weights, total_layers).n_gpu_layers
 
     def detect_model_layers(self, model_path: str) -> int:
         """Detect the number of transformer layers in a GGUF model file.

@@ -388,25 +388,16 @@ class ProcessManager:
                 status_code=400, detail="SELECIONE PELO MENOS UMA GPU"
             )
 
-        split = self.gpu_manager.compute_tensor_split(gpu_weights)
-        active_weights = [w for w in gpu_weights if w.active and w.weight > 0]
-        main_gpu_obj = next((w for w in active_weights if w.is_main), None)
-        if main_gpu_obj:
-            main_gpu = "0"
-            for i, w in enumerate(active_weights):
-                if w.index == main_gpu_obj.index:
-                    main_gpu = str(i)
-                    break
-        else:
-            main_gpu = "0"
-
-        api_token = self.token_mgr.get_or_create()
-        server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
-        # Resolve total_layers: use provided value, auto-detect from model, or fall back to default
         if not total_layers or total_layers <= 0:
             total_layers = self.gpu_manager.detect_model_layers(model_path)
         total_layers = max(1, total_layers)
-        n_gpu_layers = self.gpu_manager.compute_n_gpu_layers(gpu_weights, total_layers)
+
+        plan = self.gpu_manager.compute_offload_plan(gpu_weights, total_layers)
+        split = plan.tensor_split
+        main_gpu = self.gpu_manager.resolve_main_gpu_index(gpu_weights)
+        n_gpu_layers = plan.n_gpu_layers
+        api_token = self.token_mgr.get_or_create()
+        server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
         cmd = [
             LLAMA_SERVER_BIN,
             "-m",
@@ -464,7 +455,9 @@ class ProcessManager:
             f"ctx_per_slot={context_size}, server_ctx={server_ctx_size}, "
             f"batch_size={batch_size}, thinking_enabled={thinking_enabled}, "
             f"mtp_enabled={mtp_enabled}, mtp_draft_tokens={mtp_draft_tokens}, "
-            f"mtp_applied={mtp_applied})"
+            f"mtp_applied={mtp_applied}, gpu_pct={plan.gpu_pct}, "
+            f"cpu_pct={plan.cpu_pct}, n_gpu_layers={plan.n_gpu_layers}, "
+            f"n_cpu_layers={plan.n_cpu_layers})"
         )
 
         try:

@@ -461,6 +461,51 @@ test('startModel alerta quando carga total diferente de 100%', async () => {
     expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
 });
 
+test('startModel envia CPU inactive no payload quando desmarcada', async () => {
+    const path = '/media/cpu-off.gguf';
+    state.currentSelectedModel = path;
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="cpu-row">
+            <input type="checkbox" class="cpu-checkbox" />
+            <input type="number" class="cpu-weight" value="30" />
+            <input type="checkbox" class="cpu-pin" />
+        </div>
+    `);
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ probing: false }) });
+
+    await startModel(path, 'cpu-off-id');
+
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    const cpuEntry = body.gpu_weights.find(w => w.device === 'cpu');
+    expect(cpuEntry).toEqual(expect.objectContaining({
+        index: -1,
+        active: false,
+        device: 'cpu',
+    }));
+    const activeGpuTotal = body.gpu_weights
+        .filter(w => w.active && w.device === 'gpu')
+        .reduce((sum, w) => sum + w.weight, 0);
+    expect(activeGpuTotal).toBe(100);
+});
+
+test('startModel alerta quando GPUs somam menos de 100% com CPU desmarcada', async () => {
+    const path = '/media/partial.gguf';
+    state.currentSelectedModel = path;
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="cpu-row">
+            <input type="checkbox" class="cpu-checkbox" />
+            <input type="number" class="cpu-weight" value="0" />
+            <input type="checkbox" class="cpu-pin" />
+        </div>
+    `);
+    document.querySelector('.gpu-weight').value = '70';
+
+    await startModel(path, 'partial-id');
+
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining('100%'));
+    expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
+});
+
 test('startModel alerta quando peso da CPU excede 70%', async () => {
     const path = '/media/m.gguf';
     state.currentSelectedModel = path;
