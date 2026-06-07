@@ -19,13 +19,20 @@ DEFAULT_TOTAL_LAYERS = 32
 LLAMA_SERVER_BIN = "llama-server"
 logger = logging.getLogger("automanager")
 
-# e.g. "Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz" -> without clock suffix
+# e.g. "Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz" -> "Xeon CPU E5-2676 v3"
 _CPU_FREQ_SUFFIX = re.compile(r"\s*@\s*[\d.]+\s*GHz\s*$", re.IGNORECASE)
+_CPU_R_MARK = re.compile(r"\(R\)", re.IGNORECASE)
+_INTEL_WORD = re.compile(r"\bIntel\b", re.IGNORECASE)
+_CPU_MULTI_SPACE = re.compile(r"\s{2,}")
 
 
 def _sanitize_cpu_name(name: str) -> str:
-    """Remove clock frequency suffix from CPU model string."""
-    return _CPU_FREQ_SUFFIX.sub("", name).strip()
+    """Normalize CPU model string for display (drop MHz suffix, Intel, (R))."""
+    name = _CPU_FREQ_SUFFIX.sub("", name)
+    name = _CPU_R_MARK.sub("", name)
+    name = _INTEL_WORD.sub("", name)
+    name = _CPU_MULTI_SPACE.sub(" ", name)
+    return name.strip()
 
 
 def _format_metric_watts(value: Optional[float]) -> Optional[str]:

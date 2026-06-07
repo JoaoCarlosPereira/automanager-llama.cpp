@@ -272,6 +272,7 @@ export async function clearCompletedDownloads() {
 
 export function startDashboardPolling() {
     stopDashboardPolling();
+    updateMetrics();
     state.metricsTimer = setInterval(updateMetrics, 2000);
     ensureStatusPolling(false);
     state.downloadsTimer = setInterval(updateDownloads, 3000);
@@ -326,56 +327,67 @@ export async function renewToken() {
     }
 }
 
+function setBarWidth(el, pct) {
+    if (el) el.style.width = `${pct}%`;
+}
+
+function setText(el, text) {
+    if (el) el.innerText = text;
+}
+
+function updateCpuRowMetrics(data) {
+    const cpuRow = document.getElementById('cpu-row') || document.querySelector('.cpu-row');
+    if (!cpuRow) return;
+
+    const cpuUtil = data.cpu ?? 0;
+    const ramUsed = data.ram_used_mb ?? 0;
+    const ramTotal = data.ram_total_mb ?? 0;
+    const ramPct = data.ram ?? 0;
+
+    setText(cpuRow.querySelector('.cpu-util-val'), `${cpuUtil}%`);
+    setBarWidth(cpuRow.querySelector('.cpu-util-bar'), cpuUtil);
+    setText(cpuRow.querySelector('.cpu-temp-val'), `${data.cpu_temp || '--'}°C`);
+    setText(cpuRow.querySelector('.cpu-power-val'), `${data.cpu_power || '--'}W`);
+    setText(cpuRow.querySelector('.cpu-ram-text'), `${ramUsed} / ${ramTotal} MB`);
+    setBarWidth(cpuRow.querySelector('.cpu-ram-bar'), ramPct);
+}
+
+function updateGpuRowMetrics(gpus) {
+    (gpus || []).forEach((g) => {
+        const row = document.querySelector(`.gpu-row[data-index="${g.index}"]`);
+        if (!row) return;
+
+        setText(row.querySelector('.gpu-util-val'), `${g.util}%`);
+        setBarWidth(row.querySelector('.gpu-util-bar'), g.util);
+        setText(row.querySelector('.gpu-temp-val'), `${g.temp || '--'}°C`);
+        setText(row.querySelector('.gpu-power-val'), `${g.power || '--'}W`);
+        setText(row.querySelector('.gpu-vram-text'), `${g.mem_used} / ${g.mem_total} MB`);
+        setBarWidth(row.querySelector('.gpu-vram-bar'), g.vram_pct ?? 0);
+    });
+}
+
 export async function updateMetrics() {
     try {
         const res = await apiFetch('/metrics');
         if (sessionExpiredHandled || !res.ok) return;
         const data = await res.json();
+
         const metricsPanel = document.getElementById('metrics-panel');
         if (metricsPanel) {
             if (!state.currentRunningModelPath) metricsPanel.classList.add('metric-dimmed');
             else metricsPanel.classList.remove('metric-dimmed');
         }
-        document.getElementById('cpu-val').innerText = data.cpu + '%';
-        document.getElementById('cpu-bar').style.width = data.cpu + '%';
-        document.getElementById('ram-val').innerText = data.ram + '%';
-        document.getElementById('ram-bar').style.width = data.ram + '%';
 
-        const cpuRow = document.querySelector('.cpu-row');
-        if (cpuRow) {
-            const cpuUtil = data.cpu ?? 0;
-            const ramUsed = data.ram_used_mb ?? 0;
-            const ramTotal = data.ram_total_mb ?? 0;
-            const ramPct = data.ram ?? 0;
+        setText(document.getElementById('cpu-val'), `${data.cpu ?? 0}%`);
+        setBarWidth(document.getElementById('cpu-bar'), data.cpu ?? 0);
+        setText(document.getElementById('ram-val'), `${data.ram ?? 0}%`);
+        setBarWidth(document.getElementById('ram-bar'), data.ram ?? 0);
 
-            const utilVal = cpuRow.querySelector('.cpu-util-val');
-            const utilBar = cpuRow.querySelector('.cpu-util-bar');
-            if (utilVal) utilVal.innerText = `${cpuUtil}%`;
-            if (utilBar) utilBar.style.width = `${cpuUtil}%`;
-
-            const tempVal = cpuRow.querySelector('.cpu-temp-val');
-            const powerVal = cpuRow.querySelector('.cpu-power-val');
-            if (tempVal) tempVal.innerText = `${data.cpu_temp || '--'}°C`;
-            if (powerVal) powerVal.innerText = `${data.cpu_power || '--'}W`;
-
-            const ramText = cpuRow.querySelector('.cpu-ram-text');
-            const ramBar = cpuRow.querySelector('.cpu-ram-bar');
-            if (ramText) ramText.innerText = `${ramUsed} / ${ramTotal} MB`;
-            if (ramBar) ramBar.style.width = `${ramPct}%`;
-        }
-
-        data.gpus.forEach(g => {
-            const row = document.querySelector(`.gpu-row[data-index="${g.index}"]`);
-            if (row) {
-                row.querySelector('.gpu-util-val').innerText = g.util + '%';
-                row.querySelector('.gpu-util-bar').style.width = g.util + '%';
-                row.querySelector('.gpu-temp-val').innerText = (g.temp || '--') + '°C';
-                row.querySelector('.gpu-power-val').innerText = (g.power || '--') + 'W';
-                row.querySelector('.gpu-vram-text').innerText = `${g.mem_used} / ${g.mem_total} MB`;
-                row.querySelector('.gpu-vram-bar').style.width = g.vram_pct + '%';
-            }
-        });
-    } catch (e) {}
+        updateCpuRowMetrics(data);
+        updateGpuRowMetrics(data.gpus);
+    } catch (e) {
+        console.error('updateMetrics failed', e);
+    }
 }
 
 export function stopDashboardPolling() {

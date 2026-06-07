@@ -699,8 +699,14 @@ describe('ensureStatusPolling e dashboard polling', () => {
         expect(state.statusPollIntervalMs).toBe(1000);
     });
 
-    test('startDashboardPolling cria quatro timers', () => {
+    test('startDashboardPolling cria quatro timers e busca metricas imediatamente', async () => {
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ cpu: 7, ram: 11, gpus: [] }),
+        });
         startDashboardPolling();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(document.getElementById('cpu-val').innerText).toBe('7%');
         expect(setInterval).toHaveBeenCalledTimes(4);
         const intervals = [...intervalCallbacks.values()].map((v) => v.ms).sort((a, b) => a - b);
         expect(intervals).toEqual([2000, 3000, 3000, 5000]);

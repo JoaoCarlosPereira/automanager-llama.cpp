@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_manager import CPUInfo, GPUDetector
+from gpu_manager import CPUInfo, GPUDetector, _sanitize_cpu_name
 
 
 def _make_proc_mock(lines):
@@ -40,6 +40,13 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.name == "AMD EPYC 7763"
         assert "7763 v2" not in result.name
 
+    def test_sanitize_cpu_name_strips_intel_r_mark_and_clock(self):
+        assert (
+            _sanitize_cpu_name("Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz")
+            == "Xeon CPU E5-2676 v3"
+        )
+        assert _sanitize_cpu_name("Intel64 Family 6 Model 186") == "Intel64 Family 6 Model 186"
+
     def test_detect_cpu_info_strips_clock_frequency_suffix(self):
         lines = ["model name\t: Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz\n"]
         virtual_memory = MagicMock(
@@ -52,7 +59,9 @@ class TestGPUDetectorDetectCpuInfo:
         ), patch("gpu_manager.os.name", "posix"):
             result = GPUDetector().detect_cpu_info()
 
-        assert result.name == "Intel(R) Xeon(R) CPU E5-2676 v3"
+        assert result.name == "Xeon CPU E5-2676 v3"
+        assert "Intel" not in result.name
+        assert "(R)" not in result.name
         assert "GHz" not in result.name
         assert "@" not in result.name
 

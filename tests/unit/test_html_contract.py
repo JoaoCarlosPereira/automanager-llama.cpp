@@ -115,6 +115,7 @@ def test_html_contains_gpu_table(html):
 
 def test_html_contains_cpu_row(html):
     """Verify the CPU row is injected in the GPU table body."""
+    assert 'id="cpu-row"' in html
     assert "cpu-row" in html
     assert 'data-index="cpu"' in html
 
@@ -182,8 +183,8 @@ def test_html_contains_active_model_card(html):
 
 
 def test_html_serves_external_js_scripts(html):
-    for script in ("auth.js", "models.js", "metrics.js", "gpu.js", "index.js"):
-        assert f'type="module" src="/static/js/{script}"' in html
+    assert 'type="module" src="/static/js/index.js?v=' in html
+    assert 'src="/static/js/pacman_bg.js?v=' in html
 
 
 def test_html_contains_api_token(html):

@@ -95,6 +95,20 @@ if os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
+def _dashboard_js_version() -> str:
+    """Cache-bust dashboard bundles when any core JS file changes."""
+    js_dir = os.path.join(_static_dir, "js")
+    mtimes = []
+    for name in ("gpu.js", "auth.js", "metrics.js", "models.js", "index.js"):
+        path = os.path.join(js_dir, name)
+        if os.path.isfile(path):
+            mtimes.append(os.path.getmtime(path))
+    return str(int(max(mtimes))) if mtimes else "0"
+
+
+_DASHBOARD_JS_V = _dashboard_js_version()
+
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     icon_path = os.path.join(_static_dir, "favicon.svg")
@@ -565,7 +579,7 @@ async def index(request: Request):
     cpu_ram_total = cpu_info.ram_total_mb if cpu_info.ram_total_mb else 0
     cpu_ram_used = cpu_info.ram_used_mb if cpu_info.ram_used_mb else 0
     cpu_rows = f"""
-        <tr class="cpu-row group border-b border-slate-800/50" data-index="cpu">
+        <tr id="cpu-row" class="cpu-row group border-b border-slate-800/50" data-index="cpu">
             <td class="px-3 md:px-6 py-4 md:py-6 text-center">
                 <div class="flex flex-col items-center gap-2">
                     <span class="cpu-util-val text-xs font-black text-blue-400 font-mono">0%</span>
@@ -1132,12 +1146,8 @@ def _build_html(
             DEFAULT_BATCH_SIZE: {DEFAULT_BATCH_SIZE},
         }};
     </script>
-    <script type="module" src="/static/js/gpu.js"></script>
-    <script type="module" src="/static/js/auth.js"></script>
-    <script type="module" src="/static/js/metrics.js"></script>
-    <script type="module" src="/static/js/models.js"></script>
-    <script type="module" src="/static/js/index.js"></script>
-    <script src="/static/js/pacman_bg.js"></script>
+    <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>
+    <script src="/static/js/pacman_bg.js?v={_DASHBOARD_JS_V}"></script>
 </body>
 </html>"""
 
