@@ -48,10 +48,15 @@ def mock_index_deps(monkeypatch):
     }
     monkeypatch.setattr(llama_manager, "model_scanner", model_scanner)
 
+    cpu_info_mock = MagicMock()
+    cpu_info_mock.name = "Test CPU"
+    cpu_info_mock.ram_total_mb = 16384
+    cpu_info_mock.ram_used_mb = 4096
     gpu_manager = MagicMock()
     gpu_manager.detect_gpus.return_value = [
         {"index": 0, "name": "NVIDIA Test GPU", "vram": 24000}
     ]
+    gpu_manager.detect_cpu_info.return_value = cpu_info_mock
     monkeypatch.setattr(llama_manager, "gpu_manager", gpu_manager)
 
     config_manager = MagicMock()
@@ -106,6 +111,43 @@ def test_html_contains_gpu_table(html):
     assert "gpu-weight" in html
     assert "gpu-checkbox" in html
     assert "gpu-pin" in html
+
+
+def test_html_contains_cpu_row(html):
+    """Verify the CPU row is injected after GPU rows in the GPU table body."""
+    assert "cpu-row" in html
+    assert 'data-index="cpu"' in html
+
+
+def test_html_contains_cpu_row_elements(html):
+    """Verify CPU row has all required elements: checkbox, util bars, RAM display, pin, weight."""
+    assert "cpu-checkbox" in html
+    assert "cpu-util-val" in html
+    assert "cpu-util-bar" in html
+    assert "cpu-ram-val" in html
+    assert "cpu-ram-text" in html
+    assert "cpu-ram-bar" in html
+    assert "cpu-pin" in html
+    assert "cpu-weight" in html
+
+
+def test_html_contains_cpu_name_in_row(html):
+    """Verify CPU name from mock is displayed in the CPU row."""
+    assert "Test CPU" in html
+
+
+def test_cpu_row_has_no_main_radio(html):
+    """Verify CPU row does not have a 'main GPU' radio button."""
+    html_split = html.split('data-index="cpu"')
+    assert len(html_split) == 2
+    cpu_section = html_split[1]
+    # The CPU row <tr> should end before any next <tr> or </tbody>
+    row_end = cpu_section.find("</tr>")
+    if row_end != -1:
+        cpu_row = cpu_section[:row_end]
+    else:
+        cpu_row = cpu_section[:cpu_section.find("</tbody>")]
+    assert "main-gpu-radio" not in cpu_row
 
 
 def test_html_contains_model_list(html):

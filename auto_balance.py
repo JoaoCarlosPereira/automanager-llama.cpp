@@ -29,6 +29,13 @@ VRAM_SETTLE_SEC = 4.0
 TARGET_VRAM_PCT = 93.0
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 
+# CPU offload constants (task_05)
+MAX_CPU_WEIGHT_PCT = 70  # Hard cap: CPU weight cannot exceed 70%
+
+# CPU offload constants (task_05)
+MAX_CPU_WEIGHT_PCT = 70  # Hard cap: CPU weight cannot exceed 70%
+DEFAULT_N_GPU_LAYERS = 99  # Default llama-server --ngl value
+
 
 class AutoBalanceCancelled(Exception):
     """Raised when the user cancels an in-progress auto-balance run."""
@@ -103,11 +110,15 @@ class AutoBalancePlanner:
         return [idx for idx, w in weight_map.items() if w > 0]
 
     @staticmethod
+    def _gpu_only(weights: List[GPUWeight]) -> List[GPUWeight]:
+        return [w for w in weights if w.device == "gpu"]
+
+    @staticmethod
     def pinned_map_from_request(gpu_weights: List[GPUWeight]) -> Dict[int, int]:
         return {
             int(w.index): int(w.weight)
             for w in gpu_weights
-            if w.active and w.pinned
+            if w.active and w.pinned and w.device == "gpu"
         }
 
     @staticmethod
@@ -269,6 +280,207 @@ class AutoBalancePlanner:
             if weight_map.get(idx, 0) > 0
         ]
         return ", ".join(parts)
+
+    @staticmethod
+    def format_weights_with_cpu(
+        gpu_weight_map: Dict[int, int],
+        spill_order: List[int],
+        cpu_weight: int,
+    ) -> str:
+        """Format GPU weights string with optional CPU offload display."""
+        gpu_parts = [
+            f"GPU{idx}={gpu_weight_map.get(idx, 0)}%"
+            for idx in spill_order
+            if gpu_weight_map.get(idx, 0) > 0
+        ]
+        if cpu_weight > 0:
+            gpu_parts.append(f"CPU={cpu_weight}%")
+        return ", ".join(gpu_parts) if gpu_parts else "CPU=100%"
+
+    @staticmethod
+    def compute_cpu_offload_weights(
+        gpu_weight_map: Dict[int, int],
+        total_vram_mb: int,
+        estimated_model_vram_mb: int,
+    ) -> Tuple[Dict[int, int], int]:
+        """Compute GPU and CPU weights for model offloading.
+
+        Strategy:
+        1. If VRAM >= model size, distribute 100% across GPUs (no CPU).
+        2. If VRAM < model size, scale GPU weights down proportionally,
+           assign remainder to CPU (capped at MAX_CPU_WEIGHT_PCT%).
+
+        Args:
+            gpu_weight_map: Original GPU weight distribution (sum=100).
+            total_vram_mb: Total VRAM across all active GPUs.
+            estimated_model_vram_mb: Estimated VRAM needed for the model.
+
+        Returns:
+            Tuple of (gpu_weight_map, cpu_weight). GPU weights are scaled
+            down proportionally if CPU offload is needed.
+        """
+        if estimated_model_vram_mb <= 0:
+            return dict(gpu_weight_map), 0
+
+        if total_vram_mb >= estimated_model_vram_mb:
+            return dict(gpu_weight_map), 0
+
+        gpu_fraction = total_vram_mb / estimated_model_vram_mb
+        gpu_fraction = min(gpu_fraction, MAX_CPU_WEIGHT_PCT / 100.0)
+
+        cpu_weight = 100 - int(round(gpu_fraction * 100))
+        cpu_weight = min(cpu_weight, MAX_CPU_WEIGHT_PCT)
+        gpu_total = 100 - cpu_weight
+
+        original_total = sum(gpu_weight_map.values()) or 1
+        scaled_map: Dict[int, int] = {}
+        remaining = gpu_total
+        gpu_indices = sorted(gpu_weight_map.keys())
+        for pos, idx in enumerate(gpu_indices):
+            if pos == len(gpu_indices) - 1:
+                scaled_map[idx] = remaining
+            else:
+                share = int(round(gpu_weight_map[idx] * gpu_total / original_total))
+                share = max(0, min(share, remaining - (len(gpu_indices) - pos - 1)))
+                scaled_map[idx] = share
+                remaining -= share
+
+        if sum(scaled_map.values()) != gpu_total:
+            diff = gpu_total - sum(scaled_map.values())
+            if gpu_indices:
+                scaled_map[gpu_indices[0]] += diff
+
+        return scaled_map, cpu_weight
+
+    @staticmethod
+    def estimate_model_vram_mb(
+        model_path: str, context_size: int, parallel_slots: int
+    ) -> int:
+        """Estimate model VRAM requirements in MB.
+
+        Uses heuristics based on model filename parameter count and
+        quantization estimation (Q4_K_M ≈ 0.5x FP16 size).
+        """
+        model_name = os.path.basename(model_path).lower()
+        estimated_model_size_gb = 0.0
+
+        import re as _re
+        param_match = _re.search(r'(\d+\.?\d*)\s*[bB]', model_name)
+        if param_match:
+            params_b = float(param_match.group(1)) * 1e9
+            base_size_bytes = params_b * 2
+            estimated_model_size_gb = base_size_bytes / (1024 ** 3)
+        else:
+            estimated_model_size_gb = 4.0
+
+        quant_factor = 0.5
+        model_size_gb = estimated_model_size_gb * quant_factor
+        ctx_overhead_mb = context_size * parallel_slots * 0.1
+        total_mb = (model_size_gb * 1024) + ctx_overhead_mb
+        return int(total_mb)
+
+    @staticmethod
+    def compute_cpu_offload_weights(
+        gpu_weight_map: Dict[int, int],
+        total_vram_mb: int,
+        estimated_model_vram_mb: int,
+    ) -> Tuple[Dict[int, int], int]:
+        """Compute GPU and CPU weights for model offloading.
+
+        Strategy:
+        1. If VRAM >= model size, distribute 100% across GPUs (no CPU).
+        2. If VRAM < model size, scale GPU weights down proportionally,
+           assign remainder to CPU (capped at MAX_CPU_WEIGHT_PCT%).
+
+        Args:
+            gpu_weight_map: Original GPU weight distribution (sum=100).
+            total_vram_mb: Total VRAM across all active GPUs.
+            estimated_model_vram_mb: Estimated VRAM needed for the model.
+
+        Returns:
+            Tuple of (gpu_weight_map, cpu_weight). GPU weights are scaled
+            down proportionally if CPU offload is needed.
+        """
+        if estimated_model_vram_mb <= 0:
+            # Can't estimate — return original GPU weights, no CPU
+            return dict(gpu_weight_map), 0
+
+        if total_vram_mb >= estimated_model_vram_mb:
+            # All GPU, no CPU offload needed
+            return dict(gpu_weight_map), 0
+
+        # GPU can only handle a fraction of the model
+        gpu_fraction = total_vram_mb / estimated_model_vram_mb
+        gpu_fraction = min(gpu_fraction, MAX_CPU_WEIGHT_PCT / 100.0)
+
+        cpu_weight = 100 - int(round(gpu_fraction * 100))
+        cpu_weight = min(cpu_weight, MAX_CPU_WEIGHT_PCT)
+        gpu_total = 100 - cpu_weight
+
+        # Scale GPU weights proportionally to sum to gpu_total
+        original_total = sum(gpu_weight_map.values()) or 1
+        scaled_map: Dict[int, int] = {}
+        remaining = gpu_total
+        gpu_indices = sorted(gpu_weight_map.keys())
+        for pos, idx in enumerate(gpu_indices):
+            if pos == len(gpu_indices) - 1:
+                scaled_map[idx] = remaining
+            else:
+                share = int(round(gpu_weight_map[idx] * gpu_total / original_total))
+                share = max(0, min(share, remaining - (len(gpu_indices) - pos - 1)))
+                scaled_map[idx] = share
+                remaining -= share
+
+        # Fix rounding
+        if sum(scaled_map.values()) != gpu_total:
+            diff = gpu_total - sum(scaled_map.values())
+            if gpu_indices:
+                scaled_map[gpu_indices[0]] += diff
+
+        return scaled_map, cpu_weight
+
+    @staticmethod
+    def estimate_model_vram_mb(
+        model_path: str, context_size: int, parallel_slots: int
+    ) -> int:
+        """Estimate model VRAM requirements in MB.
+
+        Uses a heuristic based on model filename pattern and context size.
+        Returns estimated MB needed to load the model in GPU memory.
+
+        Heuristics:
+        - Filename contains parameter count (e.g., "7b", "13b", "70b")
+        - Quantization affects size (Q4 ~4bpw, Q5 ~5bpw, Q8 ~8bpw)
+        - Context size adds KV cache overhead
+        """
+        model_name = os.path.basename(model_path).lower()
+        estimated_model_size_gb = 0.0
+
+        # Extract parameter count from filename
+        import re as _re
+        param_match = _re.search(r'(\d+\.?\d*)\s*[bB]', model_name)
+        if param_match:
+            params_b = float(param_match.group(1)) * 1e9
+            # Base model size in bytes (FP16 = 2 bytes per param)
+            base_size_bytes = params_b * 2
+            estimated_model_size_gb = base_size_bytes / (1024 ** 3)
+        else:
+            # Fallback: estimate based on file size patterns
+            # GGUF files typically 1-100GB; assume ~7B Q4 as baseline (~4GB)
+            estimated_model_size_gb = 4.0  # conservative default
+
+        # Apply quantization factor (estimate Q4 as default for GGUF)
+        # Q4_K_M ≈ 4 bits per weight → ~0.5x FP16 size
+        quant_factor = 0.5
+        model_size_gb = estimated_model_size_gb * quant_factor
+
+        # Add context/KV cache overhead
+        # KV cache ≈ 2 * layers * head_dim * hidden_size * ctx_slots * 2 bytes
+        # Simplified: ~0.1 MB per context token per slot for typical models
+        ctx_overhead_mb = context_size * parallel_slots * 0.1
+
+        total_mb = (model_size_gb * 1024) + ctx_overhead_mb
+        return int(total_mb)
 
 
 class AutoBalanceProber:
@@ -635,6 +847,7 @@ class AutoBalanceProber:
                 parallel_slots=request.parallel_slots,
                 batch_size=request.batch_size,
                 thinking_enabled=request.thinking_enabled,
+                total_layers=request.total_layers,
             )
         except Exception as exc:
             logger.error(f"Auto-balance start failed: {exc}")

@@ -25,6 +25,8 @@ const {
     resetToDefaults,
     cancelAutoBalance,
     syncAutoBalanceCancelButton,
+    validateDeviceWeights,
+    getActiveWeightTotal,
 } = gpu;
 
 const PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
@@ -49,7 +51,16 @@ function gpuRowHtml(index, { weight = '0', checked = true, pinned = false, main 
     </div>`;
 }
 
-function setupGpuDom({ gpuCount = 2 } = {}) {
+function cpuRowHtml({ weight = '0', checked = true, pinned = false } = {}) {
+    return `
+    <div class="cpu-row" data-index="cpu">
+        <input type="checkbox" class="cpu-checkbox" ${checked ? 'checked' : ''}/>
+        <input type="number" class="cpu-weight" value="${weight}"/>
+        <input type="checkbox" class="cpu-pin" ${pinned ? 'checked' : ''}/>
+    </div>`;
+}
+
+function setupGpuDom({ gpuCount = 2, withCpu = false } = {}) {
     const presetOptions = PRESETS.map(v => `<option value="${v}">${v}</option>`).join('');
     const rows = Array.from({ length: gpuCount }, (_, i) =>
         gpuRowHtml(i, { weight: i === 0 ? '100' : '0', main: i === 0 })
@@ -78,6 +89,7 @@ function setupGpuDom({ gpuCount = 2 } = {}) {
             <ul id="auto-balance-capacity-suggestions"></ul>
         </div>
         ${rows}
+        ${withCpu ? cpuRowHtml({ weight: '0' }) : ''}
     `;
 }
 
@@ -596,5 +608,110 @@ describe('resetToDefaults', () => {
     test('resetToDefaults sem auto-balance-toggle', () => {
         document.getElementById('auto-balance-toggle').remove();
         expect(() => resetToDefaults()).not.toThrow();
+    });
+
+    test('resetToDefaults zera peso da CPU', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        document.querySelector('.cpu-weight').value = '40';
+        resetToDefaults();
+        expect(document.querySelector('.cpu-weight').value).toBe('0');
+    });
+});
+
+describe('validateDeviceWeights', () => {
+    test('rejeita soma diferente de 100%', () => {
+        const result = validateDeviceWeights([
+            { index: 0, weight: 50, active: true, device: 'gpu' },
+            { index: -1, weight: 30, active: true, device: 'cpu' },
+        ]);
+        expect(result.ok).toBe(false);
+        expect(result.message).toContain('100%');
+    });
+
+    test('aceita GPU-only com soma 100%', () => {
+        const result = validateDeviceWeights([
+            { index: 0, weight: 100, active: true, device: 'gpu' },
+        ]);
+        expect(result.ok).toBe(true);
+    });
+
+    test('aceita CPU inativa com peso 0', () => {
+        const result = validateDeviceWeights([
+            { index: 0, weight: 100, active: true, device: 'gpu' },
+            { index: -1, weight: 0, active: false, device: 'cpu' },
+        ]);
+        expect(result.ok).toBe(true);
+    });
+
+    test('rejeita CPU acima de 70%', () => {
+        const result = validateDeviceWeights([
+            { index: 0, weight: 20, active: true, device: 'gpu' },
+            { index: -1, weight: 80, active: true, device: 'cpu' },
+        ]);
+        expect(result.ok).toBe(false);
+        expect(result.message).toContain('70');
+    });
+
+    test('rejeita offload apenas em CPU', () => {
+        const result = validateDeviceWeights([
+            { index: -1, weight: 100, active: true, device: 'cpu' },
+        ]);
+        expect(result.ok).toBe(false);
+        expect(result.message).toContain('GPU');
+    });
+
+    test('getActiveWeightTotal soma apenas dispositivos ativos', () => {
+        expect(getActiveWeightTotal([
+            { weight: 70, active: true },
+            { weight: 30, active: false },
+        ])).toBe(70);
+    });
+});
+
+describe('CPU offload na tabela de dispositivos', () => {
+    beforeEach(() => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+    });
+
+    test('updateTotal inclui peso da CPU ativa', () => {
+        const rows = document.querySelectorAll('.gpu-row');
+        rows[0].querySelector('.gpu-weight').value = '70';
+        rows[1].querySelector('.gpu-weight').value = '20';
+        document.querySelector('.cpu-weight').value = '10';
+        updateTotal();
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+    });
+
+    test('redistributeUnpinnedWeights redistribui entre GPU e CPU', () => {
+        const cpuWeight = document.querySelector('.cpu-weight');
+        cpuWeight.value = '30';
+        redistributeUnpinnedWeights(cpuWeight);
+        const gpuSum = [...document.querySelectorAll('.gpu-weight')]
+            .reduce((s, w) => s + parseInt(w.value, 10), 0);
+        expect(gpuSum + parseInt(cpuWeight.value, 10)).toBe(100);
+    });
+
+    test('applyGpuWeightsToUI aplica peso da CPU por device', () => {
+        applyGpuWeightsToUI([
+            { index: 0, weight: 60, active: true, is_main: true, device: 'gpu' },
+            { index: 1, weight: 10, active: true, device: 'gpu' },
+            { index: -1, weight: 30, active: true, device: 'cpu' },
+        ]);
+        expect(document.querySelector('.cpu-weight').value).toBe('30');
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+    });
+
+    test('bindGpuManualListeners dispara em cpu-weight', () => {
+        bindGpuManualListeners();
+        state.manualGpuOverride = false;
+        document.querySelector('.cpu-weight').dispatchEvent(new Event('input'));
+        expect(state.manualGpuOverride).toBe(true);
+    });
+
+    test('onGpuPinToggle funciona na linha da CPU', () => {
+        const pin = document.querySelector('.cpu-pin');
+        pin.checked = true;
+        onGpuPinToggle(pin);
+        expect(document.querySelector('.cpu-weight').classList.contains('ring-2')).toBe(true);
     });
 });

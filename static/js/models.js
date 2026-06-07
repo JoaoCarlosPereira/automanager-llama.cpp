@@ -6,7 +6,7 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
-    updateThinkingBadge,
+    updateThinkingBadge, validateDeviceWeights,
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
 
@@ -99,24 +99,7 @@ export function applyModelConfig(path) {
     }
     state.manualGpuOverride = false;
     if (cfg.gpu_weights) {
-        cfg.gpu_weights.forEach(w => {
-            const row = document.querySelector(`.gpu-row[data-index="${w.index}"]`);
-            if (row) {
-                const cb = row.querySelector('.gpu-checkbox');
-                const input = row.querySelector('.gpu-weight');
-                const radio = row.querySelector('.gpu-main-radio');
-                const pin = row.querySelector('.gpu-pin');
-                cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
-                input.value = Math.round(w.weight);
-                if (w.is_main) radio.checked = true;
-                if (pin) {
-                    pin.checked = !!w.pinned;
-                    if (w.pinned) input.classList.add('ring-2', 'ring-amber-500/40');
-                    else input.classList.remove('ring-2', 'ring-amber-500/40');
-                }
-            }
-        });
-        updateTotal();
+        applyGpuWeightsToUI(cfg.gpu_weights, false);
     }
     const nameEl = document.querySelector(`[data-path="${path}"] .model-name`);
     if (nameEl) {
@@ -274,16 +257,35 @@ export async function startModel(path, elementId) {
     document.querySelectorAll('.gpu-row').forEach(r => {
         const isChecked = r.querySelector('.gpu-checkbox').checked;
         const isMain = r.querySelector('.gpu-main-radio').checked;
+        const gpuName = r.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'GPU';
         weights.push({
             index: parseInt(r.dataset.index, 10),
             weight: parseInt(r.querySelector('.gpu-weight').value || 0, 10),
-            name: "GPU",
+            name: gpuName,
             active: isChecked,
             is_main: isMain,
             pinned: r.querySelector('.gpu-pin')?.checked || false,
+            device: 'gpu',
         });
     });
-    if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU");
+    const cpuRow = document.querySelector('.cpu-row');
+    if (cpuRow) {
+        const cpuChecked = cpuRow.querySelector('.cpu-checkbox')?.checked ?? false;
+        const cpuName = cpuRow.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'CPU';
+        weights.push({
+            index: -1,
+            weight: parseInt(cpuRow.querySelector('.cpu-weight')?.value || 0, 10),
+            name: cpuName,
+            active: cpuChecked,
+            is_main: false,
+            pinned: cpuRow.querySelector('.cpu-pin')?.checked || false,
+            device: 'cpu',
+        });
+    }
+    const weightValidation = validateDeviceWeights(weights);
+    if (!weightValidation.ok) {
+        return alert(weightValidation.message);
+    }
     if (!weights.some(w => w.is_main)) return alert("DEFINA A GPU PRINCIPAL (coluna Principal)");
     const mmprojPath = document.getElementById('mmproj-path').value;
     const splitMode = document.getElementById('split-mode').value;

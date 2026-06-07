@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_manager import GPUDetector, GPUManager
+from gpu_manager import CPUInfo, GPUDetector, GPUManager
 from model_manager import ModelScanner
 
 
@@ -65,7 +65,8 @@ class TestGPUDetectorGetMetrics:
             "0, 42, 1024, 8192, 65, 125.50\n"
             "1, 0, 0, 24576, 40, 70\n"
         )
-        virtual_memory = MagicMock(percent=37.5)
+        virtual_memory = MagicMock(percent=37.5, used=8 * 1024 * 1024 * 1024, total=16 * 1024 * 1024 * 1024)
+        fake_cpu = CPUInfo(name="Intel Xeon E5-2680", ram_total_mb=16384, ram_used_mb=8192)
 
         with patch(
             "gpu_manager.subprocess.check_output",
@@ -76,12 +77,19 @@ class TestGPUDetectorGetMetrics:
         ) as mock_cpu_percent, patch(
             "gpu_manager.psutil.virtual_memory",
             return_value=virtual_memory,
+        ), patch.object(
+            detector,
+            "detect_cpu_info",
+            return_value=fake_cpu,
         ):
             result = detector.get_metrics()
 
         assert result == {
             "cpu": 12.3,
             "ram": 37.5,
+            "cpu_name": "Intel Xeon E5-2680",
+            "ram_total_mb": 16384,
+            "ram_used_mb": 8192,
             "gpus": [
                 {
                     "index": 0,
@@ -123,7 +131,14 @@ class TestGPUDetectorGetMetrics:
         ):
             result = detector.get_metrics()
 
-        assert result == {"cpu": 0, "ram": 0, "gpus": []}
+        assert result == {
+            "cpu": 0,
+            "ram": 0,
+            "cpu_name": "Unknown CPU",
+            "ram_total_mb": 0,
+            "ram_used_mb": 0,
+            "gpus": [],
+        }
 
 
 class TestModelScannerScan:

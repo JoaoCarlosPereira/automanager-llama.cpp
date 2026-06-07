@@ -340,6 +340,30 @@ export async function updateMetrics() {
         document.getElementById('cpu-bar').style.width = data.cpu + '%';
         document.getElementById('ram-val').innerText = data.ram + '%';
         document.getElementById('ram-bar').style.width = data.ram + '%';
+
+        const cpuRow = document.querySelector('.cpu-row');
+        if (cpuRow) {
+            const cpuUtil = data.cpu ?? 0;
+            const ramUsed = data.ram_used_mb ?? 0;
+            const ramTotal = data.ram_total_mb ?? 0;
+            const ramPct = ramTotal > 0
+                ? Math.round((ramUsed / ramTotal) * 1000) / 10
+                : (data.ram ?? 0);
+
+            const utilVal = cpuRow.querySelector('.cpu-util-val');
+            const utilBar = cpuRow.querySelector('.cpu-util-bar');
+            if (utilVal) utilVal.innerText = `${cpuUtil}%`;
+            if (utilBar) utilBar.style.width = `${cpuUtil}%`;
+
+            const ramVal = cpuRow.querySelector('.cpu-ram-val');
+            if (ramVal) ramVal.innerText = `${ramUsed} / ${ramTotal} MB`;
+
+            const ramText = cpuRow.querySelector('.cpu-ram-text');
+            const ramBar = cpuRow.querySelector('.cpu-ram-bar');
+            if (ramText) ramText.innerText = `${ramUsed} / ${ramTotal} MB`;
+            if (ramBar) ramBar.style.width = `${ramPct}%`;
+        }
+
         data.gpus.forEach(g => {
             const row = document.querySelector(`.gpu-row[data-index="${g.index}"]`);
             if (row) {

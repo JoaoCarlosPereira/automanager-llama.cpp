@@ -9,6 +9,29 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import llama_manager
 from llama_manager import app
+from schemas import GPUWeight
+
+MIXED_GPU_CPU_PAYLOAD = {
+    "path": "/media/docker/models/model.gguf",
+    "gpu_weights": [
+        {
+            "index": 0,
+            "weight": 70.0,
+            "name": "GPU-0",
+            "active": True,
+            "device": "gpu",
+        },
+        {
+            "index": -1,
+            "weight": 30.0,
+            "name": "CPU",
+            "active": True,
+            "device": "cpu",
+        },
+    ],
+    "context_size": 4096,
+    "total_layers": 32,
+}
 
 
 class FakeAuthManager:
@@ -197,7 +220,10 @@ def test_metrics_endpoint_uses_gpu_detector_mock(monkeypatch, authenticated_clie
     gpu_detector = MagicMock()
     gpu_detector.get_metrics.return_value = {
         "cpu": 12.5,
+        "cpu_name": "Test CPU",
         "ram": 45.0,
+        "ram_total_mb": 16384,
+        "ram_used_mb": 7340,
         "gpus": [{"index": 0, "utilization": 7, "memory_used": 1024}],
     }
     monkeypatch.setattr(llama_manager, "gpu_manager", gpu_detector)
@@ -262,3 +288,132 @@ def test_start_auto_balance_takes_priority_over_manual_override(
     assert response.json()["probing"] is True
     process_manager.start_auto_balance.assert_called_once()
     process_manager.start.assert_not_called()
+
+
+# ── CPU offload integration ───────────────────────────────────────────────
+
+
+def test_metrics_endpoint_returns_cpu_offload_fields(
+    monkeypatch, authenticated_client
+):
+    """GET /metrics exposes cpu_name and RAM fields used by the CPU offload UI."""
+    gpu_detector = MagicMock()
+    gpu_detector.get_metrics.return_value = {
+        "cpu": 12.5,
+        "cpu_name": "AMD Ryzen 9 7950X",
+        "ram": 45.0,
+        "ram_total_mb": 32768,
+        "ram_used_mb": 14745,
+        "gpus": [{"index": 0, "utilization": 7, "memory_used": 1024}],
+    }
+    monkeypatch.setattr(llama_manager, "gpu_manager", gpu_detector)
+
+    response = authenticated_client.get("/metrics")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert isinstance(payload["cpu_name"], str) and payload["cpu_name"]
+    assert isinstance(payload["ram_total_mb"], int) and payload["ram_total_mb"] > 0
+    assert isinstance(payload["ram_used_mb"], int) and payload["ram_used_mb"] >= 0
+    assert payload["ram_used_mb"] <= payload["ram_total_mb"]
+    gpu_detector.get_metrics.assert_called_once_with()
+
+
+def test_start_accepts_cpu_weight_in_gpu_weights(
+    monkeypatch, authenticated_client
+):
+    """POST /start accepts device=cpu with index=-1 alongside GPU weights."""
+    process_manager = MagicMock()
+    process_manager.start.return_value = {"message": "Started", "pid": 1234}
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", MagicMock())
+    monkeypatch.setattr(
+        llama_manager.gpu_manager, "detect_model_layers", lambda _path: 32
+    )
+
+    response = authenticated_client.post("/start", json=MIXED_GPU_CPU_PAYLOAD)
+
+    assert response.status_code == 200
+    process_manager.start.assert_called_once()
+    gpu_weights = process_manager.start.call_args.kwargs["gpu_weights"]
+    cpu_entry = next(w for w in gpu_weights if w.device == "cpu")
+    assert cpu_entry.index == -1
+    assert cpu_entry.weight == 30.0
+    assert cpu_entry.active is True
+
+
+def test_app_gpu_manager_validate_weights_rejects_cpu_over_70_percent():
+    """Wired GPUManager rejects offload plans with CPU weight above 70%."""
+    weights = [
+        GPUWeight(index=0, weight=20.0, name="GPU-0", device="gpu"),
+        GPUWeight(index=-1, weight=80.0, name="CPU", device="cpu"),
+    ]
+
+    ok, msg = llama_manager.gpu_manager.validate_weights(weights)
+
+    assert ok is False
+    assert "70" in msg
+
+
+def test_app_gpu_manager_validate_weights_accepts_cpu_at_70_percent():
+    weights = [
+        GPUWeight(index=0, weight=30.0, name="GPU-0", device="gpu"),
+        GPUWeight(index=-1, weight=70.0, name="CPU", device="cpu"),
+    ]
+
+    ok, msg = llama_manager.gpu_manager.validate_weights(weights)
+
+    assert ok is True
+    assert msg == ""
+
+
+def test_app_gpu_manager_compute_n_gpu_layers_mixed_gpu_cpu():
+    """Wired GPUManager computes GPU layer count from GPU weights only."""
+    weights = [
+        GPUWeight(index=0, weight=70.0, name="GPU-0", device="gpu"),
+        GPUWeight(index=-1, weight=30.0, name="CPU", device="cpu"),
+    ]
+
+    n_gpu_layers = llama_manager.gpu_manager.compute_n_gpu_layers(
+        weights, total_layers=32
+    )
+
+    assert n_gpu_layers == 22
+
+
+@pytest.mark.parametrize(
+    ("gpu_weight", "cpu_weight", "total_layers", "expected_ngl"),
+    [
+        (100.0, 0.0, 32, 32),
+        (50.0, 50.0, 32, 16),
+        (70.0, 30.0, 80, 56),
+        (0.0, 100.0, 32, 0),
+    ],
+)
+def test_app_gpu_manager_compute_n_gpu_layers_parametrized(
+    gpu_weight, cpu_weight, total_layers, expected_ngl
+):
+    weights = [
+        GPUWeight(index=0, weight=gpu_weight, name="GPU-0", device="gpu"),
+        GPUWeight(index=-1, weight=cpu_weight, name="CPU", device="cpu"),
+    ]
+
+    assert (
+        llama_manager.gpu_manager.compute_n_gpu_layers(weights, total_layers)
+        == expected_ngl
+    )
+
+
+def test_start_forwards_total_layers_for_mixed_gpu_cpu_weights(
+    monkeypatch, authenticated_client
+):
+    """POST /start passes total_layers to ProcessManager for dynamic -ngl."""
+    process_manager = MagicMock()
+    process_manager.start.return_value = {"message": "Started"}
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", MagicMock())
+
+    response = authenticated_client.post("/start", json=MIXED_GPU_CPU_PAYLOAD)
+
+    assert response.status_code == 200
+    assert process_manager.start.call_args.kwargs["total_layers"] == 32

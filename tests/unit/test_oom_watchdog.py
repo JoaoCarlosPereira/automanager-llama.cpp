@@ -120,6 +120,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "active": True,
             "is_main": False,
             "pinned": False,
+            "device": "gpu",
         },
         {
             "index": 1,
@@ -128,6 +129,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "active": True,
             "is_main": False,
             "pinned": False,
+            "device": "gpu",
         },
         {
             "index": 2,
@@ -136,6 +138,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "active": True,
             "is_main": False,
             "pinned": False,
+            "device": "gpu",
         },
     ]
     process_manager.start.assert_called_once_with(
@@ -147,6 +150,7 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
         parallel_slots=request.parallel_slots,
         batch_size=request.batch_size,
         thinking_enabled=True,
+        total_layers=0,
     )
 
 

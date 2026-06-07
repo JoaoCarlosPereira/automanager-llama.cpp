@@ -434,6 +434,35 @@ test('startModel alerta quando nenhuma GPU ativa', async () => {
     expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
 });
 
+test('startModel alerta quando carga total diferente de 100%', async () => {
+    const path = '/media/m.gguf';
+    state.currentSelectedModel = path;
+    document.querySelector('.gpu-weight').value = '90';
+
+    await startModel(path, 'id1');
+
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining('100%'));
+    expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
+});
+
+test('startModel alerta quando peso da CPU excede 70%', async () => {
+    const path = '/media/m.gguf';
+    state.currentSelectedModel = path;
+    document.body.insertAdjacentHTML('beforeend', `
+        <div class="cpu-row">
+            <input type="checkbox" class="cpu-checkbox" checked />
+            <input type="number" class="cpu-weight" value="80" />
+            <input type="checkbox" class="cpu-pin" />
+        </div>
+    `);
+    document.querySelector('.gpu-weight').value = '20';
+
+    await startModel(path, 'id1');
+
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining('70'));
+    expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
+});
+
 test('startModel alerta quando GPU principal ausente', async () => {
     const path = '/media/m.gguf';
     state.currentSelectedModel = path;

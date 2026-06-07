@@ -14,7 +14,7 @@ import psutil
 from fastapi import HTTPException
 
 from config_manager import ConfigManager, TokenManager
-from gpu_manager import GPUManager, LLAMA_SERVER_BIN
+from gpu_manager import GPUManager, LLAMA_SERVER_BIN, DEFAULT_TOTAL_LAYERS
 from log_manager import LogManager
 from schemas import DEFAULT_BATCH_SIZE, DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
 
@@ -329,10 +329,17 @@ class ProcessManager:
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
         batch_size: int = DEFAULT_BATCH_SIZE,
         thinking_enabled: bool = True,
+        total_layers: int = 0,
     ) -> dict:
         self.stop()
 
-        ok, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
+        has_active_cpu = any(
+            w.active and w.device == "cpu" for w in gpu_weights
+        )
+        if has_active_cpu:
+            ok, err = self.gpu_manager.validate_weights(gpu_weights)
+        else:
+            ok, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
         if not ok:
             raise HTTPException(status_code=400, detail=err)
 
@@ -356,12 +363,17 @@ class ProcessManager:
 
         api_token = self.token_mgr.get_or_create()
         server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
+        # Resolve total_layers: use provided value, auto-detect from model, or fall back to default
+        if not total_layers or total_layers <= 0:
+            total_layers = self.gpu_manager.detect_model_layers(model_path)
+        total_layers = max(1, total_layers)
+        n_gpu_layers = self.gpu_manager.compute_n_gpu_layers(gpu_weights, total_layers)
         cmd = [
             LLAMA_SERVER_BIN,
             "-m",
             model_path,
             "-ngl",
-            "99",
+            str(n_gpu_layers),
             "--flash-attn",
             "on",
             "--host",
@@ -574,6 +586,7 @@ class OOMWatchdog(threading.Thread):
                 parallel_slots=req.parallel_slots,
                 batch_size=req.batch_size,
                 thinking_enabled=req.thinking_enabled,
+                total_layers=getattr(req, "total_layers", 0),
             )
         except Exception as e:
             logger.error(f"Recovery start failed: {e}")

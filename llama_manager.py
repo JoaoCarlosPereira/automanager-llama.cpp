@@ -206,6 +206,14 @@ async def start_model(
         "auto_balance": False,
     }
 
+    # Auto-detect total_layers from model file
+    total_layers = req.total_layers if req.total_layers and req.total_layers > 0 else 0
+    try:
+        if not total_layers:
+            total_layers = gpu_manager.detect_model_layers(req.path)
+    except Exception:
+        total_layers = 0
+
     base_settings = {
         "context_size": req.context_size,
         "parallel_slots": req.parallel_slots,
@@ -214,6 +222,7 @@ async def start_model(
         "split_mode": req.split_mode,
         "auto_balance": req.auto_balance,
         "thinking_enabled": req.thinking_enabled,
+        "total_layers": total_layers if total_layers else 0,
     }
 
     if req.auto_balance:
@@ -237,6 +246,7 @@ async def start_model(
             parallel_slots=req.parallel_slots,
             batch_size=req.batch_size,
             thinking_enabled=req.thinking_enabled,
+            total_layers=total_layers,
         )
 
     config_manager.update_model_settings(
@@ -256,6 +266,7 @@ async def start_model(
         parallel_slots=req.parallel_slots,
         batch_size=req.batch_size,
         thinking_enabled=req.thinking_enabled,
+        total_layers=total_layers,
     )
 
 
@@ -435,6 +446,7 @@ async def index(request: Request):
     models = models_data["models"]
     projectors = models_data["projectors"]
     gpus = gpu_manager.detect_gpus()
+    cpu_info = gpu_manager.detect_cpu_info()
     config = config_manager.load()
     default_model = config.get("default_model")
     model_configs = config.get("model_configs", {})
@@ -541,6 +553,67 @@ async def index(request: Request):
                     <div class="relative">
                         <input type="number" value="{weight_val}" min="0" max="100"
                                class="gpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
+                               oninput="balanceWeights(this)">
+                        <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                    </div>
+                </div>
+            </td>
+        </tr>"""
+
+    # Build CPU row (follows the same visual pattern as GPU rows, no radio button)
+    cpu_name_display = cpu_info.name if cpu_info.name else "CPU Desconhecido"
+    cpu_ram_total = cpu_info.ram_total_mb if cpu_info.ram_total_mb else 0
+    cpu_ram_used = cpu_info.ram_used_mb if cpu_info.ram_used_mb else 0
+    cpu_rows = f"""
+        <tr class="cpu-row group border-b border-slate-800/50" data-index="cpu">
+            <td class="px-3 md:px-6 py-4 md:py-6 text-center">
+                <div class="flex flex-col items-center gap-2">
+                    <span class="cpu-util-val text-xs font-black text-blue-400 font-mono">0%</span>
+                    <div class="w-12 h-1 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="cpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6 text-center">
+                <!-- CPU nao tem radio principal -->
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex items-center gap-2 md:gap-4">
+                    <input type="checkbox" checked class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">CPU</span>
+                        <span class="text-sm font-bold text-slate-100 whitespace-nowrap">{cpu_name_display}</span>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex flex-col gap-2">
+                    <div class="flex flex-col">
+                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">RAM</span>
+                        <span class="cpu-ram-val text-xs font-bold text-slate-300 font-mono">{cpu_ram_used} / {cpu_ram_total} MB</span>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex flex-col gap-2 min-w-[100px] md:min-w-[160px]">
+                    <div class="flex justify-between items-end">
+                        <span class="text-[8px] font-black text-slate-500 uppercase">RAM</span>
+                        <span class="cpu-ram-text text-[9px] font-mono text-blue-400">0 / {cpu_ram_total} MB</span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="cpu-ram-bar h-full bg-amber-500 transition-all duration-1000" style="width: 0%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex items-center gap-2 md:gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer shrink-0" title="Fixar % — o auto balance nao altera esta CPU">
+                        <input type="checkbox" class="cpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
+                        <span class="text-[8px] font-black text-slate-500 uppercase tracking-wider hidden md:inline">Fixar</span>
+                    </label>
+                    <div class="relative">
+                        <input type="number" value="0" min="0" max="100"
+                               class="cpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
                                oninput="balanceWeights(this)">
                         <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
                     </div>
@@ -666,6 +739,7 @@ async def index(request: Request):
 
     html = _build_html(
         gpu_rows=gpu_rows,
+        cpu_rows=cpu_rows,
         model_items=model_items,
         vision_options=vision_options,
         ctx_opts=ctx_opts,
@@ -681,6 +755,7 @@ async def index(request: Request):
 
 def _build_html(
     gpu_rows: str,
+    cpu_rows: str,
     model_items: str,
     vision_options: str,
     ctx_opts: str,
@@ -885,6 +960,7 @@ def _build_html(
                             </thead>
                             <tbody id="gpu-table-body" class="divide-y divide-slate-800/50">
                                 {gpu_rows}
+                                {cpu_rows}
                             </tbody>
                         </table>
                     </div>
@@ -1126,6 +1202,7 @@ async def startup_event():
                     parallel_slots=parallel_slots,
                     batch_size=batch_size,
                     thinking_enabled=thinking_enabled,
+                    total_layers=saved_cfg.get("total_layers", 0),
                 )
             except Exception as e:
                 logger.error(f"Auto-start error: {e}")

@@ -1,5 +1,5 @@
 """Shared request/response schemas."""
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
@@ -14,6 +14,7 @@ class GPUWeight(BaseModel):
     active: bool = True
     is_main: bool = False
     pinned: bool = False
+    device: Literal["gpu", "cpu"] = "gpu"
 
 
 class StartRequest(BaseModel):
@@ -27,6 +28,7 @@ class StartRequest(BaseModel):
     auto_balance: bool = False
     manual_gpu_override: bool = False
     thinking_enabled: bool = True
+    total_layers: int = 0  # 0 = auto-detect from model file
 
 
 class DeleteRequest(BaseModel):

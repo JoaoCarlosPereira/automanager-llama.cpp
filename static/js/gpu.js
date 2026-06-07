@@ -1,6 +1,36 @@
 import { state } from './state.js';
 import { apiFetch } from './auth.js';
 
+const CPU_DATA_INDEX = 'cpu';
+const CPU_INDEX = -1;
+
+function getDeviceRows() {
+    return Array.from(document.querySelectorAll('.gpu-row, .cpu-row'));
+}
+
+function getRowCheckbox(row) {
+    return row.querySelector('.gpu-checkbox') || row.querySelector('.cpu-checkbox');
+}
+
+function getRowWeightInput(row) {
+    return row.querySelector('.gpu-weight') || row.querySelector('.cpu-weight');
+}
+
+function getRowPinInput(row) {
+    return row.querySelector('.gpu-pin') || row.querySelector('.cpu-pin');
+}
+
+function isCpuRow(row) {
+    return row.classList.contains('cpu-row');
+}
+
+function findDeviceRow(weight) {
+    if (weight.device === 'cpu' || weight.index === CPU_INDEX) {
+        return document.querySelector('.cpu-row');
+    }
+    return document.querySelector(`.gpu-row[data-index="${weight.index}"]`);
+}
+
 export function showAutoBalanceCapacityAlert(recovery) {
     const el = document.getElementById('auto-balance-capacity-alert');
     const msgEl = document.getElementById('auto-balance-capacity-msg');
@@ -62,23 +92,23 @@ export function balanceWeights(changedInput) {
 }
 
 export function redistributeUnpinnedWeights(changedInput) {
-    const rows = Array.from(document.querySelectorAll('.gpu-row'))
-        .filter(r => r.querySelector('.gpu-checkbox').checked);
-    const pinnedRows = rows.filter(r => r.querySelector('.gpu-pin').checked);
-    const unpinnedRows = rows.filter(r => !r.querySelector('.gpu-pin').checked);
+    const rows = getDeviceRows()
+        .filter(r => getRowCheckbox(r)?.checked);
+    const pinnedRows = rows.filter(r => getRowPinInput(r)?.checked);
+    const unpinnedRows = rows.filter(r => !getRowPinInput(r)?.checked);
 
     if (rows.length === 0) {
         updateTotal();
         return;
     }
     if (rows.length === 1) {
-        rows[0].querySelector('.gpu-weight').value = 100;
+        getRowWeightInput(rows[0]).value = 100;
         updateTotal();
         return;
     }
 
     const pinnedSum = pinnedRows.reduce(
-        (s, r) => s + (parseInt(r.querySelector('.gpu-weight').value, 10) || 0), 0
+        (s, r) => s + (parseInt(getRowWeightInput(r).value, 10) || 0), 0
     );
 
     if (unpinnedRows.length === 0) {
@@ -87,18 +117,18 @@ export function redistributeUnpinnedWeights(changedInput) {
     }
 
     if (unpinnedRows.length === 1) {
-        unpinnedRows[0].querySelector('.gpu-weight').value = Math.max(0, 100 - pinnedSum);
+        getRowWeightInput(unpinnedRows[0]).value = Math.max(0, 100 - pinnedSum);
         updateTotal();
         return;
     }
 
-    const changedRow = changedInput?.closest('.gpu-row');
-    const changedIsPinned = changedRow && changedRow.querySelector('.gpu-pin').checked;
+    const changedRow = changedInput?.closest('.gpu-row, .cpu-row');
+    const changedIsPinned = changedRow && getRowPinInput(changedRow)?.checked;
 
     if (changedIsPinned || !changedInput) {
         let remaining = Math.max(0, 100 - pinnedSum);
         for (let i = 0; i < unpinnedRows.length; i++) {
-            const input = unpinnedRows[i].querySelector('.gpu-weight');
+            const input = getRowWeightInput(unpinnedRows[i]);
             if (i === unpinnedRows.length - 1) {
                 input.value = remaining;
             } else {
@@ -120,11 +150,11 @@ export function redistributeUnpinnedWeights(changedInput) {
     if (val < 0) { val = 0; changedInput.value = 0; }
 
     const otherUnpinned = unpinnedRows.filter(
-        r => r.querySelector('.gpu-weight') !== changedInput
+        r => getRowWeightInput(r) !== changedInput
     );
     let remaining = maxForChanged - val;
     for (let i = 0; i < otherUnpinned.length; i++) {
-        const input = otherUnpinned[i].querySelector('.gpu-weight');
+        const input = getRowWeightInput(otherUnpinned[i]);
         if (i === otherUnpinned.length - 1) {
             input.value = Math.max(0, remaining);
         } else {
@@ -140,10 +170,10 @@ export function redistributeUnpinnedWeights(changedInput) {
 }
 
 export function bindGpuManualListeners() {
-    document.querySelectorAll('.gpu-weight').forEach(el => {
+    document.querySelectorAll('.gpu-weight, .cpu-weight').forEach(el => {
         el.addEventListener('input', markManualGpuChange);
     });
-    document.querySelectorAll('.gpu-checkbox').forEach(el => {
+    document.querySelectorAll('.gpu-checkbox, .cpu-checkbox').forEach(el => {
         el.addEventListener('change', () => {
             markManualGpuChange();
             redistributeUnpinnedWeights(null);
@@ -152,11 +182,11 @@ export function bindGpuManualListeners() {
     document.querySelectorAll('.gpu-main-radio').forEach(el => {
         el.addEventListener('change', markManualGpuChange);
     });
-    document.querySelectorAll('.gpu-pin').forEach(el => {
+    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(el => {
         el.addEventListener('change', () => onGpuPinToggle(el));
     });
-    document.querySelectorAll('.gpu-pin:checked').forEach(pin => {
-        pin.closest('.gpu-row')?.querySelector('.gpu-weight')
+    document.querySelectorAll('.gpu-pin:checked, .cpu-pin:checked').forEach(pin => {
+        getRowWeightInput(pin.closest('.gpu-row, .cpu-row'))
             ?.classList.add('ring-2', 'ring-amber-500/40');
     });
 }
@@ -164,17 +194,19 @@ export function bindGpuManualListeners() {
 export function applyGpuWeightsToUI(weights, duringAutoBalance) {
     if (!weights || !Array.isArray(weights)) return;
     weights.forEach(w => {
-        const row = document.querySelector(`.gpu-row[data-index="${w.index}"]`);
+        const row = findDeviceRow(w);
         if (!row) return;
-        const input = row.querySelector('.gpu-weight');
-        const cb = row.querySelector('.gpu-checkbox');
-        const pin = row.querySelector('.gpu-pin');
+        const input = getRowWeightInput(row);
+        const cb = getRowCheckbox(row);
+        const pin = getRowPinInput(row);
         const radio = row.querySelector('.gpu-main-radio');
         if (duringAutoBalance || document.activeElement !== input) {
             input.value = Math.round(w.weight);
         }
-        if (w.active !== undefined) cb.checked = w.active;
-        if (w.is_main) radio.checked = true;
+        if (cb) {
+            cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
+        }
+        if (radio && w.is_main) radio.checked = true;
         if (pin && w.pinned !== undefined) {
             pin.checked = !!w.pinned;
             if (w.pinned) input.classList.add('ring-2', 'ring-amber-500/40');
@@ -184,14 +216,63 @@ export function applyGpuWeightsToUI(weights, duringAutoBalance) {
     updateTotal();
 }
 
+export function getActiveWeightTotal(weights) {
+    if (weights) {
+        return weights
+            .filter(w => w.active)
+            .reduce((sum, w) => sum + (w.weight || 0), 0);
+    }
+    let sum = 0;
+    getDeviceRows().forEach(row => {
+        const input = getRowWeightInput(row);
+        const isChecked = getRowCheckbox(row)?.checked;
+        if (!input) return;
+        if (isChecked) sum += parseInt(input.value || 0, 10);
+    });
+    return sum;
+}
+
+/** @returns {{ ok: boolean, message: string }} */
+export function validateDeviceWeights(weights) {
+    const active = weights.filter(w => w.active);
+
+    if (!active.some(w => w.device === 'gpu')) {
+        return { ok: false, message: 'SELECIONE PELO MENOS UMA GPU' };
+    }
+
+    const total = getActiveWeightTotal(weights);
+    if (Math.abs(total - 100) > 1) {
+        return {
+            ok: false,
+            message: `A CARGA TOTAL DEVE SER 100% (atual: ${total}%). Ajuste os pesos antes de iniciar.`,
+        };
+    }
+
+    const cpuWeight = active
+        .filter(w => w.device === 'cpu')
+        .reduce((sum, w) => sum + (w.weight || 0), 0);
+    if (cpuWeight > 70) {
+        return {
+            ok: false,
+            message: `O peso da CPU (${cpuWeight}%) excede o limite máximo de 70%. `
+                + 'Reduza o peso da CPU para manter performance aceitável de inferência.',
+        };
+    }
+
+    return { ok: true, message: '' };
+}
+
 export function updateTotal() {
     let sum = 0;
-    document.querySelectorAll('.gpu-weight').forEach(i => {
-        const isChecked = i.closest('.gpu-row').querySelector('.gpu-checkbox').checked;
-        if (isChecked) sum += parseInt(i.value || 0);
-        else i.value = 0;
+    getDeviceRows().forEach(row => {
+        const input = getRowWeightInput(row);
+        const isChecked = getRowCheckbox(row)?.checked;
+        if (!input) return;
+        if (isChecked) sum += parseInt(input.value || 0, 10);
+        else input.value = 0;
     });
     const badge = document.getElementById('total-percent');
+    if (!badge) return;
     badge.innerText = `CARGA TOTAL: ${sum}%`;
     badge.className = sum === 100
         ? 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20'
@@ -200,8 +281,8 @@ export function updateTotal() {
 
 export function onGpuPinToggle(pinCheckbox) {
     markManualGpuChange();
-    const row = pinCheckbox.closest('.gpu-row');
-    const weightInput = row?.querySelector('.gpu-weight');
+    const row = pinCheckbox.closest('.gpu-row, .cpu-row');
+    const weightInput = row ? getRowWeightInput(row) : null;
     if (weightInput) {
         if (pinCheckbox.checked) {
             weightInput.classList.add('ring-2', 'ring-amber-500/40');
@@ -334,6 +415,18 @@ export function resetToDefaults() {
         if (pin) pin.checked = false;
         row.querySelector('.gpu-weight')?.classList.remove('ring-2', 'ring-amber-500/40');
     });
+    const cpuRow = document.querySelector('.cpu-row');
+    if (cpuRow) {
+        const cpuCb = getRowCheckbox(cpuRow);
+        const cpuWeight = getRowWeightInput(cpuRow);
+        const cpuPin = getRowPinInput(cpuRow);
+        if (cpuCb) cpuCb.checked = true;
+        if (cpuWeight) {
+            cpuWeight.value = '0';
+            cpuWeight.classList.remove('ring-2', 'ring-amber-500/40');
+        }
+        if (cpuPin) cpuPin.checked = false;
+    }
     markManualGpuChange();
     updateTotal();
 }

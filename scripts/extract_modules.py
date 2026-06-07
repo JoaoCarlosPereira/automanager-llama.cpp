@@ -19,7 +19,7 @@ def write(name: str, content: str) -> None:
 
 # schemas.py - pydantic models
 schemas = '''"""Shared request/response schemas."""
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel
 DEFAULT_CONTEXT_SIZE = 65536
 
@@ -30,6 +30,7 @@ class GPUWeight(BaseModel):
     name: str
     active: bool = True
     is_main: bool = False
+    device: Literal["gpu", "cpu"] = "gpu"
 
 
 class StartRequest(BaseModel):
