@@ -247,6 +247,8 @@ async def mock_metrics():
     return {
         "cpu": 42.5,
         "ram": 67.2,
+        "cpu_temp": "58",
+        "cpu_power": "95",
         "gpus": [
             {
                 "index": 0,

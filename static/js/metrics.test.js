@@ -249,12 +249,13 @@ describe('updateMetrics', () => {
         await expect(updateMetrics()).resolves.toBeUndefined();
     });
 
-    test('atualiza linha da CPU com usage e RAM em MB', async () => {
+    test('atualiza linha da CPU com usage, temp, power e RAM em MB', async () => {
         setupMetricsDom(`
             <div class="cpu-row" data-index="cpu">
                 <span class="cpu-util-val"></span>
                 <div class="cpu-util-bar" style="width:0"></div>
-                <span class="cpu-ram-val"></span>
+                <span class="cpu-temp-val"></span>
+                <span class="cpu-power-val"></span>
                 <span class="cpu-ram-text"></span>
                 <div class="cpu-ram-bar" style="width:0"></div>
             </div>
@@ -264,6 +265,8 @@ describe('updateMetrics', () => {
             json: async () => ({
                 cpu: 55,
                 ram: 40,
+                cpu_temp: '62',
+                cpu_power: '145',
                 ram_used_mb: 25600,
                 ram_total_mb: 64000,
                 gpus: [],
@@ -275,7 +278,8 @@ describe('updateMetrics', () => {
         const cpuRow = document.querySelector('.cpu-row');
         expect(cpuRow.querySelector('.cpu-util-val').innerText).toBe('55%');
         expect(cpuRow.querySelector('.cpu-util-bar').style.width).toBe('55%');
-        expect(cpuRow.querySelector('.cpu-ram-val').innerText).toBe('25600 / 64000 MB');
+        expect(cpuRow.querySelector('.cpu-temp-val').innerText).toBe('62°C');
+        expect(cpuRow.querySelector('.cpu-power-val').innerText).toBe('145W');
         expect(cpuRow.querySelector('.cpu-ram-text').innerText).toBe('25600 / 64000 MB');
         expect(cpuRow.querySelector('.cpu-ram-bar').style.width).toBe('40%');
     });

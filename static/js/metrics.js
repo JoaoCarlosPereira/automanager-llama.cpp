@@ -346,17 +346,17 @@ export async function updateMetrics() {
             const cpuUtil = data.cpu ?? 0;
             const ramUsed = data.ram_used_mb ?? 0;
             const ramTotal = data.ram_total_mb ?? 0;
-            const ramPct = ramTotal > 0
-                ? Math.round((ramUsed / ramTotal) * 1000) / 10
-                : (data.ram ?? 0);
+            const ramPct = data.ram ?? 0;
 
             const utilVal = cpuRow.querySelector('.cpu-util-val');
             const utilBar = cpuRow.querySelector('.cpu-util-bar');
             if (utilVal) utilVal.innerText = `${cpuUtil}%`;
             if (utilBar) utilBar.style.width = `${cpuUtil}%`;
 
-            const ramVal = cpuRow.querySelector('.cpu-ram-val');
-            if (ramVal) ramVal.innerText = `${ramUsed} / ${ramTotal} MB`;
+            const tempVal = cpuRow.querySelector('.cpu-temp-val');
+            const powerVal = cpuRow.querySelector('.cpu-power-val');
+            if (tempVal) tempVal.innerText = `${data.cpu_temp || '--'}°C`;
+            if (powerVal) powerVal.innerText = `${data.cpu_power || '--'}W`;
 
             const ramText = cpuRow.querySelector('.cpu-ram-text');
             const ramBar = cpuRow.querySelector('.cpu-ram-bar');

@@ -114,9 +114,18 @@ def test_html_contains_gpu_table(html):
 
 
 def test_html_contains_cpu_row(html):
-    """Verify the CPU row is injected after GPU rows in the GPU table body."""
+    """Verify the CPU row is injected in the GPU table body."""
     assert "cpu-row" in html
     assert 'data-index="cpu"' in html
+
+
+def test_cpu_row_appears_before_gpu_rows(html):
+    """CPU must be the first device row in the table (visual order)."""
+    tbody_start = html.index('id="gpu-table-body"')
+    tbody = html[tbody_start:]
+    cpu_pos = tbody.index("cpu-row")
+    gpu_pos = tbody.index("gpu-row")
+    assert cpu_pos < gpu_pos
 
 
 def test_html_contains_cpu_row_elements(html):
@@ -124,7 +133,8 @@ def test_html_contains_cpu_row_elements(html):
     assert "cpu-checkbox" in html
     assert "cpu-util-val" in html
     assert "cpu-util-bar" in html
-    assert "cpu-ram-val" in html
+    assert "cpu-temp-val" in html
+    assert "cpu-power-val" in html
     assert "cpu-ram-text" in html
     assert "cpu-ram-bar" in html
     assert "cpu-pin" in html

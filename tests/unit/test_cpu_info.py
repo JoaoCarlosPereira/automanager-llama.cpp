@@ -27,7 +27,10 @@ class TestGPUDetectorDetectCpuInfo:
             "processor\t: 1\n",
             "model name\t: AMD EPYC 7763 v2\n",
         ]
-        virtual_memory = MagicMock(total=34_359_738_368, used=8_589_934_592)
+        virtual_memory = MagicMock(
+            total=34_359_738_368,
+            available=34_359_738_368 - 8_589_934_592,
+        )
 
         with patch("gpu_manager.open", return_value=_make_proc_mock(lines)), patch(
             "gpu_manager.psutil.virtual_memory", return_value=virtual_memory
@@ -37,9 +40,28 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.name == "AMD EPYC 7763"
         assert "7763 v2" not in result.name
 
+    def test_detect_cpu_info_strips_clock_frequency_suffix(self):
+        lines = ["model name\t: Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz\n"]
+        virtual_memory = MagicMock(
+            total=34_359_738_368,
+            available=34_359_738_368 - 8_589_934_592,
+        )
+
+        with patch("gpu_manager.open", return_value=_make_proc_mock(lines)), patch(
+            "gpu_manager.psutil.virtual_memory", return_value=virtual_memory
+        ), patch("gpu_manager.os.name", "posix"):
+            result = GPUDetector().detect_cpu_info()
+
+        assert result.name == "Intel(R) Xeon(R) CPU E5-2676 v3"
+        assert "GHz" not in result.name
+        assert "@" not in result.name
+
     def test_detect_cpu_info_linux_parses_proc_cpuinfo(self):
         lines = ["model name\t: AMD Ryzen 9 7950X\n"]
-        virtual_memory = MagicMock(total=34_359_738_368, used=8_589_934_592)
+        virtual_memory = MagicMock(
+            total=34_359_738_368,
+            available=34_359_738_368 - 8_589_934_592,
+        )
 
         with patch("gpu_manager.open", return_value=_make_proc_mock(lines)), patch(
             "gpu_manager.psutil.virtual_memory", return_value=virtual_memory
@@ -52,7 +74,10 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.ram_used_mb == round(8_589_934_592 / (1024 * 1024))
 
     def test_detect_cpu_info_linux_fallback_when_proc_not_found(self):
-        virtual_memory = MagicMock(total=16_000_000_000, used=4_000_000_000)
+        virtual_memory = MagicMock(
+            total=16_000_000_000,
+            available=16_000_000_000 - 4_000_000_000,
+        )
 
         with patch("gpu_manager.open", side_effect=FileNotFoundError), patch(
             "gpu_manager.psutil.virtual_memory", return_value=virtual_memory
@@ -64,7 +89,10 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.name == "x86_64"
 
     def test_detect_cpu_info_windows_platform_processor(self):
-        virtual_memory = MagicMock(total=17_179_869_184, used=5_000_000_000)
+        virtual_memory = MagicMock(
+            total=17_179_869_184,
+            available=17_179_869_184 - 5_000_000_000,
+        )
 
         with patch("gpu_manager.psutil.virtual_memory", return_value=virtual_memory), patch(
             "gpu_manager.os.name", "nt"
@@ -75,7 +103,10 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.name == "Intel64 Family 6 Model 186"
 
     def test_detect_cpu_info_windows_registry_fallback(self):
-        virtual_memory = MagicMock(total=16_000_000_000, used=3_000_000_000)
+        virtual_memory = MagicMock(
+            total=16_000_000_000,
+            available=16_000_000_000 - 3_000_000_000,
+        )
 
         mock_key = MagicMock()
         mock_key.__enter__ = MagicMock(return_value=mock_key)
@@ -96,7 +127,10 @@ class TestGPUDetectorDetectCpuInfo:
         assert result.name == "AMD Ryzen Threadripper PRO 5955WX"
 
     def test_detect_cpu_info_windows_registry_failure_falls_back_to_machine(self):
-        virtual_memory = MagicMock(total=16_000_000_000, used=3_000_000_000)
+        virtual_memory = MagicMock(
+            total=16_000_000_000,
+            available=16_000_000_000 - 3_000_000_000,
+        )
 
         mock_key = MagicMock()
         mock_key.__enter__ = MagicMock(side_effect=PermissionError)
@@ -116,7 +150,10 @@ class TestGPUDetectorDetectCpuInfo:
 
     def test_detect_cpu_info_returns_unknown_cpu_on_total_failure(self):
         """When processor() and machine() are both empty and winreg fails, fallback is 'Unknown CPU'."""
-        virtual_memory = MagicMock(total=16_000_000_000, used=3_000_000_000)
+        virtual_memory = MagicMock(
+            total=16_000_000_000,
+            available=16_000_000_000 - 3_000_000_000,
+        )
 
         mock_key = MagicMock()
         mock_key.__enter__ = MagicMock(side_effect=PermissionError("access denied"))
@@ -139,7 +176,7 @@ class TestGPUDetectorDetectCpuInfo:
         total_bytes = 8_589_934_592  # 8 GB
         used_bytes = 2_147_483_648   # 2 GB
 
-        virtual_memory = MagicMock(total=total_bytes, used=used_bytes)
+        virtual_memory = MagicMock(total=total_bytes, available=total_bytes - used_bytes)
 
         with patch("gpu_manager.psutil.virtual_memory", return_value=virtual_memory), patch(
             "gpu_manager.os.name", "posix"

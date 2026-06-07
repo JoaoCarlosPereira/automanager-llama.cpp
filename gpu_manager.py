@@ -1,9 +1,11 @@
 """GPU detection and tensor split management."""
+import glob
 import os
 import platform
 import re
 import logging
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +18,99 @@ DEFAULT_TOTAL_LAYERS = 32
 
 LLAMA_SERVER_BIN = "llama-server"
 logger = logging.getLogger("automanager")
+
+# e.g. "Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz" -> without clock suffix
+_CPU_FREQ_SUFFIX = re.compile(r"\s*@\s*[\d.]+\s*GHz\s*$", re.IGNORECASE)
+
+
+def _sanitize_cpu_name(name: str) -> str:
+    """Remove clock frequency suffix from CPU model string."""
+    return _CPU_FREQ_SUFFIX.sub("", name).strip()
+
+
+def _format_metric_watts(value: Optional[float]) -> Optional[str]:
+    """Format power draw like nvidia-smi (integer watts string)."""
+    if value is None:
+        return None
+    return str(int(round(value)))
+
+
+def _read_cpu_temperature_c() -> Optional[float]:
+    """Best-effort CPU temperature in Celsius (cross-platform)."""
+    try:
+        sensors_fn = getattr(psutil, "sensors_temperatures", None)
+        temps = sensors_fn() if sensors_fn else {}
+        if temps:
+            preferred = ("coretemp", "k10temp", "zenpower", "acpitz", "cpu_thermal")
+            for key in preferred:
+                entries = temps.get(key)
+                if entries:
+                    current = entries[0].current
+                    if current is not None:
+                        return float(current)
+            for entries in temps.values():
+                for entry in entries:
+                    if entry.current is not None:
+                        return float(entry.current)
+    except Exception:
+        pass
+
+    if os.name != "posix":
+        return None
+
+    try:
+        for path in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
+            with open(path, "r", encoding="utf-8") as f:
+                raw = int(f.read().strip())
+            if raw > 0:
+                return raw / 1000.0
+    except Exception:
+        pass
+    return None
+
+
+def _rapl_package_energy_uj() -> Optional[int]:
+    """Read Intel/AMD RAPL package energy counter (Linux powercap)."""
+    base = "/sys/class/powercap/intel-rapl"
+    if not os.path.isdir(base):
+        return None
+    for entry in os.listdir(base):
+        name_path = os.path.join(base, entry, "name")
+        energy_path = os.path.join(base, entry, "energy_uj")
+        try:
+            with open(name_path, "r", encoding="utf-8") as f:
+                if f.read().strip() != "package-0":
+                    continue
+            with open(energy_path, "r", encoding="utf-8") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _read_hwmon_cpu_power_w() -> Optional[float]:
+    """Instantaneous CPU package power from hwmon (milliwatts), if exposed."""
+    for power_path in sorted(glob.glob("/sys/class/hwmon/hwmon*/power*_input")):
+        try:
+            with open(power_path, "r", encoding="utf-8") as f:
+                milliwatts = int(f.read().strip())
+            if milliwatts > 0:
+                return milliwatts / 1000.0
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _system_ram_mb(vm=None) -> Tuple[int, int, float]:
+    """
+    RAM stats aligned with psutil virtual_memory().percent.
+
+    Uses (total - available) for used bytes so MB text and % bar match.
+    """
+    vm = vm or psutil.virtual_memory()
+    total_mb = round(vm.total / (1024 * 1024))
+    used_mb = round((vm.total - vm.available) / (1024 * 1024))
+    return total_mb, used_mb, vm.percent
 
 
 @dataclass
@@ -34,6 +129,34 @@ class CPUInfo:
 
 class GPUDetector:
     """Detects GPUs and parses metrics from nvidia-smi."""
+
+    def __init__(self) -> None:
+        self._rapl_prev: Optional[Tuple[float, int]] = None
+
+    def _read_cpu_power_w(self) -> Optional[float]:
+        """Estimate CPU package power (RAPL delta or hwmon instantaneous)."""
+        hwmon_power = _read_hwmon_cpu_power_w()
+        if hwmon_power is not None:
+            return hwmon_power
+
+        energy_uj = _rapl_package_energy_uj()
+        if energy_uj is None:
+            return None
+
+        now = time.monotonic()
+        prev = self._rapl_prev
+        self._rapl_prev = (now, energy_uj)
+        if prev is None:
+            return None
+
+        dt = now - prev[0]
+        if dt <= 0:
+            return None
+
+        delta_uj = energy_uj - prev[1]
+        if delta_uj < 0:
+            return None
+        return delta_uj / dt / 1_000_000
 
     def detect_gpus(self) -> List[Dict[str, Any]]:
         """Detect GPUs using llama-server --help first, fallback to nvidia-smi."""
@@ -84,6 +207,7 @@ class GPUDetector:
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get real-time hardware metrics including CPU name and RAM details."""
+        gpus: List[Dict[str, Any]] = []
         try:
             output = subprocess.check_output(
                 ["nvidia-smi",
@@ -92,7 +216,6 @@ class GPUDetector:
                  "--format=csv,noheader,nounits"],
                 timeout=10,
             ).decode()
-            gpus = []
             for line in output.strip().split("\n"):
                 if not line.strip():
                     continue
@@ -111,25 +234,39 @@ class GPUDetector:
                         "temp": parts[4],
                         "power": parts[5].split(".")[0] if "." in parts[5] else parts[5],
                     })
+        except Exception as e:
+            logger.error(f"GPU metrics error: {e}")
+
+        try:
             vm = psutil.virtual_memory()
-            cpu = self.detect_cpu_info()
+            ram_total_mb, ram_used_mb, ram_pct = _system_ram_mb(vm)
+            cpu_name = self.detect_cpu_info().name
+            cpu_temp_c = _read_cpu_temperature_c()
+            cpu_temp = (
+                str(int(round(cpu_temp_c))) if cpu_temp_c is not None else None
+            )
+            cpu_power = _format_metric_watts(self._read_cpu_power_w())
             return {
                 "cpu": psutil.cpu_percent(interval=0.1),
-                "cpu_name": cpu.name,
-                "ram": vm.percent,
-                "ram_total_mb": cpu.ram_total_mb,
-                "ram_used_mb": cpu.ram_used_mb,
+                "cpu_name": cpu_name,
+                "cpu_temp": cpu_temp,
+                "cpu_power": cpu_power,
+                "ram": ram_pct,
+                "ram_total_mb": ram_total_mb,
+                "ram_used_mb": ram_used_mb,
                 "gpus": gpus,
             }
         except Exception as e:
-            logger.error(f"Metrics error: {e}")
+            logger.error(f"System metrics error: {e}")
             return {
                 "cpu": 0,
                 "cpu_name": "Unknown CPU",
+                "cpu_temp": None,
+                "cpu_power": None,
                 "ram": 0,
                 "ram_total_mb": 0,
                 "ram_used_mb": 0,
-                "gpus": [],
+                "gpus": gpus,
             }
 
     def detect_cpu_info(self) -> CPUInfo:
@@ -168,10 +305,10 @@ class GPUDetector:
         if not cpu_name:
             cpu_name = "Unknown CPU"
 
+        cpu_name = _sanitize_cpu_name(cpu_name)
+
         # --- RAM (psutil, cross-platform) ---
-        vm = psutil.virtual_memory()
-        ram_total_mb = round(vm.total / (1024 * 1024))
-        ram_used_mb = round(vm.used / (1024 * 1024))
+        ram_total_mb, ram_used_mb, _ = _system_ram_mb()
 
         return CPUInfo(
             name=cpu_name,

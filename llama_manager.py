@@ -587,10 +587,14 @@ async def index(request: Request):
                 </div>
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
-                <div class="flex flex-col gap-2">
+                <div class="flex flex-col md:flex-row gap-2 md:gap-6">
                     <div class="flex flex-col">
-                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">RAM</span>
-                        <span class="cpu-ram-val text-xs font-bold text-slate-300 font-mono">{cpu_ram_used} / {cpu_ram_total} MB</span>
+                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Temp</span>
+                        <span class="cpu-temp-val text-xs font-bold text-slate-300 font-mono">--°C</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Power</span>
+                        <span class="cpu-power-val text-xs font-bold text-slate-300 font-mono">--W</span>
                     </div>
                 </div>
             </td>
@@ -959,8 +963,8 @@ def _build_html(
                                 </tr>
                             </thead>
                             <tbody id="gpu-table-body" class="divide-y divide-slate-800/50">
-                                {gpu_rows}
                                 {cpu_rows}
+                                {gpu_rows}
                             </tbody>
                         </table>
                     </div>
