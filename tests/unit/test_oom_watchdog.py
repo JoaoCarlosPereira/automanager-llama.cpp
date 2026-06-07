@@ -150,6 +150,8 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
         parallel_slots=request.parallel_slots,
         batch_size=request.batch_size,
         thinking_enabled=True,
+        mtp_enabled=False,
+        mtp_draft_tokens=3,
         total_layers=0,
     )
 

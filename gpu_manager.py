@@ -416,6 +416,25 @@ class GPUManager(GPUDetector):
             logger.warning(f"Could not detect model layers for {model_path}: {exc}")
         return DEFAULT_TOTAL_LAYERS
 
+    def detect_model_mtp(self, model_path: str) -> bool:
+        """Return True when GGUF metadata declares MTP heads (nextn_predict_layers > 0)."""
+        try:
+            env = os.environ.copy()
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            env["CUDA_VISIBLE_DEVICES"] = ""
+            output = subprocess.check_output(
+                f'{LLAMA_SERVER_BIN} --model-info "{model_path}" 2>&1',
+                shell=True,
+                env=env,
+                timeout=15,
+            ).decode(errors="replace")
+            match = re.search(r"nextn_predict_layers\s*=\s*(\d+)", output)
+            if match:
+                return int(match.group(1)) > 0
+        except Exception as exc:
+            logger.warning(f"Could not detect MTP for {model_path}: {exc}")
+        return False
+
     def validate_weights(self, gpu_weights: List[GPUWeight]) -> Tuple[bool, str]:
         """Validate that active device weights form a valid offload plan.
 

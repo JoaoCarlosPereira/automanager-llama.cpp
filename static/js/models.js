@@ -6,7 +6,7 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
-    updateThinkingBadge, validateDeviceWeights,
+    updateThinkingBadge, updateMtpBadge, validateDeviceWeights,
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
 
@@ -18,6 +18,13 @@ export function initDashboard() {
     if (thinkingToggle) {
         thinkingToggle.addEventListener('change', () => {
             updateThinkingBadge(thinkingToggle.checked);
+        });
+    }
+
+    const mtpToggle = document.getElementById('mtp-toggle');
+    if (mtpToggle) {
+        mtpToggle.addEventListener('change', () => {
+            updateMtpBadge(mtpToggle.checked);
         });
     }
 
@@ -96,6 +103,15 @@ export function applyModelConfig(path) {
     if (thinkingToggle) {
         thinkingToggle.checked = cfg.thinking_enabled !== false;
         updateThinkingBadge(cfg.thinking_enabled !== false);
+    }
+    const mtpToggle = document.getElementById('mtp-toggle');
+    if (mtpToggle) {
+        mtpToggle.checked = !!cfg.mtp_enabled;
+        updateMtpBadge(!!cfg.mtp_enabled);
+    }
+    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
+    if (mtpDraftTokens && cfg.mtp_draft_tokens) {
+        mtpDraftTokens.value = String(cfg.mtp_draft_tokens);
     }
     state.manualGpuOverride = false;
     if (cfg.gpu_weights) {
@@ -294,6 +310,10 @@ export async function startModel(path, elementId) {
     const autoBalance = document.getElementById('auto-balance-toggle').checked;
     const thinkingToggle = document.getElementById('thinking-toggle');
     const thinkingEnabled = thinkingToggle ? thinkingToggle.checked : true;
+    const mtpToggleEl = document.getElementById('mtp-toggle');
+    const mtpEnabled = mtpToggleEl ? mtpToggleEl.checked : false;
+    const mtpDraftRaw = parseInt(document.getElementById('mtp-draft-tokens')?.value, 10);
+    const mtpDraftTokens = Math.max(1, Math.min(6, Number.isFinite(mtpDraftRaw) ? mtpDraftRaw : 3));
     document.getElementById('parallel-slots').value = parallelSlots;
     document.getElementById('status-badge').innerHTML = autoBalance
         ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
@@ -318,6 +338,8 @@ export async function startModel(path, elementId) {
                 auto_balance: autoBalance,
                 manual_gpu_override: autoBalance ? false : state.manualGpuOverride,
                 thinking_enabled: thinkingEnabled,
+                mtp_enabled: mtpEnabled,
+                mtp_draft_tokens: mtpDraftTokens,
             }),
         });
         if (!res.ok) {

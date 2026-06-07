@@ -4,7 +4,7 @@ import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
-    updateThinkingBadge,
+    updateThinkingBadge, updateMtpBadge,
 } from './gpu.js';
 
 export async function updateStatus() {
@@ -42,6 +42,17 @@ export async function updateStatus() {
                 if (thinkingToggle && data.config.thinking_enabled !== undefined) {
                     thinkingToggle.checked = !!data.config.thinking_enabled;
                     updateThinkingBadge(!!data.config.thinking_enabled);
+                }
+                const mtpToggle = document.getElementById('mtp-toggle');
+                if (mtpToggle && data.config.mtp_enabled !== undefined) {
+                    mtpToggle.checked = !!data.config.mtp_enabled;
+                    updateMtpBadge(!!data.config.mtp_enabled);
+                }
+                if (data.config.mtp_draft_tokens) {
+                    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
+                    if (mtpDraftTokens) {
+                        mtpDraftTokens.value = String(data.config.mtp_draft_tokens);
+                    }
                 }
             }
         }

@@ -8,6 +8,7 @@ const mockShowAutoBalanceCapacityAlert = jest.fn();
 const mockUpdateAutoBalanceProfileBadge = jest.fn();
 const mockSyncAutoBalanceCancelButton = jest.fn();
 const mockUpdateThinkingBadge = jest.fn();
+const mockUpdateMtpBadge = jest.fn();
 
 jest.unstable_mockModule('./gpu.js', () => ({
     applyGpuWeightsToUI: mockApplyGpuWeightsToUI,
@@ -18,6 +19,7 @@ jest.unstable_mockModule('./gpu.js', () => ({
     updateAutoBalanceProfileBadge: mockUpdateAutoBalanceProfileBadge,
     syncAutoBalanceCancelButton: mockSyncAutoBalanceCancelButton,
     updateThinkingBadge: mockUpdateThinkingBadge,
+    updateMtpBadge: mockUpdateMtpBadge,
 }));
 
 const auth = await import('./auth.js');
@@ -76,6 +78,9 @@ function setupMetricsDom(extra = '') {
         <input id="parallel-slots" value="1"/>
         <input id="batch-size" value="512"/>
         <input id="mmproj-path" value=""/>
+        <input id="thinking-toggle" type="checkbox"/>
+        <input id="mtp-toggle" type="checkbox"/>
+        <input id="mtp-draft-tokens" value="3"/>
         <input id="auto-balance-toggle" type="checkbox"/>
         <button id="auto-balance-cancel-btn" class="hidden"></button>
         <div id="auto-balance-capacity-alert" class="hidden">
@@ -543,6 +548,27 @@ describe('updateStatus', () => {
         expect(document.getElementById('parallel-slots').value).toBe('4');
         expect(document.getElementById('batch-size').value).toBe('256');
         expect(document.getElementById('mmproj-path').value).toBe('/mmproj.bin');
+    });
+
+    test('running sem modelo selecionado sincroniza campos MTP', async () => {
+        mockFetchStatus({
+            running: true,
+            model: 'A',
+            model_path: '/models/a.gguf',
+            start_time: Math.floor(Date.now() / 1000),
+            config: {
+                path: '/models/a.gguf',
+                gpu_weights: [100, 0],
+                mtp_enabled: true,
+                mtp_draft_tokens: 4,
+            },
+        }, { withLogs: true });
+
+        await updateStatus();
+
+        expect(document.getElementById('mtp-toggle').checked).toBe(true);
+        expect(document.getElementById('mtp-draft-tokens').value).toBe('4');
+        expect(mockUpdateMtpBadge).toHaveBeenCalledWith(true);
     });
 
     test('marca active-selection no modelo selecionado', async () => {

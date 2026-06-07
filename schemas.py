@@ -4,6 +4,10 @@ from pydantic import BaseModel, Field
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
+DEFAULT_MTP_ENABLED = False
+DEFAULT_MTP_DRAFT_TOKENS = 3
+MTP_DRAFT_TOKENS_MIN = 1
+MTP_DRAFT_TOKENS_MAX = 6
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192]
 
 
@@ -28,6 +32,12 @@ class StartRequest(BaseModel):
     auto_balance: bool = False
     manual_gpu_override: bool = False
     thinking_enabled: bool = True
+    mtp_enabled: bool = DEFAULT_MTP_ENABLED
+    mtp_draft_tokens: int = Field(
+        default=DEFAULT_MTP_DRAFT_TOKENS,
+        ge=MTP_DRAFT_TOKENS_MIN,
+        le=MTP_DRAFT_TOKENS_MAX,
+    )
     total_layers: int = 0  # 0 = auto-detect from model file
 
 

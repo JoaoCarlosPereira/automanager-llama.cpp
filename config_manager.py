@@ -11,6 +11,8 @@ from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
 
+from schemas import DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_MTP_ENABLED
+
 CONFIG_PATH = "/root/automanager_config.json"
 MANAGER_LOG_PATH = "/root/manager.log"
 DEFAULT_CONTEXT_SIZE = 65536
@@ -70,6 +72,10 @@ class ConfigManager:
             "auto_balance": merged.get("auto_balance", False),
             "auto_balance_profile": merged.get("auto_balance_profile", False),
             "hardware_incapable": merged.get("hardware_incapable", False),
+            "mtp_enabled": merged.get("mtp_enabled", DEFAULT_MTP_ENABLED),
+            "mtp_draft_tokens": merged.get(
+                "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
+            ),
             "last_started": datetime.utcnow().isoformat(),
         }
         if "hardware_incapable_message" in merged:

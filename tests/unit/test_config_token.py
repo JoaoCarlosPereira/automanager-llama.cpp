@@ -65,7 +65,33 @@ def test_config_update_model_settings(config_manager):
     assert saved["context_size"] == 8192
     assert saved["mmproj_path"] == "/models/llama.mmproj"
     assert saved["gpu_weights"] == settings["gpu_weights"]
+    assert saved["mtp_enabled"] is False
+    assert saved["mtp_draft_tokens"] == 3
     assert "last_started" in saved
+
+
+def test_config_update_model_settings_mtp_fields(config_manager):
+    model_path = "/models/mtp.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {"mtp_enabled": True, "mtp_draft_tokens": 5},
+    )
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["mtp_enabled"] is True
+    assert saved["mtp_draft_tokens"] == 5
+
+
+def test_config_partial_update_preserves_mtp_fields(config_manager):
+    model_path = "/models/mtp.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {"mtp_enabled": True, "mtp_draft_tokens": 4},
+    )
+    config_manager.update_model_settings(model_path, {"context_size": 32768})
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["mtp_enabled"] is True
+    assert saved["mtp_draft_tokens"] == 4
+    assert saved["context_size"] == 32768
 
 
 def test_config_hardware_incapable_persisted_and_cleared(config_manager):

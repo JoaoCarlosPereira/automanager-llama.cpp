@@ -847,6 +847,8 @@ class AutoBalanceProber:
                 parallel_slots=request.parallel_slots,
                 batch_size=request.batch_size,
                 thinking_enabled=request.thinking_enabled,
+                mtp_enabled=request.mtp_enabled,
+                mtp_draft_tokens=request.mtp_draft_tokens,
                 total_layers=request.total_layers,
             )
         except Exception as exc:

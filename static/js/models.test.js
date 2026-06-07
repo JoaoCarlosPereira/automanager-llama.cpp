@@ -64,6 +64,9 @@ function setupGpuControls() {
         <input id="auto-balance-badge" class="hidden" />
         <input id="thinking-toggle" type="checkbox" checked />
         <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
+        <input id="mtp-toggle" type="checkbox" />
+        <span id="mtp-badge" class="text-[9px] font-black uppercase tracking-wider text-slate-500">OFF</span>
+        <input id="mtp-draft-tokens" value="3" />
     `);
 }
 
@@ -184,6 +187,19 @@ test('applyModelConfig preenche campos e pesos GPU', () => {
     expect(document.getElementById('parallel-slots').value).toBe('2');
     expect(document.querySelector('.gpu-row[data-index="0"] .gpu-weight').value).toBe('60');
     expect(state.manualGpuOverride).toBe(false);
+});
+
+test('applyModelConfig restaura campos MTP', () => {
+    const path = '/media/models/mtp.gguf';
+    window.modelConfigs[path] = {
+        mtp_enabled: true,
+        mtp_draft_tokens: 5,
+    };
+
+    applyModelConfig(path);
+
+    expect(document.getElementById('mtp-toggle').checked).toBe(true);
+    expect(document.getElementById('mtp-draft-tokens').value).toBe('5');
 });
 
 test('applyModelConfig adiciona opcao mmproj quando nao existe no select', () => {
@@ -539,8 +555,25 @@ test('startModel com sucesso agenda updateStatus e probing', async () => {
     expect(fetch).toHaveBeenCalledWith('/start', expect.objectContaining({
         body: expect.stringContaining('"path":"/media/ok.gguf"'),
     }));
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.mtp_enabled).toBe(false);
+    expect(body.mtp_draft_tokens).toBe(3);
     jest.advanceTimersByTime(2000);
     expect(window.updateStatus).toHaveBeenCalled();
+});
+
+test('startModel envia mtp_enabled e mtp_draft_tokens no payload', async () => {
+    const path = '/media/mtp.gguf';
+    state.currentSelectedModel = path;
+    document.getElementById('mtp-toggle').checked = true;
+    document.getElementById('mtp-draft-tokens').value = '99';
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ probing: false }) });
+
+    await startModel(path, 'mtp-id');
+
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.mtp_enabled).toBe(true);
+    expect(body.mtp_draft_tokens).toBe(6);
 });
 
 test('startModel com erro da API', async () => {

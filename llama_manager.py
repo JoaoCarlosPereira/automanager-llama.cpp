@@ -32,6 +32,7 @@ from process_manager import ProcessManager, OOMWatchdog
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
     BATCH_SIZE_PRESETS,
+    DEFAULT_MTP_DRAFT_TOKENS,
     GPUWeight,
     StartRequest,
     DeleteRequest,
@@ -236,6 +237,8 @@ async def start_model(
         "split_mode": req.split_mode,
         "auto_balance": req.auto_balance,
         "thinking_enabled": req.thinking_enabled,
+        "mtp_enabled": req.mtp_enabled,
+        "mtp_draft_tokens": req.mtp_draft_tokens,
         "total_layers": total_layers if total_layers else 0,
     }
 
@@ -260,6 +263,8 @@ async def start_model(
             parallel_slots=req.parallel_slots,
             batch_size=req.batch_size,
             thinking_enabled=req.thinking_enabled,
+            mtp_enabled=req.mtp_enabled,
+            mtp_draft_tokens=req.mtp_draft_tokens,
             total_layers=total_layers,
         )
 
@@ -280,6 +285,8 @@ async def start_model(
         parallel_slots=req.parallel_slots,
         batch_size=req.batch_size,
         thinking_enabled=req.thinking_enabled,
+        mtp_enabled=req.mtp_enabled,
+        mtp_draft_tokens=req.mtp_draft_tokens,
         total_layers=total_layers,
     )
 
@@ -962,6 +969,18 @@ def _build_html(
                                     <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
                                 </label>
                             </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Multi-Token Prediction — acelera inferência em modelos compatíveis"><i class="fas fa-bolt text-amber-400 mr-2"></i>MTP:</label>
+                                <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-amber-500/30 transition-all">
+                                    <input type="checkbox" id="mtp-toggle" class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-600 cursor-pointer">
+                                    <span id="mtp-badge" class="text-[9px] font-black uppercase tracking-wider text-slate-500">OFF</span>
+                                </label>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tokens de predição MTP (--spec-draft-n-max); valores típicos 2–3; aplica apenas com MTP ligado"><i class="fas fa-forward text-amber-400 mr-2"></i>MTP Tok:</label>
+                                <input type="number" id="mtp-draft-tokens" value="{DEFAULT_MTP_DRAFT_TOKENS}" min="1" max="6"
+                                       class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all text-center">
+                            </div>
                         </div>
                     </div>
                     <div class="overflow-x-auto">
@@ -1184,6 +1203,10 @@ async def startup_event():
                     mmproj_path = saved_cfg.get("mmproj_path")
                     split_mode = saved_cfg.get("split_mode", "layer")
                     thinking_enabled = saved_cfg.get("thinking_enabled", True)
+                    mtp_enabled = saved_cfg.get("mtp_enabled", False)
+                    mtp_draft_tokens = saved_cfg.get(
+                        "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
+                    )
                 else:
                     gpus = gpu_manager.detect_gpus()
                     weights = []
@@ -1206,6 +1229,8 @@ async def startup_event():
                     mmproj_path = None
                     split_mode = "layer"
                     thinking_enabled = True
+                    mtp_enabled = False
+                    mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
 
                 process_manager.start(
                     model_path=default_model,
@@ -1216,6 +1241,8 @@ async def startup_event():
                     parallel_slots=parallel_slots,
                     batch_size=batch_size,
                     thinking_enabled=thinking_enabled,
+                    mtp_enabled=mtp_enabled,
+                    mtp_draft_tokens=mtp_draft_tokens,
                     total_layers=saved_cfg.get("total_layers", 0),
                 )
             except Exception as e:

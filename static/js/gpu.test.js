@@ -27,6 +27,7 @@ const {
     syncAutoBalanceCancelButton,
     validateDeviceWeights,
     getActiveWeightTotal,
+    updateMtpBadge,
 } = gpu;
 
 const PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
@@ -80,6 +81,11 @@ function setupGpuDom({ gpuCount = 2, withCpu = false } = {}) {
         <input id="mmproj-path" value="/old/path"/>
         <select id="split-mode"><option value="row">row</option><option value="layer">layer</option></select>
         <input type="checkbox" id="auto-balance-toggle" checked/>
+        <input type="checkbox" id="thinking-toggle" checked/>
+        <span id="thinking-badge"></span>
+        <input type="checkbox" id="mtp-toggle"/>
+        <span id="mtp-badge"></span>
+        <input id="mtp-draft-tokens" value="3"/>
         <span id="total-percent"></span>
         <span id="auto-balance-badge" class=""></span>
         <button id="auto-balance-cancel-btn" class="hidden"></button>
@@ -598,6 +604,8 @@ describe('resetToDefaults', () => {
         expect(document.getElementById('mmproj-path').value).toBe('');
         expect(document.getElementById('split-mode').value).toBe('layer');
         expect(document.getElementById('auto-balance-toggle').checked).toBe(false);
+        expect(document.getElementById('mtp-toggle').checked).toBe(false);
+        expect(document.getElementById('mtp-draft-tokens').value).toBe('3');
         const rows = document.querySelectorAll('.gpu-row');
         expect(rows[0].querySelector('.gpu-weight').value).toBe('100');
         expect(rows[1].querySelector('.gpu-weight').value).toBe('0');
@@ -713,5 +721,21 @@ describe('CPU offload na tabela de dispositivos', () => {
         pin.checked = true;
         onGpuPinToggle(pin);
         expect(document.querySelector('.cpu-weight').classList.contains('ring-2')).toBe(true);
+    });
+});
+
+describe('updateMtpBadge', () => {
+    test('updateMtpBadge ON aplica classe amber', () => {
+        updateMtpBadge(true);
+        const badge = document.getElementById('mtp-badge');
+        expect(badge.innerText).toBe('ON');
+        expect(badge.className).toContain('text-amber-400');
+    });
+
+    test('updateMtpBadge OFF aplica classe slate', () => {
+        updateMtpBadge(false);
+        const badge = document.getElementById('mtp-badge');
+        expect(badge.innerText).toBe('OFF');
+        expect(badge.className).toContain('text-slate-500');
     });
 });

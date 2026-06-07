@@ -16,7 +16,15 @@ from fastapi import HTTPException
 from config_manager import ConfigManager, TokenManager
 from gpu_manager import GPUManager, LLAMA_SERVER_BIN, DEFAULT_TOTAL_LAYERS
 from log_manager import LogManager
-from schemas import DEFAULT_BATCH_SIZE, DEFAULT_PARALLEL_SLOTS, GPUWeight, StartRequest
+from schemas import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MTP_DRAFT_TOKENS,
+    DEFAULT_PARALLEL_SLOTS,
+    GPUWeight,
+    MTP_DRAFT_TOKENS_MAX,
+    MTP_DRAFT_TOKENS_MIN,
+    StartRequest,
+)
 
 SERVER_PORT = 8085
 logger = logging.getLogger("automanager")
@@ -60,6 +68,27 @@ def reasoning_cli_args(thinking_enabled: bool) -> List[str]:
         "--chat-template-kwargs",
         kwargs,
     ]
+
+
+def mtp_cli_args(
+    mtp_enabled: bool,
+    mtp_draft_tokens: int,
+    model_path: str,
+    gpu_manager: GPUManager,
+) -> List[str]:
+    """Build llama-server flags for Multi-Token Prediction when applicable."""
+    if not mtp_enabled:
+        return []
+    if not gpu_manager.detect_model_mtp(model_path):
+        logger.info(
+            "MTP requested but model has no MTP head, skipping flags"
+        )
+        return []
+    n = max(
+        MTP_DRAFT_TOKENS_MIN,
+        min(MTP_DRAFT_TOKENS_MAX, mtp_draft_tokens or DEFAULT_MTP_DRAFT_TOKENS),
+    )
+    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(n)]
 
 
 class ProcessManager:
@@ -155,6 +184,10 @@ class ProcessManager:
                                     "thinking_enabled": (
                                         self._last_request.thinking_enabled
                                     ),
+                                    "mtp_enabled": self._last_request.mtp_enabled,
+                                    "mtp_draft_tokens": (
+                                        self._last_request.mtp_draft_tokens
+                                    ),
                                 }
                         return status
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -245,6 +278,8 @@ class ProcessManager:
                         "mmproj_path": request.mmproj_path,
                         "split_mode": request.split_mode,
                         "thinking_enabled": request.thinking_enabled,
+                        "mtp_enabled": request.mtp_enabled,
+                        "mtp_draft_tokens": request.mtp_draft_tokens,
                         "gpu_weights": saved_weights,
                         "auto_balance": False,
                         "auto_balance_profile": True,
@@ -274,6 +309,8 @@ class ProcessManager:
                     or existing.get("mmproj_path"),
                     "split_mode": request.split_mode,
                     "thinking_enabled": request.thinking_enabled,
+                    "mtp_enabled": request.mtp_enabled,
+                    "mtp_draft_tokens": request.mtp_draft_tokens,
                     "gpu_weights": existing.get("gpu_weights")
                     or [w.model_dump() for w in request.gpu_weights],
                     "auto_balance": False,
@@ -329,6 +366,8 @@ class ProcessManager:
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
         batch_size: int = DEFAULT_BATCH_SIZE,
         thinking_enabled: bool = True,
+        mtp_enabled: bool = False,
+        mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS,
         total_layers: int = 0,
     ) -> dict:
         self.stop()
@@ -405,6 +444,11 @@ class ProcessManager:
             cmd.append("--mmproj-auto")
 
         cmd.extend(reasoning_cli_args(thinking_enabled))
+        mtp_args = mtp_cli_args(
+            mtp_enabled, mtp_draft_tokens, model_path, self.gpu_manager
+        )
+        cmd.extend(mtp_args)
+        mtp_applied = bool(mtp_args)
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -418,7 +462,9 @@ class ProcessManager:
         logger.info(
             f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
             f"ctx_per_slot={context_size}, server_ctx={server_ctx_size}, "
-            f"batch_size={batch_size}, thinking_enabled={thinking_enabled})"
+            f"batch_size={batch_size}, thinking_enabled={thinking_enabled}, "
+            f"mtp_enabled={mtp_enabled}, mtp_draft_tokens={mtp_draft_tokens}, "
+            f"mtp_applied={mtp_applied})"
         )
 
         try:
@@ -440,6 +486,8 @@ class ProcessManager:
                     batch_size=batch_size,
                     split_mode=split_mode,
                     thinking_enabled=thinking_enabled,
+                    mtp_enabled=mtp_enabled,
+                    mtp_draft_tokens=mtp_draft_tokens,
                 )
                 return {
                     "message": "Started",
@@ -572,6 +620,8 @@ class OOMWatchdog(threading.Thread):
                 "batch_size": req.batch_size,
                 "mmproj_path": req.mmproj_path,
                 "thinking_enabled": req.thinking_enabled,
+                "mtp_enabled": req.mtp_enabled,
+                "mtp_draft_tokens": req.mtp_draft_tokens,
                 "gpu_weights": [w.model_dump() for w in new_weights],
             },
         )
@@ -586,6 +636,8 @@ class OOMWatchdog(threading.Thread):
                 parallel_slots=req.parallel_slots,
                 batch_size=req.batch_size,
                 thinking_enabled=req.thinking_enabled,
+                mtp_enabled=req.mtp_enabled,
+                mtp_draft_tokens=req.mtp_draft_tokens,
                 total_layers=getattr(req, "total_layers", 0),
             )
         except Exception as e:

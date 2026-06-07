@@ -407,6 +407,15 @@ export function resetToDefaults() {
         thinkingToggle.checked = true;
         updateThinkingBadge(true);
     }
+    const mtpToggle = document.getElementById('mtp-toggle');
+    if (mtpToggle) {
+        mtpToggle.checked = false;
+        updateMtpBadge(false);
+    }
+    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
+    if (mtpDraftTokens) {
+        mtpDraftTokens.value = '3';
+    }
     document.querySelectorAll('.gpu-row').forEach((row, idx) => {
         row.querySelector('.gpu-checkbox').checked = true;
         row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
@@ -443,5 +452,15 @@ export function updateThinkingBadge(enabled) {
     badge.innerText = isOn ? 'ON' : 'OFF';
     badge.className = isOn
         ? 'text-[9px] font-black uppercase tracking-wider text-violet-400'
+        : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
+}
+
+export function updateMtpBadge(enabled) {
+    const badge = document.getElementById('mtp-badge');
+    if (!badge) return;
+    const isOn = !!enabled;
+    badge.innerText = isOn ? 'ON' : 'OFF';
+    badge.className = isOn
+        ? 'text-[9px] font-black uppercase tracking-wider text-amber-400'
         : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
 }

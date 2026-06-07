@@ -230,6 +230,17 @@ def test_html_contains_auto_balance_toggle(html):
     assert 'id="auto-balance-badge"' in html
 
 
+def test_html_contains_mtp_toggle(html):
+    assert 'id="mtp-toggle"' in html
+    assert 'id="mtp-badge"' in html
+
+
+def test_html_contains_mtp_draft_tokens_input(html):
+    assert 'id="mtp-draft-tokens"' in html
+    assert 'min="1"' in html
+    assert 'max="6"' in html
+
+
 def test_html_contains_auto_balance_cancel_btn(html):
     assert 'id="auto-balance-cancel-btn"' in html
 
