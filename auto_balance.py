@@ -602,6 +602,97 @@ class AutoBalanceProber:
         # No cap — return raw CPU weight
         return gpu_map, raw_cpu
 
+    def _resolve_probe_cpu_weight(
+        self,
+        weight_map: Dict[int, int],
+        cpu_config: Dict[str, Any],
+    ) -> int:
+        """CPU weight for a probe trial — minimum spill-over from GPU sum."""
+        _, cpu_weight = self._finalize_cpu_split(weight_map, cpu_config)
+        return cpu_weight
+
+    def _adjust_target_weight_for_maximize(
+        self,
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+        target_idx: int,
+        new_weight: int,
+        pinned_map: Dict[int, int],
+        cpu_config: Dict[str, Any],
+    ) -> Optional[Dict[int, int]]:
+        """Set one GPU weight for phase 2: spill from later GPUs, then reclaim CPU."""
+        pinned_map = pinned_map or {}
+        current_gpu_sum = sum(weight_map.values())
+        current_weight = weight_map.get(target_idx, 0)
+        new_weight = max(MIN_GPU_WEIGHT, min(100, int(new_weight)))
+        cpu_enabled = bool(cpu_config.get("enabled")) and not cpu_config.get("pinned")
+
+        if new_weight == current_weight:
+            return dict(weight_map)
+
+        if not cpu_enabled:
+            return self.planner.set_target_weight(
+                weight_map,
+                spill_order,
+                target_idx,
+                new_weight,
+                pinned_map,
+                target_total=100,
+            )
+
+        if new_weight < current_weight:
+            return self.planner.set_target_weight(
+                weight_map,
+                spill_order,
+                target_idx,
+                new_weight,
+                pinned_map,
+                target_total=current_gpu_sum,
+            )
+
+        current_cpu = self._resolve_probe_cpu_weight(weight_map, cpu_config)
+        max_gpu_total = min(100, current_gpu_sum + current_cpu)
+        for target_total in range(current_gpu_sum, max_gpu_total + 1):
+            trial = self.planner.set_target_weight(
+                weight_map,
+                spill_order,
+                target_idx,
+                new_weight,
+                pinned_map,
+                target_total=target_total,
+            )
+            if trial is not None:
+                return trial
+
+        delta = new_weight - current_weight
+        if delta > 0 and delta <= current_cpu:
+            trial = dict(weight_map)
+            trial[target_idx] = new_weight
+            return trial
+        return None
+
+    def _max_gpu_weight_for_maximize(
+        self,
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+        target_idx: int,
+        pinned_map: Dict[int, int],
+        cpu_config: Dict[str, Any],
+    ) -> int:
+        """Upper bound for binary search in phase 2 (includes reclaimable CPU budget)."""
+        if bool(cpu_config.get("enabled")) and not cpu_config.get("pinned"):
+            current_cpu = self._resolve_probe_cpu_weight(weight_map, cpu_config)
+            gpu_budget = min(100, sum(weight_map.values()) + current_cpu)
+        else:
+            gpu_budget = 100
+        return self.planner.max_weight_for_gpu(
+            weight_map,
+            spill_order,
+            target_idx,
+            pinned_map,
+            target_total=gpu_budget,
+        )
+
     def discover(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
@@ -864,7 +955,6 @@ class AutoBalanceProber:
     ) -> Tuple[Dict[int, int], int, int]:
         """For each GPU in spill order, binary-search max weight until VRAM ~full."""
         optimized = dict(weight_map)
-        gpu_target = self._gpu_budget(cpu_weight)
         active_ordered = [
             idx for idx in spill_order if optimized.get(idx, 0) > 0
         ]
@@ -879,12 +969,8 @@ class AutoBalanceProber:
                 continue
 
             lo = optimized.get(target_idx, 0)
-            hi = self.planner.max_weight_for_gpu(
-                optimized,
-                spill_order,
-                target_idx,
-                pinned_map,
-                target_total=gpu_target,
+            hi = self._max_gpu_weight_for_maximize(
+                optimized, spill_order, target_idx, pinned_map, cpu_config
             )
             best = dict(optimized)
             best_vram = 0.0
@@ -892,13 +978,13 @@ class AutoBalanceProber:
             while lo <= hi:
                 self._raise_if_cancelled()
                 mid = (lo + hi + 1) // 2
-                trial = self.planner.set_target_weight(
+                trial = self._adjust_target_weight_for_maximize(
                     optimized,
                     spill_order,
                     target_idx,
                     mid,
                     pinned_map,
-                    target_total=gpu_target,
+                    cpu_config,
                 )
                 if trial is None:
                     hi = mid - 1
@@ -909,6 +995,7 @@ class AutoBalanceProber:
                     (g["name"] for g in all_gpus if g["index"] == target_idx),
                     f"GPU{target_idx}",
                 )
+                probe_cpu = self._resolve_probe_cpu_weight(trial, cpu_config)
                 self._set_progress(
                     attempt,
                     f"Fase 2 — maximizar {gpu_name}: testando {mid}%",
@@ -916,7 +1003,7 @@ class AutoBalanceProber:
                     all_gpus=all_gpus,
                     main_index=main_index,
                     pinned_map=pinned_map,
-                    cpu_weight=cpu_weight,
+                    cpu_weight=probe_cpu,
                     cpu_config=cpu_config,
                 )
 
@@ -926,7 +1013,7 @@ class AutoBalanceProber:
                     main_index,
                     all_gpus,
                     attempt,
-                    cpu_weight=cpu_weight,
+                    cpu_weight=probe_cpu,
                     cpu_config=cpu_config,
                 )
                 if outcome == "cancelled":
@@ -947,6 +1034,7 @@ class AutoBalanceProber:
                 lo = mid + 1
 
             optimized = best
+            cpu_weight = self._resolve_probe_cpu_weight(optimized, cpu_config)
             gpu_name = next(
                 (g["name"] for g in all_gpus if g["index"] == target_idx),
                 f"GPU{target_idx}",

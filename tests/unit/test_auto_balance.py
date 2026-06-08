@@ -242,6 +242,70 @@ class TestAutoBalanceCpu:
         assert cpu_w == 30
         assert sum(gpu_map.values()) == 70
 
+    def test_resolve_probe_cpu_weight_is_minimum_spillover(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        cpu_w = prober._resolve_probe_cpu_weight(
+            {0: 85, 1: 10},
+            {"enabled": True, "pinned": False, "weight": 0},
+        )
+        assert cpu_w == 5
+
+    def test_resolve_probe_cpu_weight_disabled_returns_zero(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        cpu_w = prober._resolve_probe_cpu_weight(
+            {0: 60, 1: 40},
+            {"enabled": False, "pinned": False, "weight": 0},
+        )
+        assert cpu_w == 0
+
+    def test_phase2_gpu_target_allows_higher_main_than_phase1_cpu_budget(self):
+        """Phase 2 can reclaim CPU budget to raise the main GPU weight."""
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = AutoBalancePlanner.spill_order(0, [0, 1])
+        weight_map = {0: 75, 1: 10}
+        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        trial = prober._adjust_target_weight_for_maximize(
+            weight_map, spill, 0, 90, {}, cpu_config
+        )
+        assert trial is not None
+        assert trial[0] == 90
+        assert sum(trial.values()) == 100
+        assert prober._resolve_probe_cpu_weight(trial, cpu_config) == 0
+
+    def test_max_gpu_weight_for_maximize_includes_cpu_budget(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = AutoBalancePlanner.spill_order(0, [0, 1])
+        weight_map = {0: 70, 1: 10}
+        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        hi = prober._max_gpu_weight_for_maximize(
+            weight_map, spill, 0, {}, cpu_config
+        )
+        capped = AutoBalancePlanner.max_weight_for_gpu(
+            weight_map, spill, 0, {}, target_total=80
+        )
+        assert hi > capped
+
+    def test_adjust_target_weight_reclaims_cpu_for_last_spill_gpu(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = AutoBalancePlanner.spill_order(0, [0, 1])
+        weight_map = {0: 90, 1: 0}
+        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        trial = prober._adjust_target_weight_for_maximize(
+            weight_map, spill, 1, 5, {}, cpu_config
+        )
+        assert trial == {0: 90, 1: 5}
+        assert prober._resolve_probe_cpu_weight(trial, cpu_config) == 5
+
     def test_to_gpu_weights_includes_cpu_entry(self):
         weights = AutoBalancePlanner.to_gpu_weights(
             [{"index": 0, "name": "GPU0"}],
