@@ -29,9 +29,15 @@ fi
 
 log_info "Detected: ${ID} ${VERSION_ID:-unknown}"
 
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+  PYTHON_VERSION="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+  log_error "Python 3.11+ required (found ${PYTHON_VERSION})."
+  exit 1
+fi
+
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-  python3 python3-pip python3-venv curl git lsb-release
+  python3 python3-pip python3-venv python3-dev curl git lsb-release
 
 if ! command -v llama-server &>/dev/null; then
   log_warn "llama-server not found in PATH."
@@ -81,7 +87,7 @@ pip install -r "${PROJECT_DIR}/requirements.txt"
 log_info "Python dependencies installed"
 
 log_info "Creating configured directories..."
-(cd "${PROJECT_DIR}" && python - <<'PY'
+(cd "${PROJECT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
 from paths import ensure_directories
 
 paths = ensure_directories()
@@ -117,9 +123,10 @@ systemctl restart llama-manager.service
 log_info "Systemd service configured"
 
 sleep 3
-if curl -sf http://localhost:8000/status >/dev/null 2>&1; then
+if curl -sf http://localhost:8000/ >/dev/null 2>&1; then
   log_info "Health check passed."
   log_info "Dashboard: http://$(hostname -I | awk '{print $1}'):8000/"
+  log_info "Default login: admin / admin (change password after first login)"
 else
   log_warn "Health check failed. Run: journalctl -u llama-manager.service -f"
 fi

@@ -106,6 +106,7 @@ Automanager is a **control plane** (FastAPI on port **8000**) that manages a sin
 | `model_manager.py` | Model scan, rename/delete, URL downloads |
 | `log_manager.py` | Rotating logs under `logs/`, SSE streaming |
 | `schemas.py` | Pydantic request/response models |
+| `paths.py` | Install path resolution (`paths.json`) |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
 
 ---
@@ -148,7 +149,7 @@ Base URL: `http://<host>:8000`. Most endpoints require a valid **session cookie*
 | **`nvidia-smi`** | Must run successfully and list at least one GPU |
 | **`llama-server`** | Pre-built binary on `PATH` (not installed by setup script) |
 | **RAM / VRAM** | Depends on model and `context_size`; multi-GPU setups use tensor split |
-| **Disk** | Space for `.gguf` models under `MODELS_DIR` (default `/media/docker/models`) |
+| **Disk** | Space for `.gguf` models under `models_dir` from `paths.json` (default `data/models/`) |
 
 CUDA toolkit installation is assumed if your `llama-server` build requires it; the installer does not install drivers or CUDA.
 
@@ -159,6 +160,7 @@ CUDA toolkit installation is assumed if your `llama-server` build requires it; t
 ### Prerequisites
 
 - Ubuntu 22.04+ or Debian 11+
+- Python 3.11+
 - `sudo` / root access
 - NVIDIA drivers + `nvidia-smi`
 - `llama-server` on `PATH`
@@ -174,14 +176,15 @@ sudo bash installer/setup.sh
 
 The script will:
 
-1. Verify Ubuntu/Debian and root privileges  
-2. Install `python3`, `python3-venv`, `python3-pip`, `curl`, `git`, `lsb-release`  
+1. Verify Ubuntu/Debian, root privileges, and Python 3.11+  
+2. Install `python3`, `python3-venv`, `python3-pip`, `python3-dev`, `curl`, `git`, `lsb-release`  
 3. Warn if `llama-server` is missing  
 4. Require at least one NVIDIA GPU  
-5. Create or reuse `.venv/` and `pip install -r requirements.txt`  
-6. Create `logs/` and ensure `/root/` exists for config  
-7. Install and enable `llama-manager.service`  
-8. Run `curl http://localhost:8000/status` and print the dashboard URL  
+5. Create `paths.json` from `paths.json.example` when missing  
+6. Create or refresh `.venv/` and `pip install -r requirements.txt`  
+7. Create configured directories (`data/models`, `data/`, `logs/`) via `paths.py`  
+8. Install and enable `llama-manager.service`  
+9. Run `curl http://localhost:8000/` (public dashboard) and print the dashboard URL  
 
 The script is **idempotent**: safe to re-run; it refreshes dependencies, rewrites the unit file, and restarts the service.
 
@@ -189,10 +192,11 @@ The script is **idempotent**: safe to re-run; it refreshes dependencies, rewrite
 
 ```bash
 cd automanager-llama.cpp
+cp paths.json.example paths.json   # skip if paths.json already exists
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-mkdir -p logs
+python -c "from paths import ensure_directories; ensure_directories()"
 python llama_manager.py
 ```
 
@@ -223,13 +227,14 @@ journalctl -u llama-manager.service -f
 | **Manager port** | `8000` |
 | **Server port** | `8085` |
 | **Default context** | `65536` tokens (`DEFAULT_CONTEXT_SIZE`) |
-| **Models directory** | `/media/docker/models` (`MODELS_DIR`) |
-| **Main config** | `/root/automanager_config.json` (default model, per-model GPU/context settings, auth) |
-| **Manager log** | `./logs/manager.log` (also mirrored to `/root/manager.log` when writable) |
-| **Server log** | `./logs/server.log` (also mirrored to `/root/llama_server.log` when writable) |
+| **Path config** | `paths.json` at install root (from `paths.json.example`; gitignored) |
+| **Models directory** | `data/models/` (relative to install root; editable via dashboard or `POST /models/dir`) |
+| **Main config** | `data/automanager_config.json` (default model, per-model GPU/context settings, auth) |
+| **Manager log** | `logs/manager.log` |
+| **Server log** | `logs/server.log` |
 | **Log rotation** | 10 MB per file, 3 backups (`RotatingFileHandler`) |
 
-Change `MODELS_DIR` and paths in `llama_manager.py` constants if your layout differs.
+Edit `paths.json` to use absolute paths or a legacy layout. Installs under `/root` with existing `/media/docker/models` or `/root/automanager_config.json` auto-select legacy defaults via `paths.py`.
 
 ---
 
@@ -239,11 +244,11 @@ Change `MODELS_DIR` and paths in `llama_manager.py` constants if your layout dif
 |---------|----------------|
 | **Health check failed after install** | `systemctl status llama-manager.service` and `journalctl -u llama-manager.service -n 50` |
 | **FALHA CRÍTICA / OOM** | Model + `context_size` exceeds total VRAM on selected GPUs; reduce context or use a smaller quant |
-| **No models listed** | `MODELS_DIR` exists and contains `.gguf` files; permissions for the service user |
+| **No models listed** | `models_dir` from `paths.json` exists and contains `.gguf` files; permissions for the service user |
 | **`llama-server` not found** | Install binary and ensure `PATH` in the systemd unit includes its location |
 | **GPU metrics empty** | `nvidia-smi` works as the service user; driver mismatch |
 | **401 on API calls** | Log in via dashboard or pass `Authorization: Bearer <key>` from `GET /api/key` |
-| **Logs not updating in UI** | Verify server log path exists and is writable (`/root/llama_server.log`) |
+| **Logs not updating in UI** | Verify `logs/server.log` (or path from `paths.json`) exists and is writable |
 
 ---
 
@@ -261,7 +266,7 @@ python llama_manager.py
 ### Tests
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 pytest
 ```
 
@@ -278,10 +283,13 @@ automanager-llama.cpp/
 ├── model_manager.py      # Models and downloads
 ├── log_manager.py        # Logging and SSE
 ├── schemas.py            # Pydantic models
+├── paths.py              # Install path resolution (paths.json)
+├── paths.json.example    # Default path template for new installs
 ├── installer/setup.sh    # Quick-Install
 ├── static/js/            # Dashboard assets (e.g. Pac-Man background)
 ├── logs/                 # Runtime logs (gitignored)
 ├── requirements.txt
+├── requirements-dev.txt  # Prod deps + pytest/httpx for development
 ├── tests/
 └── start_llama.sh        # Example manual llama-server launch
 ```
