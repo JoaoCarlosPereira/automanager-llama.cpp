@@ -1,6 +1,7 @@
 """Model discovery, rename, delete, and downloads."""
 
 import os
+import shutil
 import time
 import uuid
 import logging
@@ -11,10 +12,42 @@ import requests
 from fastapi import HTTPException
 
 from config_manager import ConfigManager
+from paths import MODELS_DIR
 from process_manager import ProcessManager
-
-MODELS_DIR = "/media/docker/models"
 logger = logging.getLogger("automanager")
+_GB = 1024**3
+
+
+def _directory_size_bytes(path: str) -> int:
+    total = 0
+    if not os.path.isdir(path):
+        return 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def get_repository_storage(models_dir: str = MODELS_DIR) -> dict:
+    """Used GB in the models tree and total GB on the hosting filesystem."""
+    used_bytes = _directory_size_bytes(models_dir)
+    total_bytes = 0
+    try:
+        stat_path = models_dir if os.path.exists(models_dir) else os.path.dirname(
+            models_dir.rstrip("/\\")
+        )
+        if stat_path:
+            total_bytes = shutil.disk_usage(stat_path).total
+    except OSError as exc:
+        logger.warning("Storage stats unavailable for %s: %s", models_dir, exc)
+    return {
+        "path": models_dir,
+        "used_gb": round(used_bytes / _GB, 1),
+        "total_gb": round(total_bytes / _GB, 1),
+    }
 
 
 class ModelScanner:
@@ -70,7 +103,11 @@ class ModelScanner:
             m["mmproj_candidates"] = candidates
             m["auto_mmproj"] = candidates[0] if candidates else None
 
-        return {"models": models, "projectors": projectors}
+        return {
+            "models": models,
+            "projectors": projectors,
+            "storage": get_repository_storage(self.models_dir),
+        }
 
     def rename_model(self, old_path: str, new_name: str) -> str:
         if not old_path.startswith(self.models_dir):

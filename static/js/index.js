@@ -12,6 +12,7 @@ import {
 import {
     initDashboard, getModelButtonsHtml, selectModel, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
+    saveModelsDir,
 } from './models.js';
 
 window.modelConfigs = window.modelConfigs || {};
@@ -45,6 +46,7 @@ win.resetToDefaults = resetToDefaults;
 win.hideAutoBalanceCapacityAlert = hideAutoBalanceCapacityAlert;
 win.getModelButtonsHtml = getModelButtonsHtml;
 win.updateModels = updateModels;
+win.saveModelsDir = saveModelsDir;
 win.updateStatus = updateStatus;
 win.downloadModel = downloadModel;
 win.updateMetrics = updateMetrics;

@@ -45,6 +45,11 @@ def mock_index_deps(monkeypatch):
             }
         ],
         "projectors": [],
+        "storage": {
+            "path": "/tmp/models",
+            "used_gb": 0.0,
+            "total_gb": 100.0,
+        },
     }
     monkeypatch.setattr(llama_manager, "model_scanner", model_scanner)
 

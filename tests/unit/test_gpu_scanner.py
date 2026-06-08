@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gpu_manager import CPUInfo, GPUDetector, GPUManager
-from model_manager import ModelScanner
+from model_manager import ModelScanner, get_repository_storage
 
 
 class TestGPUDetectorDetectGpus:
@@ -307,4 +307,20 @@ class TestModelScannerScan:
                 models_dir=str(tmp_path),
             ).scan()
 
-        assert result == {"models": [], "projectors": []}
+        assert result == {
+            "models": [],
+            "projectors": [],
+            "storage": get_repository_storage(str(tmp_path)),
+        }
+
+    def test_get_repository_storage_sums_files_and_reports_total(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "a.gguf").write_bytes(b"x" * 1024)
+        (models_dir / "b.gguf").write_bytes(b"y" * 2048)
+
+        storage = get_repository_storage(str(models_dir))
+
+        assert storage["path"] == str(models_dir)
+        assert storage["used_gb"] == round(3072 / (1024**3), 1)
+        assert storage["total_gb"] > 0

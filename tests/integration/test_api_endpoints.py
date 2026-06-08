@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import llama_manager
+from gpu_manager import ALL_GPU_LAYERS
 from llama_manager import app
 from schemas import GPUWeight
 
@@ -259,6 +260,53 @@ def test_models_endpoint_uses_model_scanner_mock(monkeypatch, authenticated_clie
     model_scanner.scan.assert_called_once_with()
 
 
+def test_set_models_dir_updates_scanner_and_returns_models(
+    monkeypatch, authenticated_client, tmp_path
+):
+    new_models_dir = tmp_path / "new-models"
+    scan_payload = {
+        "models": [],
+        "projectors": [],
+        "storage": {
+            "path": str(new_models_dir),
+            "used_gb": 0.0,
+            "total_gb": 10.0,
+        },
+    }
+
+    model_scanner = MagicMock()
+    model_scanner.scan.return_value = scan_payload
+    download_mgr = MagicMock()
+    monkeypatch.setattr(llama_manager, "model_scanner", model_scanner)
+    monkeypatch.setattr(llama_manager, "download_mgr", download_mgr)
+
+    from paths import InstallPaths
+
+    def fake_update(value):
+        model_scanner.models_dir = str(new_models_dir)
+        download_mgr.models_dir = str(new_models_dir)
+        return InstallPaths(
+            install_root=str(tmp_path),
+            models_dir=str(new_models_dir),
+            config_file=str(tmp_path / "config.json"),
+            logs_dir=str(tmp_path / "logs"),
+        )
+
+    monkeypatch.setattr(llama_manager, "update_models_dir", fake_update)
+    monkeypatch.setattr(llama_manager, "reload_module_paths", lambda: fake_update(""))
+
+    response = authenticated_client.post(
+        "/models/dir",
+        json={"models_dir": str(new_models_dir)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == scan_payload
+    assert model_scanner.models_dir == str(new_models_dir)
+    assert download_mgr.models_dir == str(new_models_dir)
+    model_scanner.scan.assert_called_once_with()
+
+
 def test_start_auto_balance_takes_priority_over_manual_override(
     monkeypatch, authenticated_client
 ):
@@ -384,7 +432,7 @@ def test_app_gpu_manager_compute_n_gpu_layers_mixed_gpu_cpu():
 @pytest.mark.parametrize(
     ("gpu_weight", "cpu_weight", "total_layers", "expected_ngl"),
     [
-        (100.0, 0.0, 32, 32),
+        (100.0, 0.0, 32, ALL_GPU_LAYERS),
         (50.0, 50.0, 32, 16),
         (70.0, 30.0, 80, 56),
         (0.0, 100.0, 32, 0),

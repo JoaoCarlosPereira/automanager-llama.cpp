@@ -11,10 +11,9 @@ from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
 
+from paths import CONFIG_PATH
 from schemas import DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_MTP_ENABLED
 
-CONFIG_PATH = "/root/automanager_config.json"
-MANAGER_LOG_PATH = "/root/manager.log"
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 SESSION_IDLE_SECONDS = 86400  # 24h without activity

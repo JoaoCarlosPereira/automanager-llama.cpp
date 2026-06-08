@@ -1,0 +1,5 @@
+{
+  "models_dir": "data/models",
+  "config_file": "data/automanager_config.json",
+  "logs_dir": "logs"
+}

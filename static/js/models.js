@@ -11,6 +11,15 @@ import {
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
 
+export function formatRepoStorageLabel(storage) {
+    if (!storage || storage.total_gb == null || storage.used_gb == null) {
+        return '-- / -- GB';
+    }
+    const used = Number(storage.used_gb).toFixed(1);
+    const total = Number(storage.total_gb).toFixed(1);
+    return `${used} / ${total} GB`;
+}
+
 export function initDashboard() {
     bindGpuManualListeners();
     syncContextSizeCustomVisibility();
@@ -154,6 +163,35 @@ export async function downloadModel() {
     } catch (e) {}
 }
 
+export async function saveModelsDir() {
+    const input = document.getElementById('models-dir-input');
+    const modelsDir = input?.value.trim();
+    if (!modelsDir) {
+        alert('Informe o caminho do repositório de modelos.');
+        return;
+    }
+    const button = input?.nextElementSibling;
+    if (button) button.disabled = true;
+    try {
+        const res = await apiFetch('/models/dir', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({models_dir: modelsDir}),
+        });
+        if (sessionExpiredHandled) return;
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Erro ao salvar: ' + (err.detail || 'Erro desconhecido'));
+            return;
+        }
+        await updateModels();
+    } catch (e) {
+        alert('Erro de rede ao salvar o diretório de modelos.');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
 export async function updateModels() {
     try {
         const [res, cfgRes] = await Promise.all([
@@ -164,6 +202,17 @@ export async function updateModels() {
         const data = await res.json();
         const cfg = await cfgRes.json();
         document.getElementById('model-count').innerText = `${data.models.length} UNIDADES`;
+        const storageEl = document.getElementById('repo-storage');
+        if (storageEl) {
+            storageEl.innerText = formatRepoStorageLabel(data.storage);
+            if (data.storage?.path) {
+                storageEl.title = `${data.storage.path} — usado / total`;
+            }
+        }
+        const dirInput = document.getElementById('models-dir-input');
+        if (dirInput && data.storage?.path && document.activeElement !== dirInput) {
+            dirInput.value = data.storage.path;
+        }
         const oldContainer = document.getElementById('model-list-container');
         const newHtml = data.models.map(m => {
             const m_js = m.path.replace(/\\\\\\\\/g, '/');
@@ -178,17 +227,17 @@ export async function updateModels() {
             const runningClass = isRunning ? 'running-now' : '';
             const hashId = m.id;
             const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
-            return `<div id="${hashId}" class="model-item-container group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass} ${incapableRow}" data-path="${m_js}" data-hardware-incapable="${incapable}">
-                <div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
-                    <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2 flex-wrap">
-                        <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i>
-                        <p class="model-name text-sm md:text-base font-bold ${hasConfigClass} break-all line-clamp-2" title="${m.name}">${m.name}</p>
+            return `<div id="${hashId}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass} ${incapableRow}" data-path="${m_js}" data-hardware-incapable="${incapable}">
+                <div class="w-full cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
+                    <div class="flex items-start gap-2 md:gap-3 mb-1 md:mb-2 flex-wrap">
+                        <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs mt-1"></i>
+                        <p class="model-name text-sm md:text-base font-bold ${hasConfigClass} break-words" title="${m.name}">${m.name}</p>
                         ${incapableBadge}
                         ${historyIcon}
                     </div>
-                    <p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${m.dir}</p>
+                    <p class="text-[9px] md:text-xs text-slate-500 break-all uppercase tracking-tighter font-mono">${m.dir}</p>
                 </div>
-                <div class="flex items-center gap-3 md:gap-6">
+                <div class="flex flex-wrap items-center gap-3 md:gap-6 w-full">
                     <div class="flex items-center gap-1">
                         <button onclick="renameModel('${m_js}')" class="rename-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all ${isRunning ? 'hidden' : ''}" title="Renomear Modelo">
                             <i class="fas fa-edit text-[10px] md:text-xs"></i>

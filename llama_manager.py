@@ -40,10 +40,12 @@ from schemas import (
     SetDefaultRequest,
     RenameRequest,
     LoginRequest,
+    SetModelsDirRequest,
 )
 from gpu_manager import GPUDetector
 from model_manager import ModelScanner
 from config_manager import ConfigManager, TokenManager
+from paths import ensure_directories, reload_module_paths, update_models_dir
 
 MANAGER_PORT = 8000
 
@@ -74,8 +76,13 @@ def context_tokens_to_k(tokens: int) -> str:
 
 
 # Initialize logging and services
-log_manager = LogManager()
-config_manager = ConfigManager()
+_install_paths = ensure_directories()
+log_manager = LogManager(
+    project_root=_install_paths.install_root,
+    server_log_path=_install_paths.server_log,
+    manager_log_path=_install_paths.manager_log,
+)
+config_manager = ConfigManager(_install_paths.config_file)
 token_manager = TokenManager(config_manager)
 auth_manager = AuthManager(config_manager, token_manager)
 gpu_manager = GPUManager()
@@ -83,8 +90,10 @@ gpu_detector = gpu_manager
 process_manager = ProcessManager(
     config_manager, token_manager, gpu_manager, log_manager
 )
-model_scanner = ModelScanner(config_manager, process_manager)
-download_mgr = DownloadManager()
+model_scanner = ModelScanner(
+    config_manager, process_manager, models_dir=_install_paths.models_dir
+)
+download_mgr = DownloadManager(models_dir=_install_paths.models_dir)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -314,6 +323,27 @@ async def get_metrics(_auth: str = Depends(get_current_auth)):
 
 @app.get("/models")
 async def list_models(_auth: str = Depends(get_current_auth)):
+    return model_scanner.scan()
+
+
+@app.post("/models/dir")
+async def set_models_dir(
+    req: SetModelsDirRequest, _auth: str = Depends(get_current_auth)
+):
+    try:
+        paths = update_models_dir(req.models_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.error("Failed to update models_dir: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="Não foi possível criar ou salvar o diretório"
+        ) from exc
+
+    reload_module_paths()
+    model_scanner.models_dir = paths.models_dir
+    download_mgr.models_dir = paths.models_dir
+    logger.info("models_dir atualizado para %s", paths.models_dir)
     return model_scanner.scan()
 
 
@@ -750,17 +780,17 @@ async def index(request: Request):
 
         model_items += f"""
         {initial_cfg_js}
-        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{incapable_attr}">
-            <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
-                <div class="flex items-center gap-2 mb-1 flex-wrap">
-                    <i class="fas fa-cube text-blue-400 text-[10px]"></i>
-                    <p class="model-name text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
+        <div id="{stable_id}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{incapable_attr}">
+            <div class="w-full cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
+                <div class="flex items-start gap-2 mb-1 flex-wrap">
+                    <i class="fas fa-cube text-blue-400 text-[10px] mt-1"></i>
+                    <p class="model-name text-sm font-bold {has_config} break-words">{m_name}</p>
                     {incapable_badge}
                     {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs and not hardware_incapable else ''}
                 </div>
-                <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir}</p>
+                <p class="text-[9px] text-slate-500 break-all uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
-            <div class="flex items-center gap-3 md:gap-4">
+            <div class="flex flex-wrap items-center gap-3 md:gap-4 w-full">
                 <div class="flex items-center gap-1">
                     <button onclick="renameModel('{m_js}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all" title="Renomear Modelo">
                         <i class="fas fa-edit text-[10px]"></i>
@@ -914,7 +944,7 @@ def _build_html(
                 </button>
             </div>
         </header>
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10 items-start">
             <div class="lg:col-span-7 space-y-6 md:space-y-10">
                 <div id="metrics-panel" class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
                     <div class="glass p-5 rounded-[1.5rem] border-l-4 border-blue-600">
@@ -1108,7 +1138,7 @@ def _build_html(
                 </div>
             </div>
             <div class="lg:col-span-5 space-y-6 md:space-y-10">
-                <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[1100px] xl:h-[1200px]">
+                <div class="glass rounded-[2rem] border border-slate-800">
                     <div class="p-8 border-b border-slate-800/50 flex items-center justify-between">
                         <div class="flex items-center gap-4 md:gap-5">
                             <div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700">
@@ -1116,7 +1146,17 @@ def _build_html(
                             </div>
                             <h3 class="font-bold text-base md:text-lg text-white tracking-tight">Model Repository</h3>
                         </div>
-                        <span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span>
+                        <div class="flex flex-col items-end gap-1">
+                            <span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span>
+                            <span class="text-[9px] bg-slate-800/80 text-slate-400 px-2 py-0.5 rounded-full font-mono border border-slate-700 whitespace-nowrap" id="repo-storage" title="Espaço usado pelo repositório / capacidade total do disco">-- / -- GB</span>
+                        </div>
+                    </div>
+                    <div class="px-6 md:px-8 py-3 border-b border-slate-800/30 bg-slate-900/20 flex items-center gap-2">
+                        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest shrink-0 hidden sm:inline">Diretório</span>
+                        <input type="text" id="models-dir-input" placeholder="Caminho do repositório de modelos" class="flex-1 min-w-0 px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-[10px] text-slate-300 font-mono focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600">
+                        <button type="button" onclick="saveModelsDir()" title="Salvar caminho e atualizar lista" class="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-blue-600 text-slate-400 hover:text-white border border-slate-700 transition-all active:scale-95">
+                            <i class="fas fa-save text-xs"></i>
+                        </button>
                     </div>
                     <div class="p-8 border-b border-slate-800/30 bg-blue-600/5">
                         <p class="text-[10px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p>
@@ -1131,10 +1171,11 @@ def _build_html(
                         </div>
                         <div id="download-status" class="mt-6 md:mt-8 space-y-3"></div>
                     </div>
-                    <div id="model-list-container" class="p-6 flex-1 overflow-y-auto custom-scroll space-y-2">
+                    <div id="model-list-container" class="p-6 md:p-8 space-y-2">
                         {model_items}
                     </div>
-                    <div class="p-8 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]">
+                </div>
+                <div class="glass rounded-[2rem] border border-slate-800 p-8">
                         <div class="flex flex-col gap-4">
                             <div class="flex flex-col gap-2">
                                 <div class="flex items-center justify-between">
@@ -1174,7 +1215,6 @@ def _build_html(
                                 </div>
                             </div>
                         </div>
-                    </div>
                 </div>
             </div>
         </div>

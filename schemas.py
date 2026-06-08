@@ -59,6 +59,10 @@ class RenameRequest(BaseModel):
     new_name: str
 
 
+class SetModelsDirRequest(BaseModel):
+    models_dir: str = Field(..., min_length=1)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

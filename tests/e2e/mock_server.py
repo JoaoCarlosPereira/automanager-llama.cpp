@@ -265,7 +265,15 @@ async def mock_metrics():
 
 @mock_api.get("/models")
 async def mock_models():
-    return {"models": copy.deepcopy(_FAKE_MODELS), "projectors": []}
+    return {
+        "models": copy.deepcopy(_FAKE_MODELS),
+        "projectors": [],
+        "storage": {
+            "path": "/models",
+            "used_gb": 42.0,
+            "total_gb": 500.0,
+        },
+    }
 
 
 @mock_api.get("/config")

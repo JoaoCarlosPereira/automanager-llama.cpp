@@ -4,6 +4,7 @@ import { state } from './state.js';
 import * as models from './models.js';
 
 const {
+    formatRepoStorageLabel,
     initDashboard,
     getModelButtonsHtml,
     selectModel,
@@ -11,6 +12,7 @@ const {
     setDefaultModel,
     downloadModel,
     updateModels,
+    saveModelsDir,
     renameModel,
     deleteModel,
     startModel,
@@ -73,6 +75,9 @@ function setupGpuControls() {
 function setupModelsListDom() {
     document.body.insertAdjacentHTML('beforeend', `
         <span id="model-count"></span>
+        <span id="repo-storage"></span>
+        <input id="models-dir-input" />
+        <button type="button"></button>
         <div id="model-list-container"></div>
         <input id="download-url" value="" />
     `);
@@ -281,6 +286,42 @@ test('downloadModel ignora erro de rede', async () => {
     await expect(downloadModel()).resolves.toBeUndefined();
 });
 
+test('formatRepoStorageLabel formata usado e total em GB', () => {
+    expect(formatRepoStorageLabel(null)).toBe('-- / -- GB');
+    expect(formatRepoStorageLabel({ used_gb: 12.3, total_gb: 500 })).toBe('12.3 / 500.0 GB');
+});
+
+test('saveModelsDir salva caminho e chama updateModels', async () => {
+    document.getElementById('models-dir-input').value = '/new/models';
+    const modelsPayload = {
+        models: [],
+        projectors: [],
+        storage: { path: '/new/models', used_gb: 0, total_gb: 100 },
+    };
+    fetch
+        .mockResolvedValueOnce({ ok: true, json: async () => modelsPayload })
+        .mockResolvedValueOnce({ ok: true, json: async () => modelsPayload })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ default_model: null }) });
+
+    await saveModelsDir();
+
+    expect(fetch).toHaveBeenCalledWith(
+        '/models/dir',
+        expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ models_dir: '/new/models' }),
+        }),
+    );
+    expect(document.getElementById('models-dir-input').value).toBe('/new/models');
+});
+
+test('saveModelsDir alerta quando caminho vazio', async () => {
+    document.getElementById('models-dir-input').value = '   ';
+    await saveModelsDir();
+    expect(alert).toHaveBeenCalledWith('Informe o caminho do repositório de modelos.');
+    expect(fetch).not.toHaveBeenCalled();
+});
+
 test('updateModels renderiza lista e projectors', async () => {
     const modelsPayload = {
         models: [{
@@ -291,6 +332,7 @@ test('updateModels renderiza lista e projectors', async () => {
             last_config: { context_size: 65536, hardware_incapable: false },
         }],
         projectors: [{ path: '/proj/p.gguf', name: 'Proj' }],
+        storage: { path: '/media/docker/models', used_gb: 120.5, total_gb: 2000 },
     };
     fetch
         .mockResolvedValueOnce({ ok: true, json: async () => modelsPayload })
@@ -299,6 +341,8 @@ test('updateModels renderiza lista e projectors', async () => {
     await updateModels();
 
     expect(document.getElementById('model-count').innerText).toBe('1 UNIDADES');
+    expect(document.getElementById('repo-storage').innerText).toBe('120.5 / 2000.0 GB');
+    expect(document.getElementById('models-dir-input').value).toBe('/media/docker/models');
     expect(document.getElementById('model-list-container').innerHTML).toContain('Model A');
     expect(document.getElementById('mmproj-path').innerHTML).toContain('Proj');
     expect(window.modelConfigs['/media/a.gguf']).toBeDefined();
