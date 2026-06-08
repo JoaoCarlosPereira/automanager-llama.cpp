@@ -3,6 +3,7 @@
 import os
 import time
 import logging
+import threading
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -95,7 +96,7 @@ class LogManager:
         os.makedirs(os.path.dirname(self._server_log_path), exist_ok=True)
         return open(self._server_log_path, "a", encoding="utf-8")
 
-    def stream_logs(self) -> StreamingResponse:
+    def stream_logs(self, stop_event: Optional[threading.Event] = None) -> StreamingResponse:
         path = self._server_log_path
 
         def generate():
@@ -105,8 +106,12 @@ class LogManager:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 existing = f.readlines()
                 for line in existing[-500:]:
+                    if stop_event and stop_event.is_set():
+                        return
                     yield f"data: {line}"
                 while True:
+                    if stop_event and stop_event.is_set():
+                        return
                     line = f.readline()
                     if not line:
                         time.sleep(0.5)

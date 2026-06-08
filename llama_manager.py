@@ -103,6 +103,7 @@ oom_watchdog = OOMWatchdog(
 )
 
 app = FastAPI(title="Automanager Llama.cpp")
+shutdown_event = threading.Event()
 
 _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(_static_dir):
@@ -411,7 +412,7 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 
 @app.get("/logs")
 async def stream_logs():
-    return log_manager.stream_logs()
+    return log_manager.stream_logs(stop_event=shutdown_event)
 
 
 # --- System Management ---
@@ -1311,7 +1312,7 @@ async def startup_event():
     """Start OOM watchdog, download runner, and optionally auto-start default model."""
     get_llama_server_bin()
     oom_watchdog.start()
-    threading.Thread(target=_run_downloads, daemon=True).start()
+    threading.Thread(target=_run_downloads, args=(shutdown_event,), daemon=True).start()
 
     # Auto-start default model
     default_model = config_manager.get_default_model()
@@ -1378,18 +1379,29 @@ async def startup_event():
                 logger.error(f"Auto-start error: {e}")
 
 
+@app.on_event("shutdown")
+async def shutdown_event_handler():
+    """Signal all background tasks to stop and kill llama-server."""
+    logger.info("Encerrando Automanager Llama.cpp...")
+    shutdown_event.set()
+    oom_watchdog.stop()
+    process_manager.stop()
+
+
 # ─────────────────────────────────────────────────────────
 # Background download task runner
 # ─────────────────────────────────────────────────────────
 
 
-def _run_downloads():
+def _run_downloads(stop_event: threading.Event):
     """Periodically process background downloads."""
-    while True:
+    while not stop_event.is_set():
         with download_mgr._lock:
             to_process = list(download_mgr._downloads_queue)
             download_mgr._downloads_queue.clear()
         for download_id, url, filename, path in to_process:
+            if stop_event.is_set():
+                break
             download_mgr._do_download(download_id, url, filename, path)
         time.sleep(1)
 
