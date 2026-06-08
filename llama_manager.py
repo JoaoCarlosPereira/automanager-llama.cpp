@@ -49,6 +49,7 @@ from model_manager import ModelScanner
 from config_manager import ConfigManager, TokenManager
 from paths import INSTALL_ROOT, ensure_directories, reload_module_paths, update_models_dir
 from version_manager import check_for_updates
+from llama_server_bin import get_llama_server_bin
 
 MANAGER_PORT = 8000
 
@@ -1303,6 +1304,7 @@ def _build_html(
 @app.on_event("startup")
 async def startup_event():
     """Start OOM watchdog, download runner, and optionally auto-start default model."""
+    get_llama_server_bin()
     oom_watchdog.start()
     threading.Thread(target=_run_downloads, daemon=True).start()
 

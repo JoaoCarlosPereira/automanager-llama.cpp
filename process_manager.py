@@ -14,7 +14,8 @@ import psutil
 from fastapi import HTTPException
 
 from config_manager import ConfigManager, TokenManager
-from gpu_manager import GPUManager, LLAMA_SERVER_BIN, DEFAULT_TOTAL_LAYERS
+from gpu_manager import GPUManager, DEFAULT_TOTAL_LAYERS
+from llama_server_bin import resolve_llama_server_bin
 from log_manager import LogManager
 from schemas import (
     DEFAULT_BATCH_SIZE,
@@ -195,13 +196,17 @@ class ProcessManager:
         return status
 
     def stop(self) -> dict:
-        subprocess.run(["pkill", "-9", LLAMA_SERVER_BIN], check=False)
+        if os.name == "posix":
+            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
         with self._lock:
             if self._current_process:
                 try:
-                    os.killpg(
-                        os.getpgid(self._current_process.pid), signal.SIGKILL
-                    )
+                    if os.name == "posix":
+                        os.killpg(
+                            os.getpgid(self._current_process.pid), signal.SIGKILL
+                        )
+                    else:
+                        self._current_process.kill()
                 except (ProcessLookupError, OSError):
                     pass
                 self._current_process = None
@@ -398,10 +403,20 @@ class ProcessManager:
         split = plan.tensor_split
         main_gpu = self.gpu_manager.resolve_main_gpu_index(gpu_weights)
         n_gpu_layers = plan.n_gpu_layers
+        llama_bin = resolve_llama_server_bin()
+        if not llama_bin:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "llama-server nao encontrado. Instale o binario, adicione ao PATH, "
+                    "defina LLAMA_SERVER_BIN ou configure llama_server_bin em paths.json."
+                ),
+            )
+
         api_token = self.token_mgr.get_or_create()
         server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
         cmd = [
-            LLAMA_SERVER_BIN,
+            llama_bin,
             "-m",
             model_path,
             "-ngl",
@@ -464,14 +479,15 @@ class ProcessManager:
 
         try:
             log_file = self.log_manager.open_server_log_append()
+            popen_kwargs = {
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "env": env,
+            }
+            if os.name == "posix":
+                popen_kwargs["preexec_fn"] = os.setsid
             with self._lock:
-                self._current_process = subprocess.Popen(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    preexec_fn=os.setsid,
-                    env=env,
-                )
+                self._current_process = subprocess.Popen(cmd, **popen_kwargs)
                 self._last_request = StartRequest(
                     path=model_path,
                     mmproj_path=mmproj_path,
@@ -488,9 +504,18 @@ class ProcessManager:
                     "message": "Started",
                     "pid": self._current_process.pid,
                 }
+        except FileNotFoundError:
+            logger.error("llama-server nao encontrado ao iniciar processo")
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "llama-server nao encontrado. Instale o binario, adicione ao PATH, "
+                    "defina LLAMA_SERVER_BIN ou configure llama_server_bin em paths.json."
+                ),
+            )
         except Exception as e:
             logger.error(f"Start error: {e}")
-            raise HTTPException(status_code=500, detail=f"Erro ao iniciar: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 class OOMWatchdog(threading.Thread):

@@ -132,16 +132,20 @@ def _captured_cmd(pm, gpu_weights=None):
 
     try:
         with patch.object(pm, "stop"):
-            with patch("subprocess.Popen", side_effect=_capture):
-                with patch.object(pm.gpu_manager, "validate_gpu_weights", return_value=(True, "")):
-                    with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
-                        with patch.object(pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]):
-                            with patch.object(pm.gpu_manager, "detect_model_layers", return_value=32):
-                                pm.start(
-                                    model_path="/fake/model.gguf",
-                                    gpu_weights=weights,
-                                    context_size=8192,
-                                )
+            with patch(
+                "process_manager.resolve_llama_server_bin",
+                return_value="/usr/bin/llama-server",
+            ):
+                with patch("subprocess.Popen", side_effect=_capture):
+                    with patch.object(pm.gpu_manager, "validate_gpu_weights", return_value=(True, "")):
+                        with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
+                            with patch.object(pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]):
+                                with patch.object(pm.gpu_manager, "detect_model_layers", return_value=32):
+                                    pm.start(
+                                        model_path="/fake/model.gguf",
+                                        gpu_weights=weights,
+                                        context_size=8192,
+                                    )
     finally:
         if orig_setsid is not None:
             pm_mod.os.setsid = orig_setsid
@@ -239,16 +243,20 @@ def test_start_dynamic_ngl_large_model(
         ]
 
         with patch.object(pm, "stop"):
-            with patch("subprocess.Popen", side_effect=_capture):
-                with patch.object(pm.gpu_manager, "validate_gpu_weights", return_value=(True, "")):
-                    with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
-                        with patch.object(pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]):
-                            with patch.object(pm.gpu_manager, "detect_model_layers", return_value=80):
-                                pm.start(
-                                    model_path="/fake/model.gguf",
-                                    gpu_weights=weights,
-                                    context_size=8192,
-                                )
+            with patch(
+                "process_manager.resolve_llama_server_bin",
+                return_value="/usr/bin/llama-server",
+            ):
+                with patch("subprocess.Popen", side_effect=_capture):
+                    with patch.object(pm.gpu_manager, "validate_gpu_weights", return_value=(True, "")):
+                        with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
+                            with patch.object(pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]):
+                                with patch.object(pm.gpu_manager, "detect_model_layers", return_value=80):
+                                    pm.start(
+                                        model_path="/fake/model.gguf",
+                                        gpu_weights=weights,
+                                        context_size=8192,
+                                    )
     finally:
         if orig_setsid is not None:
             pm_mod.os.setsid = orig_setsid

@@ -21,6 +21,7 @@ class OffloadPlan(NamedTuple):
 
 import psutil
 
+from llama_server_bin import get_llama_server_bin
 from schemas import GPUWeight
 
 # Default layer count used when model metadata cannot be read.
@@ -28,8 +29,11 @@ DEFAULT_TOTAL_LAYERS = 32
 # llama-server clamps -ngl to the model layer count; use a high value for "all GPU".
 ALL_GPU_LAYERS = 999
 
-LLAMA_SERVER_BIN = "llama-server"
 logger = logging.getLogger("automanager")
+
+
+def _llama_server_cmd() -> str:
+    return get_llama_server_bin()
 
 # e.g. "Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz" -> "Xeon CPU E5-2676 v3"
 _CPU_FREQ_SUFFIX = re.compile(r"\s*@\s*[\d.]+\s*GHz\s*$", re.IGNORECASE)
@@ -182,8 +186,9 @@ class GPUDetector:
         try:
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f"{LLAMA_SERVER_BIN} --help 2>&1",
+                f'"{bin_path}" --help 2>&1',
                 shell=True, env=env, timeout=10,
             ).decode()
             pattern = r"Device (\d+): (.*?), compute capability.*?, VRAM: (\d+) MiB"
@@ -499,8 +504,9 @@ class GPUManager(GPUDetector):
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             env["CUDA_VISIBLE_DEVICES"] = ""
+            bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f'{LLAMA_SERVER_BIN} --model-info "{model_path}" 2>&1',
+                f'"{bin_path}" --model-info "{model_path}" 2>&1',
                 shell=True, env=env, timeout=15,
             ).decode(errors="replace")
             match = re.search(r"n_layer\s*=\s*(\d+)", output)
@@ -516,8 +522,9 @@ class GPUManager(GPUDetector):
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             env["CUDA_VISIBLE_DEVICES"] = ""
+            bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f'{LLAMA_SERVER_BIN} --model-info "{model_path}" 2>&1',
+                f'"{bin_path}" --model-info "{model_path}" 2>&1',
                 shell=True,
                 env=env,
                 timeout=15,

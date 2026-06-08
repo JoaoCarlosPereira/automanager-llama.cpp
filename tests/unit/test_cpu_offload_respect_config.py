@@ -51,16 +51,20 @@ def _capture_start_cmd(pm, weights, total_layers=32):
 
     try:
         with patch.object(pm, "stop"):
-            with patch("subprocess.Popen", side_effect=_capture):
-                with patch.object(
-                    pm.gpu_manager, "detect_model_layers", return_value=total_layers
-                ):
-                    pm.start(
-                        model_path="/fake/model.gguf",
-                        gpu_weights=weights,
-                        context_size=8192,
-                        total_layers=total_layers,
-                    )
+            with patch(
+                "process_manager.resolve_llama_server_bin",
+                return_value="/usr/bin/llama-server",
+            ):
+                with patch("subprocess.Popen", side_effect=_capture):
+                    with patch.object(
+                        pm.gpu_manager, "detect_model_layers", return_value=total_layers
+                    ):
+                        pm.start(
+                            model_path="/fake/model.gguf",
+                            gpu_weights=weights,
+                            context_size=8192,
+                            total_layers=total_layers,
+                        )
     finally:
         if orig_setsid is not None:
             pm_mod.os.setsid = orig_setsid

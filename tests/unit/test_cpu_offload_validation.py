@@ -96,20 +96,24 @@ def _start_with_weights(pm, weights):
     pm_mod.os.setsid = lambda: None
     try:
         with patch.object(pm, "stop"):
-            with patch("subprocess.Popen") as popen:
-                popen.return_value = MagicMock(pid=1)
-                with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
-                    with patch.object(
-                        pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]
-                    ):
+            with patch(
+                "process_manager.resolve_llama_server_bin",
+                return_value="/usr/bin/llama-server",
+            ):
+                with patch("subprocess.Popen") as popen:
+                    popen.return_value = MagicMock(pid=1)
+                    with patch.object(pm.gpu_manager, "get_visible_devices", return_value="0"):
                         with patch.object(
-                            pm.gpu_manager, "detect_model_layers", return_value=32
+                            pm.gpu_manager, "compute_tensor_split", return_value=["1.0"]
                         ):
-                            pm.start(
-                                model_path="/fake/model.gguf",
-                                gpu_weights=weights,
-                                context_size=8192,
-                            )
+                            with patch.object(
+                                pm.gpu_manager, "detect_model_layers", return_value=32
+                            ):
+                                pm.start(
+                                    model_path="/fake/model.gguf",
+                                    gpu_weights=weights,
+                                    context_size=8192,
+                                )
     finally:
         if orig_setsid is not None:
             pm_mod.os.setsid = orig_setsid

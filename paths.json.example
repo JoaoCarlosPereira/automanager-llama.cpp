@@ -1,5 +1,6 @@
 {
   "models_dir": "data/models",
   "config_file": "data/automanager_config.json",
-  "logs_dir": "logs"
+  "logs_dir": "logs",
+  "llama_server_bin": "bin/llama-server"
 }
