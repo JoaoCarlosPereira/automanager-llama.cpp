@@ -201,6 +201,8 @@ def test_html_contains_version_update_modal(html):
     assert 'role="dialog"' in html
     assert 'aria-modal="true"' in html
     assert 'aria-labelledby="version-update-title"' in html
+    assert "Ha uma nova atualizacao disponivel. Convem atualizar o servidor" in html
+    assert "Recomendamos atualizar em breve" in html
 
 
 def test_html_contains_api_token(html):

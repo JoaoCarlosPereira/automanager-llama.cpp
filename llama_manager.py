@@ -910,9 +910,12 @@ def _build_html(
                 <div class="p-6 md:p-8 border-b border-slate-800/60 shrink-0">
                     <div class="flex items-start justify-between gap-4">
                         <div>
-                            <p class="text-[10px] font-black uppercase tracking-[0.25em] text-blue-400 mb-2">Nova versao disponivel</p>
-                            <h2 id="version-update-title" class="text-lg md:text-xl font-bold text-white">Notas de atualizacao</h2>
-                            <p class="text-xs text-slate-400 mt-2 font-mono">
+                            <p class="text-[10px] font-black uppercase tracking-[0.25em] text-blue-400 mb-2">Atualizacao disponivel</p>
+                            <h2 id="version-update-title" class="text-lg md:text-xl font-bold text-white">Nova atualizacao disponivel</h2>
+                            <p class="text-sm text-slate-300 mt-2 leading-relaxed">
+                                Ha uma nova atualizacao disponivel. Convem atualizar o servidor para aplicar correcoes e melhorias.
+                            </p>
+                            <p class="text-xs text-slate-400 mt-3 font-mono">
                                 Atual: <span id="version-current-ref" class="text-slate-200">--</span>
                                 <span class="text-slate-600 mx-2">→</span>
                                 Disponivel: <span id="version-remote-ref" class="text-emerald-400">--</span>
@@ -926,7 +929,7 @@ def _build_html(
                 <div id="version-commits-list" class="custom-scroll flex-1 overflow-y-auto p-6 md:p-8 space-y-4 min-h-0"></div>
                 <div class="p-6 md:p-8 border-t border-slate-800/60 bg-slate-900/40 shrink-0">
                     <p class="text-[10px] text-slate-500 leading-relaxed mb-4">
-                        A atualizacao e manual no servidor (ex.: <code class="text-slate-400">git pull</code> e reinicio do servico). O botao ATUALIZAR no cabecalho tambem pode aplicar a atualizacao.
+                        Recomendamos atualizar em breve. No servidor, execute <code class="text-slate-400">git pull</code> e reinicie o servico, ou use o botao ATUALIZAR no cabecalho.
                     </p>
                     <button type="button" onclick="dismissVersionModal()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-black rounded-xl transition-all uppercase tracking-widest">
                         ENTENDI
