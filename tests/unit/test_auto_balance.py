@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from auto_balance import (
+    MAX_CPU_WEIGHT_PCT,
     TARGET_VRAM_PCT,
     AutoBalanceCancelled,
     AutoBalancePlanner,
@@ -137,6 +138,90 @@ def test_oom_watchdog_skips_during_auto_balance():
 
     config_manager.update_model_settings.assert_not_called()
     process_manager.start.assert_not_called()
+
+
+class TestAutoBalanceCpu:
+    def test_should_add_cpu_false_when_disabled(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        assert prober._should_add_cpu(
+            [{"index": 0}, {"index": 1}], {0: 50, 1: 50}, False
+        ) is False
+
+    def test_should_add_cpu_true_when_all_gpus_active(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        assert prober._should_add_cpu(
+            [{"index": 0}, {"index": 1}], {0: 60, 1: 40}, True
+        ) is True
+
+    def test_should_add_cpu_false_when_gpu_missing(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        assert prober._should_add_cpu(
+            [{"index": 0}, {"index": 1}], {0: 100}, True
+        ) is False
+
+    def test_cpu_config_from_request_disabled(self):
+        request = _make_request(
+            [GPUWeight(index=0, weight=100, name="GPU0", active=True)]
+        )
+        cfg = AutoBalanceProber._cpu_config_from_request(request)
+        assert cfg["enabled"] is False
+
+    def test_cpu_config_from_request_enabled(self):
+        request = _make_request(
+            [
+                GPUWeight(index=0, weight=70, name="GPU0", active=True),
+                GPUWeight(
+                    index=-1, weight=30, name="CPU", active=True, device="cpu"
+                ),
+            ]
+        )
+        cfg = AutoBalanceProber._cpu_config_from_request(request)
+        assert cfg == {"enabled": True, "pinned": False, "weight": 30}
+
+    def test_finalize_cpu_split_caps_at_70(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        gpu_map, cpu_w = prober._finalize_cpu_split(
+            {0: 20, 1: 10},
+            {"enabled": True, "pinned": False, "weight": 0},
+        )
+        assert cpu_w == MAX_CPU_WEIGHT_PCT
+        assert sum(gpu_map.values()) == 100 - MAX_CPU_WEIGHT_PCT
+
+    def test_finalize_cpu_split_respects_pinned_cpu(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        gpu_map, cpu_w = prober._finalize_cpu_split(
+            {0: 80, 1: 20},
+            {"enabled": True, "pinned": True, "weight": 30},
+        )
+        assert cpu_w == 30
+        assert sum(gpu_map.values()) == 70
+
+    def test_to_gpu_weights_includes_cpu_entry(self):
+        weights = AutoBalancePlanner.to_gpu_weights(
+            [{"index": 0, "name": "GPU0"}],
+            {0: 70},
+            0,
+            cpu_weight=30,
+        )
+        cpu = next(w for w in weights if w.device == "cpu")
+        assert cpu.index == -1
+        assert cpu.weight == 30.0
+        assert cpu.active is True
+
+    def test_scale_weight_map_targets_budget(self):
+        scaled = AutoBalancePlanner.scale_weight_map({0: 60, 1: 40}, 70)
+        assert sum(scaled.values()) == 70
+        assert scaled[0] > scaled[1]
 
 
 def test_prober_raises_when_cancel_requested():

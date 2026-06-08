@@ -359,11 +359,21 @@ def test_discover_excludes_cpu_from_spill_order():
     captured = {}
 
     def _spy_find_feasible_split(
-        _request, _all_gpus, main_index, spill_order, *args, **kwargs
+        _request,
+        _all_gpus,
+        main_index,
+        spill_order,
+        _vram_by_index,
+        _pinned_map,
+        _active_indices,
+        _attempt,
+        cpu_config,
+        initial_cpu_weight,
     ):
         captured["spill_order"] = list(spill_order)
         captured["main_index"] = main_index
-        return None, 1, 0
+        captured["cpu_config"] = cpu_config
+        return None, 1, 0, initial_cpu_weight
 
     prober._find_feasible_split = _spy_find_feasible_split
 
@@ -372,3 +382,57 @@ def test_discover_excludes_cpu_from_spill_order():
     assert captured["spill_order"] == [0, 1]
     assert -1 not in captured["spill_order"]
     assert captured["main_index"] == 0
+    assert captured["cpu_config"]["enabled"] is False
+
+
+def test_discover_passes_cpu_config_when_cpu_enabled():
+    process_manager = MagicMock()
+    process_manager.auto_balance_cancel_requested = False
+    process_manager.auto_balance_active = False
+    gpu_manager = MagicMock()
+    gpu_manager.detect_gpus.return_value = [
+        {"index": 0, "name": "GPU0", "vram": 24000},
+    ]
+    prober = AutoBalanceProber(
+        process_manager, MagicMock(), gpu_manager, MagicMock()
+    )
+
+    request = _make_request(
+        [
+            GPUWeight(
+                index=0, weight=70, name="GPU0", active=True,
+                is_main=True, device="gpu",
+            ),
+            GPUWeight(
+                index=-1, weight=30, name="CPU", active=True,
+                pinned=True, device="cpu",
+            ),
+        ]
+    )
+
+    captured = {}
+
+    def _spy_find_feasible_split(
+        _request,
+        _all_gpus,
+        main_index,
+        spill_order,
+        _vram_by_index,
+        _pinned_map,
+        _active_indices,
+        _attempt,
+        cpu_config,
+        initial_cpu_weight,
+    ):
+        captured["cpu_config"] = cpu_config
+        captured["initial_cpu_weight"] = initial_cpu_weight
+        return None, 1, 0, initial_cpu_weight
+
+    prober._find_feasible_split = _spy_find_feasible_split
+
+    prober.discover(request)
+
+    assert captured["cpu_config"]["enabled"] is True
+    assert captured["cpu_config"]["pinned"] is True
+    assert captured["cpu_config"]["weight"] == 30
+    assert captured["initial_cpu_weight"] == 30
