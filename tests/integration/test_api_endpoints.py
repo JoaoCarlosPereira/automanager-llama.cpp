@@ -390,8 +390,8 @@ def test_start_accepts_cpu_weight_in_gpu_weights(
     assert cpu_entry.active is True
 
 
-def test_app_gpu_manager_validate_weights_rejects_cpu_over_70_percent():
-    """Wired GPUManager rejects offload plans with CPU weight above 70%."""
+def test_app_gpu_manager_validate_weights_accepts_any_cpu_weight():
+    """CPU weight has no cap — only sum validation matters."""
     weights = [
         GPUWeight(index=0, weight=20.0, name="GPU-0", device="gpu"),
         GPUWeight(index=-1, weight=80.0, name="CPU", device="cpu"),
@@ -399,8 +399,8 @@ def test_app_gpu_manager_validate_weights_rejects_cpu_over_70_percent():
 
     ok, msg = llama_manager.gpu_manager.validate_weights(weights)
 
-    assert ok is False
-    assert "70" in msg
+    assert ok is True
+    assert msg == ""
 
 
 def test_app_gpu_manager_validate_weights_accepts_cpu_at_70_percent():

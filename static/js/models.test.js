@@ -550,7 +550,7 @@ test('startModel alerta quando GPUs somam menos de 100% com CPU desmarcada', asy
     expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
 });
 
-test('startModel alerta quando peso da CPU excede 70%', async () => {
+test('startModel com CPU a 80% e GPU a 20% envia start (sem cap de 70%)', async () => {
     const path = '/media/m.gguf';
     state.currentSelectedModel = path;
     document.body.insertAdjacentHTML('beforeend', `
@@ -564,8 +564,8 @@ test('startModel alerta quando peso da CPU excede 70%', async () => {
 
     await startModel(path, 'id1');
 
-    expect(alert).toHaveBeenCalledWith(expect.stringContaining('70'));
-    expect(fetch).not.toHaveBeenCalledWith('/start', expect.anything());
+    // Agora passa — sem cap de 70%
+    expect(fetch).toHaveBeenCalledWith('/start', expect.anything());
 });
 
 test('startModel alerta quando GPU principal ausente', async () => {

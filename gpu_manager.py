@@ -23,6 +23,7 @@ import psutil
 
 from llama_server_bin import get_llama_server_bin
 from schemas import GPUWeight
+from load_distributor import LoadDistributor, DistributionResult
 
 # Default layer count used when model metadata cannot be read.
 DEFAULT_TOTAL_LAYERS = 32
@@ -413,22 +414,29 @@ class GPUManager(GPUDetector):
         return [f"{w.weight / total:.4f}" for w in active]
 
     def compute_offload_plan(
-        self, gpu_weights: List[GPUWeight], total_layers: int = 32
+        self, gpu_weights: List[GPUWeight], total_layers: int = 32, cpu_enabled: Optional[bool] = None
     ) -> OffloadPlan:
         """Resolve ``-ngl``, CPU share and ``--tensor-split`` from active weights.
 
+        Uses the unified LoadDistributor engine for GPU-first, CPU-minimum policy
+        when cpu_enabled is explicitly True or False (new behavior).
+        When cpu_enabled is None, uses the original proportional logic (backward compatible).
+
         Active devices must represent the user's distribution (sum ~100%).
-        When CPU offload is off (CPU inactive or 0%), all layers go to GPU(s)
-        and GPU weights map directly to ``--tensor-split``.
-        When CPU offload is on, GPU weight sum sets the GPU layer fraction and
-        CPU weight sum sets the remainder; GPU weights still control the split
-        ratio among cards for the offloaded GPU layers.
+        GPU weights map directly to ``--tensor-split``.
         """
         total_layers = max(1, total_layers)
+        active_gpus = self.active_gpus_with_weight(gpu_weights)
         gpu_pct = self.sum_active_weight(gpu_weights, "gpu")
         cpu_pct = self.sum_active_weight(gpu_weights, "cpu")
-        active_gpus = self.active_gpus_with_weight(gpu_weights)
 
+        # When cpu_enabled is explicitly set, use LoadDistributor policy
+        if cpu_enabled is not None:
+            return self._compute_offload_plan_with_lu(
+                gpu_weights, total_layers, cpu_enabled, active_gpus
+            )
+
+        # Backward-compatible path: use weight proportions directly
         if self.cpu_offload_active(gpu_weights):
             n_gpu_layers = max(
                 0, min(total_layers, int(round(gpu_pct / 100.0 * total_layers)))
@@ -446,6 +454,71 @@ class GPUManager(GPUDetector):
             n_cpu_layers=n_cpu_layers,
             gpu_pct=gpu_pct,
             cpu_pct=cpu_pct,
+            tensor_split=self.compute_tensor_split(gpu_weights),
+        )
+
+    def _compute_offload_plan_with_lu(
+        self,
+        gpu_weights: List[GPUWeight],
+        total_layers: int,
+        cpu_enabled: bool,
+        active_gpus: List[GPUWeight],
+    ) -> OffloadPlan:
+        """Compute offload plan using LoadDistributor when cpu_enabled is explicit."""
+        gpu_pct = self.sum_active_weight(gpu_weights, "gpu")
+        cpu_pct = self.sum_active_weight(gpu_weights, "cpu")
+
+        # Build GPU weight dict
+        gpu_weight_dict = {}
+        for w in gpu_weights:
+            if w.device == "gpu" and w.active and w.weight > 0:
+                gpu_weight_dict[int(w.index)] = int(round(w.weight))
+
+        # Get VRAM info from metrics
+        vram_dict = {}
+        for w in gpu_weights:
+            if w.device == "gpu":
+                metrics = self.get_metrics()
+                for gpu in metrics.get("gpus", []):
+                    if gpu.get("index") == w.index:
+                        vram_dict[int(w.index)] = int(gpu.get("vram_total_mb", 0))
+                        break
+
+        model_vram_mb = 0
+        if hasattr(self, '_cached_model_vram_mb') and self._cached_model_vram_mb:
+            model_vram_mb = self._cached_model_vram_mb
+
+        result = LoadDistributor.distribute(
+            gpu_vram=vram_dict,
+            gpu_weights=gpu_weight_dict,
+            total_layers=total_layers,
+            estimated_model_vram_mb=model_vram_mb,
+            cpu_enabled=cpu_enabled,
+        )
+
+        if result.is_feasible and not cpu_enabled:
+            n_gpu_layers = ALL_GPU_LAYERS
+            n_cpu_layers = 0
+            final_gpu_pct = float(sum(gpu_weight_dict.values()) or 100)
+            final_cpu_pct = 0.0
+        elif result.is_feasible and cpu_enabled:
+            n_gpu_layers = LoadDistributor.compute_n_gpu_layers(
+                total_layers, result.total_gpu_pct
+            )
+            n_cpu_layers = total_layers - n_gpu_layers
+            final_gpu_pct = float(result.total_gpu_pct)
+            final_cpu_pct = float(result.cpu_weight)
+        else:
+            n_gpu_layers = ALL_GPU_LAYERS if active_gpus else 0
+            n_cpu_layers = 0 if active_gpus else total_layers
+            final_gpu_pct = float(sum(gpu_weight_dict.values()) or 100)
+            final_cpu_pct = 0.0
+
+        return OffloadPlan(
+            n_gpu_layers=n_gpu_layers,
+            n_cpu_layers=n_cpu_layers,
+            gpu_pct=final_gpu_pct,
+            cpu_pct=final_cpu_pct,
             tensor_split=self.compute_tensor_split(gpu_weights),
         )
 
@@ -543,9 +616,6 @@ class GPUManager(GPUDetector):
 
         1. **Sum == 100 %** (±1 % tolerance) across all active devices
            (GPU + CPU).
-        2. **CPU weight <= 70 %** — the PRD flags high CPU offload as a
-           performance risk (risk table entry about ``cpu_usage`` degrading
-           interactive inference).
 
         :returns: ``(ok, error_message)`` — ``ok`` is ``True`` when all
                   rules pass; otherwise ``error_message`` explains the first
@@ -567,16 +637,6 @@ class GPUManager(GPUDetector):
             return False, (
                 f"Pesos ativos somam {total:.1f}% (esperado ~100%). "
                 "Ajuste os pesos para somar 100%."
-            )
-
-        cpu_weight = sum(
-            w.weight for w in active if w.device == "cpu"
-        )
-        if cpu_weight > 70.0:
-            return False, (
-                f"O peso da CPU ({cpu_weight:.1f}%) excede o limite máximo "
-                "de 70%. Reduza o peso da CPU para manter performance "
-                "aceitável de inferência."
             )
 
         return True, ""

@@ -654,13 +654,12 @@ describe('validateDeviceWeights', () => {
         expect(result.ok).toBe(true);
     });
 
-    test('rejeita CPU acima de 70%', () => {
+    test('aceita qualquer peso de CPU (sem cap de 70%)', () => {
         const result = validateDeviceWeights([
             { index: 0, weight: 20, active: true, device: 'gpu' },
             { index: -1, weight: 80, active: true, device: 'cpu' },
         ]);
-        expect(result.ok).toBe(false);
-        expect(result.message).toContain('70');
+        expect(result.ok).toBe(true);
     });
 
     test('rejeita offload apenas em CPU', () => {

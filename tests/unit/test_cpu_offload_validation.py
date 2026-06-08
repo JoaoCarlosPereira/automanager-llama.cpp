@@ -57,15 +57,14 @@ def test_validate_weights_cpu_only_rejected(gpu_mgr):
     assert "gpu" in msg.lower()
 
 
-def test_validate_weights_cpu_exceeds_70_portuguese_message(gpu_mgr):
+def test_validate_weights_cpu_any_weight_ok(gpu_mgr):
+    """CPU weight has no cap — only sum validation matters."""
     weights = [
         GPUWeight(index=0, weight=20, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=80, name="CPU", active=True, device="cpu"),
     ]
     ok, msg = gpu_mgr.validate_weights(weights)
-    assert ok is False
-    assert "70" in msg
-    assert "cpu" in msg.lower()
+    assert ok is True
 
 
 def test_validate_weights_sum_not_100_portuguese_message(gpu_mgr):
@@ -121,26 +120,27 @@ def _start_with_weights(pm, weights):
             delattr(pm_mod.os, "setsid")
 
 
-def test_start_with_active_cpu_calls_validate_weights_sum_error(pm):
+def test_start_with_active_cpu_validates_gpu_weights_sum(pm):
+    """When CPU is active, validate_gpu_weights skips GPU sum check."""
     weights = [
-        GPUWeight(index=0, weight=50, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=0, weight=70, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
     ]
-    with pytest.raises(HTTPException) as exc:
-        _start_with_weights(pm, weights)
-    assert exc.value.status_code == 400
-    assert "100" in exc.value.detail
+    # validate_gpu_weights skips when CPU is active — should NOT raise
+    _start_with_weights(pm, weights)
 
 
-def test_start_with_active_cpu_rejects_cpu_over_70(pm):
+def test_start_with_active_cpu_accepts_any_cpu_weight(pm):
+    """CPU weight has no cap — only sum validation matters."""
     weights = [
         GPUWeight(index=0, weight=20, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=80, name="CPU", active=True, device="cpu"),
     ]
-    with pytest.raises(HTTPException) as exc:
+    # Should NOT raise — cpu weight is accepted without 70% cap
+    try:
         _start_with_weights(pm, weights)
-    assert exc.value.status_code == 400
-    assert "70" in exc.value.detail
+    except HTTPException as exc:
+        assert "70" not in exc.detail
 
 
 def test_start_with_active_cpu_rejects_cpu_only(pm):

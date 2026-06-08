@@ -159,15 +159,14 @@ def test_validate_weights_sum_too_high(gpu_mgr):
     assert "somam" in msg.lower() or "100" in msg
 
 
-def test_validate_weights_cpu_exceeds_70_limit(gpu_mgr):
-    # 20 + 80 = 100 (sum OK) but CPU = 80 > 70 → fails CPU limit
+def test_validate_weights_cpu_any_weight_ok(gpu_mgr):
+    # 20 + 80 = 100 (sum OK), CPU = 80% — no CPU cap anymore
     weights = [
         GPUWeight(index=0, weight=20, name="A", device="gpu"),
         GPUWeight(index=0, weight=80, name="C", device="cpu"),
     ]
     ok, msg = gpu_mgr.validate_weights(weights)
-    assert ok is False
-    assert "70" in msg or "cpu" in msg.lower() or "CPU" in msg
+    assert ok is True
 
 
 def test_validate_weights_cpu_at_70_ok(gpu_mgr):

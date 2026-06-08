@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from auto_balance import (
-    MAX_CPU_WEIGHT_PCT,
+    CPU_OFFLOAD_STEP,
     TARGET_VRAM_PCT,
     AutoBalanceCancelled,
     AutoBalancePlanner,
@@ -200,7 +200,8 @@ class TestAutoBalanceCpu:
         cfg = AutoBalanceProber._cpu_config_from_request(request)
         assert cfg == {"enabled": True, "pinned": False, "weight": 0}
 
-    def test_cpu_config_from_request_pinned_keeps_weight(self):
+    def test_cpu_config_from_request_enabled_disables_pinning(self):
+        """CPU weight is dynamic — no pinning in new design."""
         request = _make_request(
             [
                 GPUWeight(index=0, weight=70, name="GPU0", active=True),
@@ -215,9 +216,10 @@ class TestAutoBalanceCpu:
             ]
         )
         cfg = AutoBalanceProber._cpu_config_from_request(request)
-        assert cfg == {"enabled": True, "pinned": True, "weight": 25}
+        # Pinned is always False now — weight is calculated by LoadDistributor
+        assert cfg == {"enabled": True, "pinned": False, "weight": 0}
 
-    def test_finalize_cpu_split_caps_at_70(self):
+    def test_finalize_cpu_split_no_cap(self):
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
@@ -225,8 +227,9 @@ class TestAutoBalanceCpu:
             {0: 20, 1: 10},
             {"enabled": True, "pinned": False, "weight": 0},
         )
-        assert cpu_w == MAX_CPU_WEIGHT_PCT
-        assert sum(gpu_map.values()) == 100 - MAX_CPU_WEIGHT_PCT
+        # No 70% cap — raw spill-over (100 - 30 = 70)
+        assert cpu_w == 70
+        assert sum(gpu_map.values()) == 30
 
     def test_finalize_cpu_split_respects_pinned_cpu(self):
         prober = AutoBalanceProber(

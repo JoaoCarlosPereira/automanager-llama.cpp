@@ -39,6 +39,7 @@ class StartRequest(BaseModel):
         le=MTP_DRAFT_TOKENS_MAX,
     )
     total_layers: int = 0  # 0 = auto-detect from model file
+    cpu_enabled: bool = False  # Checkbox de CPU — valve on/off no painel de hardware
 
 
 class DeleteRequest(BaseModel):

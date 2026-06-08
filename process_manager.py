@@ -374,18 +374,14 @@ class ProcessManager:
         mtp_enabled: bool = False,
         mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS,
         total_layers: int = 0,
+        cpu_enabled: Optional[bool] = None,
     ) -> dict:
         self.stop()
 
         gpu_weights = self.gpu_manager.normalize_gpu_weights(gpu_weights)
 
-        has_active_cpu = any(
-            w.active and w.device == "cpu" for w in gpu_weights
-        )
-        if has_active_cpu:
-            ok, err = self.gpu_manager.validate_weights(gpu_weights)
-        else:
-            ok, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
+        # Validate GPU weights only (cpu_enabled is controlled by checkbox valve)
+        ok, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
         if not ok:
             raise HTTPException(status_code=400, detail=err)
 
@@ -399,7 +395,9 @@ class ProcessManager:
             total_layers = self.gpu_manager.detect_model_layers(model_path)
         total_layers = max(1, total_layers)
 
-        plan = self.gpu_manager.compute_offload_plan(gpu_weights, total_layers)
+        plan = self.gpu_manager.compute_offload_plan(
+            gpu_weights, total_layers, cpu_enabled=cpu_enabled
+        )
         split = plan.tensor_split
         main_gpu = self.gpu_manager.resolve_main_gpu_index(gpu_weights)
         n_gpu_layers = plan.n_gpu_layers

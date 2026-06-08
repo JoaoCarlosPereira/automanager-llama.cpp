@@ -29,10 +29,10 @@ VRAM_SETTLE_SEC = 4.0
 TARGET_VRAM_PCT = 93.0
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 
-# CPU offload constants (task_05)
-MAX_CPU_WEIGHT_PCT = 70  # Hard cap: CPU weight cannot exceed 70%
-CPU_OFFLOAD_STEP = 10
+# CPU offload constants
+CPU_OFFLOAD_STEP = 10  # CPU escalates in 10% increments
 DEFAULT_N_GPU_LAYERS = 99  # Default llama-server --ngl value
+# No MAX_CPU_WEIGHT_PCT — CPU uses whatever is needed as spill-over
 
 
 class AutoBalanceCancelled(Exception):
@@ -338,7 +338,7 @@ class AutoBalancePlanner:
         Strategy:
         1. If VRAM >= model size, distribute 100% across GPUs (no CPU).
         2. If VRAM < model size, scale GPU weights down proportionally,
-           assign remainder to CPU (capped at MAX_CPU_WEIGHT_PCT%).
+           assign remainder to CPU (no cap — CPU uses what's needed).
 
         Args:
             gpu_weight_map: Original GPU weight distribution (sum=100).
@@ -356,10 +356,10 @@ class AutoBalancePlanner:
             return dict(gpu_weight_map), 0
 
         gpu_fraction = total_vram_mb / estimated_model_vram_mb
-        gpu_fraction = min(gpu_fraction, MAX_CPU_WEIGHT_PCT / 100.0)
+        # No cap on gpu_fraction — let it be whatever the ratio is
 
         cpu_weight = 100 - int(round(gpu_fraction * 100))
-        cpu_weight = min(cpu_weight, MAX_CPU_WEIGHT_PCT)
+        # No cap on cpu_weight — CPU uses what's needed
         gpu_total = 100 - cpu_weight
 
         original_total = sum(gpu_weight_map.values()) or 1
@@ -490,21 +490,15 @@ class AutoBalanceProber:
 
     @staticmethod
     def _cpu_config_from_request(request) -> Dict[str, Any]:
-        """CPU checkbox = permitir offload no auto-balance (pesos descobertos)."""
+        """CPU checkbox = valve on/off for auto-balance spill-over. No weight pinning."""
         cpu_w = next(
             (w for w in request.gpu_weights if w.device == "cpu"),
             None,
         )
         if not cpu_w or not cpu_w.active:
             return {"enabled": False, "pinned": False, "weight": 0}
-        pinned = bool(cpu_w.pinned) and int(cpu_w.weight) > 0
-        return {
-            "enabled": True,
-            "pinned": pinned,
-            "weight": (
-                min(int(cpu_w.weight), MAX_CPU_WEIGHT_PCT) if pinned else 0
-            ),
-        }
+        # CPU weight is calculated dynamically by LoadDistributor — no fixed weight
+        return {"enabled": True, "pinned": False, "weight": 0}
 
     @staticmethod
     def _should_add_cpu(
@@ -558,8 +552,10 @@ class AutoBalanceProber:
         vram_by_index: Dict[int, int],
         pinned_map: Dict[int, int],
     ) -> Tuple[Optional[Dict[int, int]], int]:
-        """Shift load from GPU to CPU in fixed steps (max 70%)."""
-        new_cpu = min(cpu_weight + CPU_OFFLOAD_STEP, MAX_CPU_WEIGHT_PCT)
+        """Shift load from GPU to CPU in fixed steps. No upper cap — CPU uses what's needed."""
+        # Reserve minimum 10% for GPUs
+        max_cpu = 90
+        new_cpu = min(cpu_weight + CPU_OFFLOAD_STEP, max_cpu)
         if new_cpu <= cpu_weight:
             return None, cpu_weight
         gpu_target = self._gpu_budget(new_cpu)
@@ -590,6 +586,7 @@ class AutoBalanceProber:
         gpu_map: Dict[int, int],
         cpu_config: Dict[str, Any],
     ) -> Tuple[Dict[int, int], int]:
+        """Finalize CPU split. No 70% cap — CPU uses what's needed as spill-over."""
         if not cpu_config.get("enabled"):
             return gpu_map, 0
 
@@ -602,14 +599,8 @@ class AutoBalanceProber:
 
         gpu_sum = sum(gpu_map.values())
         raw_cpu = max(0, 100 - gpu_sum)
-        if raw_cpu <= MAX_CPU_WEIGHT_PCT:
-            return gpu_map, raw_cpu
-
-        cpu_weight = MAX_CPU_WEIGHT_PCT
-        return (
-            self.planner.scale_weight_map(gpu_map, 100 - cpu_weight),
-            cpu_weight,
-        )
+        # No cap — return raw CPU weight
+        return gpu_map, raw_cpu
 
     def discover(
         self, request
@@ -766,7 +757,7 @@ class AutoBalanceProber:
         if weight_map is None:
             return None, active_count, attempt, cpu_weight
         gpu_target = self._gpu_budget(cpu_weight)
-        max_attempts = max(max_active * 35, MAX_CPU_WEIGHT_PCT // CPU_OFFLOAD_STEP * 5)
+        max_attempts = max(max_active * 35, 90 // CPU_OFFLOAD_STEP * 5)  # max CPU = 90% (reserve 10% for GPUs)
 
         while attempt < max_attempts:
             self._raise_if_cancelled()

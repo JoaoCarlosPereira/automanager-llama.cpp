@@ -287,16 +287,7 @@ export function validateDeviceWeights(weights) {
         };
     }
 
-    const cpuWeight = active
-        .filter(w => w.device === 'cpu')
-        .reduce((sum, w) => sum + (w.weight || 0), 0);
-    if (cpuWeight > 70) {
-        return {
-            ok: false,
-            message: `O peso da CPU (${cpuWeight}%) excede o limite máximo de 70%. `
-                + 'Reduza o peso da CPU para manter performance aceitável de inferência.',
-        };
-    }
+    // CPU weight has no upper cap — LoadDistributor manages spill-over dynamically
 
     return { ok: true, message: '' };
 }

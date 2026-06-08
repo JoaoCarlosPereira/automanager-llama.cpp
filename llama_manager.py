@@ -279,6 +279,7 @@ async def start_model(
             mtp_enabled=req.mtp_enabled,
             mtp_draft_tokens=req.mtp_draft_tokens,
             total_layers=total_layers,
+            cpu_enabled=req.cpu_enabled,
         )
 
     config_manager.update_model_settings(
@@ -301,6 +302,7 @@ async def start_model(
         mtp_enabled=req.mtp_enabled,
         mtp_draft_tokens=req.mtp_draft_tokens,
         total_layers=total_layers,
+        cpu_enabled=req.cpu_enabled,
     )
 
 

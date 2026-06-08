@@ -431,8 +431,10 @@ def test_discover_passes_cpu_config_when_cpu_enabled():
     prober.discover(request)
 
     assert captured["cpu_config"]["enabled"] is True
-    assert captured["cpu_config"]["pinned"] is True
-    assert captured["cpu_config"]["weight"] == 30
+    # pinned is always False now — CPU weight is dynamic via LoadDistributor
+    assert captured["cpu_config"]["pinned"] is False
+    # weight is always 0 now — calculated dynamically by LoadDistributor
+    assert captured["cpu_config"]["weight"] == 0
 
 
 def test_find_feasible_split_discovers_cpu_after_gpu_exhausted():
