@@ -430,11 +430,20 @@ class GPUManager(GPUDetector):
         gpu_pct = self.sum_active_weight(gpu_weights, "gpu")
         cpu_pct = self.sum_active_weight(gpu_weights, "cpu")
 
-        # When cpu_enabled is explicitly set, use LoadDistributor policy
-        if cpu_enabled is not None:
+        # Valve OFF: LoadDistributor forces GPU-only layers.
+        if cpu_enabled is False:
             return self._compute_offload_plan_with_lu(
-                gpu_weights, total_layers, cpu_enabled, active_gpus
+                gpu_weights, total_layers, False, active_gpus
             )
+
+        # Valve ON with VRAM estimate: LoadDistributor spill-over policy.
+        if cpu_enabled is True:
+            model_vram_mb = getattr(self, "_cached_model_vram_mb", 0) or 0
+            if model_vram_mb > 0:
+                return self._compute_offload_plan_with_lu(
+                    gpu_weights, total_layers, True, active_gpus
+                )
+            # Sem estimativa de VRAM — respeita pesos da UI (mesmo caminho abaixo).
 
         # Backward-compatible path: use weight proportions directly
         if self.cpu_offload_active(gpu_weights):

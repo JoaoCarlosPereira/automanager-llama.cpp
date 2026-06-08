@@ -39,7 +39,7 @@ class StartRequest(BaseModel):
         le=MTP_DRAFT_TOKENS_MAX,
     )
     total_layers: int = 0  # 0 = auto-detect from model file
-    cpu_enabled: bool = False  # Checkbox de CPU — valve on/off no painel de hardware
+    cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
 
 
 class DeleteRequest(BaseModel):

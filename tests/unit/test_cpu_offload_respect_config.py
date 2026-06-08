@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from auto_balance import AutoBalanceProber
 from gpu_manager import GPUManager, ALL_GPU_LAYERS
 from process_manager import ProcessManager
-from schemas import GPUWeight
+from schemas import GPUWeight, StartRequest
 from tests.unit.test_oom_watchdog import _make_request
 
 
@@ -34,7 +34,7 @@ def pm():
     return ProcessManager(config, token, GPUManager(), log_mgr)
 
 
-def _capture_start_cmd(pm, weights, total_layers=32):
+def _capture_start_cmd(pm, weights, total_layers=32, cpu_enabled=None):
     """Executa start() e devolve a linha de comando capturada."""
     import process_manager as pm_mod
 
@@ -49,6 +49,15 @@ def _capture_start_cmd(pm, weights, total_layers=32):
         mock_proc.pid = 1
         return mock_proc
 
+    start_kwargs = dict(
+        model_path="/fake/model.gguf",
+        gpu_weights=weights,
+        context_size=8192,
+        total_layers=total_layers,
+    )
+    if cpu_enabled is not None:
+        start_kwargs["cpu_enabled"] = cpu_enabled
+
     try:
         with patch.object(pm, "stop"):
             with patch(
@@ -59,12 +68,7 @@ def _capture_start_cmd(pm, weights, total_layers=32):
                     with patch.object(
                         pm.gpu_manager, "detect_model_layers", return_value=total_layers
                     ):
-                        pm.start(
-                            model_path="/fake/model.gguf",
-                            gpu_weights=weights,
-                            context_size=8192,
-                            total_layers=total_layers,
-                        )
+                        pm.start(**start_kwargs)
     finally:
         if orig_setsid is not None:
             pm_mod.os.setsid = orig_setsid
@@ -238,6 +242,40 @@ def test_start_cpu_active_partial_offload_ngl(pm):
     ]
     cmd = _capture_start_cmd(pm, weights, total_layers=32)
     assert _ngl_from_cmd(cmd) == 22
+
+
+def test_start_request_default_cpu_enabled_is_none():
+    """API sem cpu_enabled deve usar proporção da UI (não válvula LoadDistributor)."""
+    req = StartRequest(
+        path="/fake/model.gguf",
+        gpu_weights=[
+            GPUWeight(index=0, weight=70, name="GPU0", active=True, device="gpu"),
+            GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
+        ],
+    )
+    assert req.cpu_enabled is None
+
+
+def test_start_cpu_active_explicit_false_forces_full_gpu_ngl(pm):
+    """cpu_enabled=False desliga válvula — todas as camadas na GPU."""
+    weights = [
+        GPUWeight(index=0, weight=70, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
+    ]
+    cmd = _capture_start_cmd(pm, weights, total_layers=32, cpu_enabled=False)
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
+
+
+def test_start_cpu_active_explicit_false_default_was_regression(pm):
+    """Regressão: default False no schema ignorava offload CPU da UI."""
+    weights = [
+        GPUWeight(index=0, weight=70, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
+    ]
+    cmd_none = _capture_start_cmd(pm, weights, total_layers=32, cpu_enabled=None)
+    cmd_false = _capture_start_cmd(pm, weights, total_layers=32, cpu_enabled=False)
+    assert _ngl_from_cmd(cmd_none) == 22
+    assert _ngl_from_cmd(cmd_false) == ALL_GPU_LAYERS
 
 
 def test_compute_offload_plan_three_way_split(gpu_mgr):

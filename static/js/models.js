@@ -332,6 +332,8 @@ export async function startModel(path, elementId) {
     const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || window.__constants.DEFAULT_PARALLEL_SLOTS));
     const batchSize = parseInt(document.getElementById('batch-size').value, 10) || window.__constants.DEFAULT_BATCH_SIZE;
     const autoBalance = document.getElementById('auto-balance-toggle').checked;
+    const cpuRow = document.querySelector('.cpu-row');
+    const cpuEnabled = cpuRow?.querySelector('.cpu-checkbox')?.checked ?? false;
     const thinkingToggle = document.getElementById('thinking-toggle');
     const thinkingEnabled = thinkingToggle ? thinkingToggle.checked : true;
     const mtpToggleEl = document.getElementById('mtp-toggle');
@@ -360,6 +362,7 @@ export async function startModel(path, elementId) {
                 batch_size: batchSize,
                 split_mode: splitMode,
                 auto_balance: autoBalance,
+                cpu_enabled: cpuEnabled,
                 manual_gpu_override: autoBalance ? false : state.manualGpuOverride,
                 thinking_enabled: thinkingEnabled,
                 mtp_enabled: mtpEnabled,
