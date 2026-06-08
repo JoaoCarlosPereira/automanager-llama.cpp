@@ -145,25 +145,41 @@ class TestAutoBalanceCpu:
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
-        assert prober._should_add_cpu(
-            [{"index": 0}, {"index": 1}], {0: 50, 1: 50}, False
-        ) is False
+        assert prober._should_add_cpu([0, 1], {0: 50, 1: 50}, False) is False
 
     def test_should_add_cpu_true_when_all_gpus_active(self):
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
-        assert prober._should_add_cpu(
-            [{"index": 0}, {"index": 1}], {0: 60, 1: 40}, True
-        ) is True
+        assert prober._should_add_cpu([0, 1], {0: 60, 1: 40}, True) is True
 
     def test_should_add_cpu_false_when_gpu_missing(self):
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
-        assert prober._should_add_cpu(
-            [{"index": 0}, {"index": 1}], {0: 100}, True
-        ) is False
+        assert prober._should_add_cpu([0, 1], {0: 100}, True) is False
+
+    def test_should_add_cpu_ignores_unselected_gpus(self):
+        """Only selected GPUs matter — not every card detectada."""
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        assert prober._should_add_cpu([0, 1], {0: 50, 1: 50}, True) is True
+
+    def test_algorithmic_gpu_map_ignores_ui_percentages(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        weight_map = prober._algorithmic_gpu_map(
+            [0, 1],
+            [0, 1],
+            {0: 24000, 1: 16000},
+            {},
+            active_count=2,
+            cpu_weight=0,
+        )
+        assert sum(weight_map.values()) == 100
+        assert weight_map[0] > weight_map[1]
 
     def test_cpu_config_from_request_disabled(self):
         request = _make_request(
@@ -182,7 +198,24 @@ class TestAutoBalanceCpu:
             ]
         )
         cfg = AutoBalanceProber._cpu_config_from_request(request)
-        assert cfg == {"enabled": True, "pinned": False, "weight": 30}
+        assert cfg == {"enabled": True, "pinned": False, "weight": 0}
+
+    def test_cpu_config_from_request_pinned_keeps_weight(self):
+        request = _make_request(
+            [
+                GPUWeight(index=0, weight=70, name="GPU0", active=True),
+                GPUWeight(
+                    index=-1,
+                    weight=25,
+                    name="CPU",
+                    active=True,
+                    pinned=True,
+                    device="cpu",
+                ),
+            ]
+        )
+        cfg = AutoBalanceProber._cpu_config_from_request(request)
+        assert cfg == {"enabled": True, "pinned": True, "weight": 25}
 
     def test_finalize_cpu_split_caps_at_70(self):
         prober = AutoBalanceProber(

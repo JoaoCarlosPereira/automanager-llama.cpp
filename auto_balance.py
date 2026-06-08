@@ -490,31 +490,89 @@ class AutoBalanceProber:
 
     @staticmethod
     def _cpu_config_from_request(request) -> Dict[str, Any]:
+        """CPU checkbox = permitir offload no auto-balance (pesos descobertos)."""
         cpu_w = next(
             (w for w in request.gpu_weights if w.device == "cpu"),
             None,
         )
-        if not cpu_w or not cpu_w.active or cpu_w.weight <= 0:
+        if not cpu_w or not cpu_w.active:
             return {"enabled": False, "pinned": False, "weight": 0}
+        pinned = bool(cpu_w.pinned) and int(cpu_w.weight) > 0
         return {
             "enabled": True,
-            "pinned": bool(cpu_w.pinned),
-            "weight": min(int(cpu_w.weight), MAX_CPU_WEIGHT_PCT),
+            "pinned": pinned,
+            "weight": (
+                min(int(cpu_w.weight), MAX_CPU_WEIGHT_PCT) if pinned else 0
+            ),
         }
 
     @staticmethod
     def _should_add_cpu(
-        all_gpus: List[dict],
+        active_indices: List[int],
         weight_map: Dict[int, int],
         cpu_enabled: bool,
     ) -> bool:
+        """CPU offload only after every *selected* GPU already carries weight."""
         if not cpu_enabled:
             return False
-        for gpu in all_gpus:
-            idx = gpu["index"]
+        for idx in active_indices:
             if weight_map.get(idx, 0) <= 0:
                 return False
         return True
+
+    @staticmethod
+    def _initial_cpu_weight(cpu_config: Dict[str, Any]) -> int:
+        if cpu_config.get("pinned"):
+            return int(cpu_config["weight"])
+        return 0
+
+    def _algorithmic_gpu_map(
+        self,
+        spill_order: List[int],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        active_count: int,
+        cpu_weight: int,
+    ) -> Optional[Dict[int, int]]:
+        """VRAM-proportional GPU split; ignores manual UI percentages."""
+        gpu_target = self._gpu_budget(cpu_weight)
+        template_map = self.planner.weights_for_active_count(
+            spill_order, vram_by_index, active_count
+        )
+        return self.planner.apply_pins(
+            template_map,
+            pinned_map,
+            spill_order,
+            active_indices,
+            vram_by_index,
+            gpu_target,
+        )
+
+    def _escalate_cpu_offload(
+        self,
+        weight_map: Dict[int, int],
+        cpu_weight: int,
+        spill_order: List[int],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+    ) -> Tuple[Optional[Dict[int, int]], int]:
+        """Shift load from GPU to CPU in fixed steps (max 70%)."""
+        new_cpu = min(cpu_weight + CPU_OFFLOAD_STEP, MAX_CPU_WEIGHT_PCT)
+        if new_cpu <= cpu_weight:
+            return None, cpu_weight
+        gpu_target = self._gpu_budget(new_cpu)
+        template_map = self.planner.scale_weight_map(weight_map, 100)
+        new_map = self.planner.apply_pins(
+            template_map,
+            pinned_map,
+            spill_order,
+            active_indices,
+            vram_by_index,
+            gpu_target,
+        )
+        return new_map, new_cpu
 
     @staticmethod
     def _gpu_budget(cpu_weight: int) -> int:
@@ -581,21 +639,15 @@ class AutoBalanceProber:
         spill_order = self.planner.spill_order(main_index, active_indices)
         pinned_map = self.planner.pinned_map_from_request(request.gpu_weights)
         cpu_config = self._cpu_config_from_request(request)
-        initial_cpu_weight = (
-            cpu_config["weight"] if cpu_config.get("pinned") else 0
-        )
-        gpu_target = self._gpu_budget(initial_cpu_weight)
+        initial_cpu_weight = self._initial_cpu_weight(cpu_config)
         attempt = 0
-        template_map = self.planner.weights_for_active_count(
-            spill_order, vram_by_index, 1
-        )
-        initial_map = self.planner.apply_pins(
-            template_map,
-            pinned_map,
+        initial_map = self._algorithmic_gpu_map(
             spill_order,
             active_indices,
             vram_by_index,
-            gpu_target,
+            pinned_map,
+            active_count=1,
+            cpu_weight=initial_cpu_weight,
         )
         if initial_map is None:
             msg, failure = self.build_hardware_capacity_failure(
@@ -629,7 +681,6 @@ class AutoBalanceProber:
             active_indices,
             attempt,
             cpu_config,
-            initial_cpu_weight,
         )
         self._raise_if_cancelled()
         if feasible is None:
@@ -698,27 +749,24 @@ class AutoBalanceProber:
         active_indices: List[int],
         attempt: int,
         cpu_config: Dict[str, Any],
-        cpu_weight: int,
     ) -> Tuple[Optional[Dict[int, int]], int, int, int]:
         max_active = len(spill_order)
         active_count = 1
         cpu_enabled = bool(cpu_config.get("enabled"))
         cpu_pinned = bool(cpu_config.get("pinned"))
-        template_map = self.planner.weights_for_active_count(
-            spill_order, vram_by_index, active_count
-        )
-        gpu_target = self._gpu_budget(cpu_weight)
-        weight_map = self.planner.apply_pins(
-            template_map,
-            pinned_map,
+        cpu_weight = self._initial_cpu_weight(cpu_config)
+        weight_map = self._algorithmic_gpu_map(
             spill_order,
             active_indices,
             vram_by_index,
-            gpu_target,
+            pinned_map,
+            active_count,
+            cpu_weight,
         )
         if weight_map is None:
             return None, active_count, attempt, cpu_weight
-        max_attempts = max_active * 35
+        gpu_target = self._gpu_budget(cpu_weight)
+        max_attempts = max(max_active * 35, MAX_CPU_WEIGHT_PCT // CPU_OFFLOAD_STEP * 5)
 
         while attempt < max_attempts:
             self._raise_if_cancelled()
@@ -754,36 +802,27 @@ class AutoBalanceProber:
             if outcome == "oom" or outcome in ("timeout", "crashed"):
                 if active_count < max_active:
                     active_count += 1
-                    template_map = self.planner.weights_for_active_count(
-                        spill_order, vram_by_index, active_count
-                    )
-                    weight_map = self.planner.apply_pins(
-                        template_map,
-                        pinned_map,
+                    cpu_weight = self._initial_cpu_weight(cpu_config)
+                    weight_map = self._algorithmic_gpu_map(
                         spill_order,
                         active_indices,
                         vram_by_index,
-                        gpu_target,
+                        pinned_map,
+                        active_count,
+                        cpu_weight,
                     )
                     if weight_map is None:
                         return None, active_count, attempt, cpu_weight
+                    gpu_target = self._gpu_budget(cpu_weight)
                     continue
-                if spill_order[0] in pinned_map:
-                    if (
-                        cpu_enabled
-                        and not cpu_pinned
-                        and self._should_add_cpu(all_gpus, weight_map, cpu_enabled)
-                        and cpu_weight < MAX_CPU_WEIGHT_PCT
-                    ):
-                        cpu_weight = min(
-                            cpu_weight + CPU_OFFLOAD_STEP, MAX_CPU_WEIGHT_PCT
-                        )
-                        gpu_target = self._gpu_budget(cpu_weight)
-                        template_map = self.planner.scale_weight_map(
-                            weight_map, 100
-                        )
+
+                if spill_order[0] not in pinned_map:
+                    reduced = self.planner.reduce_main_weight(
+                        weight_map, spill_order, vram_by_index
+                    )
+                    if reduced is not None:
                         weight_map = self.planner.apply_pins(
-                            template_map,
+                            reduced,
                             pinned_map,
                             spill_order,
                             active_indices,
@@ -793,47 +832,29 @@ class AutoBalanceProber:
                         if weight_map is None:
                             return None, active_count, attempt, cpu_weight
                         continue
-                    return None, active_count, attempt, cpu_weight
-                reduced = self.planner.reduce_main_weight(
-                    weight_map, spill_order, vram_by_index
-                )
-                if reduced is None:
-                    if (
-                        cpu_enabled
-                        and not cpu_pinned
-                        and self._should_add_cpu(all_gpus, weight_map, cpu_enabled)
-                        and cpu_weight < MAX_CPU_WEIGHT_PCT
-                    ):
-                        cpu_weight = min(
-                            cpu_weight + CPU_OFFLOAD_STEP, MAX_CPU_WEIGHT_PCT
-                        )
+
+                if (
+                    cpu_enabled
+                    and not cpu_pinned
+                    and self._should_add_cpu(
+                        active_indices, weight_map, cpu_enabled
+                    )
+                ):
+                    new_map, new_cpu = self._escalate_cpu_offload(
+                        weight_map,
+                        cpu_weight,
+                        spill_order,
+                        active_indices,
+                        vram_by_index,
+                        pinned_map,
+                    )
+                    if new_map is not None:
+                        weight_map = new_map
+                        cpu_weight = new_cpu
                         gpu_target = self._gpu_budget(cpu_weight)
-                        template_map = self.planner.scale_weight_map(
-                            weight_map, 100
-                        )
-                        weight_map = self.planner.apply_pins(
-                            template_map,
-                            pinned_map,
-                            spill_order,
-                            active_indices,
-                            vram_by_index,
-                            gpu_target,
-                        )
-                        if weight_map is None:
-                            return None, active_count, attempt, cpu_weight
                         continue
-                    return None, active_count, attempt, cpu_weight
-                template_map = self.planner.scale_weight_map(reduced, 100)
-                weight_map = self.planner.apply_pins(
-                    template_map,
-                    pinned_map,
-                    spill_order,
-                    active_indices,
-                    vram_by_index,
-                    gpu_target,
-                )
-                if weight_map is None:
-                    return None, active_count, attempt, cpu_weight
+
+                return None, active_count, attempt, cpu_weight
 
         return None, active_count, attempt, cpu_weight
 
