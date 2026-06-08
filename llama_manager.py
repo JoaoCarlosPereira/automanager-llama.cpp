@@ -41,11 +41,14 @@ from schemas import (
     RenameRequest,
     LoginRequest,
     SetModelsDirRequest,
+    VersionCheckResponse,
+    VersionCommit,
 )
 from gpu_manager import GPUDetector
 from model_manager import ModelScanner
 from config_manager import ConfigManager, TokenManager
-from paths import ensure_directories, reload_module_paths, update_models_dir
+from paths import INSTALL_ROOT, ensure_directories, reload_module_paths, update_models_dir
+from version_manager import check_for_updates
 
 MANAGER_PORT = 8000
 
@@ -109,7 +112,7 @@ def _dashboard_js_version() -> str:
     """Cache-bust dashboard bundles when any core JS file changes."""
     js_dir = os.path.join(_static_dir, "js")
     mtimes = []
-    for name in ("gpu.js", "auth.js", "metrics.js", "models.js", "index.js"):
+    for name in ("gpu.js", "auth.js", "metrics.js", "models.js", "version.js", "index.js"):
         path = os.path.join(js_dir, name)
         if os.path.isfile(path):
             mtimes.append(os.path.getmtime(path))
@@ -429,6 +432,29 @@ async def system_update(
     """Pull latest code via git and restart the service."""
     background_tasks.add_task(_execute_update)
     return {"status": "update_initiated", "message": "Atualização e reinício do serviço iniciado"}
+
+
+@app.get("/api/system/version-check", response_model=VersionCheckResponse)
+async def system_version_check(_auth: str = Depends(get_current_auth)):
+    """Compare local git HEAD with origin and return ahead commits."""
+    result = check_for_updates(INSTALL_ROOT)
+    return VersionCheckResponse(
+        status=result.status,
+        update_available=result.update_available,
+        current_ref=result.current_ref,
+        remote_ref=result.remote_ref,
+        branch=result.branch,
+        commits=[
+            VersionCommit(
+                sha=c.sha,
+                message=c.message,
+                author=c.author,
+                date=c.date,
+            )
+            for c in result.commits
+        ],
+        error_message=result.error_message,
+    )
 
 
 def _execute_shutdown():
@@ -876,6 +902,38 @@ def _build_html(
             </div>
         </div>"""
 
+    version_update_modal = """
+        <div id="version-update-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="version-update-title">
+            <div id="version-update-backdrop" class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" aria-hidden="true"></div>
+            <div class="relative glass w-full max-w-2xl max-h-[85vh] flex flex-col rounded-3xl border border-blue-500/30 shadow-2xl shadow-blue-500/10 overflow-hidden">
+                <div class="p-6 md:p-8 border-b border-slate-800/60 shrink-0">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <p class="text-[10px] font-black uppercase tracking-[0.25em] text-blue-400 mb-2">Nova versao disponivel</p>
+                            <h2 id="version-update-title" class="text-lg md:text-xl font-bold text-white">Notas de atualizacao</h2>
+                            <p class="text-xs text-slate-400 mt-2 font-mono">
+                                Atual: <span id="version-current-ref" class="text-slate-200">--</span>
+                                <span class="text-slate-600 mx-2">→</span>
+                                Disponivel: <span id="version-remote-ref" class="text-emerald-400">--</span>
+                            </p>
+                        </div>
+                        <button type="button" id="version-dismiss-btn" onclick="dismissVersionModal()" class="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition-all" title="Fechar" aria-label="Fechar">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+                <div id="version-commits-list" class="custom-scroll flex-1 overflow-y-auto p-6 md:p-8 space-y-4 min-h-0"></div>
+                <div class="p-6 md:p-8 border-t border-slate-800/60 bg-slate-900/40 shrink-0">
+                    <p class="text-[10px] text-slate-500 leading-relaxed mb-4">
+                        A atualizacao e manual no servidor (ex.: <code class="text-slate-400">git pull</code> e reinicio do servico). O botao ATUALIZAR no cabecalho tambem pode aplicar a atualizacao.
+                    </p>
+                    <button type="button" onclick="dismissVersionModal()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-black rounded-xl transition-all uppercase tracking-widest">
+                        ENTENDI
+                    </button>
+                </div>
+            </div>
+        </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="pt-BR" class="dark">
 <head>
@@ -911,6 +969,7 @@ def _build_html(
 <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
     <canvas id="pacman-background" aria-hidden="true"></canvas>
     {login_overlay}
+    {version_update_modal}
     <div id="dashboard" class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10" style="display: {'block' if is_authenticated else 'none'};">
         <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
             <div class="flex items-center gap-4 md:gap-6">

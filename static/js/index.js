@@ -14,6 +14,7 @@ import {
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir,
 } from './models.js';
+import { checkForUpdates, dismissVersionModal } from './version.js';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -52,6 +53,8 @@ win.downloadModel = downloadModel;
 win.updateMetrics = updateMetrics;
 win.updateDownloads = updateDownloads;
 win.clearCompletedDownloads = clearCompletedDownloads;
+win.checkForUpdates = checkForUpdates;
+win.dismissVersionModal = dismissVersionModal;
 
 document.getElementById('chat-link').href = `http://${window.fixedIp}:8085/`;
 document.getElementById('api-link').innerText = `http://${window.fixedIp}:8085/v1`;

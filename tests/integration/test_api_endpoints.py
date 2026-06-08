@@ -465,3 +465,78 @@ def test_start_forwards_total_layers_for_mixed_gpu_cpu_weights(
 
     assert response.status_code == 200
     assert process_manager.start.call_args.kwargs["total_layers"] == 32
+
+
+def test_version_check_requires_auth(client):
+    response = client.get("/api/system/version-check")
+    assert response.status_code == 401
+
+
+def test_version_check_returns_payload_when_authenticated(monkeypatch, authenticated_client):
+    from version_manager import VersionCheckResult, VersionCommit as VmCommit
+
+    fake_result = VersionCheckResult(
+        status="ok",
+        update_available=True,
+        current_ref="abc1234",
+        remote_ref="def5678",
+        branch="main",
+        commits=[
+            VmCommit(
+                sha="fullsha1",
+                message="feat: version alert",
+                author="Dev",
+                date="2026-06-07T12:00:00-03:00",
+            )
+        ],
+    )
+    monkeypatch.setattr(llama_manager, "check_for_updates", lambda _root: fake_result)
+
+    response = authenticated_client.get("/api/system/version-check")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["update_available"] is True
+    assert body["current_ref"] == "abc1234"
+    assert body["remote_ref"] == "def5678"
+    assert body["branch"] == "main"
+    assert len(body["commits"]) == 1
+    assert body["commits"][0]["message"] == "feat: version alert"
+
+
+def test_version_check_unavailable_status(monkeypatch, authenticated_client):
+    from version_manager import VersionCheckResult
+
+    monkeypatch.setattr(
+        llama_manager,
+        "check_for_updates",
+        lambda _root: VersionCheckResult(status="unavailable"),
+    )
+
+    response = authenticated_client.get("/api/system/version-check")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "unavailable"
+    assert body["update_available"] is False
+
+
+def test_version_check_error_status(monkeypatch, authenticated_client):
+    from version_manager import VersionCheckResult
+
+    monkeypatch.setattr(
+        llama_manager,
+        "check_for_updates",
+        lambda _root: VersionCheckResult(
+            status="error",
+            error_message="git fetch falhou",
+        ),
+    )
+
+    response = authenticated_client.get("/api/system/version-check")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["error_message"] == "git fetch falhou"

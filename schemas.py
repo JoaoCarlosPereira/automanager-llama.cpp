@@ -66,3 +66,20 @@ class SetModelsDirRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class VersionCommit(BaseModel):
+    sha: str
+    message: str
+    author: str
+    date: str
+
+
+class VersionCheckResponse(BaseModel):
+    status: Literal["ok", "unavailable", "error"]
+    update_available: bool = False
+    current_ref: Optional[str] = None
+    remote_ref: Optional[str] = None
+    branch: Optional[str] = None
+    commits: List[VersionCommit] = Field(default_factory=list)
+    error_message: Optional[str] = None

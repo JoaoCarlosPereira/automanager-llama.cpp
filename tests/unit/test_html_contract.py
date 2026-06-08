@@ -192,6 +192,17 @@ def test_html_serves_external_js_scripts(html):
     assert 'src="/static/js/pacman_bg.js?v=' in html
 
 
+def test_html_contains_version_update_modal(html):
+    assert 'id="version-update-modal"' in html
+    assert 'id="version-commits-list"' in html
+    assert 'id="version-dismiss-btn"' in html
+    assert 'id="version-current-ref"' in html
+    assert 'id="version-remote-ref"' in html
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert 'aria-labelledby="version-update-title"' in html
+
+
 def test_html_contains_api_token(html):
     assert 'id="api-token"' in html
     assert FAKE_API_TOKEN in html

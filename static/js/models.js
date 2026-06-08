@@ -10,6 +10,7 @@ import {
     collectDeviceWeightsFromUI,
 } from './gpu.js';
 import { startLogs, updateUptime } from './metrics.js';
+import { checkForUpdates } from './version.js';
 
 export function formatRepoStorageLabel(storage) {
     if (!storage || storage.total_gb == null || storage.used_gb == null) {
@@ -43,6 +44,7 @@ export function initDashboard() {
     window.updateDownloads();
     window.updateModels();
     updateTotal();
+    checkForUpdates();
 }
 
 export function getModelButtonsHtml(path, elementId, isRunning) {
