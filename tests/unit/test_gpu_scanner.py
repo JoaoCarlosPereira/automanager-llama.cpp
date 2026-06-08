@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_manager import GPUDetector, GPUManager
-from model_manager import ModelScanner
+from gpu_manager import CPUInfo, GPUDetector, GPUManager
+from model_manager import ModelScanner, get_repository_storage
 
 
 class TestGPUDetectorDetectGpus:
@@ -65,7 +65,14 @@ class TestGPUDetectorGetMetrics:
             "0, 42, 1024, 8192, 65, 125.50\n"
             "1, 0, 0, 24576, 40, 70\n"
         )
-        virtual_memory = MagicMock(percent=37.5)
+        total_bytes = 16 * 1024 * 1024 * 1024
+        used_bytes = 8 * 1024 * 1024 * 1024
+        virtual_memory = MagicMock(
+            percent=37.5,
+            total=total_bytes,
+            available=total_bytes - used_bytes,
+        )
+        fake_cpu = CPUInfo(name="Intel Xeon E5-2680", ram_total_mb=16384, ram_used_mb=8192)
 
         with patch(
             "gpu_manager.subprocess.check_output",
@@ -76,12 +83,28 @@ class TestGPUDetectorGetMetrics:
         ) as mock_cpu_percent, patch(
             "gpu_manager.psutil.virtual_memory",
             return_value=virtual_memory,
+        ), patch(
+            "gpu_manager._read_cpu_temperature_c",
+            return_value=52.0,
+        ), patch.object(
+            detector,
+            "_read_cpu_power_w",
+            return_value=110.0,
+        ), patch.object(
+            detector,
+            "detect_cpu_info",
+            return_value=fake_cpu,
         ):
             result = detector.get_metrics()
 
         assert result == {
             "cpu": 12.3,
             "ram": 37.5,
+            "cpu_name": "Intel Xeon E5-2680",
+            "cpu_temp": "52",
+            "cpu_power": "110",
+            "ram_total_mb": 16384,
+            "ram_used_mb": 8192,
             "gpus": [
                 {
                     "index": 0,
@@ -120,10 +143,57 @@ class TestGPUDetectorGetMetrics:
         with patch(
             "gpu_manager.subprocess.check_output",
             side_effect=subprocess.CalledProcessError(1, "nvidia-smi"),
+        ), patch(
+            "gpu_manager.psutil.cpu_percent",
+            side_effect=RuntimeError("cpu metrics unavailable"),
+        ), patch(
+            "gpu_manager.psutil.virtual_memory",
+            side_effect=RuntimeError("ram metrics unavailable"),
         ):
             result = detector.get_metrics()
 
-        assert result == {"cpu": 0, "ram": 0, "gpus": []}
+        assert result == {
+            "cpu": 0,
+            "ram": 0,
+            "cpu_name": "Unknown CPU",
+            "cpu_temp": None,
+            "cpu_power": None,
+            "ram_total_mb": 0,
+            "ram_used_mb": 0,
+            "gpus": [],
+        }
+
+    def test_get_metrics_keeps_system_ram_when_nvidia_smi_fails(self):
+        detector = GPUDetector()
+        total_bytes = 16 * 1024 * 1024 * 1024
+        used_bytes = 4 * 1024 * 1024 * 1024
+        virtual_memory = MagicMock(
+            percent=25.0,
+            total=total_bytes,
+            available=total_bytes - used_bytes,
+        )
+
+        with patch(
+            "gpu_manager.subprocess.check_output",
+            side_effect=subprocess.CalledProcessError(1, "nvidia-smi"),
+        ), patch(
+            "gpu_manager.psutil.cpu_percent",
+            return_value=11.0,
+        ), patch(
+            "gpu_manager.psutil.virtual_memory",
+            return_value=virtual_memory,
+        ), patch.object(
+            detector,
+            "detect_cpu_info",
+            return_value=CPUInfo(name="Test CPU", ram_total_mb=16384, ram_used_mb=4096),
+        ):
+            result = detector.get_metrics()
+
+        assert result["gpus"] == []
+        assert result["cpu"] == 11.0
+        assert result["ram"] == 25.0
+        assert result["ram_total_mb"] == 16384
+        assert result["ram_used_mb"] == 4096
 
 
 class TestModelScannerScan:
@@ -237,4 +307,20 @@ class TestModelScannerScan:
                 models_dir=str(tmp_path),
             ).scan()
 
-        assert result == {"models": [], "projectors": []}
+        assert result == {
+            "models": [],
+            "projectors": [],
+            "storage": get_repository_storage(str(tmp_path)),
+        }
+
+    def test_get_repository_storage_sums_files_and_reports_total(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "a.gguf").write_bytes(b"x" * 1024)
+        (models_dir / "b.gguf").write_bytes(b"y" * 2048)
+
+        storage = get_repository_storage(str(models_dir))
+
+        assert storage["path"] == str(models_dir)
+        assert storage["used_gb"] == round(3072 / (1024**3), 1)
+        assert storage["total_gb"] > 0

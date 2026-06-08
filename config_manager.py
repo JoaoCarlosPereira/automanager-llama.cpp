@@ -6,14 +6,18 @@ import logging
 import hashlib
 import secrets
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
 
-CONFIG_PATH = "/root/automanager_config.json"
-MANAGER_LOG_PATH = "/root/manager.log"
+from paths import CONFIG_PATH
+from schemas import DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_MTP_ENABLED
+
 DEFAULT_CONTEXT_SIZE = 65536
+DEFAULT_PARALLEL_SLOTS = 1
+SESSION_IDLE_SECONDS = 86400  # 24h without activity
+DEFAULT_BATCH_SIZE = 2048
 
 logger = logging.getLogger("automanager")
 
@@ -55,13 +59,29 @@ class ConfigManager:
         config = self.load()
         if "model_configs" not in config:
             config["model_configs"] = {}
-        config["model_configs"][model_path] = {
-            "context_size": settings.get("context_size", DEFAULT_CONTEXT_SIZE),
-            "mmproj_path": settings.get("mmproj_path"),
-            "gpu_weights": settings.get("gpu_weights"),
-            "split_mode": settings.get("split_mode", "layer"),
+        prev = config["model_configs"].get(model_path, {})
+        merged = {**prev, **settings}
+        entry = {
+            "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
+            "parallel_slots": merged.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
+            "batch_size": merged.get("batch_size", DEFAULT_BATCH_SIZE),
+            "mmproj_path": merged.get("mmproj_path"),
+            "gpu_weights": merged.get("gpu_weights"),
+            "split_mode": merged.get("split_mode", "layer"),
+            "auto_balance": merged.get("auto_balance", False),
+            "auto_balance_profile": merged.get("auto_balance_profile", False),
+            "hardware_incapable": merged.get("hardware_incapable", False),
+            "mtp_enabled": merged.get("mtp_enabled", DEFAULT_MTP_ENABLED),
+            "mtp_draft_tokens": merged.get(
+                "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
+            ),
             "last_started": datetime.utcnow().isoformat(),
         }
+        if "hardware_incapable_message" in merged:
+            entry["hardware_incapable_message"] = merged["hardware_incapable_message"]
+        elif prev.get("hardware_incapable_message") and not entry["hardware_incapable"]:
+            entry["hardware_incapable_message"] = None
+        config["model_configs"][model_path] = entry
         self.save(config)
 
     def set_default_model(self, path: Optional[str]) -> None:
@@ -142,11 +162,16 @@ class AuthManager:
 
     def verify_session(self, session_token: str) -> bool:
         with self._lock:
-            if session_token in self._sessions:
-                # Extend session
-                self._sessions[session_token] = datetime.utcnow()
-                return True
-            return False
+            last_seen = self._sessions.get(session_token)
+            if last_seen is None:
+                return False
+            idle = (datetime.utcnow() - last_seen).total_seconds()
+            if idle > SESSION_IDLE_SECONDS:
+                del self._sessions[session_token]
+                logger.info("Session expired due to inactivity")
+                return False
+            self._sessions[session_token] = datetime.utcnow()
+            return True
 
     def logout(self, session_token: str) -> None:
         with self._lock:

@@ -13,17 +13,26 @@ import time
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 
-from config_manager import ConfigManager, TokenManager, AuthManager, DEFAULT_CONTEXT_SIZE
+from config_manager import (
+    ConfigManager,
+    TokenManager,
+    AuthManager,
+    DEFAULT_CONTEXT_SIZE,
+    DEFAULT_PARALLEL_SLOTS,
+    DEFAULT_BATCH_SIZE,
+)
 from gpu_manager import GPUManager
 from log_manager import LogManager, logger
 from process_manager import ProcessManager, OOMWatchdog
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
+    BATCH_SIZE_PRESETS,
+    DEFAULT_MTP_DRAFT_TOKENS,
     GPUWeight,
     StartRequest,
     DeleteRequest,
@@ -31,16 +40,49 @@ from schemas import (
     SetDefaultRequest,
     RenameRequest,
     LoginRequest,
+    SetModelsDirRequest,
 )
 from gpu_manager import GPUDetector
 from model_manager import ModelScanner
 from config_manager import ConfigManager, TokenManager
+from paths import ensure_directories, reload_module_paths, update_models_dir
 
 MANAGER_PORT = 8000
 
+CONTEXT_PRESETS = [
+    (2048, "2K"),
+    (4096, "4K"),
+    (8192, "8K"),
+    (16384, "16K"),
+    (32768, "32K"),
+    (65536, "64K"),
+    (131072, "128K"),
+    (262144, "256K"),
+    (524288, "512K"),
+    (1048576, "1M"),
+]
+CONTEXT_PRESET_VALUES = [v for v, _ in CONTEXT_PRESETS]
+# Custom context input is in K (100 → 100_000 tokens)
+CONTEXT_K_MULTIPLIER = 1000
+
+
+def context_tokens_to_k(tokens: int) -> str:
+    """Convert token count to K for the custom input (100 → '100')."""
+    k = tokens / CONTEXT_K_MULTIPLIER
+    if k == int(k):
+        return str(int(k))
+    rounded = round(k, 3)
+    return str(int(rounded)) if rounded == int(rounded) else str(rounded)
+
+
 # Initialize logging and services
-log_manager = LogManager()
-config_manager = ConfigManager()
+_install_paths = ensure_directories()
+log_manager = LogManager(
+    project_root=_install_paths.install_root,
+    server_log_path=_install_paths.server_log,
+    manager_log_path=_install_paths.manager_log,
+)
+config_manager = ConfigManager(_install_paths.config_file)
 token_manager = TokenManager(config_manager)
 auth_manager = AuthManager(config_manager, token_manager)
 gpu_manager = GPUManager()
@@ -48,8 +90,10 @@ gpu_detector = gpu_manager
 process_manager = ProcessManager(
     config_manager, token_manager, gpu_manager, log_manager
 )
-model_scanner = ModelScanner(config_manager, process_manager)
-download_mgr = DownloadManager()
+model_scanner = ModelScanner(
+    config_manager, process_manager, models_dir=_install_paths.models_dir
+)
+download_mgr = DownloadManager(models_dir=_install_paths.models_dir)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -59,6 +103,28 @@ app = FastAPI(title="Automanager Llama.cpp")
 _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+
+def _dashboard_js_version() -> str:
+    """Cache-bust dashboard bundles when any core JS file changes."""
+    js_dir = os.path.join(_static_dir, "js")
+    mtimes = []
+    for name in ("gpu.js", "auth.js", "metrics.js", "models.js", "index.js"):
+        path = os.path.join(js_dir, name)
+        if os.path.isfile(path):
+            mtimes.append(os.path.getmtime(path))
+    return str(int(max(mtimes))) if mtimes else "0"
+
+
+_DASHBOARD_JS_V = _dashboard_js_version()
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    icon_path = os.path.join(_static_dir, "favicon.svg")
+    if os.path.isfile(icon_path):
+        return FileResponse(icon_path, media_type="image/svg+xml")
+    raise HTTPException(status_code=404)
 
 # Security scheme for API key
 security = HTTPBearer(auto_error=False)
@@ -161,17 +227,62 @@ async def start_model(
         "active": False,
         "failed": False,
         "message": "",
+        "auto_balance": False,
     }
-    # Save model config
+
+    # Auto-detect total_layers from model file
+    total_layers = req.total_layers if req.total_layers and req.total_layers > 0 else 0
+    try:
+        if not total_layers:
+            total_layers = gpu_manager.detect_model_layers(req.path)
+    except Exception:
+        total_layers = 0
+
+    base_settings = {
+        "context_size": req.context_size,
+        "parallel_slots": req.parallel_slots,
+        "batch_size": req.batch_size,
+        "mmproj_path": req.mmproj_path,
+        "split_mode": req.split_mode,
+        "auto_balance": req.auto_balance,
+        "thinking_enabled": req.thinking_enabled,
+        "mtp_enabled": req.mtp_enabled,
+        "mtp_draft_tokens": req.mtp_draft_tokens,
+        "total_layers": total_layers if total_layers else 0,
+    }
+
+    if req.auto_balance:
+        return process_manager.start_auto_balance(req)
+
+    if req.manual_gpu_override:
+        config_manager.update_model_settings(
+            req.path,
+            {
+                **base_settings,
+                "gpu_weights": [w.model_dump() for w in req.gpu_weights],
+                "auto_balance_profile": False,
+            },
+        )
+        return process_manager.start(
+            model_path=req.path,
+            gpu_weights=req.gpu_weights,
+            context_size=req.context_size,
+            mmproj_path=req.mmproj_path,
+            split_mode=req.split_mode,
+            parallel_slots=req.parallel_slots,
+            batch_size=req.batch_size,
+            thinking_enabled=req.thinking_enabled,
+            mtp_enabled=req.mtp_enabled,
+            mtp_draft_tokens=req.mtp_draft_tokens,
+            total_layers=total_layers,
+        )
+
     config_manager.update_model_settings(
         req.path,
         {
-            "context_size": req.context_size,
-            "mmproj_path": req.mmproj_path,
-            "split_mode": req.split_mode,
-            "gpu_weights": [
-                w.model_dump() for w in req.gpu_weights
-            ],
+            **base_settings,
+            "gpu_weights": [w.model_dump() for w in req.gpu_weights],
+            "auto_balance_profile": False,
         },
     )
     return process_manager.start(
@@ -180,12 +291,23 @@ async def start_model(
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
         split_mode=req.split_mode,
+        parallel_slots=req.parallel_slots,
+        batch_size=req.batch_size,
+        thinking_enabled=req.thinking_enabled,
+        mtp_enabled=req.mtp_enabled,
+        mtp_draft_tokens=req.mtp_draft_tokens,
+        total_layers=total_layers,
     )
 
 
 @app.post("/stop")
 async def stop_model(_auth: str = Depends(get_current_auth)):
     return process_manager.stop()
+
+
+@app.post("/auto-balance/cancel")
+async def cancel_auto_balance(_auth: str = Depends(get_current_auth)):
+    return process_manager.cancel_auto_balance()
 
 
 # --- Hardware Metrics ---
@@ -201,6 +323,27 @@ async def get_metrics(_auth: str = Depends(get_current_auth)):
 
 @app.get("/models")
 async def list_models(_auth: str = Depends(get_current_auth)):
+    return model_scanner.scan()
+
+
+@app.post("/models/dir")
+async def set_models_dir(
+    req: SetModelsDirRequest, _auth: str = Depends(get_current_auth)
+):
+    try:
+        paths = update_models_dir(req.models_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.error("Failed to update models_dir: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="Não foi possível criar ou salvar o diretório"
+        ) from exc
+
+    reload_module_paths()
+    model_scanner.models_dir = paths.models_dir
+    download_mgr.models_dir = paths.models_dir
+    logger.info("models_dir atualizado para %s", paths.models_dir)
     return model_scanner.scan()
 
 
@@ -238,6 +381,12 @@ async def get_downloads(_auth: str = Depends(get_current_auth)):
     return download_mgr.get_progress()
 
 
+@app.post("/downloads/clear")
+async def clear_downloads(_auth: str = Depends(get_current_auth)):
+    download_mgr.clear_completed()
+    return {"status": "cleared"}
+
+
 # --- API Key Management ---
 
 
@@ -257,6 +406,57 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 @app.get("/logs")
 async def stream_logs():
     return log_manager.stream_logs()
+
+
+# --- System Management ---
+
+
+@app.post("/api/system/shutdown")
+async def system_shutdown(
+    _auth: str = Depends(get_current_auth),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Shut down the entire system."""
+    background_tasks.add_task(_execute_shutdown)
+    return {"status": "shutdown_initiated", "message": "Desligamento do sistema iniciado"}
+
+
+@app.post("/api/system/update")
+async def system_update(
+    _auth: str = Depends(get_current_auth),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Pull latest code via git and restart the service."""
+    background_tasks.add_task(_execute_update)
+    return {"status": "update_initiated", "message": "Atualização e reinício do serviço iniciado"}
+
+
+def _execute_shutdown():
+    """Execute poweroff command."""
+    logger.info("Solicitado desligamento do sistema")
+    try:
+        os.system("poweroff")
+    except Exception as e:
+        logger.error(f"Erro ao desligar: {e}")
+
+
+def _execute_update():
+    """Pull latest code and restart llama-manager service."""
+    logger.info("Solicitada atualização do sistema")
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        # Git pull
+        result = os.system(f'cd "{app_dir}" && git pull')
+        if result != 0:
+            logger.error(f"Git pull falhou com codigo {result}")
+        # Restart service
+        result = os.system("sudo systemctl restart llama-manager.service")
+        if result != 0:
+            logger.error(f"Systemctl restart falhou com codigo {result}")
+        else:
+            logger.info("Servico reiniciado com sucesso")
+    except Exception as e:
+        logger.error(f"Erro na atualizacao: {e}")
 
 
 # --- Configuration ---
@@ -297,6 +497,7 @@ async def index(request: Request):
     models = models_data["models"]
     projectors = models_data["projectors"]
     gpus = gpu_manager.detect_gpus()
+    cpu_info = gpu_manager.detect_cpu_info()
     config = config_manager.load()
     default_model = config.get("default_model")
     model_configs = config.get("model_configs", {})
@@ -330,18 +531,22 @@ async def index(request: Request):
                     )
                     weight_val = int(w_obj.get("weight", 0))
                     is_main = w_obj.get("is_main", False)
+                    pin_checked = "checked" if w_obj.get("pinned") else ""
                 else:
                     is_checked = "checked"
                     weight_val = 100 if idx == main_gpu_idx else 0
                     is_main = (idx == main_gpu_idx)
+                    pin_checked = ""
             else:
                 is_checked = "checked"
                 weight_val = 100 if idx == main_gpu_idx else 0
                 is_main = (idx == main_gpu_idx)
+                pin_checked = ""
         else:
             is_checked = "checked"
             weight_val = 100 if idx == main_gpu_idx else 0
             is_main = (idx == main_gpu_idx)
+            pin_checked = ""
 
         main_checked = "checked" if is_main else ""
 
@@ -391,11 +596,107 @@ async def index(request: Request):
                 </div>
             </td>
             <td class="px-2 md:px-4 py-4 md:py-6">
-                <div class="relative">
-                    <input type="number" value="{weight_val}" min="0" max="100"
-                           class="gpu-weight w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
-                           oninput="balanceWeights(this)">
-                    <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                <div class="flex items-center gap-2 md:gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer shrink-0" title="Fixar % — o auto balance nao altera esta GPU">
+                        <input type="checkbox" {pin_checked} class="gpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
+                        <span class="text-[8px] font-black text-slate-500 uppercase tracking-wider hidden md:inline">Fixar</span>
+                    </label>
+                    <div class="relative">
+                        <input type="number" value="{weight_val}" min="0" max="100"
+                               class="gpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
+                               oninput="balanceWeights(this)">
+                        <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                    </div>
+                </div>
+            </td>
+        </tr>"""
+
+    # Build CPU row (follows the same visual pattern as GPU rows, no radio button)
+    cpu_name_display = cpu_info.name if cpu_info.name else "CPU Desconhecido"
+    cpu_ram_total = cpu_info.ram_total_mb if cpu_info.ram_total_mb else 0
+    cpu_ram_used = cpu_info.ram_used_mb if cpu_info.ram_used_mb else 0
+    cpu_checked = ""
+    cpu_weight_val = 0
+    cpu_pin_checked = ""
+    if (
+        status.get("running")
+        and status.get("config", {}).get("gpu_weights")
+    ):
+        w_list = status["config"]["gpu_weights"]
+        if isinstance(w_list, list):
+            cpu_obj = next(
+                (
+                    w
+                    for w in w_list
+                    if isinstance(w, dict)
+                    and (
+                        w.get("device") == "cpu"
+                        or w.get("index") == -1
+                    )
+                ),
+                None,
+            )
+            if cpu_obj:
+                cpu_checked = "checked" if cpu_obj.get("active", False) else ""
+                cpu_weight_val = int(cpu_obj.get("weight", 0))
+                cpu_pin_checked = "checked" if cpu_obj.get("pinned") else ""
+    cpu_rows = f"""
+        <tr id="cpu-row" class="cpu-row group border-b border-slate-800/50" data-index="cpu">
+            <td class="px-3 md:px-6 py-4 md:py-6 text-center">
+                <div class="flex flex-col items-center gap-2">
+                    <span class="cpu-util-val text-xs font-black text-blue-400 font-mono">0%</span>
+                    <div class="w-12 h-1 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="cpu-util-bar h-full bg-blue-500 transition-all duration-1000" style="width: 0%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6 text-center">
+                <!-- CPU nao tem radio principal -->
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex items-center gap-2 md:gap-4">
+                    <input type="checkbox" {cpu_checked} class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-0.5">CPU</span>
+                        <span class="text-sm font-bold text-slate-100 whitespace-nowrap">{cpu_name_display}</span>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex flex-col md:flex-row gap-2 md:gap-6">
+                    <div class="flex flex-col">
+                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Temp</span>
+                        <span class="cpu-temp-val text-xs font-bold text-slate-300 font-mono">--°C</span>
+                    </div>
+                    <div class="flex flex-col">
+                        <span class="text-[8px] font-black text-slate-500 uppercase mb-0.5">Power</span>
+                        <span class="cpu-power-val text-xs font-bold text-slate-300 font-mono">--W</span>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex flex-col gap-2 min-w-[100px] md:min-w-[160px]">
+                    <div class="flex justify-between items-end">
+                        <span class="text-[8px] font-black text-slate-500 uppercase">RAM</span>
+                        <span class="cpu-ram-text text-[9px] font-mono text-blue-400">0 / {cpu_ram_total} MB</span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="cpu-ram-bar h-full bg-amber-500 transition-all duration-1000" style="width: 0%"></div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-2 md:px-4 py-4 md:py-6">
+                <div class="flex items-center gap-2 md:gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer shrink-0" title="Fixar % — o auto balance nao altera esta CPU">
+                        <input type="checkbox" {cpu_pin_checked} class="cpu-pin w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-500 cursor-pointer">
+                        <span class="text-[8px] font-black text-slate-500 uppercase tracking-wider hidden md:inline">Fixar</span>
+                    </label>
+                    <div class="relative">
+                        <input type="number" value="{cpu_weight_val}" min="0" max="100"
+                               class="cpu-weight w-20 md:w-24 pl-2 md:pl-4 pr-7 md:pr-9 py-2 bg-slate-900/80 border border-slate-700 rounded-xl text-sm font-black text-blue-400 outline-none transition-all"
+                               oninput="balanceWeights(this)">
+                        <span class="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-600">%</span>
+                    </div>
                 </div>
             </td>
         </tr>"""
@@ -405,27 +706,48 @@ async def index(request: Request):
     for p in projectors:
         vision_options += f'<option value="{p["path"]}" class="bg-slate-900">{p["name"]}</option>'
 
-    # Context options
+    # Context options (presets + manual via "Personalizado")
+    running_ctx = (
+        status.get("config", {}).get("context_size")
+        if status.get("running")
+        else None
+    )
+    use_custom_ctx = (
+        running_ctx is not None and running_ctx not in CONTEXT_PRESET_VALUES
+    )
     ctx_opts = ""
-    for val, label in [
-        (2048, "2K"),
-        (4096, "4K"),
-        (8192, "8K"),
-        (16384, "16K"),
-        (32768, "32K"),
-        (65536, "64K"),
-        (131072, "128K"),
-        (262144, "256K"),
-        (524288, "512K"),
-        (1048576, "1M"),
-    ]:
-        selected = "selected" if (
-            status.get("running")
-            and status.get("config", {}).get("context_size") == val
-        ) else ""
-        if not selected and val == DEFAULT_CONTEXT_SIZE:
-            selected = "selected"
+    for val, label in CONTEXT_PRESETS:
+        if use_custom_ctx:
+            selected = ""
+        elif running_ctx is not None:
+            selected = "selected" if running_ctx == val else ""
+        else:
+            selected = "selected" if val == DEFAULT_CONTEXT_SIZE else ""
         ctx_opts += f'<option value="{val}" class="bg-slate-900" {selected}>{label}</option>'
+    custom_selected = "selected" if use_custom_ctx else ""
+    ctx_opts += (
+        f'<option value="custom" class="bg-slate-900" {custom_selected}>'
+        "Personalizado</option>"
+    )
+    custom_ctx_value = (
+        context_tokens_to_k(running_ctx) if use_custom_ctx else ""
+    )
+    custom_ctx_class = "" if use_custom_ctx else "hidden"
+
+    running_batch = (
+        status.get("config", {}).get("batch_size")
+        if status.get("running")
+        else None
+    )
+    batch_opts = ""
+    for val in BATCH_SIZE_PRESETS:
+        if running_batch is not None:
+            selected = "selected" if running_batch == val else ""
+        else:
+            selected = "selected" if val == DEFAULT_BATCH_SIZE else ""
+        batch_opts += (
+            f'<option value="{val}" class="bg-slate-900" {selected}>{val}</option>'
+        )
 
     # Model items
     model_items = ""
@@ -441,20 +763,34 @@ async def index(request: Request):
             initial_cfg_js = (
                 f"<script>window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};</script>"
             )
+        m_cfg = model_configs.get(m_path, {})
         has_config = "text-blue-400" if m_path in model_configs else "text-slate-100"
+        hardware_incapable = bool(m_cfg.get("hardware_incapable"))
+        incapable_row_class = (
+            "border-red-500/40 bg-red-950/20" if hardware_incapable else ""
+        )
+        incapable_badge = (
+            '<span class="shrink-0 text-[8px] font-black uppercase tracking-wider '
+            'text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30" '
+            'title="Incompativel com o hardware atual (auto balance)">Incapaz</span>'
+            if hardware_incapable
+            else ""
+        )
+        incapable_attr = "true" if hardware_incapable else "false"
 
         model_items += f"""
         {initial_cfg_js}
-        <div id="{stable_id}" class="model-item-container group flex items-center justify-between p-4 mb-3 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg" data-path="{m_js}">
-            <div class="flex-1 min-w-0 mr-4 cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
-                <div class="flex items-center gap-2 mb-1">
-                    <i class="fas fa-cube text-blue-400 text-[10px]"></i>
-                    <p class="model-name text-sm font-bold {has_config} break-all line-clamp-2">{m_name}</p>
-                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs else ''}
+        <div id="{stable_id}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{incapable_attr}">
+            <div class="w-full cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')" title="Clique para selecionar e carregar configuracoes">
+                <div class="flex items-start gap-2 mb-1 flex-wrap">
+                    <i class="fas fa-cube text-blue-400 text-[10px] mt-1"></i>
+                    <p class="model-name text-sm font-bold {has_config} break-words">{m_name}</p>
+                    {incapable_badge}
+                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs and not hardware_incapable else ''}
                 </div>
-                <p class="text-[9px] text-slate-500 truncate uppercase tracking-tighter font-mono">{m_dir}</p>
+                <p class="text-[9px] text-slate-500 break-all uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
-            <div class="flex items-center gap-3 md:gap-4">
+            <div class="flex flex-wrap items-center gap-3 md:gap-4 w-full">
                 <div class="flex items-center gap-1">
                     <button onclick="renameModel('{m_js}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all" title="Renomear Modelo">
                         <i class="fas fa-edit text-[10px]"></i>
@@ -483,9 +819,13 @@ async def index(request: Request):
 
     html = _build_html(
         gpu_rows=gpu_rows,
+        cpu_rows=cpu_rows,
         model_items=model_items,
         vision_options=vision_options,
         ctx_opts=ctx_opts,
+        custom_ctx_value=custom_ctx_value,
+        custom_ctx_class=custom_ctx_class,
+        batch_opts=batch_opts,
         local_ip=local_ip,
         api_token=api_token,
         is_authenticated=is_authenticated,
@@ -495,19 +835,22 @@ async def index(request: Request):
 
 def _build_html(
     gpu_rows: str,
+    cpu_rows: str,
     model_items: str,
     vision_options: str,
     ctx_opts: str,
+    custom_ctx_value: str,
+    custom_ctx_class: str,
+    batch_opts: str,
     local_ip: str,
     api_token: str,
     is_authenticated: bool,
 ) -> str:
     """Build the full HTML template."""
 
-    login_overlay = ""
-    if not is_authenticated:
-        login_overlay = """
-        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center" style="background: radial-gradient(circle at 50% 0%, #1e3a8a 0%, #020617 100%);">
+    login_overlay_style = "none" if is_authenticated else "flex"
+    login_overlay = f"""
+        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto" style="display: {login_overlay_style};">
             <div class="glass p-8 md:p-10 rounded-3xl border border-slate-700/50 w-full max-w-md mx-4">
                 <div class="flex flex-col items-center mb-8">
                     <div class="bg-blue-600 p-4 rounded-2xl shadow-xl shadow-blue-500/20 mb-4">
@@ -539,6 +882,8 @@ def _build_html(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Automanager Llama.cpp</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="shortcut icon" href="/favicon.ico">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -586,12 +931,20 @@ def _build_html(
                 <div id="status-badge" class="px-6 md:px-8 py-2 md:py-2.5 rounded-xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 glass border-slate-700/50 text-slate-500 uppercase transition-all duration-500">
                     <div class="w-2 h-2 rounded-full bg-slate-600"></div>OFFLINE
                 </div>
+                <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                    <button onclick="handleUpdate()" class="px-3 py-2 bg-amber-600/10 hover:bg-amber-600/20 text-amber-500 border border-amber-500/30 rounded-xl text-[10px] font-black hover:tracking-widest transition-all uppercase" title="Atualizar codigo e reiniciar servico">
+                        <i class="fas fa-sync-alt text-[9px]"></i> <span class="hidden lg:inline">ATUALIZAR</span>
+                    </button>
+                    <button onclick="handleShutdown()" class="px-3 py-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-xl text-[10px] font-black hover:tracking-widest transition-all uppercase" title="Desligar o sistema">
+                        <i class="fas fa-power-off text-[9px]"></i> <span class="hidden lg:inline">DESLIGAR</span>
+                    </button>
+                </div>
                 <button onclick="handleLogout()" class="text-slate-500 hover:text-white transition-colors" title="Sair">
                     <i class="fas fa-sign-out-alt"></i>
                 </button>
             </div>
         </header>
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-10 items-start">
             <div class="lg:col-span-7 space-y-6 md:space-y-10">
                 <div id="metrics-panel" class="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
                     <div class="glass p-5 rounded-[1.5rem] border-l-4 border-blue-600">
@@ -627,9 +980,28 @@ def _build_html(
                         </div>
                         <div class="flex flex-wrap items-center gap-4 md:gap-6 bg-slate-900/80 p-1.5 rounded-2xl border border-slate-800">
                             <div class="flex items-center gap-2">
-                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap">Contexto:</label>
-                                <select id="context-size" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
+                                <label class="text-[9px] font-black uppercase text-slate-400 pl-3 md:pl-4 tracking-widest whitespace-nowrap" title="Tokens por slot (--ctx-size / --parallel no llama-server)">Contexto:</label>
+                                <select id="context-size" onchange="onContextSizePresetChange()" class="bg-blue-600/20 border border-blue-500/30 text-blue-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer">
                                     {ctx_opts}
+                                </select>
+                                <div class="relative {custom_ctx_class}" id="context-size-custom-wrap">
+                                    <input type="number" id="context-size-custom" value="{custom_ctx_value}"
+                                           class="w-28 min-w-[7rem] bg-slate-800 border border-slate-700 text-slate-300 rounded-xl pl-3 pr-8 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center tabular-nums"
+                                           min="1" step="1" placeholder="K"
+                                           title="Contexto em K (ex.: 100 = 100K tokens por slot)"
+                                           oninput="onContextSizeCustomInput()">
+                                    <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-500 pointer-events-none">K</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Requisições simultâneas (--parallel)"><i class="fas fa-clone text-blue-400 mr-2"></i>Slots:</label>
+                                <input type="number" id="parallel-slots" value="{DEFAULT_PARALLEL_SLOTS}" min="1" max="64"
+                                       class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-center">
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tamanho do batch de prefill (--batch-size)"><i class="fas fa-boxes-stacked text-violet-400 mr-2"></i>Batch:</label>
+                                <select id="batch-size" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[5.5rem]">
+                                    {batch_opts}
                                 </select>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
@@ -644,6 +1016,25 @@ def _build_html(
                                     <option value="layer">Layer (Sqn)</option>
                                     <option value="row">Row (Par)</option>
                                 </select>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-brain text-violet-400 mr-2"></i>Thinking:</label>
+                                <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-violet-500/30 transition-all">
+                                    <input type="checkbox" id="thinking-toggle" checked class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer">
+                                    <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
+                                </label>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Multi-Token Prediction — acelera inferência em modelos compatíveis"><i class="fas fa-bolt text-amber-400 mr-2"></i>MTP:</label>
+                                <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-amber-500/30 transition-all">
+                                    <input type="checkbox" id="mtp-toggle" class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-amber-600 cursor-pointer">
+                                    <span id="mtp-badge" class="text-[9px] font-black uppercase tracking-wider text-slate-500">OFF</span>
+                                </label>
+                            </div>
+                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tokens de predição MTP (--spec-draft-n-max); valores típicos 2–3; aplica apenas com MTP ligado"><i class="fas fa-forward text-amber-400 mr-2"></i>MTP Tok:</label>
+                                <input type="number" id="mtp-draft-tokens" value="{DEFAULT_MTP_DRAFT_TOKENS}" min="1" max="6"
+                                       class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all text-center">
                             </div>
                         </div>
                     </div>
@@ -660,16 +1051,46 @@ def _build_html(
                                 </tr>
                             </thead>
                             <tbody id="gpu-table-body" class="divide-y divide-slate-800/50">
+                                {cpu_rows}
                                 {gpu_rows}
                             </tbody>
                         </table>
                     </div>
                     <div class="flex flex-col sm:flex-row justify-between items-center pt-8 gap-4">
-                        <div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500">
-                            <i class="fas fa-info-circle text-blue-500"></i>
-                            Distribua 100% da carga total entre as GPUs selecionadas
+                        <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                            <div class="flex items-center gap-3 text-[10px] md:text-xs text-slate-500">
+                                <i class="fas fa-info-circle text-blue-500"></i>
+                                Distribua 100% da carga total entre as GPUs selecionadas
+                            </div>
+                            <label class="flex items-center gap-3 cursor-pointer select-none bg-slate-900/60 px-4 py-2.5 rounded-xl border border-slate-800 hover:border-blue-500/30 transition-all">
+                                <input type="checkbox" id="auto-balance-toggle" class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer">
+                                <span class="text-[10px] md:text-xs font-black uppercase tracking-widest text-slate-300">Auto Balance</span>
+                                <span id="auto-balance-badge" class="hidden text-[9px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20">Salvo</span>
+                            </label>
+                            <button type="button" id="auto-balance-cancel-btn" onclick="cancelAutoBalance()"
+                                    class="hidden px-4 py-2.5 rounded-xl border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20 text-[10px] font-black uppercase tracking-widest transition-all"
+                                    title="Interromper calibracao de GPUs">
+                                <i class="fas fa-stop mr-2"></i>Cancelar balance
+                            </button>
                         </div>
                         <span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span>
+                    </div>
+                    <div id="auto-balance-capacity-alert" class="hidden mt-6 p-5 md:p-6 rounded-2xl border border-red-500/40 bg-red-950/40">
+                        <div class="flex gap-4 items-start">
+                            <div class="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0">
+                                <i class="fas fa-microchip text-red-400"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-[10px] font-black uppercase tracking-widest text-red-400 mb-2">Modelo além da capacidade do hardware</p>
+                                <p id="auto-balance-capacity-msg" class="text-xs md:text-sm text-red-100/90 leading-relaxed"></p>
+                                <ul id="auto-balance-capacity-details" class="mt-3 text-[10px] text-slate-400 space-y-1"></ul>
+                                <p class="mt-3 text-[10px] font-black uppercase tracking-wider text-slate-500">Sugestões</p>
+                                <ul id="auto-balance-capacity-suggestions" class="mt-1 text-[10px] text-slate-400 space-y-1 list-disc list-inside"></ul>
+                            </div>
+                            <button type="button" onclick="hideAutoBalanceCapacityAlert()" class="text-slate-500 hover:text-white shrink-0 p-1" title="Fechar">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] border border-blue-500/30 hidden transition-all duration-700">
@@ -717,7 +1138,7 @@ def _build_html(
                 </div>
             </div>
             <div class="lg:col-span-5 space-y-6 md:space-y-10">
-                <div class="glass rounded-[2rem] border border-slate-800 flex flex-col h-auto md:h-[1100px] xl:h-[1200px]">
+                <div class="glass rounded-[2rem] border border-slate-800">
                     <div class="p-8 border-b border-slate-800/50 flex items-center justify-between">
                         <div class="flex items-center gap-4 md:gap-5">
                             <div class="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center border border-slate-700">
@@ -725,7 +1146,17 @@ def _build_html(
                             </div>
                             <h3 class="font-bold text-base md:text-lg text-white tracking-tight">Model Repository</h3>
                         </div>
-                        <span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span>
+                        <div class="flex flex-col items-end gap-1">
+                            <span class="text-[10px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-mono border border-slate-700" id="model-count">0 UNIDADES</span>
+                            <span class="text-[9px] bg-slate-800/80 text-slate-400 px-2 py-0.5 rounded-full font-mono border border-slate-700 whitespace-nowrap" id="repo-storage" title="Espaço usado pelo repositório / capacidade total do disco">-- / -- GB</span>
+                        </div>
+                    </div>
+                    <div class="px-6 md:px-8 py-3 border-b border-slate-800/30 bg-slate-900/20 flex items-center gap-2">
+                        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest shrink-0 hidden sm:inline">Diretório</span>
+                        <input type="text" id="models-dir-input" placeholder="Caminho do repositório de modelos" class="flex-1 min-w-0 px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-[10px] text-slate-300 font-mono focus:ring-2 focus:ring-blue-500/50 outline-none transition-all placeholder:text-slate-600">
+                        <button type="button" onclick="saveModelsDir()" title="Salvar caminho e atualizar lista" class="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-blue-600 text-slate-400 hover:text-white border border-slate-700 transition-all active:scale-95">
+                            <i class="fas fa-save text-xs"></i>
+                        </button>
                     </div>
                     <div class="p-8 border-b border-slate-800/30 bg-blue-600/5">
                         <p class="text-[10px] font-black text-slate-500 uppercase mb-4 md:mb-6 tracking-widest">Ingerir GGUF via URL</p>
@@ -740,10 +1171,11 @@ def _build_html(
                         </div>
                         <div id="download-status" class="mt-6 md:mt-8 space-y-3"></div>
                     </div>
-                    <div id="model-list-container" class="p-6 flex-1 overflow-y-auto custom-scroll space-y-2">
+                    <div id="model-list-container" class="p-6 md:p-8 space-y-2">
                         {model_items}
                     </div>
-                    <div class="p-8 bg-slate-950/40 border-t border-slate-800 rounded-b-[2rem] md:rounded-b-[2.5rem]">
+                </div>
+                <div class="glass rounded-[2rem] border border-slate-800 p-8">
                         <div class="flex flex-col gap-4">
                             <div class="flex flex-col gap-2">
                                 <div class="flex items-center justify-between">
@@ -783,606 +1215,23 @@ def _build_html(
                                 </div>
                             </div>
                         </div>
-                    </div>
                 </div>
             </div>
         </div>
     </div>
     <script>
-        let logStream = null;
-        let startTime = null;
-        const fixedIp = "{local_ip}";
+        window.fixedIp = "{local_ip}";
         window.modelConfigs = window.modelConfigs || {{}};
-        let currentSelectedModel = null;
-        let currentRunningModelPath = null;
-
-        document.getElementById('chat-link').href = `http://${{fixedIp}}:8085/`;
-        document.getElementById('api-link').innerText = `http://${{fixedIp}}:8085/v1`;
-
-        // ─── Authentication ───
-        async function handleLogin(event) {{
-            event.preventDefault();
-            const username = document.getElementById('login-username').value;
-            const password = document.getElementById('login-password').value;
-            try {{
-                const res = await fetch('/api/auth/login', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{username, password}}),
-                }});
-                if (res.ok) {{
-                    document.getElementById('login-overlay').style.display = 'none';
-                    document.getElementById('dashboard').style.display = 'block';
-                    initDashboard();
-                }} else {{
-                    const err = await res.json();
-                    const el = document.getElementById('login-error');
-                    el.textContent = err.detail || 'Erro no login';
-                    el.classList.remove('hidden');
-                }}
-            }} catch (e) {{
-                const el = document.getElementById('login-error');
-                el.textContent = 'Erro de rede';
-                el.classList.remove('hidden');
-            }}
-        }}
-
-        async function handleLogout() {{
-            try {{ await fetch('/api/auth/logout', {{method: 'POST'}}); }} catch (e) {{}}
-            location.reload();
-        }}
-
-        async function changePassword() {{
-            const currentPassword = document.getElementById('current-password').value;
-            const newPassword = document.getElementById('new-password').value;
-            const statusEl = document.getElementById('password-change-status');
-
-            statusEl.textContent = '';
-            statusEl.className = 'text-[10px] font-bold min-h-[1rem]';
-
-            if (!currentPassword || !newPassword) {{
-                statusEl.textContent = 'Informe a senha atual e a nova senha.';
-                statusEl.classList.add('text-amber-500');
-                return;
-            }}
-
-            if (newPassword.length < 6) {{
-                statusEl.textContent = 'A nova senha deve ter pelo menos 6 caracteres.';
-                statusEl.classList.add('text-amber-500');
-                return;
-            }}
-
-            try {{
-                const res = await fetch('/api/auth/change-password', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{username: currentPassword, password: newPassword}}),
-                }});
-                if (res.ok) {{
-                    document.getElementById('current-password').value = '';
-                    document.getElementById('new-password').value = '';
-                    statusEl.textContent = 'Senha alterada com sucesso.';
-                    statusEl.classList.add('text-emerald-500');
-                }} else {{
-                    const err = await res.json();
-                    statusEl.textContent = err.detail || 'Erro ao alterar senha.';
-                    statusEl.classList.add('text-red-500');
-                }}
-            }} catch (e) {{
-                statusEl.textContent = 'Erro de rede ao alterar senha.';
-                statusEl.classList.add('text-red-500');
-            }}
-        }}
-
-        // ─── Dashboard functions ───
-        function initDashboard() {{
-            updateStatus();
-            updateMetrics();
-            updateDownloads();
-            updateModels();
-            updateTotal();
-        }}
-
-        function getModelButtonsHtml(path, elementId, isRunning) {{
-            if (isRunning) {{
-                return `<div class="flex items-center gap-3">
-                    <a href="http://${{fixedIp}}:8085/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
-                        <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
-                    </a>
-                    <button onclick="stopModel()" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
-                        ENCERRAR
-                    </button>
-                    <div class="flex items-center gap-2 text-[9px] font-mono text-emerald-400 bg-emerald-500/5 px-3 py-2 rounded-xl border border-emerald-500/10">
-                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span id="uptime-val">--</span>
-                    </div>
-                </div>`;
-            }}
-            return `<button onclick="startModel('${{path}}', '${{elementId}}')" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all">
-                <i class="fas fa-play text-[9px]"></i> <span class="hidden sm:inline">CARREGAR</span><span class="sm:hidden">LOAD</span>
-            </button>`;
-        }}
-
-        function resetToDefaults() {{
-            document.getElementById('context-size').value = "{DEFAULT_CONTEXT_SIZE}"; // 65536
-            document.getElementById('mmproj-path').value = "";
-            document.getElementById('split-mode').value = "layer";
-            document.querySelectorAll('.gpu-row').forEach((row, idx) => {{
-                row.querySelector('.gpu-checkbox').checked = true;
-                row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
-                row.querySelector('.gpu-main-radio').checked = (idx === 0);
-            }});
-            updateTotal();
-        }}
-
-        function selectModel(path, elementId) {{
-            currentSelectedModel = path;
-            document.querySelectorAll('.model-item-container').forEach(el => {{
-                el.classList.remove('active-selection');
-            }});
-            const selectedEl = document.getElementById(elementId);
-            if (selectedEl) selectedEl.classList.add('active-selection');
-            if (window.modelConfigs[path]) {{
-                applyModelConfig(path);
-            }} else {{
-                resetToDefaults();
-            }}
-        }}
-
-        function applyModelConfig(path) {{
-            const cfg = window.modelConfigs[path];
-            if (!cfg) return;
-            if (cfg.context_size) document.getElementById('context-size').value = cfg.context_size;
-            if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
-            if (cfg.mmproj_path !== undefined) {{
-                const select = document.getElementById('mmproj-path');
-                let found = false;
-                for (let i = 0; i < select.options.length; i++) {{
-                    if (select.options[i].value === cfg.mmproj_path) {{
-                        select.value = cfg.mmproj_path;
-                        found = true;
-                        break;
-                    }}
-                }}
-                if (!found && cfg.mmproj_path) {{
-                    const opt = document.createElement('option');
-                    opt.value = cfg.mmproj_path;
-                    opt.text = cfg.mmproj_path.split('/').pop() + " (Salvo)";
-                    select.add(opt);
-                    select.value = cfg.mmproj_path;
-                }} else if (!cfg.mmproj_path) {{
-                    select.value = "";
-                }}
-            }}
-            if (cfg.gpu_weights) {{
-                cfg.gpu_weights.forEach(w => {{
-                    const row = document.querySelector(`.gpu-row[data-index="${{w.index}}"]`);
-                    if (row) {{
-                        const cb = row.querySelector('.gpu-checkbox');
-                        const input = row.querySelector('.gpu-weight');
-                        const radio = row.querySelector('.gpu-main-radio');
-                        cb.checked = w.active !== undefined ? w.active : (w.weight > 0);
-                        input.value = Math.round(w.weight);
-                        if (w.is_main) radio.checked = true;
-                    }}
-                }});
-                updateTotal();
-            }}
-            const nameEl = document.querySelector(`[data-path="${{path}}"] .model-name`);
-            if (nameEl) {{
-                nameEl.classList.add('text-emerald-400');
-                setTimeout(() => {{ nameEl.classList.remove('text-emerald-400'); }}, 1000);
-            }}
-        }}
-
-        function balanceWeights(changedInput) {{
-            const weights = Array.from(document.querySelectorAll('.gpu-weight'));
-            const checkedWeights = weights.filter(w => w.closest('.gpu-row').querySelector('.gpu-checkbox').checked);
-            if (checkedWeights.length <= 1) {{
-                if (checkedWeights.length === 1) checkedWeights[0].value = 100;
-                updateTotal();
-                return;
-            }}
-            let val = parseInt(changedInput.value) || 0;
-            if (val > 100) {{ val = 100; changedInput.value = 100; }}
-            if (val < 0) {{ val = 0; changedInput.value = 0; }}
-            const otherInputs = checkedWeights.filter(w => w !== changedInput);
-            let remaining = 100 - val;
-            for (let i = 0; i < otherInputs.length; i++) {{
-                if (i === otherInputs.length - 1) {{ otherInputs[i].value = Math.max(0, remaining); }}
-                else {{
-                    let share = Math.min(remaining, Math.round(remaining / otherInputs.length));
-                    otherInputs[i].value = share;
-                    remaining -= share;
-                }}
-            }}
-            updateTotal();
-        }}
-
-        function updateTotal() {{
-            let sum = 0;
-            document.querySelectorAll('.gpu-weight').forEach(i => {{
-                const isChecked = i.closest('.gpu-row').querySelector('.gpu-checkbox').checked;
-                if (isChecked) sum += parseInt(i.value || 0);
-                else i.value = 0;
-            }});
-            const badge = document.getElementById('total-percent');
-            badge.innerText = `CARGA TOTAL: ${{sum}}%`;
-            badge.className = sum === 100
-                ? 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                : 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20';
-        }}
-
-        async function updateMetrics() {{
-            try {{
-                const res = await fetch('/metrics');
-                const data = await res.json();
-                const metricsPanel = document.getElementById('metrics-panel');
-                if (metricsPanel) {{
-                    if (!currentRunningModelPath) metricsPanel.classList.add('metric-dimmed');
-                    else metricsPanel.classList.remove('metric-dimmed');
-                }}
-                document.getElementById('cpu-val').innerText = data.cpu + '%';
-                document.getElementById('cpu-bar').style.width = data.cpu + '%';
-                document.getElementById('ram-val').innerText = data.ram + '%';
-                document.getElementById('ram-bar').style.width = data.ram + '%';
-                data.gpus.forEach(g => {{
-                    const row = document.querySelector(`.gpu-row[data-index="${{g.index}}"]`);
-                    if (row) {{
-                        row.querySelector('.gpu-util-val').innerText = g.util + '%';
-                        row.querySelector('.gpu-util-bar').style.width = g.util + '%';
-                        row.querySelector('.gpu-temp-val').innerText = (g.temp || '--') + '°C';
-                        row.querySelector('.gpu-power-val').innerText = (g.power || '--') + 'W';
-                        row.querySelector('.gpu-vram-text').innerText = `${{g.mem_used}} / ${{g.mem_total}} MB`;
-                        row.querySelector('.gpu-vram-bar').style.width = g.vram_pct + '%';
-                    }}
-                }});
-            }} catch (e) {{}}
-        }}
-
-        async function startLogs() {{
-            if (logStream) logStream.abort();
-            logStream = new AbortController();
-            const box = document.getElementById('log-box');
-            box.innerHTML = '';
-            try {{
-                const response = await fetch('/logs', {{ signal: logStream.signal }});
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                while (true) {{
-                    const {{ value, done }} = await reader.read();
-                    if (done) break;
-                    const formatted = decoder.decode(value)
-                        .replace(/error/gi, '<span class="text-red-500 font-black px-1 rounded bg-red-500/10">ERRO</span>')
-                        .replace(/warn/gi, '<span class="text-amber-500 font-black px-1 rounded bg-amber-500/10">AVISO</span>')
-                        .replace(/info/gi, '<span class="text-blue-400 font-bold uppercase tracking-tighter">info</span>');
-                    const line = document.createElement('div');
-                    line.className = 'terminal-line mb-1 md:mb-2 border-l border-slate-800 md:border-l-2 pl-3 md:pl-4';
-                    line.innerHTML = formatted;
-                    box.appendChild(line);
-                    box.scrollTop = box.scrollHeight;
-                    if (box.childNodes.length > 500) box.removeChild(box.firstChild);
-                }}
-            }} catch (e) {{}}
-        }}
-
-        function updateUptime(serverStartTime) {{
-            let diff;
-            if (serverStartTime) {{
-                diff = Math.floor(Date.now() / 1000 - serverStartTime);
-            }} else if (startTime) {{
-                diff = Math.floor((new Date() - startTime) / 1000);
-            }} else {{ return; }}
-            document.getElementById('uptime-val').innerText = `${{Math.floor(diff/3600)}}h ${{Math.floor((diff%3600)/60)}}m ${{diff%60}}s`;
-        }}
-
-        async function renewToken() {{
-            if (!confirm("Deseja realmente gerar uma nova chave de API?")) return;
-            try {{
-                const res = await fetch('/api/key/renew', {{ method: 'POST' }});
-                const data = await res.json();
-                document.getElementById('api-token').innerText = data.key;
-                alert("Nova chave gerada!");
-            }} catch (e) {{
-                alert("Erro ao renovar token.");
-            }}
-        }}
-
-        async function updateStatus() {{
-            try {{
-                const res = await fetch('/status');
-                const data = await res.json();
-                const badge = document.getElementById('status-badge');
-                const card = document.getElementById('active-card');
-
-                if (data.config && data.config.gpu_weights && (!data.recovery || !data.recovery.active)) {{
-                    data.config.gpu_weights.forEach(w => {{
-                        const row = document.querySelector(`.gpu-row[data-index="${{w.index}}"]`);
-                        if (row) {{
-                            const input = row.querySelector('.gpu-weight');
-                            const cb = row.querySelector('.gpu-checkbox');
-                            if (document.activeElement !== input) {{
-                                const newWeight = Math.round(w.weight);
-                                if (parseInt(input.value) !== newWeight) input.value = newWeight;
-                            }}
-                            if (w.active !== undefined) cb.checked = w.active;
-                        }}
-                    }});
-                    updateTotal();
-                    if (data.running && !currentSelectedModel) {{
-                        if (data.config.context_size) document.getElementById('context-size').value = data.config.context_size;
-                        if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
-                    }}
-                }}
-
-                if (data.recovery && data.recovery.failed) {{
-                    badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-red-500/50 text-red-500 uppercase';
-                    badge.innerHTML = `<i class="fas fa-exclamation-triangle mr-1"></i> FALHA: ${{data.recovery.message.toUpperCase()}}`;
-                    return;
-                }}
-
-                if (data.recovery && data.recovery.active) {{
-                    badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
-                    badge.innerHTML = '<i class="fas fa-sync animate-spin mr-1"></i> REALOCANDO...';
-                    return;
-                }}
-
-                if (data.running) {{
-                    badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
-                    badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE';
-                    card.classList.remove('hidden');
-                    document.getElementById('active-model-name').innerText = data.model;
-                    if (!logStream) startLogs();
-                    updateUptime(data.start_time);
-                    currentRunningModelPath = data.model_path;
-                    if (!currentSelectedModel && currentRunningModelPath) {{
-                        currentSelectedModel = currentRunningModelPath.replace(/\\\\\\\\/g, '/');
-                    }}
-                    const chatLink = document.getElementById('chat-link');
-                    if (chatLink) {{
-                        chatLink.classList.remove('pointer-events-none', 'opacity-40');
-                        chatLink.setAttribute('aria-disabled', 'false');
-                    }}
-                }} else {{
-                    startTime = null;
-                    badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase';
-                    badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE';
-                    card.classList.add('hidden');
-                    if (logStream) {{ logStream.abort(); logStream = null; }}
-                    currentRunningModelPath = null;
-                    const chatLinkOff = document.getElementById('chat-link');
-                    if (chatLinkOff) {{
-                        chatLinkOff.classList.add('pointer-events-none', 'opacity-40');
-                        chatLinkOff.setAttribute('aria-disabled', 'true');
-                    }}
-                }}
-
-                document.querySelectorAll('.model-item-container').forEach(el => {{
-                    const m_js = el.dataset.path;
-                    const actionBtnContainer = el.querySelector('.action-btn-container');
-                    const renameBtn = el.querySelector('.rename-btn');
-                    const deleteBtn = el.querySelector('.delete-btn');
-                    const normalizedM = m_js.replace(/\\\\\\\\/g, '/');
-                    const normalizedR = currentRunningModelPath ? currentRunningModelPath.replace(/\\\\\\\\/g, '/') : null;
-                    const isRunning = normalizedR && normalizedM === normalizedR;
-
-                    if (isRunning) {{
-                        el.classList.add('running-now');
-                        if (renameBtn) renameBtn.classList.add('hidden');
-                        if (deleteBtn) deleteBtn.classList.add('hidden');
-                    }} else {{
-                        el.classList.remove('running-now');
-                        if (renameBtn) renameBtn.classList.remove('hidden');
-                        if (deleteBtn) deleteBtn.classList.remove('hidden');
-                    }}
-                    if (currentSelectedModel === m_js) el.classList.add('active-selection');
-                    else el.classList.remove('active-selection');
-
-                    const newButtonsHtml = getModelButtonsHtml(m_js, el.id, isRunning);
-                    if (actionBtnContainer.innerHTML.trim() !== newButtonsHtml.trim()) {{
-                        actionBtnContainer.innerHTML = newButtonsHtml;
-                    }}
-                }});
-            }} catch (e) {{ console.error("updateStatus error:", e); }}
-        }}
-
-        async function setDefaultModel(checkbox, path) {{
-            if (checkbox.checked) document.querySelectorAll('.model-default-checkbox').forEach(cb => {{
-                if (cb !== checkbox) cb.checked = false;
-            }});
-            try {{
-                await fetch('/set_default', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{path: checkbox.checked ? path : null}}),
-                }});
-            }} catch (e) {{
-                alert("Erro ao salvar configuracao.");
-            }}
-        }}
-
-        async function downloadModel() {{
-            const url = document.getElementById('download-url').value.trim();
-            if (!url) return;
-            try {{
-                const res = await fetch('/downloads', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{url}}),
-                }});
-                if (res.ok) document.getElementById('download-url').value = '';
-                updateDownloads();
-            }} catch (e) {{}}
-        }}
-
-        async function updateDownloads() {{
-            try {{
-                const res = await fetch('/downloads');
-                const data = await res.json();
-                const container = document.getElementById('download-status');
-                const entries = Object.entries(data);
-                if (entries.length === 0) {{ container.innerHTML = ''; return; }}
-                container.innerHTML = entries.map(([id, d]) => `
-                    <div class="p-4 md:p-5 bg-slate-900 border border-slate-800 rounded-2xl">
-                        <div class="flex justify-between items-center mb-3 md:mb-4">
-                            <p class="text-xs md:text-sm font-bold truncate flex-1 mr-3 md:mr-4 text-slate-300 font-mono" title="${{d.filename}}">${{d.filename}}</p>
-                            <span class="text-[8px] md:text-[10px] font-black uppercase px-2 md:px-3 py-0.5 md:py-1 rounded ${{d.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : d.status === 'failed' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}}">
-                                ${{d.status === 'completed' ? 'concluído' : d.status === 'failed' ? 'falhou' : 'baixando'}}
-                            </span>
-                        </div>
-                        <div class="w-full h-1.5 md:h-2 bg-slate-800 rounded-full overflow-hidden">
-                            <div class="h-full bg-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)] transition-all duration-500" style="width: ${{d.progress}}%"></div>
-                        </div>
-                    </div>
-                `).join('');
-                if (entries.some(([_, d]) => d.status === 'completed')) updateModels();
-            }} catch (e) {{}}
-        }}
-
-        async function updateModels() {{
-            try {{
-                const [res, cfgRes] = await Promise.all([fetch('/models'), fetch('/config')]);
-                const data = await res.json();
-                const cfg = await cfgRes.json();
-                document.getElementById('model-count').innerText = `${{data.models.length}} UNIDADES`;
-                const oldContainer = document.getElementById('model-list-container');
-                const newHtml = data.models.map(m => {{
-                    const m_js = m.path.replace(/\\\\\\\\/g, '/');
-                    if (m.last_config) window.modelConfigs[m.path] = m.last_config;
-                    const hasConfigClass = m.last_config ? 'text-blue-400' : 'text-slate-100';
-                    const historyIcon = m.last_config ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
-                    const isRunning = currentRunningModelPath && m_js === currentRunningModelPath.replace(/\\\\\\\\/g, '/');
-                    const isActive = currentSelectedModel === m_js ? 'active-selection' : '';
-                    const runningClass = isRunning ? 'running-now' : '';
-                    const hashId = m.id;
-                    const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
-                    return `<div id="${{hashId}}" class="model-item-container group flex items-center justify-between p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${{isActive}} ${{runningClass}}" data-path="${{m_js}}">
-                        <div class="flex-1 min-w-0 mr-4 md:mr-6 cursor-pointer" onclick="selectModel('${{m_js}}', '${{hashId}}')">
-                            <div class="flex items-center gap-2 md:gap-3 mb-1 md:mb-2">
-                                <i class="fas fa-cube text-blue-400 text-[10px] md:text-xs"></i>
-                                <p class="model-name text-sm md:text-base font-bold ${{hasConfigClass}} break-all line-clamp-2" title="${{m.name}}">${{m.name}}</p>
-                                ${{historyIcon}}
-                            </div>
-                            <p class="text-[9px] md:text-xs text-slate-500 truncate uppercase tracking-tighter font-mono">${{m.dir}}</p>
-                        </div>
-                        <div class="flex items-center gap-3 md:gap-6">
-                            <div class="flex items-center gap-1">
-                                <button onclick="renameModel('${{m_js}}')" class="rename-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-blue-500/20 text-slate-600 hover:text-blue-500 transition-all ${{isRunning ? 'hidden' : ''}}" title="Renomear Modelo">
-                                    <i class="fas fa-edit text-[10px] md:text-xs"></i>
-                                </button>
-                                <button onclick="deleteModel('${{m_js}}')" class="delete-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all ${{isRunning ? 'hidden' : ''}}" title="Excluir Modelo">
-                                    <i class="fas fa-trash-alt text-[10px] md:text-xs"></i>
-                                </button>
-                            </div>
-                            <div class="flex flex-col items-center gap-1 md:gap-1.5">
-                                <span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
-                                <input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${{m.path === cfg.default_model ? 'checked' : ''}} onclick="setDefaultModel(this, '${{m_js}}')">
-                            </div>
-                            <div class="action-btn-container">${{buttonsHtml}}</div>
-                        </div>
-                    </div>`;
-                }}).join('');
-                if (oldContainer.innerHTML !== newHtml) oldContainer.innerHTML = newHtml;
-
-                const projSelect = document.getElementById('mmproj-path');
-                const currentVal = projSelect.value;
-                let projHtml = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>';
-                data.projectors.forEach(p => {{
-                    projHtml += `<option value="${{p.path}}" class="bg-slate-900">${{p.name}}</option>`;
-                }});
-                if (projSelect.innerHTML.trim() !== projHtml.trim()) {{
-                    projSelect.innerHTML = projHtml;
-                    projSelect.value = currentVal;
-                    if (projSelect.value !== currentVal) projSelect.value = "";
-                }}
-            }} catch (e) {{}}
-        }}
-
-        async function renameModel(path) {{
-            const currentName = path.split('/').pop().replace('.gguf', '');
-            const newName = prompt("Digite o novo nome para o modelo:", currentName);
-            if (!newName || newName === currentName) return;
-            try {{
-                const res = await fetch('/rename', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{path, new_name: newName}}),
-                }});
-                if (res.ok) updateModels();
-                else {{ const err = await res.json(); alert("Erro ao renomear: " + (err.detail || "Erro desconhecido")); }}
-            }} catch (e) {{
-                alert("Erro de rede ao renomear modelo.");
-            }}
-        }}
-
-        async function deleteModel(path) {{
-            if (!confirm("TEM CERTEZA QUE DESEJA EXCLUIR ESTE MODELO DO DISCO?\\nEsta ação é irreversível.")) return;
-            try {{
-                const res = await fetch('/delete', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{path}}),
-                }});
-                if (res.ok) updateModels();
-                else {{ const err = await res.json(); alert("Erro ao excluir: " + (err.detail || "Erro desconhecido")); }}
-            }} catch (e) {{
-                alert("Erro de rede ao excluir modelo.");
-            }}
-        }}
-
-        async function startModel(path, elementId) {{
-            if (currentSelectedModel !== path) {{
-                selectModel(path, elementId);
-                await new Promise(r => setTimeout(r, 100));
-            }}
-            const weights = [];
-            document.getElementById('log-box').innerHTML = '';
-            document.querySelectorAll('.gpu-row').forEach(r => {{
-                const isChecked = r.querySelector('.gpu-checkbox').checked;
-                const isMain = r.querySelector('.gpu-main-radio').checked;
-                weights.push({{
-                    index: parseInt(r.dataset.index),
-                    weight: parseInt(r.querySelector('.gpu-weight').value || 0),
-                    name: "GPU",
-                    active: isChecked,
-                    is_main: isMain,
-                }});
-            }});
-            if (!weights.some(w => w.active)) return alert("SELECIONE PELO MENOS UMA GPU");
-            const mmprojPath = document.getElementById('mmproj-path').value;
-            const splitMode = document.getElementById('split-mode').value;
-            document.getElementById('status-badge').innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> INICIALIZANDO...';
-            try {{
-                await fetch('/start', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{
-                        path,
-                        mmproj_path: mmprojPath || null,
-                        gpu_weights: weights,
-                        context_size: parseInt(document.getElementById('context-size').value),
-                        split_mode: splitMode,
-                    }}),
-                }});
-            }} catch (e) {{
-                alert("Erro ao iniciar modelo.");
-            }}
-            setTimeout(updateStatus, 2000);
-        }}
-
-        async function stopModel() {{
-            if (confirm("ENCERRAR PROCESSO?")) {{
-                await fetch('/stop', {{method: 'POST'}});
-                setTimeout(updateStatus, 1000);
-            }}
-        }}
-
-        setInterval(updateMetrics, 2000);
-        setInterval(updateStatus, 3000);
-        setInterval(updateDownloads, 3000);
-        setInterval(updateModels, 5000);
+        window.__constants = {{
+            CONTEXT_PRESET_VALUES: {json.dumps(CONTEXT_PRESET_VALUES)},
+            DEFAULT_CONTEXT_SIZE: {DEFAULT_CONTEXT_SIZE},
+            CONTEXT_K_MULTIPLIER: {CONTEXT_K_MULTIPLIER},
+            DEFAULT_PARALLEL_SLOTS: {DEFAULT_PARALLEL_SLOTS},
+            DEFAULT_BATCH_SIZE: {DEFAULT_BATCH_SIZE},
+        }};
     </script>
-    <script src="/static/js/pacman_bg.js"></script>
+    <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>
+    <script src="/static/js/pacman_bg.js?v={_DASHBOARD_JS_V}"></script>
 </body>
 </html>"""
 
@@ -1410,11 +1259,17 @@ async def startup_event():
                         GPUWeight(**w) if isinstance(w, dict) else w
                         for w in saved_cfg["gpu_weights"]
                     ]
-                    for w in weights:
-                        if not hasattr(w, "active"):
-                            w.active = True
+                    weights = gpu_manager.normalize_gpu_weights(weights)
                     context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
+                    parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
+                    batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
                     mmproj_path = saved_cfg.get("mmproj_path")
+                    split_mode = saved_cfg.get("split_mode", "layer")
+                    thinking_enabled = saved_cfg.get("thinking_enabled", True)
+                    mtp_enabled = saved_cfg.get("mtp_enabled", False)
+                    mtp_draft_tokens = saved_cfg.get(
+                        "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
+                    )
                 else:
                     gpus = gpu_manager.detect_gpus()
                     weights = []
@@ -1432,13 +1287,26 @@ async def startup_event():
                             )
                         )
                     context_size = DEFAULT_CONTEXT_SIZE
+                    parallel_slots = DEFAULT_PARALLEL_SLOTS
+                    batch_size = DEFAULT_BATCH_SIZE
                     mmproj_path = None
+                    split_mode = "layer"
+                    thinking_enabled = True
+                    mtp_enabled = False
+                    mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
 
                 process_manager.start(
                     model_path=default_model,
                     gpu_weights=weights,
                     context_size=context_size,
                     mmproj_path=mmproj_path,
+                    split_mode=split_mode,
+                    parallel_slots=parallel_slots,
+                    batch_size=batch_size,
+                    thinking_enabled=thinking_enabled,
+                    mtp_enabled=mtp_enabled,
+                    mtp_draft_tokens=mtp_draft_tokens,
+                    total_layers=saved_cfg.get("total_layers", 0),
                 )
             except Exception as e:
                 logger.error(f"Auto-start error: {e}")

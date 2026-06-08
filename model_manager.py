@@ -1,6 +1,7 @@
 """Model discovery, rename, delete, and downloads."""
 
 import os
+import shutil
 import time
 import uuid
 import logging
@@ -11,10 +12,42 @@ import requests
 from fastapi import HTTPException
 
 from config_manager import ConfigManager
+from paths import MODELS_DIR
 from process_manager import ProcessManager
-
-MODELS_DIR = "/media/docker/models"
 logger = logging.getLogger("automanager")
+_GB = 1024**3
+
+
+def _directory_size_bytes(path: str) -> int:
+    total = 0
+    if not os.path.isdir(path):
+        return 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def get_repository_storage(models_dir: str = MODELS_DIR) -> dict:
+    """Used GB in the models tree and total GB on the hosting filesystem."""
+    used_bytes = _directory_size_bytes(models_dir)
+    total_bytes = 0
+    try:
+        stat_path = models_dir if os.path.exists(models_dir) else os.path.dirname(
+            models_dir.rstrip("/\\")
+        )
+        if stat_path:
+            total_bytes = shutil.disk_usage(stat_path).total
+    except OSError as exc:
+        logger.warning("Storage stats unavailable for %s: %s", models_dir, exc)
+    return {
+        "path": models_dir,
+        "used_gb": round(used_bytes / _GB, 1),
+        "total_gb": round(total_bytes / _GB, 1),
+    }
 
 
 class ModelScanner:
@@ -70,7 +103,11 @@ class ModelScanner:
             m["mmproj_candidates"] = candidates
             m["auto_mmproj"] = candidates[0] if candidates else None
 
-        return {"models": models, "projectors": projectors}
+        return {
+            "models": models,
+            "projectors": projectors,
+            "storage": get_repository_storage(self.models_dir),
+        }
 
     def rename_model(self, old_path: str, new_name: str) -> str:
         if not old_path.startswith(self.models_dir):
@@ -174,6 +211,10 @@ class DownloadManager:
                 "url": url,
                 "status": "downloading",
                 "progress": 0,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "speed_bps": 0,
+                "start_time": time.time(),
             }
             self._downloads_queue.append(
                 (download_id, url, filename, path)
@@ -184,6 +225,18 @@ class DownloadManager:
         with self._lock:
             return dict(self._downloads)
 
+    def clear_completed(self) -> int:
+        """Remove completed downloads from memory. Returns count cleared."""
+        with self._lock:
+            to_remove = [
+                did
+                for did, d in self._downloads.items()
+                if d.get("status") == "completed"
+            ]
+            for did in to_remove:
+                del self._downloads[did]
+            return len(to_remove)
+
     def _do_download(
         self, download_id: str, url: str, filename: str, path: str
     ) -> None:
@@ -192,14 +245,21 @@ class DownloadManager:
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
+            start_time = time.time()
             with open(path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192 * 4):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if total_size > 0:
-                            with self._lock:
-                                if download_id in self._downloads:
+                        now = time.time()
+                        elapsed = now - start_time
+                        speed_bps = downloaded / elapsed if elapsed > 0 else 0
+                        with self._lock:
+                            if download_id in self._downloads:
+                                self._downloads[download_id]["downloaded_bytes"] = downloaded
+                                self._downloads[download_id]["total_bytes"] = total_size
+                                self._downloads[download_id]["speed_bps"] = speed_bps
+                                if total_size > 0:
                                     self._downloads[download_id][
                                         "progress"
                                     ] = round(
@@ -209,6 +269,7 @@ class DownloadManager:
                 if download_id in self._downloads:
                     self._downloads[download_id]["status"] = "completed"
                     self._downloads[download_id]["progress"] = 100
+                    self._downloads[download_id]["speed_bps"] = 0
             logger.info(f"Download completed: {filename}")
         except Exception as e:
             logger.error(f"Download error {download_id}: {e}")

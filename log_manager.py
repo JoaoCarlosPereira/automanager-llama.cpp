@@ -8,10 +8,14 @@ from typing import Optional
 
 from fastapi.responses import StreamingResponse
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
-SERVER_LOG_PATH = os.path.join(LOGS_DIR, "server.log")
-MANAGER_LOG_PATH = os.path.join(LOGS_DIR, "manager.log")
+from paths import (
+    INSTALL_ROOT,
+    LOGS_DIR,
+    MANAGER_LOG_PATH,
+    SERVER_LOG_PATH,
+)
+
+PROJECT_ROOT = INSTALL_ROOT
 LEGACY_SERVER_LOG_PATH = "/root/llama_server.log"
 LEGACY_MANAGER_LOG_PATH = "/root/manager.log"
 MAX_LOG_SIZE = 10 * 1024 * 1024

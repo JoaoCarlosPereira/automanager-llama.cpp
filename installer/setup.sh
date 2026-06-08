@@ -53,6 +53,20 @@ log_info "Detected ${GPU_COUNT} NVIDIA GPU(s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
+PATHS_FILE="${PROJECT_DIR}/paths.json"
+PATHS_EXAMPLE="${PROJECT_DIR}/paths.json.example"
+
+if [[ ! -f "${PATHS_FILE}" ]]; then
+  if [[ -f "${PATHS_EXAMPLE}" ]]; then
+    cp "${PATHS_EXAMPLE}" "${PATHS_FILE}"
+    log_info "Created ${PATHS_FILE} from paths.json.example"
+  else
+    log_error "Missing ${PATHS_EXAMPLE}. Cannot configure install paths."
+    exit 1
+  fi
+else
+  log_info "Using existing path configuration: ${PATHS_FILE}"
+fi
 
 if [[ -d "${VENV_DIR}" ]]; then
   log_warn "Removing existing venv at ${VENV_DIR}"
@@ -66,8 +80,16 @@ pip install --upgrade pip
 pip install -r "${PROJECT_DIR}/requirements.txt"
 log_info "Python dependencies installed"
 
-mkdir -p "${PROJECT_DIR}/logs"
-mkdir -p /root
+log_info "Creating configured directories..."
+(cd "${PROJECT_DIR}" && python - <<'PY'
+from paths import ensure_directories
+
+paths = ensure_directories()
+print(f"  models_dir  -> {paths.models_dir}")
+print(f"  config_file -> {paths.config_file}")
+print(f"  logs_dir    -> {paths.logs_dir}")
+PY
+)
 
 SERVICE_FILE="/etc/systemd/system/llama-manager.service"
 cat >"${SERVICE_FILE}" <<EOF
@@ -103,3 +125,4 @@ else
 fi
 
 log_info "Installation complete."
+log_info "Edit ${PATHS_FILE} to change models, config, or logs locations, then rerun setup or restart the service."

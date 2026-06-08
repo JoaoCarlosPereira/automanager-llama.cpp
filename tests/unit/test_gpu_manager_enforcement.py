@@ -42,3 +42,22 @@ def test_validate_gpu_weights_rejects_empty(gpu_mgr):
     )
     assert ok is False
     assert "No active GPUs" in msg
+
+
+def test_validate_gpu_weights_requires_100_when_cpu_inactive(gpu_mgr):
+    weights = [
+        GPUWeight(index=0, weight=70, name="a", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=0, name="cpu", active=False, device="cpu"),
+    ]
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
+    assert ok is False
+    assert "100" in msg
+
+
+def test_validate_gpu_weights_ok_gpu_only_100(gpu_mgr):
+    weights = [
+        GPUWeight(index=0, weight=100, name="a", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=0, name="cpu", active=False, device="cpu"),
+    ]
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
+    assert ok is True

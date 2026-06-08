@@ -18,6 +18,7 @@ def _make_watchdog(process_manager=None, config_manager=None):
         "failed": False,
         "message": "",
     }
+    process_manager.auto_balance_active = False
 
     config_manager = config_manager or MagicMock()
 
@@ -118,6 +119,8 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "name": "main",
             "active": True,
             "is_main": False,
+            "pinned": False,
+            "device": "gpu",
         },
         {
             "index": 1,
@@ -125,6 +128,8 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "name": "secondary-1",
             "active": True,
             "is_main": False,
+            "pinned": False,
+            "device": "gpu",
         },
         {
             "index": 2,
@@ -132,6 +137,8 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "name": "secondary-2",
             "active": True,
             "is_main": False,
+            "pinned": False,
+            "device": "gpu",
         },
     ]
     process_manager.start.assert_called_once_with(
@@ -140,6 +147,12 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
         context_size=request.context_size,
         mmproj_path=request.mmproj_path,
         split_mode=request.split_mode,
+        parallel_slots=request.parallel_slots,
+        batch_size=request.batch_size,
+        thinking_enabled=True,
+        mtp_enabled=False,
+        mtp_draft_tokens=3,
+        total_layers=0,
     )
 
 
