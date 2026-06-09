@@ -167,6 +167,40 @@ class TestAutoBalancePlanner:
         )
         assert weights is None
 
+    def test_model_weights_mb_from_disk(self, tmp_path):
+        model = tmp_path / "test.gguf"
+        model.write_bytes(b"\0" * (50 * 1024 * 1024))
+        assert AutoBalancePlanner.model_weights_mb_from_disk(str(model)) == 50
+        assert AutoBalancePlanner.model_weights_mb_from_disk("/missing.gguf") is None
+
+    def test_estimate_model_vram_uses_disk_file_size(self, tmp_path):
+        model = tmp_path / "qwen-49b.gguf"
+        model.write_bytes(b"\0" * (100 * 1024 * 1024))
+        est = AutoBalancePlanner.estimate_model_vram_mb(str(model), 65536, 1)
+        assert est >= 100 + 6553  # weights + ctx overhead (65536*0.1)
+
+    def test_plan_min_gpu_count_for_large_model(self):
+        spill = SPILL_ORDER_3090_MAIN
+        vram = {0: 16384, 1: 16384, 2: 24576}
+        assert AutoBalancePlanner.plan_min_gpu_count(spill, vram, 4 * 1024) == 1
+        assert AutoBalancePlanner.plan_min_gpu_count(spill, vram, 30 * 1024) == 2
+        assert AutoBalancePlanner.plan_min_gpu_count(spill, vram, 80 * 1024) == 3
+
+    def test_estimate_cpu_spill_weight_gpu_only_when_fits(self):
+        total = 24576 + 16384 + 16384
+        assert AutoBalancePlanner.estimate_cpu_spill_weight(total, 50 * 1024) == 0
+
+    def test_estimate_cpu_spill_weight_when_model_exceeds_vram(self):
+        total = 24576 + 16384 + 16384
+        cpu = AutoBalancePlanner.estimate_cpu_spill_weight(total, 70 * 1024)
+        assert 0 < cpu <= 90
+
+    def test_align_cpu_weight_step(self):
+        assert AutoBalancePlanner.align_cpu_weight_step(0) == 0
+        assert AutoBalancePlanner.align_cpu_weight_step(1) == 10
+        assert AutoBalancePlanner.align_cpu_weight_step(22) == 30
+        assert AutoBalancePlanner.align_cpu_weight_step(95) == 90
+
 
 @pytest.mark.parametrize(
     "line",

@@ -4,7 +4,8 @@ Priority-fill order (cláusula pétrea): main GPU -> spill GPUs in order -> CPU.
 Phase 1 activates GPUs one at a time with the main at maximum share; Phase 2
 raises each GPU's weight (in that order) until VRAM reaches ~95%% before
 spilling to the next device. CPU offload is only attempted after all selected
-GPUs are active.
+GPUs are active. Model VRAM need is estimated from the on-disk GGUF size (plus
+KV-cache/context overhead) to plan GPU count and CPU spill targets.
 """
 
 from __future__ import annotations
@@ -45,6 +46,8 @@ FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 CPU_OFFLOAD_STEP = 10  # CPU escalates in 10% increments
 DEFAULT_N_GPU_LAYERS = 99  # Default llama-server --ngl value
 # No MAX_CPU_WEIGHT_PCT — CPU uses whatever is needed as spill-over
+MODEL_RUNTIME_OVERHEAD_MB = 256  # mmap/metadata headroom on top of GGUF weights
+MODEL_RUNTIME_OVERHEAD_RATIO = 0.05  # 5% of file size, whichever is larger
 
 
 class AutoBalanceCancelled(Exception):
@@ -595,47 +598,104 @@ class AutoBalancePlanner:
         return scaled_map, cpu_weight
 
     @staticmethod
-    def estimate_model_vram_mb(
-        model_path: str, context_size: int, parallel_slots: int
-    ) -> int:
-        """Estimate model VRAM requirements in MB.
+    def model_weights_mb_from_disk(model_path: str) -> Optional[int]:
+        """Return GGUF file size in MB, or None if the path is missing/unreadable."""
+        if not model_path:
+            return None
+        try:
+            if not os.path.isfile(model_path):
+                return None
+            return int(os.path.getsize(model_path) / (1024 * 1024))
+        except OSError:
+            return None
 
-        Uses a heuristic based on model filename pattern and context size.
-        Returns estimated MB needed to load the model in GPU memory.
-
-        Heuristics:
-        - Filename contains parameter count (e.g., "7b", "13b", "70b")
-        - Quantization affects size (Q4 ~4bpw, Q5 ~5bpw, Q8 ~8bpw)
-        - Context size adds KV cache overhead
-        """
+    @staticmethod
+    def _estimate_from_filename(model_path: str) -> float:
+        """Heuristic model weight size in GB from filename (before KV cache)."""
         model_name = os.path.basename(model_path).lower()
-        estimated_model_size_gb = 0.0
-
-        # Extract parameter count from filename
-        import re as _re
-        param_match = _re.search(r'(\d+\.?\d*)\s*[bB]', model_name)
+        param_match = re.search(r"(\d+\.?\d*)\s*[bB]", model_name)
         if param_match:
             params_b = float(param_match.group(1)) * 1e9
-            # Base model size in bytes (FP16 = 2 bytes per param)
             base_size_bytes = params_b * 2
             estimated_model_size_gb = base_size_bytes / (1024 ** 3)
         else:
-            # Fallback: estimate based on file size patterns
-            # GGUF files typically 1-100GB; assume ~7B Q4 as baseline (~4GB)
-            estimated_model_size_gb = 4.0  # conservative default
-
-        # Apply quantization factor (estimate Q4 as default for GGUF)
-        # Q4_K_M ≈ 4 bits per weight → ~0.5x FP16 size
+            estimated_model_size_gb = 4.0
         quant_factor = 0.5
-        model_size_gb = estimated_model_size_gb * quant_factor
+        return estimated_model_size_gb * quant_factor
 
-        # Add context/KV cache overhead
-        # KV cache ≈ 2 * layers * head_dim * hidden_size * ctx_slots * 2 bytes
-        # Simplified: ~0.1 MB per context token per slot for typical models
+    @staticmethod
+    def _runtime_overhead_mb(weights_mb: int) -> int:
+        return max(MODEL_RUNTIME_OVERHEAD_MB, int(weights_mb * MODEL_RUNTIME_OVERHEAD_RATIO))
+
+    @staticmethod
+    def plan_min_gpu_count(
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+        estimated_model_vram_mb: int,
+    ) -> int:
+        """
+        Minimum GPUs (in spill order) whose combined VRAM at 95% fill can hold
+        the estimated model size. Always at least 1 (main GPU is tried first).
+        """
+        if estimated_model_vram_mb <= 0 or not spill_order:
+            return 1
+        cumulative = 0
+        for pos, idx in enumerate(spill_order):
+            cumulative += max(0, vram_by_index.get(idx, 0))
+            if cumulative * (TARGET_VRAM_PCT_MIN / 100.0) >= estimated_model_vram_mb:
+                return pos + 1
+        return len(spill_order)
+
+    @staticmethod
+    def estimate_cpu_spill_weight(
+        total_gpu_vram_mb: int,
+        estimated_model_vram_mb: int,
+    ) -> int:
+        """
+        Estimated CPU weight (%%) when all GPUs are filled to TARGET_VRAM_PCT_MAX.
+        Returns 0 when the model should fit entirely on GPU VRAM.
+        """
+        if estimated_model_vram_mb <= 0 or total_gpu_vram_mb <= 0:
+            return 0
+        usable_gpu_mb = total_gpu_vram_mb * (TARGET_VRAM_PCT_MAX / 100.0)
+        if usable_gpu_mb >= estimated_model_vram_mb:
+            return 0
+        gpu_fraction = usable_gpu_mb / estimated_model_vram_mb
+        cpu_weight = DEVICE_BUDGET_TOTAL - int(round(gpu_fraction * DEVICE_BUDGET_TOTAL))
+        return max(0, min(90, cpu_weight))
+
+    @staticmethod
+    def align_cpu_weight_step(cpu_weight: int) -> int:
+        """Round CPU weight up to the next offload step (10%%, max 90%%)."""
+        if cpu_weight <= 0:
+            return 0
+        stepped = (
+            (cpu_weight + CPU_OFFLOAD_STEP - 1) // CPU_OFFLOAD_STEP
+        ) * CPU_OFFLOAD_STEP
+        return min(90, stepped)
+
+    @staticmethod
+    def estimate_model_vram_mb(
+        model_path: str, context_size: int, parallel_slots: int
+    ) -> int:
+        """Estimate total VRAM needed in MB (weights + KV cache + runtime).
+
+        Prefers the on-disk GGUF size when the file exists; falls back to the
+        filename parameter-count heuristic.
+        """
         ctx_overhead_mb = context_size * parallel_slots * 0.1
 
-        total_mb = (model_size_gb * 1024) + ctx_overhead_mb
-        return int(total_mb)
+        disk_mb = AutoBalancePlanner.model_weights_mb_from_disk(model_path)
+        if disk_mb is not None and disk_mb > 0:
+            return disk_mb + ctx_overhead_mb + AutoBalancePlanner._runtime_overhead_mb(
+                disk_mb
+            )
+
+        model_size_gb = AutoBalancePlanner._estimate_from_filename(model_path)
+        weights_mb = int(model_size_gb * 1024)
+        return weights_mb + ctx_overhead_mb + AutoBalancePlanner._runtime_overhead_mb(
+            weights_mb
+        )
 
 
 class AutoBalanceProber:
@@ -731,6 +791,65 @@ class AutoBalanceProber:
         if cpu_config.get("pinned"):
             return int(cpu_config["weight"])
         return 0
+
+    def _cache_model_vram_estimate(self, request, estimated_mb: int) -> None:
+        """Share VRAM estimate with GPUManager / LoadDistributor during probes."""
+        try:
+            self.gpu_manager._cached_model_vram_mb = estimated_mb
+        except AttributeError:
+            pass
+
+    def _apply_cpu_budget(
+        self,
+        weight_map: Dict[int, int],
+        cpu_weight: int,
+        target_cpu: int,
+        spill_order: List[int],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+    ) -> Tuple[Optional[Dict[int, int]], int]:
+        """Set CPU offload to *target_cpu*, taking GPU budget from spill order."""
+        target_cpu = self.planner.align_cpu_weight_step(
+            max(cpu_weight, min(90, int(target_cpu)))
+        )
+        if target_cpu <= cpu_weight:
+            return dict(weight_map), cpu_weight
+        gpu_target = self._gpu_budget(target_cpu)
+        shifted = self.planner.shift_gpu_budget_for_cpu(
+            weight_map, spill_order, pinned_map, gpu_target
+        )
+        if shifted is None:
+            return None, cpu_weight
+        new_map = self.planner.apply_pins(
+            shifted,
+            pinned_map,
+            spill_order,
+            active_indices,
+            vram_by_index,
+            gpu_target,
+        )
+        if new_map is None:
+            return None, cpu_weight
+        return new_map, target_cpu
+
+    def _model_plan_summary(
+        self,
+        request,
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+    ) -> Tuple[int, int, Optional[int], int]:
+        """Return (estimated_mb, planned_gpu_count, disk_mb, estimated_cpu)."""
+        estimated_mb = self.planner.estimate_model_vram_mb(
+            request.path, request.context_size, request.parallel_slots
+        )
+        disk_mb = self.planner.model_weights_mb_from_disk(request.path)
+        planned_gpus = self.planner.plan_min_gpu_count(
+            spill_order, vram_by_index, estimated_mb
+        )
+        total_vram = sum(vram_by_index.get(i, 0) for i in spill_order)
+        est_cpu = self.planner.estimate_cpu_spill_weight(total_vram, estimated_mb)
+        return estimated_mb, planned_gpus, disk_mb, est_cpu
 
     def _algorithmic_gpu_map(
         self,
@@ -930,8 +1049,18 @@ class AutoBalanceProber:
         pinned_map = self.planner.pinned_map_from_request(request.gpu_weights)
         cpu_config = self._cpu_config_from_request(request)
         cpu_enabled = bool(cpu_config.get("enabled"))
+        estimated_mb, planned_gpus, disk_mb, est_cpu = self._model_plan_summary(
+            request, spill_order, vram_by_index
+        )
+        self._cache_model_vram_estimate(request, estimated_mb)
         initial_cpu_weight = self._initial_cpu_weight(cpu_config)
         attempt = 0
+        plan_hint = (
+            f"~{estimated_mb} MB"
+            + (f" (arquivo {disk_mb} MB)" if disk_mb else "")
+            + f", previsto ≥{planned_gpus} GPU(s)"
+            + (f", CPU ~{est_cpu}%" if est_cpu and cpu_enabled else "")
+        )
         initial_map = self._algorithmic_gpu_map(
             spill_order,
             active_indices,
@@ -952,7 +1081,7 @@ class AutoBalanceProber:
 
         self._set_progress(
             0,
-            "Iniciando auto-balance...",
+            f"Iniciando auto-balance ({plan_hint})...",
             weight_map=initial_map,
             all_gpus=all_gpus,
             main_index=main_index,
@@ -972,6 +1101,7 @@ class AutoBalanceProber:
             active_indices,
             attempt,
             cpu_config,
+            estimated_model_mb=estimated_mb,
             allow_cpu=False,
         )
         self._raise_if_cancelled()
@@ -986,6 +1116,7 @@ class AutoBalanceProber:
                 active_indices,
                 attempt,
                 cpu_config,
+                estimated_model_mb=estimated_mb,
             )
         self._raise_if_cancelled()
         if feasible is None:
@@ -1082,6 +1213,7 @@ class AutoBalanceProber:
         attempt: int,
         cpu_config: Dict[str, Any],
         *,
+        estimated_model_mb: int = 0,
         allow_cpu: bool = True,
     ) -> Tuple[Optional[Dict[int, int]], int, int, int]:
         max_active = len(spill_order)
@@ -1089,6 +1221,9 @@ class AutoBalanceProber:
         cpu_enabled = bool(cpu_config.get("enabled"))
         cpu_pinned = bool(cpu_config.get("pinned"))
         cpu_weight = self._initial_cpu_weight(cpu_config)
+        planned_gpus = self.planner.plan_min_gpu_count(
+            spill_order, vram_by_index, estimated_model_mb
+        )
         weight_map = self._algorithmic_gpu_map(
             spill_order,
             active_indices,
@@ -1107,9 +1242,12 @@ class AutoBalanceProber:
             label = self.planner.format_weights_with_cpu(
                 weight_map, spill_order, cpu_weight
             )
+            phase_hint = ""
+            if estimated_model_mb > 0 and active_count < planned_gpus:
+                phase_hint = f" (modelo ~{estimated_model_mb} MB, meta {planned_gpus} GPU(s))"
             self._set_progress(
                 attempt,
-                f"Fase 1 — encaixar modelo: {label}",
+                f"Fase 1 — encaixar modelo{phase_hint}: {label}",
                 weight_map=weight_map,
                 all_gpus=all_gpus,
                 main_index=main_index,
@@ -1180,6 +1318,8 @@ class AutoBalanceProber:
         active_indices: List[int],
         attempt: int,
         cpu_config: Dict[str, Any],
+        *,
+        estimated_model_mb: int = 0,
     ) -> Tuple[Optional[Dict[int, int]], int, int]:
         """After all GPUs are active, shift spill to CPU (secondary GPUs first)."""
         max_active = len(spill_order)
@@ -1195,6 +1335,33 @@ class AutoBalanceProber:
         if weight_map is None:
             return None, attempt, cpu_weight
 
+        if estimated_model_mb <= 0:
+            estimated_model_mb = self.planner.estimate_model_vram_mb(
+                request.path, request.context_size, request.parallel_slots
+            )
+        total_vram = sum(vram_by_index.get(i, 0) for i in active_indices)
+        target_cpu = self.planner.estimate_cpu_spill_weight(
+            total_vram, estimated_model_mb
+        )
+        if target_cpu > cpu_weight:
+            jumped, new_cpu = self._apply_cpu_budget(
+                weight_map,
+                cpu_weight,
+                target_cpu,
+                spill_order,
+                active_indices,
+                vram_by_index,
+                pinned_map,
+            )
+            if jumped is not None:
+                weight_map = jumped
+                cpu_weight = new_cpu
+                logger.info(
+                    "Auto-balance CPU hint from model size (~%s MB): target CPU %s%%",
+                    estimated_model_mb,
+                    cpu_weight,
+                )
+
         max_attempts = max(90 // CPU_OFFLOAD_STEP + 5, 20)
         while attempt < max_attempts and cpu_weight < 90:
             self._raise_if_cancelled()
@@ -1202,9 +1369,14 @@ class AutoBalanceProber:
             label = self.planner.format_weights_with_cpu(
                 weight_map, spill_order, cpu_weight
             )
+            cpu_hint = (
+                f" (~{estimated_model_mb} MB no disco+ctx)"
+                if estimated_model_mb > 0
+                else ""
+            )
             self._set_progress(
                 attempt,
-                f"Fase 1 — offload CPU: {label}",
+                f"Fase 1 — offload CPU{cpu_hint}: {label}",
                 weight_map=weight_map,
                 all_gpus=all_gpus,
                 main_index=main_index,
