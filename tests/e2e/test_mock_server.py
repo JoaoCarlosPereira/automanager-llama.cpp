@@ -24,7 +24,7 @@ def test_status_reflects_start_and_stop(client: TestClient) -> None:
 
     client.post(
         "/start",
-        json={"path": "/models/llama-3.1-8b.gguf", "gpu_weights": []},
+        json={"path": "/models/llama/llama-3.1-8b.gguf", "gpu_weights": []},
     )
     status = client.get("/status").json()
     assert status["running"] is True
@@ -45,7 +45,38 @@ def test_metrics_returns_fake_gpu_data(client: TestClient) -> None:
 def test_models_returns_fake_list(client: TestClient) -> None:
     data = client.get("/models").json()
     assert len(data["models"]) >= 2
-    assert data["projectors"] == []
+    assert len(data["projectors"]) >= 1
+    llama = next(m for m in data["models"] if m["name"] == "llama-3.1-8b.gguf")
+    assert llama["mmproj_candidates"] == ["/models/llama/llama-3.1-8b-mmproj.gguf"]
+    mistral = next(m for m in data["models"] if m["name"] == "mistral-7b.gguf")
+    assert mistral["mmproj_candidates"] == []
+
+
+def test_models_mmproj_persists_selection(client: TestClient) -> None:
+    path = "/models/llama/llama-3.1-8b.gguf"
+    mmproj = "/models/llama/llama-3.1-8b-mmproj.gguf"
+    response = client.post(
+        "/models/mmproj",
+        json={"model_path": path, "mmproj_path": mmproj},
+    )
+    assert response.status_code == 200
+    assert response.json()["mmproj_path"] == mmproj
+    config = client.get("/config").json()
+    assert config["model_configs"][path]["mmproj_path"] == mmproj
+
+
+def test_download_with_model_path_adds_projector(client: TestClient) -> None:
+    response = client.post(
+        "/downloads",
+        json={
+            "url": "https://example.com/mistral-vision.mmproj",
+            "model_path": "/models/text/mistral-7b.gguf",
+        },
+    )
+    assert response.status_code == 200
+    data = client.get("/models").json()
+    mistral = next(m for m in data["models"] if m["name"] == "mistral-7b.gguf")
+    assert "/models/text/mistral-vision.mmproj" in mistral["mmproj_candidates"]
 
 
 def test_logs_sse_stream(client: TestClient) -> None:
@@ -55,14 +86,14 @@ def test_logs_sse_stream(client: TestClient) -> None:
     assert "[INFO] llama server started" in response.text
 
 
-_FAKE_PATH = "/models/llama-3.1-8b.gguf"
+_FAKE_PATH = "/models/llama/llama-3.1-8b.gguf"
 
 
 @pytest.mark.parametrize(
     "method,path,body",
     [
         ("POST", "/rename", {"path": _FAKE_PATH, "new_name": "renamed-model"}),
-        ("POST", "/delete", {"path": "/models/mistral-7b.gguf"}),
+        ("POST", "/delete", {"path": "/models/text/mistral-7b.gguf"}),
         ("POST", "/set_default", {"path": _FAKE_PATH}),
     ],
 )

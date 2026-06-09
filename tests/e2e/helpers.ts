@@ -3,7 +3,7 @@ import { APIRequestContext, Page, expect } from '@playwright/test';
 export const ADMIN_USER = 'admin';
 export const ADMIN_PASS = 'admin';
 
-export const DEFAULT_MODEL_PATH = '/models/llama-3.1-8b.gguf';
+export const DEFAULT_MODEL_PATH = '/models/llama/llama-3.1-8b.gguf';
 
 export async function resetMockState(request: APIRequestContext): Promise<void> {
   await request.post('/__e2e/reset');

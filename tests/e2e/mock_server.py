@@ -23,14 +23,14 @@ _FAKE_MODELS: List[Dict[str, Any]] = [
     {
         "id": "m1",
         "name": "llama-3.1-8b.gguf",
-        "path": "/models/llama-3.1-8b.gguf",
-        "dir": "/models",
+        "path": "/models/llama/llama-3.1-8b.gguf",
+        "dir": "llama",
     },
     {
         "id": "m2",
         "name": "mistral-7b.gguf",
-        "path": "/models/mistral-7b.gguf",
-        "dir": "/models",
+        "path": "/models/text/mistral-7b.gguf",
+        "dir": "text",
     },
     {
         "id": "m3",
@@ -57,11 +57,34 @@ _recovery_state: Dict[str, Any] = {
 
 _downloads_state: Dict[str, Dict[str, Any]] = {}
 _download_counter = 0
+_model_configs: Dict[str, Dict[str, Any]] = {}
+_FAKE_PROJECTORS: List[Dict[str, Any]] = []
 _mocks_installed = False
 _original_routes: Optional[list] = None
 _original_detect_gpus: Any = None
 
-_DEFAULT_START_PATH = "/models/llama-3.1-8b.gguf"
+_DEFAULT_START_PATH = "/models/llama/llama-3.1-8b.gguf"
+
+
+def _model_directory(model_path: str) -> str:
+    if "/" in model_path:
+        return model_path.rsplit("/", 1)[0]
+    return "/models"
+
+
+def _sync_mmproj_candidates() -> None:
+    for model in _FAKE_MODELS:
+        model_dir = _model_directory(model["path"])
+        candidates = sorted(
+            projector["path"]
+            for projector in _FAKE_PROJECTORS
+            if _model_directory(projector["path"]) == model_dir
+        )
+        model["mmproj_candidates"] = candidates
+        model["auto_mmproj"] = candidates[0] if candidates else None
+        saved = _model_configs.get(model["path"], {})
+        if saved:
+            model["last_config"] = copy.deepcopy(saved)
 
 
 def _reset_mock_data() -> None:
@@ -85,18 +108,20 @@ def _reset_mock_data() -> None:
     )
     _downloads_state.clear()
     _download_counter = 0
+    _model_configs.clear()
+    _FAKE_PROJECTORS.clear()
     _FAKE_MODELS[:] = [
         {
             "id": "m1",
             "name": "llama-3.1-8b.gguf",
-            "path": "/models/llama-3.1-8b.gguf",
-            "dir": "/models",
+            "path": "/models/llama/llama-3.1-8b.gguf",
+            "dir": "llama",
         },
         {
             "id": "m2",
             "name": "mistral-7b.gguf",
-            "path": "/models/mistral-7b.gguf",
-            "dir": "/models",
+            "path": "/models/text/mistral-7b.gguf",
+            "dir": "text",
         },
         {
             "id": "m3",
@@ -105,6 +130,17 @@ def _reset_mock_data() -> None:
             "dir": "/models",
         },
     ]
+    _FAKE_PROJECTORS.append(
+        {
+            "path": "/models/llama/llama-3.1-8b-mmproj.gguf",
+            "name": "llama-3.1-8b-mmproj.gguf",
+            "dir": "llama",
+        }
+    )
+    _model_configs["/models/llama/llama-3.1-8b.gguf"] = {
+        "mmproj_path": "/models/llama/llama-3.1-8b-mmproj.gguf",
+    }
+    _sync_mmproj_candidates()
 
 
 def _status_payload() -> Dict[str, Any]:
@@ -265,9 +301,10 @@ async def mock_metrics():
 
 @mock_api.get("/models")
 async def mock_models():
+    _sync_mmproj_candidates()
     return {
         "models": copy.deepcopy(_FAKE_MODELS),
-        "projectors": [],
+        "projectors": copy.deepcopy(_FAKE_PROJECTORS),
         "storage": {
             "path": "/models",
             "used_gb": 42.0,
@@ -278,7 +315,23 @@ async def mock_models():
 
 @mock_api.get("/config")
 async def mock_config():
-    return {"default_model": None, "model_configs": {}}
+    return {
+        "default_model": None,
+        "model_configs": copy.deepcopy(_model_configs),
+    }
+
+
+@mock_api.post("/models/mmproj")
+async def mock_set_mmproj(request: Request):
+    body = await request.json()
+    model_path = body.get("model_path")
+    if not model_path:
+        raise HTTPException(status_code=400, detail="model_path obrigatorio")
+    mmproj_path = body.get("mmproj_path")
+    entry = _model_configs.setdefault(model_path, {})
+    entry["mmproj_path"] = mmproj_path
+    _sync_mmproj_candidates()
+    return {"status": "ok", "mmproj_path": mmproj_path}
 
 
 @mock_api.get("/logs")
@@ -301,7 +354,29 @@ async def mock_post_downloads(request: Request):
     body = await request.json()
     _download_counter += 1
     download_id = f"dl-{_download_counter}"
-    filename = body.get("filename") or "e2e-model.gguf"
+    url = body.get("url", "")
+    model_path = body.get("model_path")
+    if model_path:
+        filename = body.get("filename") or url.split("/")[-1].split("?")[0] or "e2e-vision.mmproj"
+        if not any(
+            marker in filename.lower()
+            for marker in ("mmproj", "clip", "vision", "projector")
+        ):
+            filename = f"{filename}.mmproj" if not filename.endswith(".gguf") else filename.replace(
+                ".gguf", ".mmproj"
+            )
+        projector_path = f"{_model_directory(model_path)}/{filename}"
+        if not any(p["path"] == projector_path for p in _FAKE_PROJECTORS):
+            _FAKE_PROJECTORS.append(
+                {
+                    "path": projector_path,
+                    "name": filename,
+                    "dir": _model_directory(model_path),
+                }
+            )
+        _sync_mmproj_candidates()
+    else:
+        filename = body.get("filename") or "e2e-model.gguf"
     _downloads_state[download_id] = {
         "filename": filename,
         "status": "downloading",
