@@ -338,6 +338,33 @@ def test_start_auto_balance_takes_priority_over_manual_override(
     process_manager.start.assert_not_called()
 
 
+def test_start_auto_balance_clears_pinned_flags(monkeypatch, authenticated_client):
+    """POST /start com auto_balance=true zera pinned antes de delegar (ADR-001)."""
+    process_manager = MagicMock()
+    process_manager.start_auto_balance.return_value = {"probing": True}
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", MagicMock())
+
+    response = authenticated_client.post(
+        "/start",
+        json={
+            "path": "/media/docker/models/model.gguf",
+            "gpu_weights": [
+                {"index": 0, "weight": 70.0, "name": "GPU-0",
+                 "active": True, "is_main": True, "pinned": True},
+                {"index": 1, "weight": 30.0, "name": "GPU-1",
+                 "active": True, "pinned": True},
+            ],
+            "context_size": 4096,
+            "auto_balance": True,
+        },
+    )
+
+    assert response.status_code == 200
+    sent_request = process_manager.start_auto_balance.call_args.args[0]
+    assert all(w.pinned is False for w in sent_request.gpu_weights)
+
+
 # ── CPU offload integration ───────────────────────────────────────────────
 
 
