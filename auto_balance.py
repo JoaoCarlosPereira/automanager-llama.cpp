@@ -84,15 +84,50 @@ class AutoBalancePlanner:
         return weights
 
     @staticmethod
+    def _split_pool_by_vram(
+        indices: List[int],
+        pool: int,
+        vram_by_index: Dict[int, int],
+        *,
+        min_each: int = MIN_SPILL_GPU_WEIGHT,
+    ) -> Optional[Dict[int, int]]:
+        """Split *pool* across *indices* proportionally to VRAM (each >= min_each)."""
+        if pool <= 0 or not indices:
+            return {}
+        if len(indices) == 1:
+            return {indices[0]: pool}
+
+        min_pool = min_each * len(indices)
+        if pool < min_pool:
+            return None
+
+        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in indices)
+        shares: Dict[int, int] = {}
+        remaining = pool
+        for pos, idx in enumerate(indices):
+            if pos == len(indices) - 1:
+                shares[idx] = remaining
+            else:
+                vram = max(1, vram_by_index.get(idx, 1))
+                share = int(round(pool * vram / total_vram))
+                share = max(min_each, min(share, remaining - min_each * (len(indices) - pos - 1)))
+                shares[idx] = share
+                remaining -= share
+        if sum(shares.values()) != pool:
+            shares[indices[-1]] += pool - sum(shares.values())
+        return shares
+
+    @staticmethod
     def weights_for_cascade_spill(
         spill_order: List[int],
         active_count: int,
+        vram_by_index: Optional[Dict[int, int]] = None,
         target_total: int = 100,
     ) -> Optional[Dict[int, int]]:
         """
         Priority-fill template: main (spill_order[0]) keeps the maximum share;
-        each newly activated GPU receives the minimum slice (10%) until the
-        model fits. Order: main -> GPU0 -> GPU1 -> ... -> CPU (handled later).
+        secondary GPUs split the remainder by VRAM (minimum slice each). Order:
+        main -> GPUs by index -> CPU (handled later).
         """
         if active_count <= 0 or active_count > len(spill_order):
             return None
@@ -100,26 +135,76 @@ class AutoBalancePlanner:
         if active_count == 1:
             return {subset[0]: target_total}
 
-        min_secondary = MIN_SPILL_GPU_WEIGHT
-        reserved = min_secondary * (active_count - 1)
-        if reserved >= target_total:
+        secondaries = subset[1:]
+        secondary_pool = MIN_SPILL_GPU_WEIGHT * len(secondaries)
+        if secondary_pool >= target_total - MIN_MAIN_WEIGHT:
             return None
-        main_share = target_total - reserved
+        main_share = target_total - secondary_pool
         if main_share < MIN_MAIN_WEIGHT:
             return None
 
-        weights: Dict[int, int] = {}
-        weights[subset[0]] = main_share
-        remaining = target_total - main_share
-        for pos in range(1, len(subset)):
-            if pos == len(subset) - 1:
-                weights[subset[pos]] = remaining
-            else:
-                weights[subset[pos]] = min_secondary
-                remaining -= min_secondary
+        weights: Dict[int, int] = {subset[0]: main_share}
+        if vram_by_index:
+            sec_weights = AutoBalancePlanner._split_pool_by_vram(
+                secondaries, secondary_pool, vram_by_index
+            )
+            if sec_weights is None:
+                return None
+        else:
+            sec_weights = {idx: MIN_SPILL_GPU_WEIGHT for idx in secondaries}
+            sec_weights[secondaries[-1]] += secondary_pool - sum(sec_weights.values())
+        weights.update(sec_weights)
         if sum(weights.values()) != target_total:
             weights[subset[-1]] += target_total - sum(weights.values())
         return weights
+
+    @staticmethod
+    def shift_gpu_budget_for_cpu(
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+        pinned_map: Dict[int, int],
+        gpu_target: int,
+    ) -> Optional[Dict[int, int]]:
+        """
+        Reduce GPU budget to *gpu_target* by taking weight from later spill GPUs
+        first; the main GPU (spill_order[0]) is reduced only as a last resort.
+        """
+        pinned_map = pinned_map or {}
+        active = AutoBalancePlanner.active_subset(weight_map)
+        if not active:
+            return None
+
+        trial = {idx: weight_map.get(idx, 0) for idx in active}
+        current = sum(trial.values())
+        if current < gpu_target:
+            return AutoBalancePlanner.scale_weight_map(trial, gpu_target)
+        if current == gpu_target:
+            return trial
+
+        to_remove = current - gpu_target
+        for idx in reversed(spill_order):
+            if idx not in trial or trial[idx] <= 0:
+                continue
+            if idx in pinned_map:
+                continue
+            take = min(trial[idx], to_remove)
+            trial[idx] -= take
+            to_remove -= take
+            if to_remove == 0:
+                break
+
+        if to_remove > 0:
+            main_idx = spill_order[0]
+            if main_idx in trial and main_idx not in pinned_map:
+                take = min(trial[main_idx], to_remove)
+                trial[main_idx] -= take
+                to_remove -= take
+
+        if to_remove > 0:
+            return None
+        if sum(trial.values()) != gpu_target:
+            return None
+        return trial
 
     @staticmethod
     def reduce_main_weight(
@@ -248,6 +333,10 @@ class AutoBalancePlanner:
                 return dict(weight_map)
             if total <= 0:
                 return None
+            if total > target_total:
+                return AutoBalancePlanner.shift_gpu_budget_for_cpu(
+                    weight_map, spill_order, {}, target_total
+                )
             return AutoBalancePlanner.scale_weight_map(weight_map, target_total)
         unpinned = [i for i in active_indices if i not in pinned_map]
         merged = dict(weight_map)
@@ -655,7 +744,7 @@ class AutoBalanceProber:
         """Cascade priority-fill split; ignores manual UI percentages."""
         gpu_target = self._gpu_budget(cpu_weight)
         template_map = self.planner.weights_for_cascade_spill(
-            spill_order, active_count, gpu_target
+            spill_order, active_count, vram_by_index, gpu_target
         )
         if template_map is None:
             return None
@@ -677,16 +766,19 @@ class AutoBalanceProber:
         vram_by_index: Dict[int, int],
         pinned_map: Dict[int, int],
     ) -> Tuple[Optional[Dict[int, int]], int]:
-        """Shift load from GPU to CPU in fixed steps. No upper cap — CPU uses what's needed."""
-        # Reserve minimum 10% for GPUs
+        """Shift load from later spill GPUs to CPU; main GPU is reduced last."""
         max_cpu = 90
         new_cpu = min(cpu_weight + CPU_OFFLOAD_STEP, max_cpu)
         if new_cpu <= cpu_weight:
             return None, cpu_weight
         gpu_target = self._gpu_budget(new_cpu)
-        template_map = self.planner.scale_weight_map(weight_map, 100)
+        shifted = self.planner.shift_gpu_budget_for_cpu(
+            weight_map, spill_order, pinned_map, gpu_target
+        )
+        if shifted is None:
+            return None, cpu_weight
         new_map = self.planner.apply_pins(
-            template_map,
+            shifted,
             pinned_map,
             spill_order,
             active_indices,
@@ -837,6 +929,7 @@ class AutoBalanceProber:
         spill_order = self.planner.spill_order(main_index, active_indices)
         pinned_map = self.planner.pinned_map_from_request(request.gpu_weights)
         cpu_config = self._cpu_config_from_request(request)
+        cpu_enabled = bool(cpu_config.get("enabled"))
         initial_cpu_weight = self._initial_cpu_weight(cpu_config)
         attempt = 0
         initial_map = self._algorithmic_gpu_map(
@@ -879,7 +972,21 @@ class AutoBalanceProber:
             active_indices,
             attempt,
             cpu_config,
+            allow_cpu=False,
         )
+        self._raise_if_cancelled()
+        if feasible is None and cpu_enabled and not cpu_config.get("pinned"):
+            feasible, attempt, cpu_weight = self._escalate_cpu_until_feasible(
+                request,
+                all_gpus,
+                main_index,
+                spill_order,
+                vram_by_index,
+                pinned_map,
+                active_indices,
+                attempt,
+                cpu_config,
+            )
         self._raise_if_cancelled()
         if feasible is None:
             self.process_manager.stop()
@@ -974,6 +1081,8 @@ class AutoBalanceProber:
         active_indices: List[int],
         attempt: int,
         cpu_config: Dict[str, Any],
+        *,
+        allow_cpu: bool = True,
     ) -> Tuple[Optional[Dict[int, int]], int, int, int]:
         max_active = len(spill_order)
         active_count = 1
@@ -990,8 +1099,7 @@ class AutoBalanceProber:
         )
         if weight_map is None:
             return None, active_count, attempt, cpu_weight
-        gpu_target = self._gpu_budget(cpu_weight)
-        max_attempts = max(max_active * 35, 90 // CPU_OFFLOAD_STEP * 5)  # max CPU = 90% (reserve 10% for GPUs)
+        max_attempts = max(max_active * 35, 90 // CPU_OFFLOAD_STEP * 5)
 
         while attempt < max_attempts:
             self._raise_if_cancelled()
@@ -1041,16 +1149,9 @@ class AutoBalanceProber:
                     )
                     if weight_map is None:
                         return None, active_count, attempt, cpu_weight
-                    gpu_target = self._gpu_budget(cpu_weight)
                     continue
 
-                if (
-                    cpu_enabled
-                    and not cpu_pinned
-                    and self._should_add_cpu(
-                        active_indices, weight_map, cpu_enabled
-                    )
-                ):
+                if allow_cpu and cpu_enabled and not cpu_pinned:
                     new_map, new_cpu = self._escalate_cpu_offload(
                         weight_map,
                         cpu_weight,
@@ -1062,12 +1163,90 @@ class AutoBalanceProber:
                     if new_map is not None:
                         weight_map = new_map
                         cpu_weight = new_cpu
-                        gpu_target = self._gpu_budget(cpu_weight)
                         continue
 
                 return None, active_count, attempt, cpu_weight
 
         return None, active_count, attempt, cpu_weight
+
+    def _escalate_cpu_until_feasible(
+        self,
+        request,
+        all_gpus: List[dict],
+        main_index: int,
+        spill_order: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        active_indices: List[int],
+        attempt: int,
+        cpu_config: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[int, int]], int, int]:
+        """After all GPUs are active, shift spill to CPU (secondary GPUs first)."""
+        max_active = len(spill_order)
+        cpu_weight = self._initial_cpu_weight(cpu_config)
+        weight_map = self._algorithmic_gpu_map(
+            spill_order,
+            active_indices,
+            vram_by_index,
+            pinned_map,
+            max_active,
+            cpu_weight,
+        )
+        if weight_map is None:
+            return None, attempt, cpu_weight
+
+        max_attempts = max(90 // CPU_OFFLOAD_STEP + 5, 20)
+        while attempt < max_attempts and cpu_weight < 90:
+            self._raise_if_cancelled()
+            attempt += 1
+            label = self.planner.format_weights_with_cpu(
+                weight_map, spill_order, cpu_weight
+            )
+            self._set_progress(
+                attempt,
+                f"Fase 1 — offload CPU: {label}",
+                weight_map=weight_map,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+                cpu_weight=cpu_weight,
+                cpu_config=cpu_config,
+            )
+            outcome = self._probe_start(
+                request,
+                weight_map,
+                main_index,
+                all_gpus,
+                attempt,
+                cpu_weight=cpu_weight,
+                cpu_config=cpu_config,
+            )
+            if outcome == "cancelled":
+                raise AutoBalanceCancelled()
+            if outcome == "ready":
+                weight_map, cpu_weight = self._finalize_cpu_split(
+                    weight_map, cpu_config
+                )
+                return dict(weight_map), attempt, cpu_weight
+
+            if outcome in ("oom", "timeout", "crashed"):
+                new_map, new_cpu = self._escalate_cpu_offload(
+                    weight_map,
+                    cpu_weight,
+                    spill_order,
+                    active_indices,
+                    vram_by_index,
+                    pinned_map,
+                )
+                if new_map is None:
+                    return None, attempt, cpu_weight
+                weight_map = new_map
+                cpu_weight = new_cpu
+                continue
+
+            return None, attempt, cpu_weight
+
+        return None, attempt, cpu_weight
 
     def _maximize_vram_per_gpu(
         self,
@@ -1153,11 +1332,14 @@ class AutoBalanceProber:
 
                 time.sleep(VRAM_SETTLE_SEC)
                 vram_pct = self._get_vram_pct(target_idx)
+                if vram_pct > TARGET_VRAM_PCT_MAX:
+                    hi = mid - 1
+                    continue
                 if vram_pct >= best_vram:
                     best = trial
                     best_vram = vram_pct
 
-                if vram_pct >= TARGET_VRAM_PCT:
+                if TARGET_VRAM_PCT_MIN <= vram_pct <= TARGET_VRAM_PCT_MAX:
                     break
 
                 lo = mid + 1

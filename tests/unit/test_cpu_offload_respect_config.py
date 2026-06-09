@@ -406,6 +406,7 @@ def test_discover_excludes_cpu_from_spill_order():
         _active_indices,
         _attempt,
         cpu_config,
+        **_kwargs,
     ):
         captured["spill_order"] = list(spill_order)
         captured["main_index"] = main_index
@@ -413,6 +414,7 @@ def test_discover_excludes_cpu_from_spill_order():
         return None, 1, 0, 0
 
     prober._find_feasible_split = _spy_find_feasible_split
+    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
 
     prober.discover(request)
 
@@ -460,11 +462,13 @@ def test_discover_passes_cpu_config_when_cpu_enabled():
         _active_indices,
         _attempt,
         cpu_config,
+        **_kwargs,
     ):
         captured["cpu_config"] = cpu_config
         return None, 1, 0, 30
 
     prober._find_feasible_split = _spy_find_feasible_split
+    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
 
     prober.discover(request)
 
@@ -564,11 +568,13 @@ def test_discover_starts_with_zero_cpu_when_not_pinned():
         _active_indices,
         _attempt,
         cpu_config,
+        **_kwargs,
     ):
         captured["cpu_config"] = cpu_config
         return None, 2, 0, 0
 
     prober._find_feasible_split = _spy_find_feasible_split
+    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
     prober.discover(request)
 
     assert captured["cpu_config"]["enabled"] is True

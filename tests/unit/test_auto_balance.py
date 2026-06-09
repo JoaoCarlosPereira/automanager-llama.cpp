@@ -29,9 +29,10 @@ THREE_GPU_HARDWARE = [
 MAIN_GPU_INDEX = 2
 SPILL_ORDER_3090_MAIN = [2, 0, 1]
 
-# Fase 1 cascade (3090 principal): main max, demais GPUs com fatia mínima (10%).
+# Fase 1 cascade (3090 principal): main max, demais GPUs com fatia mínima por VRAM.
 CASCADE_GPU_ONLY_MAP = {2: 80, 0: 10, 1: 10}
-CASCADE_CPU_OFFLOAD_MAP = {2: 72, 0: 9, 1: 9}
+# CPU +10%: tira das GPUs secundárias (ordem inversa de spill) antes da principal.
+CASCADE_CPU_OFFLOAD_MAP = {2: 80, 0: 10, 1: 0}
 VALID_GPU_ONLY_CPU = 0
 VALID_CPU_OFFLOAD_CPU = 10
 
@@ -68,9 +69,48 @@ class TestAutoBalancePlanner:
         assert weights == {2: 90, 0: 10}
 
     def test_cascade_spill_three_gpus_main_gets_80(self):
-        weights = AutoBalancePlanner.weights_for_cascade_spill([2, 0, 1], 3)
+        vram = {0: 16384, 1: 16384, 2: 24576}
+        weights = AutoBalancePlanner.weights_for_cascade_spill(
+            [2, 0, 1], 3, vram
+        )
         assert weights == {2: 80, 0: 10, 1: 10}
         assert sum(weights.values()) == 100
+
+    def test_cascade_spill_secondary_split_by_vram(self):
+        vram = {0: 24000, 1: 8000, 2: 24576, 3: 8000}
+        weights = AutoBalancePlanner.weights_for_cascade_spill(
+            [2, 0, 1, 3], 4, vram
+        )
+        assert weights[2] == 70
+        assert weights[2] > max(weights[0], weights[1], weights[3])
+        assert sum(weights.values()) == 100
+
+    def test_split_pool_by_vram_skews_larger_cards(self):
+        shares = AutoBalancePlanner._split_pool_by_vram(
+            [0, 1], 40, {0: 24000, 1: 8000}
+        )
+        assert shares[0] > shares[1]
+        assert sum(shares.values()) == 40
+
+    def test_shift_gpu_budget_takes_from_last_spill_gpu_first(self):
+        shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
+            {2: 80, 0: 10, 1: 10},
+            [2, 0, 1],
+            {},
+            90,
+        )
+        assert shifted == {2: 80, 0: 10, 1: 0}
+
+    def test_shift_gpu_budget_main_is_last_resort(self):
+        shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
+            {2: 80, 0: 10, 1: 0},
+            [2, 0, 1],
+            {},
+            70,
+        )
+        assert shifted.get(0, 0) == 0
+        assert shifted.get(1, 0) == 0
+        assert shifted[2] == 70
 
     def test_cascade_spill_respects_target_total_with_cpu_budget(self):
         weights = AutoBalancePlanner.weights_for_cascade_spill(
@@ -426,7 +466,7 @@ class TestCanonicalAutoBalanceStates:
         self._assert_canonical_export(normalized, enforced_cpu)
 
     def test_valid_state_cpu_offload_cascade_scaled(self):
-        """Com offload CPU 10%: GPUs escaladas para 90% (72/9/9 + CPU 10%)."""
+        """Com offload CPU 10%: tira da última GPU secundária (80/10/0 + CPU 10%)."""
         gpu_map = dict(CASCADE_CPU_OFFLOAD_MAP)
         normalized, enforced_cpu = AutoBalancePlanner.enforce_device_budget(
             gpu_map, CPU_VALVE_ON
@@ -436,7 +476,7 @@ class TestCanonicalAutoBalanceStates:
         self._assert_canonical_export(normalized, enforced_cpu)
 
     def test_escalate_cpu_offload_from_cascade_produces_scaled_map(self):
-        """Fase 1: CPU +10% a partir do cascade 80/10/10 -> 72/9/9 + CPU 10%."""
+        """Fase 1: CPU +10% a partir do cascade 80/10/10 -> 80/10/0 + CPU 10%."""
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
@@ -455,12 +495,14 @@ class TestCanonicalAutoBalanceStates:
         assert new_cpu == VALID_CPU_OFFLOAD_CPU
         self._assert_canonical_export(new_map, new_cpu)
 
-    def test_scale_weight_map_derives_offload_from_cascade_reference(self):
-        scaled = AutoBalancePlanner.scale_weight_map(
+    def test_shift_gpu_budget_derives_offload_from_cascade_reference(self):
+        shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
             CASCADE_GPU_ONLY_MAP,
+            SPILL_ORDER_3090_MAIN,
+            {},
             DEVICE_BUDGET_TOTAL - VALID_CPU_OFFLOAD_CPU,
         )
-        assert scaled == CASCADE_CPU_OFFLOAD_MAP
+        assert shifted == CASCADE_CPU_OFFLOAD_MAP
 
 
 class TestDeviceBudgetInvariants:
@@ -485,12 +527,14 @@ class TestDeviceBudgetInvariants:
         assert normalized == gpu_map
 
     def test_enforce_cpu_offload_10_splits_gpu_to_90(self):
-        scaled = AutoBalancePlanner.scale_weight_map(
+        shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
             CASCADE_GPU_ONLY_MAP,
+            SPILL_ORDER_3090_MAIN,
+            {},
             DEVICE_BUDGET_TOTAL - VALID_CPU_OFFLOAD_CPU,
         )
         normalized, cpu_w = AutoBalancePlanner.enforce_device_budget(
-            scaled, self.CPU_CONFIG_ON
+            shifted, self.CPU_CONFIG_ON
         )
         self._assert_budget(normalized, cpu_w)
         assert cpu_w == VALID_CPU_OFFLOAD_CPU
