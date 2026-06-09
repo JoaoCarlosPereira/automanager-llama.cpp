@@ -86,6 +86,12 @@ FINE_TUNE_STEP = 1  # Fine-tuning Phase 3: 1% increments on main GPU
 DEVICE_BUDGET_TOTAL = 100
 DEVICE_BUDGET_TOLERANCE = 1
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
+FAILURE_SERVER_CRASH = "server_crashed"
+
+# A probe that dies faster than this is almost certainly a startup crash
+# (incompatible model/binary or bad launch flag), never an OOM during the
+# weight allocation of a multi-GB model.
+CRASH_FAST_FAIL_SEC = 20.0
 
 # CPU offload constants
 CPU_OFFLOAD_STEP = 10  # CPU escalates in 10% increments
@@ -97,6 +103,37 @@ MODEL_RUNTIME_OVERHEAD_RATIO = 0.05  # 5% of file size, whichever is larger
 
 class AutoBalanceCancelled(Exception):
     """Raised when the user cancels an in-progress auto-balance run."""
+
+
+class AutoBalanceServerCrashed(Exception):
+    """Raised when a probe makes llama-server die WITHOUT an OOM signal.
+
+    This is a fatal condition for auto-balance: a non-OOM crash means the model
+    cannot be loaded by this binary at all (incompatible architecture, bad
+    launch flag, missing dependency, ...), so escalating GPUs/CPU is pointless.
+    The run aborts and the user is told it is a crash — not lack of VRAM.
+
+    Carries enough context to build a user-facing message:
+      - ``weight_map`` / ``cpu_weight``: the split that crashed.
+      - ``elapsed``: seconds until the process died.
+      - ``log_tail``: last lines of the llama-server log (best-effort).
+    """
+
+    def __init__(
+        self,
+        weight_map: Dict[int, int],
+        cpu_weight: int,
+        elapsed: float,
+        log_tail: Optional[List[str]] = None,
+    ) -> None:
+        self.weight_map = dict(weight_map)
+        self.cpu_weight = int(cpu_weight)
+        self.elapsed = float(elapsed)
+        self.log_tail = list(log_tail or [])
+        super().__init__(
+            f"llama-server crashed after {self.elapsed:.1f}s "
+            f"(split={self.weight_map}, cpu={self.cpu_weight}%)"
+        )
 
 
 class AutoBalancePlanner:
@@ -986,12 +1023,83 @@ class AutoBalanceProber:
         )
         return message, failure
 
+    def build_server_crash_failure(
+        self,
+        request,
+        crash: "AutoBalanceServerCrashed",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Build the user-facing failure for a non-OOM server crash.
+
+        Distinct from :meth:`build_hardware_capacity_failure`: this is NOT a
+        VRAM-capacity problem. The server died without an OOM signal, so the
+        model/binary/flags are incompatible and no GPU/CPU split would help.
+        """
+        model_name = os.path.basename(request.path) if request.path else "?"
+        try:
+            server_log_path = self.log_manager.get_server_log_path()
+        except Exception:  # pragma: no cover - defensive
+            server_log_path = "?"
+        log_tail = crash.log_tail or []
+
+        message = (
+            f'O servidor encerrou inesperadamente (~{crash.elapsed:.1f}s) ao '
+            f'carregar "{model_name}", sem indício de falta de memória (OOM). '
+            "Isso indica incompatibilidade do modelo/binário llama.cpp ou um "
+            "parâmetro de inicialização inválido — não falta de VRAM. "
+            "O auto-balance foi interrompido."
+        )
+
+        failure: Dict[str, Any] = {
+            "code": FAILURE_SERVER_CRASH,
+            "reason": "server_crashed",
+            "model": model_name,
+            "model_path": request.path,
+            "context_size": request.context_size,
+            "parallel_slots": request.parallel_slots,
+            "crashed_split": crash.weight_map,
+            "crashed_cpu_weight": crash.cpu_weight,
+            "elapsed_sec": round(crash.elapsed, 1),
+            "server_log_path": server_log_path,
+            "server_log_tail": log_tail,
+            "suggestions": [
+                "Verifique o log do servidor para o erro exato: "
+                f"{server_log_path}",
+                "Confirme que esta build do llama.cpp suporta a arquitetura do "
+                "modelo (ex.: rode 'llama-server --model-info <modelo>')",
+                "Atualize o llama.cpp para uma versão que suporte o modelo",
+                "Revise flags de inicialização (contexto, flash-attn, "
+                "reasoning, MTP, chat-template)",
+            ],
+        }
+        _auto_balance_log(
+            "=== SERVER CRASH FAILURE (não-OOM) ===\n"
+            "  model=%s path=%s\n"
+            "  elapsed=%.1fs crashed_split=%s cpu=%d%%\n"
+            "  server_log=%s\n"
+            "  log_tail=%s\n"
+            "  message=%s",
+            model_name,
+            request.path,
+            crash.elapsed,
+            crash.weight_map,
+            crash.cpu_weight,
+            server_log_path,
+            log_tail,
+            message,
+            level="error",
+        )
+        return message, failure
+
     def __init__(self, process_manager, config_manager, gpu_manager, log_manager):
         self.process_manager = process_manager
         self.config = config_manager
         self.gpu_manager = gpu_manager
         self.log_manager = log_manager
         self.planner = AutoBalancePlanner()
+        # Diagnostics from the last probe that died, used to build a clear
+        # crash message (vs. an OOM) for the user.
+        self._last_server_log_tail: List[str] = []
+        self._last_crash_elapsed: float = 0.0
 
     def _raise_if_cancelled(self) -> None:
         if self.process_manager.auto_balance_cancel_requested:
@@ -1388,6 +1496,13 @@ class AutoBalanceProber:
             return self._discover_empirical(request)
         except AutoBalanceCancelled:
             return False, request.gpu_weights, "Auto-balance cancelado pelo usuário.", None
+        except AutoBalanceServerCrashed as crash:
+            # Non-OOM crash: the model cannot be loaded by this binary at all.
+            # Stop any lingering process and report a clear crash (not a VRAM
+            # capacity verdict) so the user fixes the real cause.
+            self.process_manager.stop()
+            msg, failure = self.build_server_crash_failure(request, crash)
+            return False, request.gpu_weights, msg, failure
 
     def _discover_empirical(
         self, request
@@ -2737,7 +2852,12 @@ class AutoBalanceProber:
                 request.path,
                 exc,
             )
-            return "crashed"
+            # Could not even launch the server — a hard crash, not an OOM.
+            self._last_crash_elapsed = 0.0
+            self._last_server_log_tail = [f"START EXCEPTION: {exc}"]
+            raise AutoBalanceServerCrashed(
+                weight_map, probe_cpu, 0.0, self._last_server_log_tail
+            )
         outcome = self._wait_for_outcome()
         _auto_balance_log(
             "PROBE #%d RESULT: %s | synced={%s} cpu=%d",
@@ -2747,6 +2867,26 @@ class AutoBalanceProber:
             probe_cpu,
             level="warn" if outcome in ("oom", "timeout", "crashed") else "info",
         )
+        # Differentiate a genuine crash from an OOM: a non-OOM death that
+        # happens too fast to be a real multi-GB allocation failure means the
+        # model/binary/flags are incompatible. Abort the whole run and tell the
+        # user — escalating GPUs/CPU would only produce a misleading
+        # "hardware capacity exceeded" verdict. A slow non-OOM death is left on
+        # the normal path (treated like a load failure that may benefit from
+        # more devices), since some real OOMs print messages our regex misses.
+        if outcome == "crashed" and self._last_crash_elapsed < CRASH_FAST_FAIL_SEC:
+            _auto_balance_log(
+                "PROBE #%d → CRASH (não-OOM, %.1fs) — abortando auto-balance",
+                attempt,
+                self._last_crash_elapsed,
+                level="error",
+            )
+            raise AutoBalanceServerCrashed(
+                weight_map,
+                probe_cpu,
+                self._last_crash_elapsed,
+                self._last_server_log_tail,
+            )
         return outcome
 
     def _get_vram_pct(self, gpu_index: int) -> float:
@@ -2881,11 +3021,31 @@ class AutoBalanceProber:
                 )
                 return "cancelled"
             if not self._process_alive():
+                # Process died. Drain whatever the server wrote before exiting
+                # and check for an OOM signal FIRST — an OOM that kills the
+                # process between polls must not be misread as a generic crash.
+                chunk, last_pos = self._read_log_since(path, last_pos)
                 elapsed = time.time() - start_time
-                logger.info(
-                    "_wait_for_outcome: CRASHED after %.1fs (log=%s)",
+                if chunk and OOM_PATTERNS.search(chunk):
+                    self._last_server_log_tail = chunk.strip().split("\n")[-5:]
+                    logger.warning(
+                        "_wait_for_outcome: OOM-on-exit after %.1fs (log=%s) | preview=%s",
+                        elapsed,
+                        path,
+                        self._last_server_log_tail,
+                    )
+                    return "oom"
+                # No OOM marker -> genuine crash (incompatible model/binary or
+                # bad launch flag). Capture the tail for the user-facing message.
+                self._last_server_log_tail = (
+                    chunk.strip().split("\n")[-5:] if chunk else []
+                )
+                self._last_crash_elapsed = elapsed
+                logger.warning(
+                    "_wait_for_outcome: CRASHED after %.1fs (log=%s) | preview=%s",
                     elapsed,
                     path,
+                    self._last_server_log_tail,
                 )
                 return "crashed"
 

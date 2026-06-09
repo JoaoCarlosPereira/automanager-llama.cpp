@@ -14,7 +14,10 @@ from auto_balance import (
     AutoBalanceCancelled,
     AutoBalancePlanner,
     AutoBalanceProber,
+    AutoBalanceServerCrashed,
+    CRASH_FAST_FAIL_SEC,
     FAILURE_HARDWARE_CAPACITY,
+    FAILURE_SERVER_CRASH,
     MIN_MAIN_WEIGHT,
     READY_PATTERNS,
 )
@@ -871,6 +874,104 @@ def test_prober_raises_when_cancel_requested():
     )
     with pytest.raises(AutoBalanceCancelled):
         prober._raise_if_cancelled()
+
+
+class TestCrashVsOom:
+    """Auto-balance must differentiate OOM from a genuine server crash."""
+
+    def _prober(self):
+        pm = MagicMock()
+        pm.auto_balance_cancel_requested = False
+        lm = MagicMock()
+        lm.get_server_log_path.return_value = "/tmp/server.log"
+        return AutoBalanceProber(pm, MagicMock(), MagicMock(), lm), pm
+
+    def test_wait_for_outcome_oom_on_exit_reads_final_log(self):
+        """Processo morre, mas o log tem marcador de OOM → classifica como OOM."""
+        prober, _ = self._prober()
+        prober._process_alive = MagicMock(return_value=False)
+        prober._read_log_since = MagicMock(
+            return_value=("ggml CUDA error: out of memory\n", 120)
+        )
+        with patch("auto_balance.time") as t:
+            t.time.return_value = 1000.0
+            assert prober._wait_for_outcome() == "oom"
+
+    def test_wait_for_outcome_crash_when_no_oom_marker(self):
+        """Processo morre sem marcador de OOM → crash, com tail capturado."""
+        prober, _ = self._prober()
+        prober._process_alive = MagicMock(return_value=False)
+        prober._read_log_since = MagicMock(
+            return_value=("error: unknown model architecture 'qwen3-next'\n", 80)
+        )
+        with patch("auto_balance.time") as t:
+            t.time.return_value = 1000.0
+            assert prober._wait_for_outcome() == "crashed"
+        assert prober._last_server_log_tail  # tail capturado p/ mensagem
+
+    def test_probe_start_raises_on_fast_crash(self):
+        """Crash não-OOM rápido aborta o auto-balance (levanta exceção)."""
+        prober, _ = self._prober()
+
+        def fake_wait():
+            prober._last_crash_elapsed = 1.0
+            prober._last_server_log_tail = ["unknown architecture"]
+            return "crashed"
+
+        prober._wait_for_outcome = fake_wait
+        with pytest.raises(AutoBalanceServerCrashed):
+            prober._probe_start(
+                MagicMock(), {0: 100}, 0, [{"index": 0, "name": "g0"}], 1
+            )
+
+    def test_probe_start_slow_crash_does_not_abort(self):
+        """Morte não-OOM tardia segue o caminho normal (não aborta)."""
+        prober, _ = self._prober()
+
+        def fake_wait():
+            prober._last_crash_elapsed = CRASH_FAST_FAIL_SEC + 10.0
+            prober._last_server_log_tail = []
+            return "crashed"
+
+        prober._wait_for_outcome = fake_wait
+        outcome = prober._probe_start(
+            MagicMock(), {0: 100}, 0, [{"index": 0, "name": "g0"}], 1
+        )
+        assert outcome == "crashed"
+
+    def test_discover_aborts_and_reports_crash(self):
+        """discover() captura o crash e devolve falha server_crashed clara."""
+        prober, pm = self._prober()
+        prober.gpu_manager.detect_gpus.return_value = THREE_GPU_HARDWARE
+        request = _make_request(
+            [
+                GPUWeight(index=0, weight=10, name="P100", active=True, device="gpu"),
+                GPUWeight(index=1, weight=10, name="P100", active=True, device="gpu"),
+                GPUWeight(
+                    index=2, weight=80, name="3090", active=True,
+                    is_main=True, device="gpu",
+                ),
+                GPUWeight(index=-1, weight=0, name="CPU", active=True, device="cpu"),
+            ]
+        )
+        request.path = "/models/Qwen3-Coder-Next.gguf"
+        request.parallel_slots = 1
+
+        def boom(*args, **kwargs):
+            raise AutoBalanceServerCrashed({2: 100}, 0, 1.0, ["unknown architecture"])
+
+        prober._probe_start = boom
+        with patch.object(
+            AutoBalancePlanner, "model_weights_mb_from_disk", return_value=20000
+        ):
+            ok, weights, msg, failure = prober.discover(request)
+
+        assert ok is False
+        assert failure is not None
+        assert failure["code"] == FAILURE_SERVER_CRASH
+        assert failure["server_log_tail"] == ["unknown architecture"]
+        assert "inesperadamente" in msg and "OOM" in msg
+        pm.stop.assert_called()
 
 
 class TestBudgetSelectedIndices:
