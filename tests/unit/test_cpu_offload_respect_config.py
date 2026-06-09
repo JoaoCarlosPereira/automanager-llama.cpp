@@ -371,6 +371,7 @@ def test_start_gpu_only_tensor_split_matches_user_percentages(pm):
 
 
 def test_discover_excludes_cpu_from_spill_order():
+    """Analítico: CPU (-1) nunca entra na ordem de GPUs; principal primeiro."""
     process_manager = MagicMock()
     process_manager.auto_balance_cancel_requested = False
     process_manager.auto_balance_active = False
@@ -382,6 +383,8 @@ def test_discover_excludes_cpu_from_spill_order():
     prober = AutoBalanceProber(
         process_manager, MagicMock(), gpu_manager, MagicMock()
     )
+    # Modelo cabe na GPU0 (principal).
+    prober.planner.estimate_model_vram_mb = lambda *a, **k: 20000
 
     request = _make_request(
         [
@@ -394,38 +397,21 @@ def test_discover_excludes_cpu_from_spill_order():
         ]
     )
 
-    captured = {}
+    success, weights, _msg, failure = prober.discover(request)
 
-    def _spy_find_feasible_split(
-        _request,
-        _all_gpus,
-        main_index,
-        spill_order,
-        _vram_by_index,
-        _pinned_map,
-        _active_indices,
-        _attempt,
-        cpu_config,
-        **_kwargs,
-    ):
-        captured["spill_order"] = list(spill_order)
-        captured["main_index"] = main_index
-        captured["cpu_config"] = cpu_config
-        return None, 1, 0, 0
-
-    prober._find_feasible_split = _spy_find_feasible_split
-    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
-
-    prober.discover(request)
-
-    assert captured["spill_order"] == [0, 1]
-    assert -1 not in captured["spill_order"]
-    assert captured["main_index"] == 0
-    assert captured["cpu_config"]["enabled"] is True
-    assert captured["cpu_config"]["weight"] == 0
+    assert success is True
+    assert failure is None
+    gpu_entries = [w for w in weights if w.device == "gpu"]
+    assert all(w.index != -1 for w in gpu_entries)
+    main = next(w for w in weights if w.is_main)
+    assert main.index == 0
+    assert main.weight == 100  # modelo inteiro na principal
+    # Modelo iniciado com os pesos da cascata.
+    process_manager.start.assert_called_once()
 
 
 def test_discover_passes_cpu_config_when_cpu_enabled():
+    """Analítico: CPU ligada + modelo cabe nas GPUs → viável, CPU 0%, pin off."""
     process_manager = MagicMock()
     process_manager.auto_balance_cancel_requested = False
     process_manager.auto_balance_active = False
@@ -436,6 +422,7 @@ def test_discover_passes_cpu_config_when_cpu_enabled():
     prober = AutoBalanceProber(
         process_manager, MagicMock(), gpu_manager, MagicMock()
     )
+    prober.planner.estimate_model_vram_mb = lambda *a, **k: 20000
 
     request = _make_request(
         [
@@ -450,33 +437,16 @@ def test_discover_passes_cpu_config_when_cpu_enabled():
         ]
     )
 
-    captured = {}
+    success, weights, _msg, failure = prober.discover(request)
 
-    def _spy_find_feasible_split(
-        _request,
-        _all_gpus,
-        main_index,
-        spill_order,
-        _vram_by_index,
-        _pinned_map,
-        _active_indices,
-        _attempt,
-        cpu_config,
-        **_kwargs,
-    ):
-        captured["cpu_config"] = cpu_config
-        return None, 1, 0, 30
-
-    prober._find_feasible_split = _spy_find_feasible_split
-    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
-
-    prober.discover(request)
-
-    assert captured["cpu_config"]["enabled"] is True
-    # pinned is always False now — CPU weight is dynamic via LoadDistributor
-    assert captured["cpu_config"]["pinned"] is False
-    # weight is always 0 now — calculated dynamically by LoadDistributor
-    assert captured["cpu_config"]["weight"] == 0
+    assert success is True
+    assert failure is None
+    cpu_entry = next((w for w in weights if w.device == "cpu"), None)
+    # CPU não recebe carga (modelo cabe) e pin é ignorado sob Auto-Balance.
+    if cpu_entry is not None:
+        assert cpu_entry.weight == 0
+        assert cpu_entry.pinned is False
+    process_manager.start.assert_called_once()
 
 
 def test_find_feasible_split_discovers_cpu_after_gpu_exhausted():
@@ -531,6 +501,7 @@ def test_find_feasible_split_discovers_cpu_after_gpu_exhausted():
 
 
 def test_discover_starts_with_zero_cpu_when_not_pinned():
+    """Analítico: modelo cabe nas GPUs → CPU recebe 0% (zero-offload)."""
     process_manager = MagicMock()
     process_manager.auto_balance_cancel_requested = False
     gpu_manager = MagicMock()
@@ -541,6 +512,8 @@ def test_discover_starts_with_zero_cpu_when_not_pinned():
     prober = AutoBalanceProber(
         process_manager, MagicMock(), gpu_manager, MagicMock()
     )
+    # 30000 cabe em 3090(23520)+P100(15680) sem CPU.
+    prober.planner.estimate_model_vram_mb = lambda *a, **k: 30000
 
     request = _make_request(
         [
@@ -556,26 +529,77 @@ def test_discover_starts_with_zero_cpu_when_not_pinned():
         ]
     )
 
-    captured = {}
+    success, weights, _msg, failure = prober.discover(request)
 
-    def _spy_find_feasible_split(
-        _request,
-        _all_gpus,
-        _main_index,
-        _spill_order,
-        _vram_by_index,
-        _pinned_map,
-        _active_indices,
-        _attempt,
-        cpu_config,
-        **_kwargs,
-    ):
-        captured["cpu_config"] = cpu_config
-        return None, 2, 0, 0
+    assert success is True
+    assert failure is None
+    cpu_entry = next((w for w in weights if w.device == "cpu"), None)
+    if cpu_entry is not None:
+        assert cpu_entry.weight == 0
+    process_manager.start.assert_called_once()
 
-    prober._find_feasible_split = _spy_find_feasible_split
-    prober._escalate_cpu_until_feasible = MagicMock(return_value=(None, 0, 0))
-    prober.discover(request)
 
-    assert captured["cpu_config"]["enabled"] is True
-    assert captured["cpu_config"]["weight"] == 0
+def test_discover_spills_to_cpu_when_model_exceeds_gpus():
+    """Analítico: modelo > soma das GPUs + CPU ligada → CPU recebe sobra (>0)."""
+    process_manager = MagicMock()
+    process_manager.auto_balance_cancel_requested = False
+    gpu_manager = MagicMock()
+    gpu_manager.detect_gpus.return_value = [
+        {"index": 0, "name": "GPU0", "vram": 24000},
+        {"index": 1, "name": "GPU1", "vram": 16000},
+    ]
+    prober = AutoBalanceProber(
+        process_manager, MagicMock(), gpu_manager, MagicMock()
+    )
+    prober.planner.estimate_model_vram_mb = lambda *a, **k: 70000  # > caps
+
+    request = _make_request(
+        [
+            GPUWeight(
+                index=0, weight=50, name="GPU0", active=True,
+                is_main=True, device="gpu",
+            ),
+            GPUWeight(index=1, weight=20, name="GPU1", active=True, device="gpu"),
+            GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
+        ]
+    )
+
+    success, weights, _msg, failure = prober.discover(request)
+
+    assert success is True
+    cpu_entry = next((w for w in weights if w.device == "cpu"), None)
+    assert cpu_entry is not None and cpu_entry.weight > 0
+    process_manager.start.assert_called_once()
+
+
+def test_discover_infeasible_when_cpu_off_and_model_too_big():
+    """Analítico: CPU desligada + modelo não cabe → falha hardware_capacity."""
+    process_manager = MagicMock()
+    process_manager.auto_balance_cancel_requested = False
+    gpu_manager = MagicMock()
+    gpu_manager.detect_gpus.return_value = [
+        {"index": 0, "name": "GPU0", "vram": 24000},
+        {"index": 1, "name": "GPU1", "vram": 16000},
+    ]
+    prober = AutoBalanceProber(
+        process_manager, MagicMock(), gpu_manager, MagicMock()
+    )
+    prober.planner.estimate_model_vram_mb = lambda *a, **k: 70000
+
+    request = _make_request(
+        [
+            GPUWeight(
+                index=0, weight=50, name="GPU0", active=True,
+                is_main=True, device="gpu",
+            ),
+            GPUWeight(index=1, weight=50, name="GPU1", active=True, device="gpu"),
+            GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
+        ]
+    )
+
+    success, _weights, _msg, failure = prober.discover(request)
+
+    assert success is False
+    assert failure is not None
+    assert failure.get("code") == "hardware_capacity_exceeded"
+    process_manager.start.assert_not_called()

@@ -233,3 +233,66 @@ def test_validate_weights_three_gpus_plus_cpu(gpu_mgr):
     ]
     ok, msg = gpu_mgr.validate_weights(weights)
     assert ok is True
+
+
+# ── compute_offload_plan via cascata estrita (task_02) ────────────────────
+
+
+def _fake_metrics(vram_by_index):
+    return {"gpus": [
+        {"index": i, "vram_total_mb": v} for i, v in vram_by_index.items()
+    ]}
+
+
+def _mgr_with_hw(gpu_mgr, vram_by_index, model_vram_mb):
+    """Configura métricas de VRAM e tamanho estimado do modelo no manager."""
+    gpu_mgr.get_metrics = lambda: _fake_metrics(vram_by_index)
+    gpu_mgr._cached_model_vram_mb = model_vram_mb
+    return gpu_mgr
+
+
+def test_build_priority_order_main_first():
+    weights = [
+        GPUWeight(index=0, weight=10, name="A", device="gpu", is_main=False),
+        GPUWeight(index=2, weight=10, name="C", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=10, name="B", device="gpu", is_main=False),
+    ]
+    assert GPUManager._build_priority_order(weights) == [2, 0, 1]
+
+
+def test_offload_plan_cascata_modelo_cabe_na_principal(gpu_mgr):
+    """Modelo cabe na 3090 (principal) → tudo na GPU, CPU 0%, viável."""
+    _mgr_with_hw(gpu_mgr, {0: 24000, 1: 16000}, model_vram_mb=20000)
+    weights = [
+        GPUWeight(index=0, weight=50, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=50, name="P100", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    assert plan.is_feasible
+    assert plan.cpu_pct == 0.0
+    assert plan.n_gpu_layers == 80  # 100% das camadas na GPU
+
+
+def test_offload_plan_cascata_transborda_para_cpu(gpu_mgr):
+    """Modelo > soma das GPUs com CPU ligada → CPU recebe sobra, viável."""
+    _mgr_with_hw(gpu_mgr, {0: 24000, 1: 16000, 2: 16000}, model_vram_mb=70000)
+    weights = [
+        GPUWeight(index=0, weight=33, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=33, name="P100a", device="gpu"),
+        GPUWeight(index=2, weight=34, name="P100b", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    assert plan.is_feasible
+    assert plan.cpu_pct > 0
+    assert plan.n_gpu_layers < 80  # parte das camadas vai para a CPU
+
+
+def test_offload_plan_cascata_cpu_off_infeasivel(gpu_mgr):
+    """Modelo não cabe e CPU desligada → plano sinaliza is_feasible=False."""
+    _mgr_with_hw(gpu_mgr, {0: 24000, 1: 16000}, model_vram_mb=70000)
+    weights = [
+        GPUWeight(index=0, weight=50, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=50, name="P100", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=False)
+    assert plan.is_feasible is False
