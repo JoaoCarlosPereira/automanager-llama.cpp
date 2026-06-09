@@ -37,6 +37,7 @@ from schemas import (
     StartRequest,
     DeleteRequest,
     DownloadRequest,
+    SetMmprojRequest,
     SetDefaultRequest,
     RenameRequest,
     LoginRequest,
@@ -370,6 +371,16 @@ async def delete_model(
     return {"status": "deleted"}
 
 
+@app.post("/models/mmproj")
+async def set_model_mmproj(
+    req: SetMmprojRequest, _auth: str = Depends(get_current_auth)
+):
+    config_manager.update_model_settings(
+        req.model_path, {"mmproj_path": req.mmproj_path}
+    )
+    return {"status": "ok", "mmproj_path": req.mmproj_path}
+
+
 # --- Downloads ---
 
 
@@ -379,7 +390,9 @@ async def start_download_endpoint(
     background_tasks: BackgroundTasks,
     _auth: str = Depends(get_current_auth),
 ):
-    download_id = download_mgr.start_download(req.url, req.filename)
+    download_id = download_mgr.start_download(
+        req.url, req.filename, model_path=req.model_path
+    )
     return {"download_id": download_id}
 
 
@@ -512,6 +525,51 @@ async def set_default(
 # Frontend (Steps 10–16)
 # Embedded SPA with login overlay, dashboard, and all JS
 # ─────────────────────────────────────────────────────────
+
+
+def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
+    candidates = model.get("mmproj_candidates") or []
+    if not candidates:
+        return None
+    saved = model_cfg.get("mmproj_path")
+    if saved and saved in candidates:
+        return saved
+    return candidates[0]
+
+
+def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) -> str:
+    candidates = model.get("mmproj_candidates") or []
+    import_btn = (
+        f'<button type="button" onclick="event.stopPropagation(); '
+        f"openVisionImportModal('{model_js}')\" "
+        'class="vision-import-btn w-10 h-10 flex items-center justify-center rounded-xl '
+        'hover:bg-violet-500/20 text-slate-600 hover:text-violet-400 transition-all" '
+        'title="Importar projetor de visao" aria-label="Importar projetor de visao">'
+        '<i class="fas fa-eye text-[10px] md:text-xs"></i></button>'
+    )
+    if not candidates:
+        return import_btn
+    selected = _resolved_mmproj_path(model, model_cfg)
+    options = ""
+    for candidate in candidates:
+        name = os.path.basename(candidate)
+        selected_attr = " selected" if candidate == selected else ""
+        options += (
+            f'<option value="{candidate}" class="bg-slate-900"{selected_attr}>'
+            f"{name}</option>"
+        )
+    return (
+        f"{import_btn}"
+        f'<select data-mmproj-for="{model_js}" '
+        'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
+        'rounded-xl px-3 py-2 text-[10px] font-bold focus:ring-2 focus:ring-violet-500/50 '
+        'outline-none transition-all cursor-pointer max-w-[180px]" '
+        f"onchange=\"onMmprojChange('{model_js}', this)\" "
+        'onclick="event.stopPropagation()" '
+        'title="Projetor de visao para este modelo" '
+        'aria-label="Projetor de visao para este modelo">'
+        f"{options}</select>"
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -731,11 +789,6 @@ async def index(request: Request):
             </td>
         </tr>"""
 
-    # Vision options
-    vision_options = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>'
-    for p in projectors:
-        vision_options += f'<option value="{p["path"]}" class="bg-slate-900">{p["name"]}</option>'
-
     # Context options (presets + manual via "Personalizado")
     running_ctx = (
         status.get("config", {}).get("context_size")
@@ -807,6 +860,7 @@ async def index(request: Request):
             else ""
         )
         incapable_attr = "true" if hardware_incapable else "false"
+        vision_controls = _build_model_vision_controls(m, m_js, m_cfg)
 
         model_items += f"""
         {initial_cfg_js}
@@ -828,6 +882,7 @@ async def index(request: Request):
                     <button onclick="deleteModel('{m_js}')" class="delete-btn w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all" title="Excluir Modelo">
                         <i class="fas fa-trash-alt text-[10px]"></i>
                     </button>
+                    {vision_controls}
                 </div>
                 <div class="flex flex-col items-center gap-1">
                     <span class="text-[8px] font-black text-slate-600 uppercase tracking-tighter">Padrao</span>
@@ -851,7 +906,6 @@ async def index(request: Request):
         gpu_rows=gpu_rows,
         cpu_rows=cpu_rows,
         model_items=model_items,
-        vision_options=vision_options,
         ctx_opts=ctx_opts,
         custom_ctx_value=custom_ctx_value,
         custom_ctx_class=custom_ctx_class,
@@ -867,7 +921,6 @@ def _build_html(
     gpu_rows: str,
     cpu_rows: str,
     model_items: str,
-    vision_options: str,
     ctx_opts: str,
     custom_ctx_value: str,
     custom_ctx_class: str,
@@ -902,6 +955,38 @@ def _build_html(
                         ENTRAR
                     </button>
                     <p id="login-error" class="text-red-500 text-xs mt-3 text-center hidden"></p>
+                </form>
+            </div>
+        </div>"""
+
+    vision_import_modal = """
+        <div id="vision-import-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="vision-import-title">
+            <div id="vision-import-backdrop" class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" aria-hidden="true" onclick="closeVisionImportModal()"></div>
+            <div class="relative glass w-full max-w-lg rounded-3xl border border-violet-500/30 shadow-2xl shadow-violet-500/10 overflow-hidden">
+                <div class="p-6 md:p-8 border-b border-slate-800/60">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <p class="text-[10px] font-black uppercase tracking-[0.25em] text-violet-400 mb-2">Projetor de visao</p>
+                            <h2 id="vision-import-title" class="text-lg font-bold text-white">Importar mmproj</h2>
+                            <p class="text-sm text-slate-400 mt-2 leading-relaxed">
+                                Informe o link de download do arquivo mmproj. O arquivo sera salvo no diretorio deste modelo.
+                            </p>
+                        </div>
+                        <button type="button" onclick="closeVisionImportModal()" class="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition-all" title="Fechar" aria-label="Fechar">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+                <form id="vision-import-form" class="p-6 md:p-8 space-y-4" onsubmit="submitVisionImport(event)">
+                    <input type="hidden" id="vision-import-model-path" value="">
+                    <div>
+                        <label for="vision-import-url" class="text-[10px] font-black text-slate-500 uppercase tracking-widest">URL de download</label>
+                        <input type="url" id="vision-import-url" required placeholder="https://..."
+                               class="w-full mt-2 px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-violet-500/50 outline-none">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-violet-600 hover:bg-violet-500 text-white text-sm font-black rounded-xl transition-all uppercase tracking-widest">
+                        BAIXAR PROJETOR
+                    </button>
                 </form>
             </div>
         </div>"""
@@ -976,6 +1061,7 @@ def _build_html(
 <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
     <canvas id="pacman-background" aria-hidden="true"></canvas>
     {login_overlay}
+    {vision_import_modal}
     {version_update_modal}
     <div id="dashboard" class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10" style="display: {'block' if is_authenticated else 'none'};">
         <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
@@ -1068,12 +1154,6 @@ def _build_html(
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tamanho do batch de prefill (--batch-size)"><i class="fas fa-boxes-stacked text-violet-400 mr-2"></i>Batch:</label>
                                 <select id="batch-size" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[5.5rem]">
                                     {batch_opts}
-                                </select>
-                            </div>
-                            <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
-                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-eye text-blue-400 mr-2"></i>Vision:</label>
-                                <select id="mmproj-path" class="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-4 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all cursor-pointer max-w-[200px]">
-                                    {vision_options}
                                 </select>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">

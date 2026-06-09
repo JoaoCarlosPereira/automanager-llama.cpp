@@ -1,4 +1,11 @@
-"""Progressive GPU weight discovery and VRAM maximization for auto-balance."""
+"""Progressive GPU weight discovery and VRAM maximization for auto-balance.
+
+Priority-fill order (cláusula pétrea): main GPU -> spill GPUs in order -> CPU.
+Phase 1 activates GPUs one at a time with the main at maximum share; Phase 2
+raises each GPU's weight (in that order) until VRAM reaches ~95%% before
+spilling to the next device. CPU offload is only attempted after all selected
+GPUs are active.
+"""
 
 from __future__ import annotations
 
@@ -23,10 +30,13 @@ OOM_PATTERNS = re.compile(
 MAIN_REDUCTION_STEP = 5
 MIN_MAIN_WEIGHT = 10
 MIN_GPU_WEIGHT = 0
+MIN_SPILL_GPU_WEIGHT = 10  # minimum slice when activating the next GPU in cascade
 PROBE_TIMEOUT_SEC = 180
 POLL_INTERVAL_SEC = 1.0
 VRAM_SETTLE_SEC = 4.0
-TARGET_VRAM_PCT = 93.0
+TARGET_VRAM_PCT = 95.0
+TARGET_VRAM_PCT_MIN = 95.0
+TARGET_VRAM_PCT_MAX = 99.0
 DEVICE_BUDGET_TOTAL = 100
 DEVICE_BUDGET_TOLERANCE = 1
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
@@ -71,6 +81,44 @@ class AutoBalancePlanner:
                 share = max(1, min(share, remaining - (len(subset) - pos - 1)))
                 weights[idx] = share
                 remaining -= share
+        return weights
+
+    @staticmethod
+    def weights_for_cascade_spill(
+        spill_order: List[int],
+        active_count: int,
+        target_total: int = 100,
+    ) -> Optional[Dict[int, int]]:
+        """
+        Priority-fill template: main (spill_order[0]) keeps the maximum share;
+        each newly activated GPU receives the minimum slice (10%) until the
+        model fits. Order: main -> GPU0 -> GPU1 -> ... -> CPU (handled later).
+        """
+        if active_count <= 0 or active_count > len(spill_order):
+            return None
+        subset = spill_order[:active_count]
+        if active_count == 1:
+            return {subset[0]: target_total}
+
+        min_secondary = MIN_SPILL_GPU_WEIGHT
+        reserved = min_secondary * (active_count - 1)
+        if reserved >= target_total:
+            return None
+        main_share = target_total - reserved
+        if main_share < MIN_MAIN_WEIGHT:
+            return None
+
+        weights: Dict[int, int] = {}
+        weights[subset[0]] = main_share
+        remaining = target_total - main_share
+        for pos in range(1, len(subset)):
+            if pos == len(subset) - 1:
+                weights[subset[pos]] = remaining
+            else:
+                weights[subset[pos]] = min_secondary
+                remaining -= min_secondary
+        if sum(weights.values()) != target_total:
+            weights[subset[-1]] += target_total - sum(weights.values())
         return weights
 
     @staticmethod
@@ -604,11 +652,13 @@ class AutoBalanceProber:
         active_count: int,
         cpu_weight: int,
     ) -> Optional[Dict[int, int]]:
-        """VRAM-proportional GPU split; ignores manual UI percentages."""
+        """Cascade priority-fill split; ignores manual UI percentages."""
         gpu_target = self._gpu_budget(cpu_weight)
-        template_map = self.planner.weights_for_active_count(
-            spill_order, vram_by_index, active_count
+        template_map = self.planner.weights_for_cascade_spill(
+            spill_order, active_count, gpu_target
         )
+        if template_map is None:
+            return None
         return self.planner.apply_pins(
             template_map,
             pinned_map,
@@ -993,23 +1043,6 @@ class AutoBalanceProber:
                         return None, active_count, attempt, cpu_weight
                     gpu_target = self._gpu_budget(cpu_weight)
                     continue
-
-                if spill_order[0] not in pinned_map:
-                    reduced = self.planner.reduce_main_weight(
-                        weight_map, spill_order, vram_by_index
-                    )
-                    if reduced is not None:
-                        weight_map = self.planner.apply_pins(
-                            reduced,
-                            pinned_map,
-                            spill_order,
-                            active_indices,
-                            vram_by_index,
-                            gpu_target,
-                        )
-                        if weight_map is None:
-                            return None, active_count, attempt, cpu_weight
-                        continue
 
                 if (
                     cpu_enabled

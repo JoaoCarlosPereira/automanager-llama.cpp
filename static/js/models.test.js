@@ -5,6 +5,13 @@ import * as models from './models.js';
 
 const {
     formatRepoStorageLabel,
+    resolveMmprojPath,
+    buildModelVisionControlsHtml,
+    getSelectedMmprojForModel,
+    openVisionImportModal,
+    closeVisionImportModal,
+    submitVisionImport,
+    onMmprojChange,
     initDashboard,
     getModelButtonsHtml,
     selectModel,
@@ -58,7 +65,6 @@ function setupGpuControls() {
         <div id="context-size-custom-wrap" class="hidden">
             <input id="context-size-custom" value="64" />
         </div>
-        <select id="mmproj-path"><option value="">Auto</option></select>
         <select id="split-mode"><option value="layer">layer</option></select>
         <input id="parallel-slots" value="4" />
         <input id="batch-size" value="512" />
@@ -80,6 +86,11 @@ function setupModelsListDom() {
         <button type="button"></button>
         <div id="model-list-container"></div>
         <input id="download-url" value="" />
+        <div id="vision-import-modal" class="hidden">
+            <input id="vision-import-model-path" value="" />
+            <input id="vision-import-url" value="" />
+            <form id="vision-import-form"></form>
+        </div>
     `);
 }
 
@@ -181,7 +192,6 @@ test('applyModelConfig preenche campos e pesos GPU', () => {
             { index: 1, weight: 40, active: true, is_main: false, pinned: false },
         ],
     };
-    document.getElementById('mmproj-path').innerHTML = '<option value="">Auto</option>';
     document.body.insertAdjacentHTML('beforeend', `
         <div data-path="${path}"><p class="model-name">Cfg</p></div>
     `);
@@ -207,17 +217,36 @@ test('applyModelConfig restaura campos MTP', () => {
     expect(document.getElementById('mtp-draft-tokens').value).toBe('5');
 });
 
-test('applyModelConfig adiciona opcao mmproj quando nao existe no select', () => {
-    const path = '/media/models/mm.gguf';
-    const mmPath = '/projectors/new.gguf';
-    window.modelConfigs[path] = { mmproj_path: mmPath };
-    document.getElementById('mmproj-path').innerHTML = '<option value="">Auto</option>';
+test('resolveMmprojPath usa primeiro candidato quando salvo ausente', () => {
+    const model = {
+        path: '/media/models/mm.gguf',
+        mmproj_candidates: ['/media/models/a.mmproj', '/media/models/b.mmproj'],
+    };
+    expect(resolveMmprojPath(model)).toBe('/media/models/a.mmproj');
+});
 
-    applyModelConfig(path);
+test('resolveMmprojPath respeita mmproj salvo em modelConfigs', () => {
+    const model = {
+        path: '/media/models/mm.gguf',
+        mmproj_candidates: ['/media/models/a.mmproj', '/media/models/b.mmproj'],
+    };
+    window.modelConfigs[model.path] = { mmproj_path: '/media/models/b.mmproj' };
+    expect(resolveMmprojPath(model)).toBe('/media/models/b.mmproj');
+});
 
-    const select = document.getElementById('mmproj-path');
-    expect(select.value).toBe(mmPath);
-    expect(select.options.length).toBe(2);
+test('buildModelVisionControlsHtml oculta combobox sem candidatos', () => {
+    const html = buildModelVisionControlsHtml({ path: '/m.gguf', mmproj_candidates: [] }, '/m.gguf');
+    expect(html).toContain('openVisionImportModal');
+    expect(html).not.toContain('model-mmproj-select');
+});
+
+test('buildModelVisionControlsHtml renderiza combobox com candidatos', () => {
+    const html = buildModelVisionControlsHtml({
+        path: '/media/m.gguf',
+        mmproj_candidates: ['/media/m.mmproj'],
+    }, '/media/m.gguf');
+    expect(html).toContain('model-mmproj-select');
+    expect(html).toContain('m.mmproj');
 });
 
 test('setDefaultModel envia path quando checkbox marcado', async () => {
@@ -322,7 +351,7 @@ test('saveModelsDir alerta quando caminho vazio', async () => {
     expect(fetch).not.toHaveBeenCalled();
 });
 
-test('updateModels renderiza lista e projectors', async () => {
+test('updateModels renderiza lista e controles de visao por modelo', async () => {
     const modelsPayload = {
         models: [{
             id: 'm1',
@@ -330,8 +359,10 @@ test('updateModels renderiza lista e projectors', async () => {
             name: 'Model A',
             dir: '/media',
             last_config: { context_size: 65536, hardware_incapable: false },
+            mmproj_candidates: ['/media/a-mmproj.gguf'],
+            auto_mmproj: '/media/a-mmproj.gguf',
         }],
-        projectors: [{ path: '/proj/p.gguf', name: 'Proj' }],
+        projectors: [{ path: '/media/a-mmproj.gguf', name: 'a-mmproj.gguf' }],
         storage: { path: '/media/docker/models', used_gb: 120.5, total_gb: 2000 },
     };
     fetch
@@ -343,8 +374,10 @@ test('updateModels renderiza lista e projectors', async () => {
     expect(document.getElementById('model-count').innerText).toBe('1 UNIDADES');
     expect(document.getElementById('repo-storage').innerText).toBe('120.5 / 2000.0 GB');
     expect(document.getElementById('models-dir-input').value).toBe('/media/docker/models');
-    expect(document.getElementById('model-list-container').innerHTML).toContain('Model A');
-    expect(document.getElementById('mmproj-path').innerHTML).toContain('Proj');
+    const listHtml = document.getElementById('model-list-container').innerHTML;
+    expect(listHtml).toContain('Model A');
+    expect(listHtml).toContain('model-mmproj-select');
+    expect(listHtml).toContain('a-mmproj.gguf');
     expect(window.modelConfigs['/media/a.gguf']).toBeDefined();
 });
 
@@ -754,16 +787,56 @@ test('initDashboard chama rotinas de inicializacao', () => {
     expect(window.updateModels).toHaveBeenCalled();
 });
 
-test('applyModelConfig limpa mmproj quando config vazio', () => {
-    const path = '/media/models/empty-mm.gguf';
-    document.getElementById('mmproj-path').innerHTML =
-        '<option value="">Auto</option><option value="/p.gguf">P</option>';
-    document.getElementById('mmproj-path').value = '/p.gguf';
-    window.modelConfigs[path] = { mmproj_path: '' };
+test('getSelectedMmprojForModel le do combobox do item', () => {
+    const path = '/media/models/mm.gguf';
+    const select = document.createElement('select');
+    select.setAttribute('data-mmproj-for', path);
+    const opt = document.createElement('option');
+    opt.value = '/media/models/p.mmproj';
+    opt.selected = true;
+    select.append(opt);
+    document.body.append(select);
+    expect(getSelectedMmprojForModel(path)).toBe('/media/models/p.mmproj');
+});
 
-    applyModelConfig(path);
+test('openVisionImportModal e closeVisionImportModal alternam visibilidade', () => {
+    openVisionImportModal('/media/m.gguf');
+    expect(document.getElementById('vision-import-model-path').value).toBe('/media/m.gguf');
+    expect(document.getElementById('vision-import-modal').classList.contains('flex')).toBe(true);
+    closeVisionImportModal();
+    expect(document.getElementById('vision-import-modal').classList.contains('hidden')).toBe(true);
+});
 
-    expect(document.getElementById('mmproj-path').value).toBe('');
+test('submitVisionImport envia model_path no download', async () => {
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ download_id: '1' }) });
+    document.getElementById('vision-import-model-path').value = '/media/m.gguf';
+    document.getElementById('vision-import-url').value = 'https://example.com/v.mmproj';
+
+    await submitVisionImport({ preventDefault: jest.fn() });
+
+    expect(fetch).toHaveBeenCalledWith('/downloads', expect.objectContaining({
+        body: JSON.stringify({
+            url: 'https://example.com/v.mmproj',
+            model_path: '/media/m.gguf',
+        }),
+    }));
+});
+
+test('onMmprojChange persiste selecao via API', async () => {
+    const path = '/media/m.gguf';
+    const select = document.createElement('select');
+    const opt = document.createElement('option');
+    opt.value = '/media/m.mmproj';
+    select.append(opt);
+    select.value = '/media/m.mmproj';
+    fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    await onMmprojChange(path, select);
+
+    expect(window.modelConfigs[path].mmproj_path).toBe('/media/m.mmproj');
+    expect(fetch).toHaveBeenCalledWith('/models/mmproj', expect.objectContaining({
+        body: JSON.stringify({ model_path: path, mmproj_path: '/media/m.mmproj' }),
+    }));
 });
 
 test('selectModel ignora elemento inexistente', () => {
@@ -837,23 +910,6 @@ test('updateModels com modelo selecionado ativo', async () => {
         .toContain('active-selection');
 });
 
-test('updateModels reseta mmproj quando valor salvo nao existe mais', async () => {
-    document.getElementById('mmproj-path').value = '/proj/removed.gguf';
-    fetch
-        .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ models: [], projectors: [] }),
-        })
-        .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ default_model: null }),
-        });
-
-    await updateModels();
-
-    expect(document.getElementById('mmproj-path').value).toBe('');
-});
-
 test('startModel hardware incapaz inclui mensagem detalhada no confirm', async () => {
     const path = '/media/det.gguf';
     state.currentSelectedModel = path;
@@ -895,23 +951,20 @@ test('updateModels renderiza modelo hardware incapaz', async () => {
     expect(html).toContain('data-hardware-incapable="true"');
 });
 
-test('updateModels mantem valor mmproj quando lista de projectors nao muda', async () => {
-    const proj = { path: '/proj/x.gguf', name: 'X' };
-    document.getElementById('mmproj-path').innerHTML =
-        '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>' +
-        '<option value="/proj/x.gguf" class="bg-slate-900">X</option>';
-    document.getElementById('mmproj-path').value = '/proj/x.gguf';
+test('startModel envia mmproj_path do combobox do modelo', async () => {
+    const path = '/media/vision.gguf';
+    state.currentSelectedModel = path;
+    const select = document.createElement('select');
+    select.setAttribute('data-mmproj-for', path);
+    const opt = document.createElement('option');
+    opt.value = '/media/vision-mmproj.gguf';
+    opt.selected = true;
+    select.append(opt);
+    document.body.append(select);
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ probing: false }) });
 
-    fetch
-        .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ models: [], projectors: [proj] }),
-        })
-        .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ default_model: null }),
-        });
-    await updateModels();
+    await startModel(path, 'vision-id');
 
-    expect(document.getElementById('mmproj-path').value).toBe('/proj/x.gguf');
+    const body = JSON.parse(fetch.mock.calls[0][1].body);
+    expect(body.mmproj_path).toBe('/media/vision-mmproj.gguf');
 });

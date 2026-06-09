@@ -12,7 +12,8 @@ import {
 import {
     initDashboard, getModelButtonsHtml, selectModel, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
-    saveModelsDir,
+    saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
+    onMmprojChange,
 } from './models.js';
 import { checkForUpdates, dismissVersionModal } from './version.js';
 
@@ -50,6 +51,10 @@ win.updateModels = updateModels;
 win.saveModelsDir = saveModelsDir;
 win.updateStatus = updateStatus;
 win.downloadModel = downloadModel;
+win.openVisionImportModal = openVisionImportModal;
+win.closeVisionImportModal = closeVisionImportModal;
+win.submitVisionImport = submitVisionImport;
+win.onMmprojChange = onMmprojChange;
 win.updateMetrics = updateMetrics;
 win.updateDownloads = updateDownloads;
 win.clearCompletedDownloads = clearCompletedDownloads;

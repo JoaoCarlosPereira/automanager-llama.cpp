@@ -31,6 +31,23 @@ def _directory_size_bytes(path: str) -> int:
     return total
 
 
+def _is_projector_filename(name_lower: str) -> bool:
+    return any(
+        marker in name_lower
+        for marker in ("mmproj", "clip", "vision", "projector")
+    )
+
+
+def _projector_paths_for_model(model_path: str, projectors: List[dict]) -> List[str]:
+    """Return projector paths in the same directory as the language model."""
+    model_dir = os.path.dirname(model_path)
+    return sorted(
+        proj["path"]
+        for proj in projectors
+        if os.path.dirname(proj["path"]) == model_dir
+    )
+
+
 def get_repository_storage(models_dir: str = MODELS_DIR) -> dict:
     """Used GB in the models tree and total GB on the hosting filesystem."""
     used_bytes = _directory_size_bytes(models_dir)
@@ -76,12 +93,9 @@ class ModelScanner:
                         "name": f,
                         "dir": os.path.relpath(root, self.models_dir) or "/",
                     }
-                    if any(
-                        x in name_lower
-                        for x in ["mmproj", "clip", "vision", "projector"]
-                    ):
+                    if _is_projector_filename(name_lower):
                         projectors.append(item)
-                    else:
+                    elif name_lower.endswith(".gguf"):
                         models.append(item)
         except OSError as e:
             logger.error(f"Scan error: {e}")
@@ -94,12 +108,7 @@ class ModelScanner:
             p["last_config"] = model_configs.get(p["path"])
 
         for m in models:
-            base_name = os.path.splitext(m["name"])[0]
-            candidates = []
-            for proj in projectors:
-                proj_base = os.path.splitext(proj["name"])[0]
-                if proj_base == base_name or base_name in proj_base:
-                    candidates.append(proj["path"])
+            candidates = _projector_paths_for_model(m["path"], projectors)
             m["mmproj_candidates"] = candidates
             m["auto_mmproj"] = candidates[0] if candidates else None
 
@@ -187,17 +196,41 @@ class DownloadManager:
         self._downloads_queue: List[tuple] = []
         self._lock = threading.Lock()
 
-    def start_download(self, url: str, filename: Optional[str] = None) -> str:
+    def start_download(
+        self,
+        url: str,
+        filename: Optional[str] = None,
+        model_path: Optional[str] = None,
+    ) -> str:
         download_id = str(uuid.uuid4())
-        if not filename:
-            filename = url.split("/")[-1].split("?")[0]
-            if not filename.endswith(".gguf"):
-                filename += ".gguf"
+        if model_path:
+            normalized_root = os.path.normpath(self.models_dir)
+            normalized_model = os.path.normpath(model_path)
+            if not normalized_model.startswith(normalized_root):
+                raise HTTPException(status_code=403, detail="Acesso negado")
+            if not os.path.isfile(normalized_model):
+                raise HTTPException(
+                    status_code=404, detail="Modelo nao encontrado"
+                )
+            if not filename:
+                filename = url.split("/")[-1].split("?")[0]
+                if not _is_projector_filename(filename.lower()):
+                    if filename.endswith(".gguf"):
+                        filename = filename.replace(".gguf", ".mmproj")
+                    else:
+                        filename += ".mmproj"
+            model_specific_dir = os.path.dirname(normalized_model)
+            path = os.path.join(model_specific_dir, filename)
+        else:
+            if not filename:
+                filename = url.split("/")[-1].split("?")[0]
+                if not filename.endswith(".gguf"):
+                    filename += ".gguf"
 
-        model_name_folder = filename.replace(".gguf", "")
-        model_specific_dir = os.path.join(self.models_dir, model_name_folder)
-        os.makedirs(model_specific_dir, exist_ok=True)
-        path = os.path.join(model_specific_dir, filename)
+            model_name_folder = filename.replace(".gguf", "")
+            model_specific_dir = os.path.join(self.models_dir, model_name_folder)
+            os.makedirs(model_specific_dir, exist_ok=True)
+            path = os.path.join(model_specific_dir, filename)
 
         if os.path.exists(path):
             base, ext = os.path.splitext(filename)

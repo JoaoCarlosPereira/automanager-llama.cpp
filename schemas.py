@@ -1,6 +1,6 @@
 """Shared request/response schemas."""
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
@@ -47,8 +47,18 @@ class DeleteRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     url: str
     filename: Optional[str] = None
+    model_path: Optional[str] = None
+
+
+class SetMmprojRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str
+    mmproj_path: Optional[str] = None
 
 
 class SetDefaultRequest(BaseModel):

@@ -12,6 +12,97 @@ import {
 import { startLogs, updateUptime } from './metrics.js';
 import { checkForUpdates } from './version.js';
 
+export function resolveMmprojPath(model) {
+    const candidates = model.mmproj_candidates || [];
+    if (!candidates.length) return null;
+    const cfg = window.modelConfigs[model.path] || model.last_config || {};
+    const saved = cfg.mmproj_path;
+    if (saved && candidates.includes(saved)) return saved;
+    return candidates[0];
+}
+
+export function buildModelVisionControlsHtml(model, modelJs) {
+    const candidates = model.mmproj_candidates || [];
+    const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${modelJs}')" class="vision-import-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-violet-500/20 text-slate-600 hover:text-violet-400 transition-all" title="Importar projetor de visao" aria-label="Importar projetor de visao"><i class="fas fa-eye text-[10px] md:text-xs"></i></button>`;
+    if (!candidates.length) return importBtn;
+    const selected = resolveMmprojPath(model);
+    const options = candidates.map((candidate) => {
+        const name = candidate.split('/').pop();
+        const selectedAttr = candidate === selected ? ' selected' : '';
+        return `<option value="${candidate}" class="bg-slate-900"${selectedAttr}>${name}</option>`;
+    }).join('');
+    return `${importBtn}<select data-mmproj-for="${modelJs}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-[10px] font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[180px]" onchange="onMmprojChange('${modelJs}', this)" onclick="event.stopPropagation()" title="Projetor de visao para este modelo" aria-label="Projetor de visao para este modelo">${options}</select>`;
+}
+
+export function getSelectedMmprojForModel(modelPath) {
+    const selects = document.querySelectorAll('select[data-mmproj-for]');
+    for (const select of selects) {
+        if (select.getAttribute('data-mmproj-for') === modelPath && select.value) {
+            return select.value;
+        }
+    }
+    const cfg = window.modelConfigs[modelPath];
+    return cfg?.mmproj_path || null;
+}
+
+export function openVisionImportModal(modelPath) {
+    const modal = document.getElementById('vision-import-modal');
+    const pathInput = document.getElementById('vision-import-model-path');
+    const urlInput = document.getElementById('vision-import-url');
+    if (!modal || !pathInput || !urlInput) return;
+    pathInput.value = modelPath;
+    urlInput.value = '';
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    urlInput.focus();
+}
+
+export function closeVisionImportModal() {
+    const modal = document.getElementById('vision-import-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+export async function submitVisionImport(event) {
+    event.preventDefault();
+    const modelPath = document.getElementById('vision-import-model-path')?.value.trim();
+    const url = document.getElementById('vision-import-url')?.value.trim();
+    if (!modelPath || !url) return;
+    try {
+        const res = await fetch('/downloads', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url, model_path: modelPath}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Erro ao iniciar download: ' + (err.detail || 'Erro desconhecido'));
+            return;
+        }
+        closeVisionImportModal();
+        window.updateDownloads();
+        window.updateModels();
+    } catch (e) {
+        alert('Erro de rede ao iniciar download do projetor.');
+    }
+}
+
+export async function onMmprojChange(modelPath, selectEl) {
+    const mmprojPath = selectEl?.value || null;
+    if (!window.modelConfigs[modelPath]) window.modelConfigs[modelPath] = {};
+    window.modelConfigs[modelPath].mmproj_path = mmprojPath;
+    try {
+        await apiFetch('/models/mmproj', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model_path: modelPath, mmproj_path: mmprojPath}),
+        });
+    } catch (e) {
+        alert('Erro ao salvar projetor de visao.');
+    }
+}
+
 export function formatRepoStorageLabel(storage) {
     if (!storage || storage.total_gb == null || storage.used_gb == null) {
         return '-- / -- GB';
@@ -88,26 +179,6 @@ export function applyModelConfig(path) {
     if (cfg.parallel_slots) document.getElementById('parallel-slots').value = cfg.parallel_slots;
     if (cfg.batch_size) document.getElementById('batch-size').value = cfg.batch_size;
     if (cfg.split_mode) document.getElementById('split-mode').value = cfg.split_mode;
-    if (cfg.mmproj_path !== undefined) {
-        const select = document.getElementById('mmproj-path');
-        let found = false;
-        for (let i = 0; i < select.options.length; i++) {
-            if (select.options[i].value === cfg.mmproj_path) {
-                select.value = cfg.mmproj_path;
-                found = true;
-                break;
-            }
-        }
-        if (!found && cfg.mmproj_path) {
-            const opt = document.createElement('option');
-            opt.value = cfg.mmproj_path;
-            opt.text = cfg.mmproj_path.split('/').pop() + " (Salvo)";
-            select.add(opt);
-            select.value = cfg.mmproj_path;
-        } else if (!cfg.mmproj_path) {
-            select.value = "";
-        }
-    }
     const abToggle = document.getElementById('auto-balance-toggle');
     if (abToggle) abToggle.checked = !!cfg.auto_balance;
     updateAutoBalanceProfileBadge(cfg.auto_balance_profile);
@@ -229,6 +300,7 @@ export async function updateModels() {
             const runningClass = isRunning ? 'running-now' : '';
             const hashId = m.id;
             const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
+            const visionControls = buildModelVisionControlsHtml(m, m_js);
             return `<div id="${hashId}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass} ${incapableRow}" data-path="${m_js}" data-hardware-incapable="${incapable}">
                 <div class="w-full cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
                     <div class="flex items-start gap-2 md:gap-3 mb-1 md:mb-2 flex-wrap">
@@ -247,6 +319,7 @@ export async function updateModels() {
                         <button onclick="deleteModel('${m_js}')" class="delete-btn w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-500/20 text-slate-600 hover:text-red-500 transition-all ${isRunning ? 'hidden' : ''}" title="Excluir Modelo">
                             <i class="fas fa-trash-alt text-[10px] md:text-xs"></i>
                         </button>
+                        ${visionControls}
                     </div>
                     <div class="flex flex-col items-center gap-1 md:gap-1.5">
                         <span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
@@ -257,18 +330,6 @@ export async function updateModels() {
             </div>`;
         }).join('');
         if (oldContainer.innerHTML !== newHtml) oldContainer.innerHTML = newHtml;
-
-        const projSelect = document.getElementById('mmproj-path');
-        const currentVal = projSelect.value;
-        let projHtml = '<option value="" class="bg-slate-900 italic">Auto-detectar / Nenhum</option>';
-        data.projectors.forEach(p => {
-            projHtml += `<option value="${p.path}" class="bg-slate-900">${p.name}</option>`;
-        });
-        if (projSelect.innerHTML.trim() !== projHtml.trim()) {
-            projSelect.innerHTML = projHtml;
-            projSelect.value = currentVal;
-            if (projSelect.value !== currentVal) projSelect.value = "";
-        }
     } catch (e) {}
 }
 
@@ -327,7 +388,7 @@ export async function startModel(path, elementId) {
         return alert(weightValidation.message);
     }
     if (!weights.some(w => w.is_main)) return alert("DEFINA A GPU PRINCIPAL (coluna Principal)");
-    const mmprojPath = document.getElementById('mmproj-path').value;
+    const mmprojPath = getSelectedMmprojForModel(path);
     const splitMode = document.getElementById('split-mode').value;
     const parallelSlots = Math.max(1, Math.min(64, parseInt(document.getElementById('parallel-slots').value) || window.__constants.DEFAULT_PARALLEL_SLOTS));
     const batchSize = parseInt(document.getElementById('batch-size').value, 10) || window.__constants.DEFAULT_BATCH_SIZE;

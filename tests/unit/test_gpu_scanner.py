@@ -255,8 +255,9 @@ class TestModelScannerScan:
         assert llava_model["mmproj_candidates"] == [str(matching_projector_path)]
         assert llava_model["auto_mmproj"] == str(matching_projector_path)
 
-        assert mistral_model["mmproj_candidates"] == []
-        assert mistral_model["auto_mmproj"] is None
+        assert mistral_model["mmproj_candidates"] == [str(other_projector_path)]
+        assert mistral_model["auto_mmproj"] == str(other_projector_path)
+        assert str(other_projector_path) not in llava_model["mmproj_candidates"]
 
     def test_scan_attaches_saved_last_config(
         self,

@@ -79,7 +79,6 @@ function setupGpuDom({ gpuCount = 2, withCpu = false, cpuChecked = true } = {}) 
         </div>
         <input id="parallel-slots" value="2"/>
         <input id="batch-size" value="512"/>
-        <input id="mmproj-path" value="/old/path"/>
         <select id="split-mode"><option value="row">row</option><option value="layer">layer</option></select>
         <input type="checkbox" id="auto-balance-toggle" checked/>
         <input type="checkbox" id="thinking-toggle" checked/>
@@ -593,7 +592,6 @@ describe('resetToDefaults', () => {
         document.getElementById('context-size').value = '8192';
         document.getElementById('parallel-slots').value = '8';
         document.getElementById('batch-size').value = '4096';
-        document.getElementById('mmproj-path').value = '/tmp/mmproj';
         document.getElementById('split-mode').value = 'row';
         document.getElementById('auto-balance-toggle').checked = true;
 
@@ -602,7 +600,6 @@ describe('resetToDefaults', () => {
         expect(getContextSize()).toBe(65536);
         expect(document.getElementById('parallel-slots').value).toBe('1');
         expect(document.getElementById('batch-size').value).toBe('2048');
-        expect(document.getElementById('mmproj-path').value).toBe('');
         expect(document.getElementById('split-mode').value).toBe('layer');
         expect(document.getElementById('auto-balance-toggle').checked).toBe(false);
         expect(document.getElementById('mtp-toggle').checked).toBe(false);

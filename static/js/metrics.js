@@ -38,7 +38,10 @@ export async function updateStatus() {
                 if (data.config.context_size) setContextSize(data.config.context_size);
                 if (data.config.parallel_slots) document.getElementById('parallel-slots').value = data.config.parallel_slots;
                 if (data.config.batch_size) document.getElementById('batch-size').value = data.config.batch_size;
-                if (data.config.mmproj_path !== undefined) document.getElementById('mmproj-path').value = data.config.mmproj_path || "";
+                const mmprojEl = document.getElementById('mmproj-path');
+                if (mmprojEl && data.config.mmproj_path !== undefined) {
+                    mmprojEl.value = data.config.mmproj_path || '';
+                }
                 const thinkingToggle = document.getElementById('thinking-toggle');
                 if (thinkingToggle && data.config.thinking_enabled !== undefined) {
                     thinkingToggle.checked = !!data.config.thinking_enabled;

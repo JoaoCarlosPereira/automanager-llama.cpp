@@ -438,7 +438,6 @@ export function resetToDefaults() {
     setContextSize(window.__constants.DEFAULT_CONTEXT_SIZE);
     document.getElementById('parallel-slots').value = String(window.__constants.DEFAULT_PARALLEL_SLOTS);
     document.getElementById('batch-size').value = String(window.__constants.DEFAULT_BATCH_SIZE);
-    document.getElementById('mmproj-path').value = "";
     document.getElementById('split-mode').value = "layer";
     const toggle = document.getElementById('auto-balance-toggle');
     if (toggle) toggle.checked = false;

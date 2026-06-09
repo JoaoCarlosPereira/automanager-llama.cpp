@@ -235,8 +235,19 @@ def test_html_contains_batch_size_select(html):
     assert 'id="batch-size"' in html
 
 
-def test_html_contains_mmproj_select(html):
-    assert 'id="mmproj-path"' in html
+def test_html_does_not_contain_global_mmproj_select(html):
+    assert 'id="mmproj-path"' not in html
+
+
+def test_html_contains_vision_import_modal(html):
+    assert 'id="vision-import-modal"' in html
+    assert 'id="vision-import-url"' in html
+    assert 'submitVisionImport' in html
+
+
+def test_html_contains_per_model_vision_import_button(html):
+    assert 'vision-import-btn' in html
+    assert 'openVisionImportModal' in html
 
 
 def test_html_contains_split_mode_select(html):
