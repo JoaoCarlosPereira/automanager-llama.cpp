@@ -92,6 +92,10 @@ FAILURE_SERVER_CRASH = "server_crashed"
 # (incompatible model/binary or bad launch flag), never an OOM during the
 # weight allocation of a multi-GB model.
 CRASH_FAST_FAIL_SEC = 20.0
+# A fast crash may also be transient (e.g. the previous probe's server still
+# releasing the HTTP port). Retry a few times before declaring it fatal.
+CRASH_RETRY_MAX = 2
+CRASH_RETRY_BACKOFF_SEC = 1.0
 
 # CPU offload constants
 CPU_OFFLOAD_STEP = 10  # CPU escalates in 10% increments
@@ -207,6 +211,60 @@ class AutoBalancePlanner:
         if sum(weights.values()) != target_total:
             weights[subset[-1]] += target_total - sum(weights.values())
         return weights
+
+    @staticmethod
+    def cascade_fill_weights(
+        subset: List[int],
+        vram_by_index: Dict[int, int],
+        model_mb: int,
+        target_total: int = 100,
+        vram_limit_pct: float = TARGET_VRAM_PCT_MAX,
+    ) -> Optional[Dict[int, int]]:
+        """VRAM-cap priority fill across *subset* (spill order), as percentages.
+
+        Mirrors :meth:`LoadDistributor.distribute`: each GPU is filled up to
+        ``vram * vram_limit_pct`` MB in order; the LAST GPU of the subset
+        absorbs whatever remains — even above its cap — so the probe actually
+        tests that split (and OOMs, prompting Fase 1 to add the next GPU) when
+        the subset cannot hold the model. The MB allocation is converted to
+        integer percentages summing to *target_total* (largest-remainder).
+
+        Returns None when *subset* is empty or *model_mb* <= 0 (caller falls
+        back to the flat template).
+        """
+        if not subset or model_mb <= 0 or target_total <= 0:
+            return None
+
+        mb_by_idx: Dict[int, int] = {}
+        remaining = model_mb
+        last = len(subset) - 1
+        for pos, idx in enumerate(subset):
+            if pos == last:
+                mb_by_idx[idx] = max(0, remaining)
+                remaining = 0
+            else:
+                cap = int(max(0, vram_by_index.get(idx, 0)) * vram_limit_pct / 100.0)
+                alloc = min(cap, remaining)
+                mb_by_idx[idx] = alloc
+                remaining -= alloc
+
+        total_mb = sum(mb_by_idx.values())
+        if total_mb <= 0:
+            return None
+
+        # MB -> integer % summing to target_total (largest-remainder method).
+        floors: Dict[int, int] = {}
+        remainders: List[Tuple[float, int]] = []
+        for idx, mb in mb_by_idx.items():
+            exact = mb * target_total / total_mb
+            floor = int(exact)
+            floors[idx] = floor
+            remainders.append((exact - floor, idx))
+        leftover = target_total - sum(floors.values())
+        remainders.sort(reverse=True)
+        for _, idx in remainders[: max(0, leftover)]:
+            floors[idx] += 1
+        return floors
 
     @staticmethod
     def gpu_weight_floors(
@@ -1100,6 +1158,9 @@ class AutoBalanceProber:
         # crash message (vs. an OOM) for the user.
         self._last_server_log_tail: List[str] = []
         self._last_crash_elapsed: float = 0.0
+        # Estimated model weight size (MB) for the current run; drives the
+        # VRAM-cap cascade template in _algorithmic_gpu_map.
+        self._weights_mb: int = 0
 
     def _raise_if_cancelled(self) -> None:
         if self.process_manager.auto_balance_cancel_requested:
@@ -1211,11 +1272,26 @@ class AutoBalanceProber:
         active_count: int,
         cpu_weight: int,
     ) -> Optional[Dict[int, int]]:
-        """Cascade priority-fill split; ignores manual UI percentages."""
+        """Cascade priority-fill split; ignores manual UI percentages.
+
+        When the model size is known, fills each GPU up to its VRAM cap in
+        spill order (same policy as :class:`LoadDistributor`), so the probe
+        tries the balanced split that actually fits (e.g. ~48/33/19 on a
+        3090+2×P100) instead of overloading the main GPU. Falls back to the
+        flat template (main max, secondaries minimum slice) when size unknown.
+        """
         gpu_target = self._gpu_budget(cpu_weight)
-        template_map = self.planner.weights_for_cascade_spill(
-            spill_order, active_count, vram_by_index, gpu_target
-        )
+        subset = spill_order[:active_count]
+        template_map = None
+        weights_mb = getattr(self, "_weights_mb", 0)
+        if weights_mb and weights_mb > 0:
+            template_map = self.planner.cascade_fill_weights(
+                subset, vram_by_index, weights_mb, gpu_target
+            )
+        if template_map is None:
+            template_map = self.planner.weights_for_cascade_spill(
+                spill_order, active_count, vram_by_index, gpu_target
+            )
         if template_map is None:
             return None
         return self.planner.apply_pins(
@@ -1544,6 +1620,8 @@ class AutoBalanceProber:
         weights_mb = est["weights_mb"]
         kv_cache_mb = est["kv_cache_mb"]
         total_mb = est["total_mb"]
+        # Drives the VRAM-cap cascade template in _algorithmic_gpu_map.
+        self._weights_mb = weights_mb
         gpu_names = {g["index"]: g.get("name", f"GPU{g['index']}") for g in all_gpus}
         model_name = os.path.basename(request.path) if request.path else "?"
         total_active_vram = sum(vram_by_index.get(i, 0) for i in active_indices)
@@ -1638,8 +1716,8 @@ class AutoBalanceProber:
         self._raise_if_cancelled()
         if feasible is None:
             _auto_balance_log(
-                "Fase 1 — GPUs esgotadas sem split viável; "
-                "tentando maximizar todas as GPUs antes de CPU",
+                "Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only "
+                "maximizando o principal (resto balanceado por VRAM) antes do CPU",
                 level="warn",
             )
             feasible, attempt, cpu_weight = self._try_full_gpu_maximize_before_cpu(
@@ -1906,65 +1984,108 @@ class AutoBalanceProber:
         active_indices: List[int],
         attempt: int,
     ) -> Tuple[Optional[Dict[int, int]], int, int]:
+        """Find the largest main-GPU weight that loads GPU-only (no CPU).
+
+        The strict cap cascade fills the main GPU using only the **weights**
+        size and ignores the KV-cache/compute buffers that also live on each
+        GPU (proportionally to its layers), so it overloads the main and OOMs.
+        Here we binary-search the main weight downward from its cap share; for
+        each candidate the remainder is split across the other active GPUs by
+        VRAM (balanced). The largest main weight that probes READY wins —
+        honouring "main has priority" (it stays as high as physically fits)
+        without trusting the (unreliable) VRAM estimate.
+
+        Returns (feasible_map | None, attempt, 0).
         """
-        After GPU-only phase 1 fails, maximize VRAM on every selected GPU before
-        any CPU offload. Returns a feasible map when the model loads GPU-only.
-        """
-        weight_map = self._algorithmic_gpu_map(
-            spill_order,
-            active_indices,
-            vram_by_index,
-            pinned_map,
-            len(spill_order),
-            0,
-        )
-        if weight_map is None:
+        others = [i for i in spill_order[1:] if i in active_indices]
+        unpinned_others = [i for i in others if i not in pinned_map]
+        if not others or main_index in pinned_map or not unpinned_others:
             return None, attempt, 0
 
         gpu_only_cpu = {"enabled": False, "pinned": False, "weight": 0}
-        attempt += 1
-        self._set_progress(
-            attempt,
-            "Fase 2 — maximizar todas as GPUs antes de CPU",
-            weight_map=weight_map,
-            all_gpus=all_gpus,
-            main_index=main_index,
-            pinned_map=pinned_map,
-            cpu_weight=0,
-            cpu_config=gpu_only_cpu,
+        subset = [main_index] + others
+
+        # hi = cap-based main share (what the cascade tried); lo = VRAM-
+        # proportional main share (balanced) — the natural floor below which
+        # the secondaries would themselves overload.
+        cap_map = self.planner.cascade_fill_weights(
+            subset, vram_by_index, self._weights_mb or 0, DEVICE_BUDGET_TOTAL
         )
-        optimized, attempt, _ = self._maximize_vram_per_gpu(
-            request,
-            all_gpus,
+        hi = (cap_map or {}).get(main_index, 0)
+        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in subset)
+        proportional_main = int(round(
+            DEVICE_BUDGET_TOTAL
+            * max(1, vram_by_index.get(main_index, 1)) / total_vram
+        ))
+        lo = max(MIN_MAIN_WEIGHT, min(proportional_main, hi or proportional_main))
+        hi = max(lo, hi)
+
+        _auto_balance_log(
+            "=== Fase 1c — busca GPU-only (maximizar principal) ===\n"
+            "  principal=GPU%d faixa=[%d%%, %d%%] resto por VRAM em %s",
             main_index,
-            spill_order,
-            weight_map,
-            vram_by_index,
-            pinned_map,
-            attempt,
-            gpu_only_cpu,
-            0,
-            active_indices=active_indices,
+            lo,
+            hi,
+            others,
         )
-        attempt += 1
-        outcome = self._probe_start(
-            request,
-            optimized,
-            main_index,
-            all_gpus,
-            attempt,
-            cpu_weight=0,
-            cpu_config=gpu_only_cpu,
-            spill_order=spill_order,
-            selected_indices=active_indices,
-            pinned_map=pinned_map,
-        )
-        if outcome == "ready":
-            logger.info(
-                "Auto-balance: modelo carregou em GPU-only após maximizar "
-                "todas as placas selecionadas (sem CPU)"
+
+        best: Optional[Dict[int, int]] = None
+        while lo <= hi:
+            self._raise_if_cancelled()
+            mid = (lo + hi + 1) // 2
+            trial = self.planner.distribute_unpinned(
+                {**pinned_map, main_index: mid},
+                unpinned_others,
+                vram_by_index,
+                spill_order,
+                DEVICE_BUDGET_TOTAL,
             )
-            return dict(optimized), attempt, 0
+            if trial is None:
+                hi = mid - 1
+                continue
+            attempt += 1
+            label = self.planner.format_weights(trial, spill_order)
+            self._set_progress(
+                attempt,
+                f"Fase 1c — GPU-only: principal {mid}% ({label})",
+                weight_map=trial,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+                cpu_weight=0,
+                cpu_config=gpu_only_cpu,
+            )
+            outcome = self._probe_start(
+                request,
+                trial,
+                main_index,
+                all_gpus,
+                attempt,
+                cpu_weight=0,
+                cpu_config=gpu_only_cpu,
+                spill_order=spill_order,
+                selected_indices=active_indices,
+                pinned_map=pinned_map,
+            )
+            if outcome == "ready":
+                best = dict(trial)
+                _auto_balance_log("Fase 1c — principal %d%% → READY (%s)", mid, label)
+                lo = mid + 1  # main fits — try to give it even more
+            else:
+                _auto_balance_log(
+                    "Fase 1c — principal %d%% → %s; reduzindo principal",
+                    mid,
+                    outcome,
+                    level="warn",
+                )
+                hi = mid - 1
+
+        if best is not None:
+            logger.info(
+                "Auto-balance: split GPU-only viável (principal maximizado): %s",
+                self.planner.format_weights(best, spill_order),
+            )
+            return best, attempt, 0
         return None, attempt, 0
 
     def _find_feasible_split(
@@ -2830,64 +2951,91 @@ class AutoBalanceProber:
             gpu_weight_details,
         )
 
-        self.process_manager.stop()
-        try:
-            self.process_manager.start(
-                model_path=request.path,
-                gpu_weights=gpu_weights,
-                context_size=request.context_size,
-                mmproj_path=request.mmproj_path,
-                split_mode=request.split_mode,
-                parallel_slots=request.parallel_slots,
-                batch_size=request.batch_size,
-                thinking_enabled=request.thinking_enabled,
-                mtp_enabled=request.mtp_enabled,
-                mtp_draft_tokens=request.mtp_draft_tokens,
-                total_layers=request.total_layers,
-            )
-        except Exception as exc:
-            logger.error(
-                "Auto-balance probe #%d: START EXCEPTION model=%s error=%s",
-                attempt,
-                request.path,
-                exc,
-            )
-            # Could not even launch the server — a hard crash, not an OOM.
-            self._last_crash_elapsed = 0.0
-            self._last_server_log_tail = [f"START EXCEPTION: {exc}"]
-            raise AutoBalanceServerCrashed(
-                weight_map, probe_cpu, 0.0, self._last_server_log_tail
-            )
-        outcome = self._wait_for_outcome()
-        _auto_balance_log(
-            "PROBE #%d RESULT: %s | synced={%s} cpu=%d",
-            attempt,
-            outcome,
-            ", ".join(f"{i}: {synced_map.get(i, 0)}%" for i in synced_map),
-            probe_cpu,
-            level="warn" if outcome in ("oom", "timeout", "crashed") else "info",
-        )
-        # Differentiate a genuine crash from an OOM: a non-OOM death that
-        # happens too fast to be a real multi-GB allocation failure means the
-        # model/binary/flags are incompatible. Abort the whole run and tell the
-        # user — escalating GPUs/CPU would only produce a misleading
-        # "hardware capacity exceeded" verdict. A slow non-OOM death is left on
-        # the normal path (treated like a load failure that may benefit from
-        # more devices), since some real OOMs print messages our regex misses.
-        if outcome == "crashed" and self._last_crash_elapsed < CRASH_FAST_FAIL_SEC:
+        crash_retries = 0
+        while True:
+            self.process_manager.stop()  # also waits for the port to be released
+            try:
+                self.process_manager.start(
+                    model_path=request.path,
+                    gpu_weights=gpu_weights,
+                    context_size=request.context_size,
+                    mmproj_path=request.mmproj_path,
+                    split_mode=request.split_mode,
+                    parallel_slots=request.parallel_slots,
+                    batch_size=request.batch_size,
+                    thinking_enabled=request.thinking_enabled,
+                    mtp_enabled=request.mtp_enabled,
+                    mtp_draft_tokens=request.mtp_draft_tokens,
+                    total_layers=request.total_layers,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Auto-balance probe #%d: START EXCEPTION model=%s error=%s",
+                    attempt,
+                    request.path,
+                    exc,
+                )
+                # Could not even launch the server — treat as a (retryable) crash.
+                self._last_crash_elapsed = 0.0
+                self._last_server_log_tail = [f"START EXCEPTION: {exc}"]
+                outcome = "crashed"
+            else:
+                outcome = self._wait_for_outcome()
+
             _auto_balance_log(
-                "PROBE #%d → CRASH (não-OOM, %.1fs) — abortando auto-balance",
+                "PROBE #%d RESULT: %s | synced={%s} cpu=%d",
                 attempt,
-                self._last_crash_elapsed,
-                level="error",
-            )
-            raise AutoBalanceServerCrashed(
-                weight_map,
+                outcome,
+                ", ".join(f"{i}: {synced_map.get(i, 0)}%" for i in synced_map),
                 probe_cpu,
-                self._last_crash_elapsed,
-                self._last_server_log_tail,
+                level="warn" if outcome in ("oom", "timeout", "crashed") else "info",
             )
-        return outcome
+
+            is_fast_crash = (
+                outcome == "crashed"
+                and self._last_crash_elapsed < CRASH_FAST_FAIL_SEC
+            )
+            # A fast non-OOM death is often transient (port not yet released).
+            # Retry a few times before deciding it is fatal.
+            if (
+                is_fast_crash
+                and crash_retries < CRASH_RETRY_MAX
+                and not self.process_manager.auto_balance_cancel_requested
+            ):
+                crash_retries += 1
+                _auto_balance_log(
+                    "PROBE #%d → CRASH (não-OOM, %.1fs) — retry %d/%d "
+                    "(provável porta/transitório)",
+                    attempt,
+                    self._last_crash_elapsed,
+                    crash_retries,
+                    CRASH_RETRY_MAX,
+                    level="warn",
+                )
+                time.sleep(CRASH_RETRY_BACKOFF_SEC)
+                continue
+
+            # Persisted after retries: a genuine crash (incompatible
+            # model/binary or bad launch flag). Abort and inform the user —
+            # escalating GPUs/CPU would only produce a misleading
+            # "hardware capacity exceeded" verdict. A slow non-OOM death is left
+            # on the normal path (some real OOMs print messages our regex misses).
+            if is_fast_crash:
+                _auto_balance_log(
+                    "PROBE #%d → CRASH persistente (não-OOM, %.1fs após %d retries) "
+                    "— abortando auto-balance",
+                    attempt,
+                    self._last_crash_elapsed,
+                    crash_retries,
+                    level="error",
+                )
+                raise AutoBalanceServerCrashed(
+                    weight_map,
+                    probe_cpu,
+                    self._last_crash_elapsed,
+                    self._last_server_log_tail,
+                )
+            return outcome
 
     def _get_vram_pct(self, gpu_index: int) -> float:
         metrics = self.gpu_manager.get_metrics()

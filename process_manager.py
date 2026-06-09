@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import socket
 import time
 import signal
 import logging
@@ -28,6 +29,11 @@ from schemas import (
 )
 
 SERVER_PORT = 8085
+# How long to wait for the OS to release the server port after killing the
+# process, so a follow-up start() (e.g. the next auto-balance probe) does not
+# fail to bind it. SIGKILL is async: the socket lingers briefly after the kill.
+PORT_RELEASE_TIMEOUT_SEC = 10.0
+PORT_RELEASE_POLL_SEC = 0.25
 logger = logging.getLogger("automanager")
 
 
@@ -195,22 +201,63 @@ class ProcessManager:
                 continue
         return status
 
+    @staticmethod
+    def _is_port_free(port: int) -> bool:
+        """True when nothing is listening on *port* (connect is refused)."""
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return False  # something answered -> still bound
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            return True
+
+    def _wait_port_released(
+        self,
+        port: int = SERVER_PORT,
+        timeout: float = PORT_RELEASE_TIMEOUT_SEC,
+    ) -> bool:
+        """Block until *port* is free, or *timeout* elapses.
+
+        Prevents the next start()/probe from failing with
+        "couldn't bind HTTP server socket" while the just-killed server is still
+        releasing the socket.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._is_port_free(port):
+                return True
+            time.sleep(PORT_RELEASE_POLL_SEC)
+        free = self._is_port_free(port)
+        if not free:
+            logger.warning(
+                "Port %d still bound after %.1fs wait — start() may fail to bind",
+                port,
+                timeout,
+            )
+        return free
+
     def stop(self) -> dict:
         if os.name == "posix":
             subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
         with self._lock:
-            if self._current_process:
+            proc = self._current_process
+            if proc:
                 try:
                     if os.name == "posix":
-                        os.killpg(
-                            os.getpgid(self._current_process.pid), signal.SIGKILL
-                        )
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                     else:
-                        self._current_process.kill()
+                        proc.kill()
                 except (ProcessLookupError, OSError):
                     pass
                 self._current_process = None
             self._last_request = None
+        # Reap the killed process and wait for the OS to release the port so a
+        # follow-up start() can bind it (fixes transient probe bind crashes).
+        if proc is not None:
+            try:
+                proc.wait(timeout=PORT_RELEASE_TIMEOUT_SEC)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
+                pass
+        self._wait_port_released()
         if not self.auto_balance_active:
             self.recovery_state = {
                 "active": False,

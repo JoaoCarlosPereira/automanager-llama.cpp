@@ -16,6 +16,7 @@ from auto_balance import (
     AutoBalanceProber,
     AutoBalanceServerCrashed,
     CRASH_FAST_FAIL_SEC,
+    CRASH_RETRY_MAX,
     FAILURE_HARDWARE_CAPACITY,
     FAILURE_SERVER_CRASH,
     MIN_MAIN_WEIGHT,
@@ -133,6 +134,34 @@ class TestAutoBalancePlanner:
         )
         assert weights == {2: 70, 0: 10, 1: 10}
         assert sum(weights.values()) == 90
+
+    def test_cascade_fill_large_model_fills_each_gpu_to_cap(self):
+        """47 GB em 3090+2×P100 → ~48/33/19 (cap de cada GPU, em ordem)."""
+        vram = {0: 16384, 1: 16384, 2: 24576}
+        w = AutoBalancePlanner.cascade_fill_weights([2, 0, 1], vram, 48594, 100)
+        assert sum(w.values()) == 100
+        assert w[2] > w[0] > w[1] > 0
+        assert 45 <= w[2] <= 52  # 3090 cap ≈ 24330/48594 ≈ 50%
+
+    def test_cascade_fill_small_model_all_on_main(self):
+        """Modelo que cabe na main → 100% na main."""
+        vram = {0: 16384, 1: 16384, 2: 24576}
+        w = AutoBalancePlanner.cascade_fill_weights([2, 0, 1], vram, 10000, 100)
+        assert w[2] == 100
+        assert w[0] == 0 and w[1] == 0
+
+    def test_cascade_fill_subset_too_small_overloads_last(self):
+        """Subset que não comporta o modelo → última GPU recebe a sobra (>cap)."""
+        vram = {0: 16384, 2: 24576}
+        # 2 GPUs (cap ≈ 40550) não cabem 60 GB → GPU0 (última) leva a sobra.
+        w = AutoBalancePlanner.cascade_fill_weights([2, 0], vram, 60000, 100)
+        assert sum(w.values()) == 100
+        assert w[0] > w[2]  # a última absorve o excedente (probe vai dar OOM)
+
+    def test_cascade_fill_unknown_size_returns_none(self):
+        vram = {0: 16384, 2: 24576}
+        assert AutoBalancePlanner.cascade_fill_weights([2, 0], vram, 0, 100) is None
+        assert AutoBalancePlanner.cascade_fill_weights([], vram, 1000, 100) is None
 
     def test_set_target_weight_increases_main_from_secondary(self):
         base = {0: 70, 1: 30}
@@ -305,6 +334,7 @@ class TestAutoBalanceCpu:
         assert prober._should_add_cpu([0, 1], {0: 50, 1: 50}, True) is True
 
     def test_algorithmic_gpu_map_uses_cascade_priority_fill(self):
+        """Sem tamanho de modelo conhecido (_weights_mb=0) → template plano."""
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
@@ -319,6 +349,27 @@ class TestAutoBalanceCpu:
         assert weight_map == CASCADE_GPU_ONLY_MAP
         assert weight_map[MAIN_GPU_INDEX] > weight_map[0]
         assert weight_map[MAIN_GPU_INDEX] > weight_map[1]
+
+    def test_algorithmic_gpu_map_fills_by_vram_cap_when_size_known(self):
+        """Com tamanho conhecido → enche cada GPU até o cap de VRAM (não 80/10/10)."""
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        prober._weights_mb = 48594  # ~47 GB (caso real Qwen3-Coder-Next)
+        weight_map = prober._algorithmic_gpu_map(
+            SPILL_ORDER_3090_MAIN,
+            [0, 1, 2],
+            {0: 16384, 1: 16384, 2: 24576},
+            {},
+            active_count=3,
+            cpu_weight=0,
+        )
+        assert sum(weight_map.values()) == 100
+        # GPU2 (3090) enche primeiro (~48%), depois GPU0 (~33%), GPU1 com a sobra.
+        assert weight_map[MAIN_GPU_INDEX] > weight_map[0] > weight_map[1] > 0
+        assert 45 <= weight_map[MAIN_GPU_INDEX] <= 52  # cap do 3090 ≈ 48%
+        # Bem diferente do template fixo 80/10/10.
+        assert weight_map != CASCADE_GPU_ONLY_MAP
 
     def test_cpu_config_from_request_disabled(self):
         request = _make_request(
@@ -909,9 +960,9 @@ class TestCrashVsOom:
             assert prober._wait_for_outcome() == "crashed"
         assert prober._last_server_log_tail  # tail capturado p/ mensagem
 
-    def test_probe_start_raises_on_fast_crash(self):
-        """Crash não-OOM rápido aborta o auto-balance (levanta exceção)."""
-        prober, _ = self._prober()
+    def test_probe_start_raises_on_persistent_fast_crash(self):
+        """Crash não-OOM rápido e PERSISTENTE (após retries) aborta o run."""
+        prober, pm = self._prober()
 
         def fake_wait():
             prober._last_crash_elapsed = 1.0
@@ -919,10 +970,33 @@ class TestCrashVsOom:
             return "crashed"
 
         prober._wait_for_outcome = fake_wait
-        with pytest.raises(AutoBalanceServerCrashed):
-            prober._probe_start(
+        with patch("auto_balance.time.sleep", return_value=None):
+            with pytest.raises(AutoBalanceServerCrashed):
+                prober._probe_start(
+                    MagicMock(), {0: 100}, 0, [{"index": 0, "name": "g0"}], 1
+                )
+        # Tentou 1 + CRASH_RETRY_MAX vezes antes de desistir.
+        assert pm.start.call_count == CRASH_RETRY_MAX + 1
+
+    def test_probe_start_retries_transient_crash_then_ready(self):
+        """Crash transitório (porta) seguido de READY no retry NÃO aborta."""
+        prober, pm = self._prober()
+        outcomes = iter(["crashed", "ready"])
+
+        def fake_wait():
+            o = next(outcomes)
+            if o == "crashed":
+                prober._last_crash_elapsed = 1.0
+                prober._last_server_log_tail = ["couldn't bind HTTP server socket"]
+            return o
+
+        prober._wait_for_outcome = fake_wait
+        with patch("auto_balance.time.sleep", return_value=None):
+            outcome = prober._probe_start(
                 MagicMock(), {0: 100}, 0, [{"index": 0, "name": "g0"}], 1
             )
+        assert outcome == "ready"
+        assert pm.start.call_count == 2  # 1 crash + 1 retry que subiu
 
     def test_probe_start_slow_crash_does_not_abort(self):
         """Morte não-OOM tardia segue o caminho normal (não aborta)."""
@@ -972,6 +1046,65 @@ class TestCrashVsOom:
         assert failure["server_log_tail"] == ["unknown architecture"]
         assert "inesperadamente" in msg and "OOM" in msg
         pm.stop.assert_called()
+
+
+class TestGpuOnlyMainSearch:
+    """Fase 1c: maximizar o GPU principal mantendo GPU-only (resto por VRAM)."""
+
+    def _prober(self):
+        pm = MagicMock()
+        pm.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(pm, MagicMock(), MagicMock(), MagicMock())
+        prober._weights_mb = 48594  # ~47 GB (caso real)
+        prober._set_progress = MagicMock()
+        return prober
+
+    def test_finds_largest_main_weight_that_loads(self):
+        """Cap (50%) dá OOM por KV-cache; converge para o maior principal que cabe."""
+        prober = self._prober()
+        probes = []
+
+        def fake_probe(request, weight_map, *a, **k):
+            probes.append(dict(weight_map))
+            # GPU-only só carrega quando o principal (GPU2) <= 45% (folga p/ KV).
+            return "ready" if weight_map.get(MAIN_GPU_INDEX, 0) <= 45 else "oom"
+
+        prober._probe_start = MagicMock(side_effect=fake_probe)
+        feasible, _attempt, cpu = prober._try_full_gpu_maximize_before_cpu(
+            MagicMock(),
+            THREE_GPU_HARDWARE,
+            MAIN_GPU_INDEX,
+            SPILL_ORDER_3090_MAIN,
+            {0: 16384, 1: 16384, 2: 24576},
+            {},
+            [0, 1, 2],
+            0,
+        )
+        assert feasible is not None
+        assert cpu == 0
+        assert feasible[MAIN_GPU_INDEX] == 45  # maior principal viável
+        assert sum(feasible.values()) == 100
+        # Resto balanceado entre as duas P100 (VRAM igual).
+        assert abs(feasible[0] - feasible[1]) <= 1
+        assert feasible[0] > 0 and feasible[1] > 0
+        # Nunca testou o principal acima do cap da cascata (~50%).
+        assert max(p.get(MAIN_GPU_INDEX, 0) for p in probes) <= 50
+
+    def test_returns_none_when_no_gpu_only_split_loads(self):
+        """Se nem o split balanceado carrega → None (segue p/ CPU offload)."""
+        prober = self._prober()
+        prober._probe_start = MagicMock(return_value="oom")
+        feasible, _attempt, cpu = prober._try_full_gpu_maximize_before_cpu(
+            MagicMock(),
+            THREE_GPU_HARDWARE,
+            MAIN_GPU_INDEX,
+            SPILL_ORDER_3090_MAIN,
+            {0: 16384, 1: 16384, 2: 24576},
+            {},
+            [0, 1, 2],
+            0,
+        )
+        assert feasible is None
 
 
 class TestBudgetSelectedIndices:
@@ -1304,13 +1437,16 @@ class TestDiscoverPhaseHandoff:
         return prober, state, process_manager
 
     def test_phase3_continues_from_phase2_and_cpu_unmarked(self):
-        # Model fits on GPU2 + GPU0 only; GPU2 must carry <= 92%.
+        # Model (~30 GB) exceeds GPU2's VRAM cap (24576*0.99≈24330 MB) but fits
+        # on GPU2+GPU0, so the VRAM-cap cascade yields {2:81, 0:19} (GPU1 unused).
         def ready_rule(weight_map):
-            return weight_map.get(MAIN_GPU_INDEX, 0) <= 92
+            # Feasible only when the second GPU carries part of the model and
+            # the main stays within its cap share (<= 81%).
+            return weight_map.get(0, 0) > 0 and weight_map.get(MAIN_GPU_INDEX, 0) <= 81
 
         def vram_pct_for_main(main_weight):
-            # 92% weight -> ~96% VRAM, lands inside the [95, 99] target window.
-            return min(99.0, float(main_weight) + 4.0)
+            # 81% weight -> ~96% VRAM, inside the [95, 99] target window.
+            return min(99.0, float(main_weight) + 15.0)
 
         prober, state, pm = self._build_prober(ready_rule, vram_pct_for_main)
         request = _make_request(
@@ -1325,20 +1461,25 @@ class TestDiscoverPhaseHandoff:
             ]
         )
 
-        with patch.object(AutoBalancePlanner, "model_weights_mb_from_disk",
-                          return_value=21109), \
-             patch("auto_balance.time.sleep", return_value=None):
+        with patch.object(
+            AutoBalancePlanner, "estimate_model_vram_mb",
+            return_value={"weights_mb": 30000, "kv_cache_mb": 0, "total_mb": 30000},
+        ), patch.object(
+            AutoBalancePlanner, "model_weights_mb_from_disk", return_value=28500
+        ), patch("auto_balance.time.sleep", return_value=None):
             ok, weights, msg, failure = prober.discover(request)
 
         assert ok, msg
         by_idx = {w.index: w for w in weights}
-        # Phase 3 kept Phase 2's maximized 2-GPU split — NOT a fresh 3-GPU cascade.
-        assert by_idx[2].weight == 92.0
-        assert by_idx[0].weight == 8.0
+        # VRAM-cap cascade: GPU2 filled to its cap (~81%), GPU0 takes the rest,
+        # GPU1 never needed. Phase 3 kept Phase 2's split (no fresh 3-GPU cascade).
+        assert by_idx[2].weight == 81.0
+        assert by_idx[0].weight == 19.0
         assert by_idx[1].weight == 0.0
         assert not by_idx[1].active
-        # GPU1 was dropped in Phase 2 and never re-probed in Phase 3.
-        assert all(p.get(1, 0) == 0 for p in state["probes"][-5:])
+        assert by_idx[2].weight > by_idx[0].weight  # main keeps priority
+        # GPU1 was never used in any probe (model fit on 2 GPUs).
+        assert all(p.get(1, 0) == 0 for p in state["probes"])
 
         # Issue 2: during every GPU-only progress update the CPU valve must show
         # unmarked (it never carried load in this run).

@@ -301,3 +301,27 @@ def test_start_zero_gpu_weight(gpu_mgr, pm, mock_config, mock_token, mock_log_mg
     cmd = _captured_cmd(pm, weights)
     ngl_idx = cmd.index("-ngl")
     assert cmd[ngl_idx + 1] == "0"
+
+
+# ── port release on stop() ─────────────────────────────────────────────────
+
+
+def test_wait_port_released_returns_when_free(pm):
+    """_wait_port_released returns True as soon as the port is free."""
+    with patch.object(type(pm), "_is_port_free", return_value=True):
+        assert pm._wait_port_released(port=8085, timeout=1.0) is True
+
+
+def test_wait_port_released_times_out_when_bound(pm):
+    """Still bound after timeout -> returns False (logged), does not hang."""
+    with patch.object(type(pm), "_is_port_free", return_value=False), \
+         patch("process_manager.time.sleep", return_value=None):
+        assert pm._wait_port_released(port=8085, timeout=0.5) is False
+
+
+def test_stop_waits_for_port_release(pm):
+    """stop() must wait for the port to free so the next start() can bind it."""
+    with patch("process_manager.subprocess.run"), \
+         patch.object(pm, "_wait_port_released", return_value=True) as waited:
+        pm.stop()
+    waited.assert_called_once()
