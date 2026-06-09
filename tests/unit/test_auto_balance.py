@@ -31,8 +31,8 @@ SPILL_ORDER_3090_MAIN = [2, 0, 1]
 
 # Fase 1 cascade (3090 principal): main max, demais GPUs com fatia mínima por VRAM.
 CASCADE_GPU_ONLY_MAP = {2: 80, 0: 10, 1: 10}
-# CPU +10%: tira das GPUs secundárias (ordem inversa de spill) antes da principal.
-CASCADE_CPU_OFFLOAD_MAP = {2: 80, 0: 10, 1: 0}
+# CPU +10%: tira da principal por último; todas as GPUs selecionadas mantêm fatia mínima.
+CASCADE_CPU_OFFLOAD_MAP = {2: 70, 0: 10, 1: 10}
 VALID_GPU_ONLY_CPU = 0
 VALID_CPU_OFFLOAD_CPU = 10
 
@@ -40,6 +40,7 @@ VALID_CPU_OFFLOAD_CPU = 10
 LEGACY_INVERTED_GPU_MAP = {0: 43, 1: 47, 2: 10}
 
 CPU_VALVE_ON = {"enabled": True, "pinned": False, "weight": 0}
+CPU_VALVE_ON_SPILL = {**CPU_VALVE_ON, "cpu_spill_allowed": True}
 
 
 class TestAutoBalancePlanner:
@@ -100,6 +101,16 @@ class TestAutoBalancePlanner:
             90,
         )
         assert shifted == {2: 80, 0: 10, 1: 0}
+
+    def test_shift_gpu_budget_preserves_all_selected_gpus(self):
+        shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
+            {2: 80, 0: 10, 1: 10},
+            SPILL_ORDER_3090_MAIN,
+            {},
+            90,
+            [0, 1, 2],
+        )
+        assert shifted == {2: 70, 0: 10, 1: 10}
 
     def test_shift_gpu_budget_main_is_last_resort(self):
         shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
@@ -342,11 +353,29 @@ class TestAutoBalanceCpu:
         )
         gpu_map, cpu_w = prober._finalize_cpu_split(
             {0: 20, 1: 10},
-            {"enabled": True, "pinned": False, "weight": 0},
+            CPU_VALVE_ON_SPILL,
+            cpu_spill_allowed=True,
         )
         # No 70% cap — raw spill-over (100 - 30 = 70)
         assert cpu_w == 70
         assert sum(gpu_map.values()) == 30
+
+    def test_finalize_cpu_split_valve_on_without_spill_scales_gpu(self):
+        """Válvula CPU ligada não preenche gap até offload ser confirmado."""
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        gpu_map, cpu_w = prober._finalize_cpu_split(
+            {2: 82, 0: 14, 1: 0},
+            CPU_VALVE_ON,
+            cpu_spill_allowed=False,
+            spill_order=SPILL_ORDER_3090_MAIN,
+            selected_indices=[0, 2],
+        )
+        assert cpu_w == 0
+        assert sum(gpu_map.values()) == DEVICE_BUDGET_TOTAL
+        assert gpu_map[2] >= 82
+        assert gpu_map[0] >= 14
 
     def test_finalize_cpu_split_respects_pinned_cpu(self):
         prober = AutoBalanceProber(
@@ -359,13 +388,27 @@ class TestAutoBalanceCpu:
         assert cpu_w == 30
         assert sum(gpu_map.values()) == 70
 
-    def test_resolve_probe_cpu_weight_is_minimum_spillover(self):
+    def test_resolve_probe_cpu_weight_without_spill_scales_gpu(self):
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
         cpu_w = prober._resolve_probe_cpu_weight(
             {0: 85, 1: 10},
-            {"enabled": True, "pinned": False, "weight": 0},
+            CPU_VALVE_ON,
+            cpu_spill_allowed=False,
+            spill_order=[0, 1],
+            selected_indices=[0, 1],
+        )
+        assert cpu_w == 0
+
+    def test_resolve_probe_cpu_weight_with_spill_is_minimum_spillover(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        cpu_w = prober._resolve_probe_cpu_weight(
+            {0: 85, 1: 10},
+            CPU_VALVE_ON_SPILL,
+            cpu_spill_allowed=True,
         )
         assert cpu_w == 5
 
@@ -386,14 +429,16 @@ class TestAutoBalanceCpu:
         )
         spill = AutoBalancePlanner.spill_order(0, [0, 1])
         weight_map = {0: 75, 1: 10}
-        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        cpu_config = {**CPU_VALVE_ON, "cpu_spill_allowed": True}
         trial = prober._adjust_target_weight_for_maximize(
             weight_map, spill, 0, 90, {}, cpu_config
         )
         assert trial is not None
         assert trial[0] == 90
         assert sum(trial.values()) == 100
-        assert prober._resolve_probe_cpu_weight(trial, cpu_config) == 0
+        assert prober._resolve_probe_cpu_weight(
+            trial, cpu_config, cpu_spill_allowed=True
+        ) == 0
 
     def test_max_gpu_weight_for_maximize_includes_cpu_budget(self):
         prober = AutoBalanceProber(
@@ -401,9 +446,9 @@ class TestAutoBalanceCpu:
         )
         spill = AutoBalancePlanner.spill_order(0, [0, 1])
         weight_map = {0: 70, 1: 10}
-        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        cpu_config = CPU_VALVE_ON_SPILL
         hi = prober._max_gpu_weight_for_maximize(
-            weight_map, spill, 0, {}, cpu_config
+            weight_map, spill, 0, {}, cpu_config, selected_indices=[0, 1]
         )
         capped = AutoBalancePlanner.max_weight_for_gpu(
             weight_map, spill, 0, {}, target_total=80
@@ -416,12 +461,14 @@ class TestAutoBalanceCpu:
         )
         spill = AutoBalancePlanner.spill_order(0, [0, 1])
         weight_map = {0: 90, 1: 0}
-        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+        cpu_config = CPU_VALVE_ON_SPILL
         trial = prober._adjust_target_weight_for_maximize(
-            weight_map, spill, 1, 5, {}, cpu_config
+            weight_map, spill, 1, 5, {}, cpu_config, selected_indices=[0, 1]
         )
         assert trial == {0: 90, 1: 5}
-        assert prober._resolve_probe_cpu_weight(trial, cpu_config) == 5
+        assert prober._resolve_probe_cpu_weight(
+            trial, cpu_config, cpu_spill_allowed=True
+        ) == 5
 
     def test_to_gpu_weights_includes_cpu_entry(self):
         weights = AutoBalancePlanner.to_gpu_weights(
@@ -500,17 +547,17 @@ class TestCanonicalAutoBalanceStates:
         self._assert_canonical_export(normalized, enforced_cpu)
 
     def test_valid_state_cpu_offload_cascade_scaled(self):
-        """Com offload CPU 10%: tira da última GPU secundária (80/10/0 + CPU 10%)."""
+        """Com offload CPU 10%: principal cede 10%%, secundárias mantêm 10%% cada."""
         gpu_map = dict(CASCADE_CPU_OFFLOAD_MAP)
         normalized, enforced_cpu = AutoBalancePlanner.enforce_device_budget(
-            gpu_map, CPU_VALVE_ON
+            gpu_map, CPU_VALVE_ON_SPILL
         )
         assert normalized == CASCADE_CPU_OFFLOAD_MAP
         assert enforced_cpu == VALID_CPU_OFFLOAD_CPU
         self._assert_canonical_export(normalized, enforced_cpu)
 
     def test_escalate_cpu_offload_from_cascade_produces_scaled_map(self):
-        """Fase 1: CPU +10% a partir do cascade 80/10/10 -> 80/10/0 + CPU 10%."""
+        """Fase 1: CPU +10% a partir do cascade 80/10/10 -> 70/10/10 + CPU 10%."""
         prober = AutoBalanceProber(
             MagicMock(), MagicMock(), MagicMock(), MagicMock()
         )
@@ -535,6 +582,7 @@ class TestCanonicalAutoBalanceStates:
             SPILL_ORDER_3090_MAIN,
             {},
             DEVICE_BUDGET_TOTAL - VALID_CPU_OFFLOAD_CPU,
+            [0, 1, 2],
         )
         assert shifted == CASCADE_CPU_OFFLOAD_MAP
 
@@ -566,13 +614,26 @@ class TestDeviceBudgetInvariants:
             SPILL_ORDER_3090_MAIN,
             {},
             DEVICE_BUDGET_TOTAL - VALID_CPU_OFFLOAD_CPU,
+            [0, 1, 2],
         )
         normalized, cpu_w = AutoBalancePlanner.enforce_device_budget(
-            shifted, self.CPU_CONFIG_ON
+            shifted, CPU_VALVE_ON_SPILL
         )
         self._assert_budget(normalized, cpu_w)
         assert cpu_w == VALID_CPU_OFFLOAD_CPU
         assert normalized == CASCADE_CPU_OFFLOAD_MAP
+
+    def test_enforce_valve_on_without_spill_never_adds_cpu_gap(self):
+        gpu_map = {2: 82, 0: 14, 1: 0}
+        normalized, cpu_w = AutoBalancePlanner.enforce_device_budget(
+            gpu_map,
+            CPU_VALVE_ON,
+            spill_order=SPILL_ORDER_3090_MAIN,
+            selected_indices=[0, 2],
+        )
+        self._assert_budget(normalized, cpu_w)
+        assert cpu_w == 0
+        assert sum(normalized.values()) == DEVICE_BUDGET_TOTAL
 
     def test_enforce_cpu_disabled_scales_gpus_to_100(self):
         gpu_map = {0: 38, 1: 42, 2: 9}
