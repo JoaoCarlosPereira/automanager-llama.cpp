@@ -77,21 +77,22 @@ class TestAutoBalancePlanner:
         assert weights == {2: 80, 0: 10, 1: 10}
         assert sum(weights.values()) == 100
 
-    def test_cascade_spill_secondary_split_by_vram(self):
+    def test_cascade_spill_secondary_flat_min_slice(self):
+        """Secundárias recebem fatia mínima plana — nunca split proporcional.
+
+        VRAM bem desigual entre as secundárias não deve enviesar o template:
+        a main fica com a maior fatia e cada secundária com MIN_SPILL_GPU_WEIGHT.
+        O preenchimento real por VRAM acontece na Fase 2.
+        """
         vram = {0: 24000, 1: 8000, 2: 24576, 3: 8000}
         weights = AutoBalancePlanner.weights_for_cascade_spill(
             [2, 0, 1, 3], 4, vram
         )
         assert weights[2] == 70
         assert weights[2] > max(weights[0], weights[1], weights[3])
+        # Sem proporcionalidade: todas as secundárias com a mesma fatia mínima.
+        assert weights[0] == weights[1] == weights[3] == MIN_SPILL_GPU_WEIGHT
         assert sum(weights.values()) == 100
-
-    def test_split_pool_by_vram_skews_larger_cards(self):
-        shares = AutoBalancePlanner._split_pool_by_vram(
-            [0, 1], 40, {0: 24000, 1: 8000}
-        )
-        assert shares[0] > shares[1]
-        assert sum(shares.values()) == 40
 
     def test_shift_gpu_budget_takes_from_last_spill_gpu_first(self):
         shifted = AutoBalancePlanner.shift_gpu_budget_for_cpu(
@@ -188,7 +189,14 @@ class TestAutoBalancePlanner:
         model = tmp_path / "qwen-49b.gguf"
         model.write_bytes(b"\0" * (100 * 1024 * 1024))
         est = AutoBalancePlanner.estimate_model_vram_mb(str(model), 65536, 1)
-        assert est >= 100 + 6553  # weights + ctx overhead (65536*0.1)
+        weights_mb = est["weights_mb"]
+        kv_mb = est["kv_cache_mb"]
+        total = est["total_mb"]
+        assert total >= 100 + 6553  # weights + ctx overhead (65536*0.1)
+        assert kv_mb == 6553
+        # runtime_overhead = max(256, 5% de 100) = max(256, 5) = 256
+        assert weights_mb == 100 + 256  # disk + runtime_overhead
+        assert total == weights_mb + kv_mb
 
     def test_plan_min_gpu_count_for_large_model(self):
         spill = SPILL_ORDER_3090_MAIN
@@ -863,3 +871,388 @@ def test_prober_raises_when_cancel_requested():
     )
     with pytest.raises(AutoBalanceCancelled):
         prober._raise_if_cancelled()
+
+
+class TestBudgetSelectedIndices:
+    def test_single_gpu_probe_not_inflated_to_cascade(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = SPILL_ORDER_3090_MAIN
+        budget = prober._budget_selected_indices({2: 100}, spill, [0, 1, 2])
+        assert budget == [2]
+
+        synced, cpu_w = AutoBalancePlanner.enforce_device_budget(
+            {2: 100},
+            CPU_VALVE_ON,
+            spill_order=spill,
+            selected_indices=budget,
+        )
+        assert synced == {2: 100}
+        assert cpu_w == 0
+
+    def test_two_gpu_trial_keeps_only_active_pair(self):
+        prober = AutoBalanceProber(
+            MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = SPILL_ORDER_3090_MAIN
+        weight_map = {2: 90, 0: 10, 1: 0}
+        budget = prober._budget_selected_indices(weight_map, spill, [0, 1, 2])
+        assert budget == [2, 0]
+
+
+class TestPhase2MaximizeFloors:
+    def test_maximize_floors_allow_secondary_down_to_zero(self):
+        spill = SPILL_ORDER_3090_MAIN
+        weight_map = {2: 90, 0: 10}
+        floors = AutoBalancePlanner.gpu_weight_floors_for_maximize(
+            weight_map, spill
+        )
+        assert floors[2] == MIN_MAIN_WEIGHT
+        assert floors[0] == 0
+
+    def test_set_target_weight_can_reach_93_7_split(self):
+        spill = SPILL_ORDER_3090_MAIN
+        weight_map = {2: 90, 0: 10}
+        floors = AutoBalancePlanner.gpu_weight_floors_for_maximize(
+            weight_map, spill
+        )
+        trial = AutoBalancePlanner.set_target_weight(
+            weight_map,
+            spill,
+            2,
+            93,
+            {},
+            target_total=100,
+            weight_floors=floors,
+        )
+        assert trial == {2: 93, 0: 7}
+
+    def test_phase2_maximizes_each_gpu_in_spill_order(self):
+        """Fase 2 enche cada GPU na ordem de prioridade — não só a main.
+
+        Regressão da cláusula pétrea: antes, ``_maximize_vram_per_gpu`` só tinha
+        a main em ``active_ordered``; agora itera todas as GPUs ativas em ordem
+        de spill. Espionamos o ajuste por-alvo (retornando None p/ encerrar a
+        busca binária de imediato) e conferimos que a main é o 1º alvo e que as
+        secundárias também são maximizadas.
+        """
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = SPILL_ORDER_3090_MAIN  # [2, 0, 1]
+        weight_map = {2: 80, 0: 10, 1: 10}
+        gpu_only = {
+            "enabled": False, "pinned": False, "weight": 0,
+            "cpu_spill_allowed": False,
+        }
+        targets = []
+
+        def spy(_wm, _spill, target_idx, *args, **kwargs):
+            targets.append(target_idx)
+            return None  # encerra a busca binária deste alvo de imediato
+
+        with patch.object(
+            prober, "_adjust_target_weight_for_maximize", side_effect=spy
+        ):
+            prober._maximize_vram_per_gpu(
+                MagicMock(),
+                THREE_GPU_HARDWARE,
+                MAIN_GPU_INDEX,
+                spill,
+                weight_map,
+                {0: 16384, 1: 16384, 2: 24576},
+                {},
+                0,
+                gpu_only,
+                0,
+                active_indices=[0, 1, 2],
+            )
+
+        assert targets, "Fase 2 não tentou maximizar nenhuma GPU"
+        assert targets[0] == MAIN_GPU_INDEX  # main tem prioridade absoluta
+        # Secundárias agora também são maximizadas (antes: só a main).
+        assert {MAIN_GPU_INDEX, 0, 1} <= set(targets)
+        # A main é sempre tentada antes de qualquer secundária.
+        assert targets.index(MAIN_GPU_INDEX) < targets.index(0)
+        assert targets.index(0) < targets.index(1)
+
+
+class TestTrimTrailingSpillGpus:
+    def test_removes_trailing_gpu_when_probe_ready(self):
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = SPILL_ORDER_3090_MAIN
+        weight_map = dict(CASCADE_GPU_ONLY_MAP)
+        all_gpus = THREE_GPU_HARDWARE
+        cpu_config = CPU_VALVE_ON
+
+        with patch.object(
+            prober, "_probe_start", side_effect=["ready", "oom"]
+        ):
+            trimmed, _, cpu_w = prober._trim_trailing_spill_gpus(
+                _make_request([]),
+                all_gpus,
+                MAIN_GPU_INDEX,
+                spill,
+                weight_map,
+                {},
+                [0, 1, 2],
+                0,
+                cpu_config,
+                0,
+            )
+
+        assert trimmed == {2: 90, 0: 10, 1: 0}
+        assert cpu_w == 0
+
+    def test_keeps_trailing_gpu_when_probe_oom(self):
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), MagicMock(), MagicMock()
+        )
+        spill = SPILL_ORDER_3090_MAIN
+        weight_map = dict(CASCADE_GPU_ONLY_MAP)
+        all_gpus = THREE_GPU_HARDWARE
+        cpu_config = CPU_VALVE_ON
+
+        with patch.object(prober, "_probe_start", return_value="oom"):
+            trimmed, _, _ = prober._trim_trailing_spill_gpus(
+                _make_request([]),
+                all_gpus,
+                MAIN_GPU_INDEX,
+                spill,
+                weight_map,
+                {},
+                [0, 1, 2],
+                0,
+                cpu_config,
+                0,
+            )
+
+        assert trimmed == CASCADE_GPU_ONLY_MAP
+
+
+class TestCpuNotDominant:
+    """CPU weight must not exceed total GPU weight."""
+
+    def test_valid_equal_gpu_and_cpu(self):
+        """GPU sum == CPU weight is valid (boundary case)."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 50, 1: 50}, 100
+        )
+        assert ok
+        assert err == ""
+
+    def test_valid_gpu_exceeds_cpu(self):
+        """GPU sum > CPU weight is valid."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 70, 1: 30}, 50
+        )
+        assert ok
+        assert err == ""
+
+    def test_valid_gpu_only_no_cpu(self):
+        """GPU-only configuration is valid."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 100}, 0
+        )
+        assert ok
+        assert err == ""
+
+    def test_valid_cpu_zero_with_gpus(self):
+        """CPU weight 0 is always valid when GPUs active."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 50, 1: 50}, 0
+        )
+        assert ok
+        assert err == ""
+
+    def test_rejected_cpu_exceeds_gpus(self):
+        """CPU weight > GPU sum is rejected."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 30, 1: 20}, 60
+        )
+        assert not ok
+        assert "CPU=60% > GPU total=50%" in err
+
+    def test_rejected_cpu_only_no_gpu(self):
+        """CPU with no GPUs is rejected."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {}, 100
+        )
+        assert not ok
+        assert "nenhuma GPU ativa" in err
+
+    def test_rejected_cpu_dominant_single_gpu(self):
+        """Single GPU with CPU > GPU weight is rejected."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 40}, 60
+        )
+        assert not ok
+        assert "CPU=60% > GPU total=40%" in err
+
+    def test_valid_boundary_cpu_equals_gpu(self):
+        """CPU == GPU is the boundary — valid."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 50}, 50
+        )
+        assert ok
+        assert err == ""
+
+    def test_valid_cascade_with_cpu_offload(self):
+        """Cascade 80/10/10 + CPU 10 is valid (100 > 10)."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {2: 80, 0: 10, 1: 10}, 10
+        )
+        assert ok
+        assert err == ""
+
+    def test_rejected_cascade_heavy_cpu(self):
+        """Cascade 80/10/10 + CPU 100 is rejected (100 > 100)."""
+        # Actually 100 == 100, so it's valid (boundary)
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {2: 80, 0: 10, 1: 10}, 101
+        )
+        assert not ok
+        assert "CPU=101% > GPU total=100%" in err
+
+    def test_rejected_high_cpu_weight(self):
+        """High CPU weight with low GPU weights is rejected."""
+        ok, err = AutoBalancePlanner.validate_cpu_not_dominant(
+            {0: 20, 1: 10}, 50
+        )
+        assert not ok
+        assert "CPU=50% > GPU total=30%" in err
+
+
+class TestDiscoverPhaseHandoff:
+    """End-to-end discover(): Phase 3 must continue from Phase 2's result and
+    the CPU valve must stay unmarked while every probe is GPU-only."""
+
+    class _PMStub:
+        """Process-manager double that records every progress (recovery) state."""
+
+        def __init__(self):
+            self.auto_balance_cancel_requested = False
+            self._lock = threading.Lock()
+            self._current_process = None
+            self.recovery_states = []
+
+        @property
+        def recovery_state(self):
+            return self.recovery_states[-1] if self.recovery_states else None
+
+        @recovery_state.setter
+        def recovery_state(self, value):
+            self.recovery_states.append(value)
+
+        def stop(self):
+            pass
+
+        def start(self, **kwargs):
+            pass
+
+    def _build_prober(self, ready_rule, vram_pct_for_main):
+        """Wire a prober whose probes/metrics derive from the live trial map.
+
+        *ready_rule(weight_map) -> bool* decides ready vs OOM.
+        *vram_pct_for_main(main_weight) -> float* feeds Phase 2/3 settle reads.
+        """
+        process_manager = self._PMStub()
+        gpu_manager = MagicMock()
+        gpu_manager.detect_gpus.return_value = THREE_GPU_HARDWARE
+        log_manager = MagicMock()
+        log_manager.get_server_log_path.return_value = "/tmp/server.log"
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), gpu_manager, log_manager
+        )
+
+        state = {"map": {MAIN_GPU_INDEX: 100}, "probes": []}
+
+        def fake_probe(request, weight_map, *args, **kwargs):
+            state["map"] = dict(weight_map)
+            state["probes"].append(dict(weight_map))
+            return "ready" if ready_rule(weight_map) else "oom"
+
+        def fake_metrics():
+            main_w = state["map"].get(MAIN_GPU_INDEX, 0)
+            gpus = []
+            for g in THREE_GPU_HARDWARE:
+                if g["index"] == MAIN_GPU_INDEX:
+                    pct = vram_pct_for_main(main_w)
+                else:
+                    pct = float(state["map"].get(g["index"], 0))
+                gpus.append({
+                    "index": g["index"],
+                    "vram_pct": pct,
+                    "mem_used": g["vram"] * pct / 100.0,
+                    "mem_total": g["vram"],
+                    "util": 0,
+                })
+            return {"gpus": gpus, "cpu": 0}
+
+        gpu_manager.get_metrics.side_effect = fake_metrics
+        prober._probe_start = MagicMock(side_effect=fake_probe)
+        return prober, state, process_manager
+
+    def test_phase3_continues_from_phase2_and_cpu_unmarked(self):
+        # Model fits on GPU2 + GPU0 only; GPU2 must carry <= 92%.
+        def ready_rule(weight_map):
+            return weight_map.get(MAIN_GPU_INDEX, 0) <= 92
+
+        def vram_pct_for_main(main_weight):
+            # 92% weight -> ~96% VRAM, lands inside the [95, 99] target window.
+            return min(99.0, float(main_weight) + 4.0)
+
+        prober, state, pm = self._build_prober(ready_rule, vram_pct_for_main)
+        request = _make_request(
+            [
+                GPUWeight(index=0, weight=10, name="P100", active=True, device="gpu"),
+                GPUWeight(index=1, weight=10, name="P100", active=True, device="gpu"),
+                GPUWeight(
+                    index=2, weight=80, name="3090", active=True,
+                    is_main=True, device="gpu",
+                ),
+                GPUWeight(index=-1, weight=0, name="CPU", active=True, device="cpu"),
+            ]
+        )
+
+        with patch.object(AutoBalancePlanner, "model_weights_mb_from_disk",
+                          return_value=21109), \
+             patch("auto_balance.time.sleep", return_value=None):
+            ok, weights, msg, failure = prober.discover(request)
+
+        assert ok, msg
+        by_idx = {w.index: w for w in weights}
+        # Phase 3 kept Phase 2's maximized 2-GPU split — NOT a fresh 3-GPU cascade.
+        assert by_idx[2].weight == 92.0
+        assert by_idx[0].weight == 8.0
+        assert by_idx[1].weight == 0.0
+        assert not by_idx[1].active
+        # GPU1 was dropped in Phase 2 and never re-probed in Phase 3.
+        assert all(p.get(1, 0) == 0 for p in state["probes"][-5:])
+
+        # Issue 2: during every GPU-only progress update the CPU valve must show
+        # unmarked (it never carried load in this run).
+        saw_progress_cpu = False
+        for prog in pm.recovery_states:
+            for entry in prog.get("gpu_weights", []):
+                if entry["device"] == "cpu":
+                    saw_progress_cpu = True
+                    assert entry["weight"] == 0.0 and not entry["active"], (
+                        f"CPU marked during GPU-only phase: {entry}"
+                    )
+        # (CPU rows may be omitted entirely while unused — both are acceptable.)
+        assert pm.recovery_states, "expected progress updates to be recorded"
+
+        # Scope chosen by the user: the saved result preserves the CPU valve the
+        # user enabled, so the final CPU entry stays present (spill still allowed).
+        cpu = next((w for w in weights if w.device == "cpu"), None)
+        assert cpu is not None and cpu.weight == 0.0

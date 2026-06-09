@@ -59,13 +59,16 @@ class LogManager:
             and getattr(h, "baseFilename", "") == self._manager_log_path
             for h in root_logger.handlers
         ):
-            rfh = RotatingFileHandler(
-                self._manager_log_path,
-                maxBytes=MAX_LOG_SIZE,
-                backupCount=LOG_BACKUP_COUNT,
-            )
-            rfh.setFormatter(formatter)
-            root_logger.addHandler(rfh)
+            try:
+                rfh = RotatingFileHandler(
+                    self._manager_log_path,
+                    maxBytes=MAX_LOG_SIZE,
+                    backupCount=LOG_BACKUP_COUNT,
+                )
+                rfh.setFormatter(formatter)
+                root_logger.addHandler(rfh)
+            except OSError:
+                pass
 
         try:
             os.makedirs(os.path.dirname(LEGACY_MANAGER_LOG_PATH), exist_ok=True)

@@ -55,8 +55,11 @@ Usage examples:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # VRAM occupation limit per GPU (ADR-001). Fixed, not exposed in the UI.
 DEFAULT_VRAM_LIMIT_PCT = 98.0
@@ -132,6 +135,9 @@ class LoadDistributor:
             total_gpu_pct and is_feasible.
         """
         if not gpu_vram:
+            logger.info(
+                "LoadDistributor.distribute: gpu_vram vazio -> infeasible"
+            )
             return DistributionResult(
                 gpu_weights={},
                 cpu_weight=0,
@@ -145,6 +151,13 @@ class LoadDistributor:
         if estimated_model_vram_mb <= 0:
             passthrough = dict(gpu_weights) if gpu_weights else {}
             total_gpu_pct = sum(passthrough.values()) or 100
+            logger.info(
+                "LoadDistributor.distribute: modelo tamanho desconhecido "
+                "(estimated_model_vram_mb=%d) -> passthrough weights=%s, gpu_pct=%d",
+                estimated_model_vram_mb,
+                passthrough,
+                total_gpu_pct,
+            )
             return DistributionResult(
                 gpu_weights=passthrough,
                 cpu_weight=0,
@@ -163,11 +176,40 @@ class LoadDistributor:
             mb_by_gpu[idx] = alloc
             remaining -= alloc
 
+        # Log detailed cascade breakdown
+        gpu_vram_details = {idx: gpu_vram.get(idx, 0) for idx in order}
+        cap_by_gpu = {
+            idx: int(max(0, gpu_vram.get(idx, 0)) * vram_limit_pct / 100.0)
+            for idx in order
+        }
+        pct_result = LoadDistributor._mb_to_pct(mb_by_gpu, _CPU_KEY, max(0, remaining))
+        pct_result.pop(_CPU_KEY, 0)
+        total_gpu_pct = sum(pct_result.values())
+
+        logger.info(
+            "LoadDistributor.distribute: cascade=%s vram_limit=%.1f%% "
+            "model_mb=%d | gpu_vram=%s | gpu_cap=%s | gpu_alloc=%s | "
+            "remaining_mb=%d cpu_mb=%d",
+            order,
+            vram_limit_pct,
+            estimated_model_vram_mb,
+            gpu_vram_details,
+            cap_by_gpu,
+            mb_by_gpu,
+            remaining,
+            max(0, remaining),
+        )
+
         # Remainder did not fit in the GPUs.
         if remaining > 0 and not cpu_enabled:
-            # Infeasible: preserve GPU shares (as % of GPU caps) for reporting.
             gpu_pct = LoadDistributor._mb_to_pct(mb_by_gpu, _CPU_KEY, 0)
             cpu_weight = gpu_pct.pop(_CPU_KEY, 0)
+            logger.info(
+                "LoadDistributor.distribute: INFEASIBLE "
+                "model_mb=%d > gpu_total_cap=%d | cpu_enabled=False -> bloqueado",
+                estimated_model_vram_mb,
+                sum(cap_by_gpu.values()),
+            )
             return DistributionResult(
                 gpu_weights=gpu_pct,
                 cpu_weight=cpu_weight,
@@ -178,6 +220,14 @@ class LoadDistributor:
         cpu_mb = max(0, remaining)
         pct = LoadDistributor._mb_to_pct(mb_by_gpu, _CPU_KEY, cpu_mb)
         cpu_weight = pct.pop(_CPU_KEY, 0)
+        logger.info(
+            "LoadDistributor.distribute: resultado final "
+            "gpu_weights=%s cpu_weight=%d total_gpu_pct=%d feasible=%s",
+            pct,
+            cpu_weight,
+            sum(pct.values()),
+            True,
+        )
         return DistributionResult(
             gpu_weights=pct,
             cpu_weight=cpu_weight,

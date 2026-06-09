@@ -14,12 +14,55 @@ import logging
 import os
 import re
 import time
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+import psutil
 
 from schemas import GPUWeight
 from load_distributor import LoadDistributor
+from paths import INSTALL_ROOT
 
 logger = logging.getLogger("automanager")
+
+# -------------------------------------------------------------------------
+# Dedicated Auto-Balance log file (logs/auto_balance.log)
+# -------------------------------------------------------------------------
+AUTOBALANCE_LOG_DIR = os.path.join(INSTALL_ROOT, "logs")
+AUTOBALANCE_LOG_PATH = os.path.join(AUTOBALANCE_LOG_DIR, "auto_balance.log")
+_ab_logger = logging.getLogger("automanager.auto_balance")
+_ab_logger.setLevel(logging.INFO)
+_ab_handler: Optional[RotatingFileHandler] = None
+
+
+def _ensure_auto_balance_log() -> None:
+    """Create the rotating file handler for auto_balance.log (idempotent)."""
+    global _ab_handler
+    if _ab_handler is not None:
+        return
+    try:
+        os.makedirs(AUTOBALANCE_LOG_DIR, exist_ok=True)
+        formatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s"
+        )
+        _ab_handler = RotatingFileHandler(
+            AUTOBALANCE_LOG_PATH,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=3,
+        )
+        _ab_handler.setFormatter(formatter)
+        _ab_logger.addHandler(_ab_handler)
+    except OSError:
+        pass
+
+
+def _auto_balance_log(msg: str, *args, level: str = "info", **kwargs) -> None:
+    """Write formatted *msg* to both the main manager log AND the dedicated file."""
+    _ensure_auto_balance_log()
+    fn = getattr(_ab_logger, level, _ab_logger.info)
+    fn(msg, *args, **kwargs)
+    fn = getattr(logger, level, logger.info)
+    fn(msg, *args, **kwargs)
 
 READY_PATTERNS = re.compile(
     r"(?i)(listening on|http server listening|server listening|"
@@ -39,6 +82,7 @@ VRAM_SETTLE_SEC = 4.0
 TARGET_VRAM_PCT = 95.0
 TARGET_VRAM_PCT_MIN = 95.0
 TARGET_VRAM_PCT_MAX = 99.0
+FINE_TUNE_STEP = 1  # Fine-tuning Phase 3: 1% increments on main GPU
 DEVICE_BUDGET_TOTAL = 100
 DEVICE_BUDGET_TOLERANCE = 1
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
@@ -88,40 +132,6 @@ class AutoBalancePlanner:
         return weights
 
     @staticmethod
-    def _split_pool_by_vram(
-        indices: List[int],
-        pool: int,
-        vram_by_index: Dict[int, int],
-        *,
-        min_each: int = MIN_SPILL_GPU_WEIGHT,
-    ) -> Optional[Dict[int, int]]:
-        """Split *pool* across *indices* proportionally to VRAM (each >= min_each)."""
-        if pool <= 0 or not indices:
-            return {}
-        if len(indices) == 1:
-            return {indices[0]: pool}
-
-        min_pool = min_each * len(indices)
-        if pool < min_pool:
-            return None
-
-        total_vram = sum(max(1, vram_by_index.get(i, 1)) for i in indices)
-        shares: Dict[int, int] = {}
-        remaining = pool
-        for pos, idx in enumerate(indices):
-            if pos == len(indices) - 1:
-                shares[idx] = remaining
-            else:
-                vram = max(1, vram_by_index.get(idx, 1))
-                share = int(round(pool * vram / total_vram))
-                share = max(min_each, min(share, remaining - min_each * (len(indices) - pos - 1)))
-                shares[idx] = share
-                remaining -= share
-        if sum(shares.values()) != pool:
-            shares[indices[-1]] += pool - sum(shares.values())
-        return shares
-
-    @staticmethod
     def weights_for_cascade_spill(
         spill_order: List[int],
         active_count: int,
@@ -130,8 +140,15 @@ class AutoBalancePlanner:
     ) -> Optional[Dict[int, int]]:
         """
         Priority-fill template: main (spill_order[0]) keeps the maximum share;
-        secondary GPUs split the remainder by VRAM (minimum slice each). Order:
+        each secondary GPU gets the flat minimum slice (``MIN_SPILL_GPU_WEIGHT``)
+        in priority order — never a proportional split. The real per-GPU VRAM
+        filling happens empirically in Fase 2 (:meth:`_maximize_vram_per_gpu`),
+        which raises each GPU to its cap in spill order. Order:
         main -> GPUs by index -> CPU (handled later).
+
+        ``vram_by_index`` is accepted for call-site compatibility but unused:
+        the template no longer skews secondaries by VRAM (cláusula pétrea —
+        nunca distribuir proporcionalmente entre GPUs).
         """
         if active_count <= 0 or active_count > len(spill_order):
             return None
@@ -148,16 +165,8 @@ class AutoBalancePlanner:
             return None
 
         weights: Dict[int, int] = {subset[0]: main_share}
-        if vram_by_index:
-            sec_weights = AutoBalancePlanner._split_pool_by_vram(
-                secondaries, secondary_pool, vram_by_index
-            )
-            if sec_weights is None:
-                return None
-        else:
-            sec_weights = {idx: MIN_SPILL_GPU_WEIGHT for idx in secondaries}
-            sec_weights[secondaries[-1]] += secondary_pool - sum(sec_weights.values())
-        weights.update(sec_weights)
+        for idx in secondaries:
+            weights[idx] = MIN_SPILL_GPU_WEIGHT
         if sum(weights.values()) != target_total:
             weights[subset[-1]] += target_total - sum(weights.values())
         return weights
@@ -177,6 +186,23 @@ class AutoBalancePlanner:
                 floors[idx] = MIN_MAIN_WEIGHT
             else:
                 floors[idx] = MIN_SPILL_GPU_WEIGHT
+        return floors
+
+    @staticmethod
+    def gpu_weight_floors_for_maximize(
+        weight_map: Dict[int, int],
+        spill_order: List[int],
+    ) -> Dict[int, int]:
+        """Phase-2 floors: only GPUs carrying weight; secondaries may drain to 0."""
+        if not spill_order:
+            return {}
+        main_idx = spill_order[0]
+        floors: Dict[int, int] = {}
+        for idx in AutoBalancePlanner.active_subset(weight_map):
+            if idx == main_idx:
+                floors[idx] = MIN_MAIN_WEIGHT
+            else:
+                floors[idx] = MIN_GPU_WEIGHT
         return floors
 
     @staticmethod
@@ -557,6 +583,32 @@ class AutoBalancePlanner:
         )
 
     @staticmethod
+    def validate_cpu_not_dominant(
+        gpu_map: Dict[int, int],
+        cpu_weight: int,
+    ) -> Tuple[bool, str]:
+        """CPU weight must not exceed total GPU weight.
+
+        Returns True when gpu_sum >= cpu_weight (valid).
+        Returns False when cpu_weight > gpu_sum (CPU dominant -> rejected).
+        """
+        gpu_sum = sum(gpu_map.values())
+        if gpu_sum == 0 and cpu_weight == 0:
+            return True, ""
+        if gpu_sum == 0 and cpu_weight > 0:
+            return (
+                False,
+                f"CPU={cpu_weight}% com nenhuma GPU ativa — rejeitado.",
+            )
+        if cpu_weight > gpu_sum:
+            return (
+                False,
+                f"CPU={cpu_weight}% > GPU total={gpu_sum}% — "
+                "CPU não pode ultrapassar soma das GPUs.",
+            )
+        return True, ""
+
+    @staticmethod
     def enforce_device_budget(
         gpu_map: Dict[int, int],
         cpu_config: Dict[str, Any],
@@ -564,8 +616,14 @@ class AutoBalancePlanner:
         spill_order: Optional[List[int]] = None,
         selected_indices: Optional[List[int]] = None,
         pinned_map: Optional[Dict[int, int]] = None,
+        skip_floors: bool = False,
     ) -> Tuple[Dict[int, int], int]:
-        """Normalize GPU/CPU weights so the active budget sums to exactly 100%."""
+        """Normalize GPU/CPU weights so the active budget sums to exactly 100%.
+
+        When *skip_floors* is True, minimum weight floors are NOT applied.
+        This is used during empirical probes so the trial weight_map is passed
+        through unchanged (no floor inflation on idle GPUs).
+        """
         pinned_map = pinned_map or {}
         spill_allowed = bool(cpu_config.get("cpu_spill_allowed"))
 
@@ -579,7 +637,7 @@ class AutoBalancePlanner:
             source_map: Dict[int, int],
         ) -> Tuple[Dict[int, int], int]:
             working = dict(source_map)
-            if selected_indices and spill_order:
+            if selected_indices and spill_order and not skip_floors:
                 floored = AutoBalancePlanner.ensure_selected_gpu_floors(
                     working,
                     spill_order,
@@ -711,8 +769,21 @@ class AutoBalancePlanner:
         try:
             if not os.path.isfile(model_path):
                 return None
-            return int(os.path.getsize(model_path) / (1024 * 1024))
-        except OSError:
+            size_bytes = os.path.getsize(model_path)
+            mb = int(size_bytes / (1024 * 1024))
+            logger.debug(
+                "model_weights_mb_from_disk: path=%s size_bytes=%d size_mb=%d",
+                model_path,
+                size_bytes,
+                mb,
+            )
+            return mb
+        except OSError as exc:
+            logger.debug(
+                "model_weights_mb_from_disk: FAILED path=%s error=%s",
+                model_path,
+                exc,
+            )
             return None
 
     @staticmethod
@@ -783,25 +854,64 @@ class AutoBalancePlanner:
     @staticmethod
     def estimate_model_vram_mb(
         model_path: str, context_size: int, parallel_slots: int
-    ) -> int:
-        """Estimate total VRAM needed in MB (weights + KV cache + runtime).
+    ) -> Dict[str, int]:
+        """Estimate VRAM components separately: weights + KV-cache + runtime.
 
-        Prefers the on-disk GGUF size when the file exists; falls back to the
-        filename parameter-count heuristic.
+        Returns a dict with keys:
+          - ``weights_mb``: GGUF disk size + runtime overhead (what
+            ``--tensor-split`` and ``--ngl`` actually divide).
+          - ``kv_cache_mb``: KV-cache overhead from context size.
+          - ``total_mb``: weights + kv_cache + runtime (for total VRAM budget).
+
+        The cascade MUST distribute only ``weights_mb``, because the llama-server
+        splits weights (not KV-cache) via --tensor-split/--ngl.
         """
         ctx_overhead_mb = context_size * parallel_slots * 0.1
 
         disk_mb = AutoBalancePlanner.model_weights_mb_from_disk(model_path)
         if disk_mb is not None and disk_mb > 0:
-            return disk_mb + ctx_overhead_mb + AutoBalancePlanner._runtime_overhead_mb(
-                disk_mb
+            runtime_overhead = AutoBalancePlanner._runtime_overhead_mb(disk_mb)
+            weights_mb = disk_mb + runtime_overhead
+            kv_cache_mb = int(ctx_overhead_mb)
+            total = weights_mb + kv_cache_mb
+            _auto_balance_log(
+                "estimate_model_vram_mb [DISK] model=%s disk_mb=%d "
+                "runtime_overhead_mb=%d weights_mb=%d "  # <-- weights = disk + runtime
+                "kv_cache_mb=%d total_mb=%d",
+                model_path,
+                disk_mb,
+                runtime_overhead,
+                weights_mb,
+                kv_cache_mb,
+                total,
             )
+            return {
+                "weights_mb": weights_mb,
+                "kv_cache_mb": kv_cache_mb,
+                "total_mb": total,
+            }
 
         model_size_gb = AutoBalancePlanner._estimate_from_filename(model_path)
         weights_mb = int(model_size_gb * 1024)
-        return weights_mb + ctx_overhead_mb + AutoBalancePlanner._runtime_overhead_mb(
-            weights_mb
+        runtime_overhead = AutoBalancePlanner._runtime_overhead_mb(weights_mb)
+        kv_cache_mb = int(ctx_overhead_mb)
+        total = weights_mb + kv_cache_mb + runtime_overhead
+        _auto_balance_log(
+            "estimate_model_vram_mb [FILENAME] model=%s "
+            "estimated_gb=%.2f weights_mb=%d ctx_overhead_mb=%d "
+            "runtime_overhead_mb=%d total_mb=%d",
+            model_path,
+            model_size_gb,
+            weights_mb,
+            kv_cache_mb,
+            runtime_overhead,
+            total,
         )
+        return {
+            "weights_mb": weights_mb,
+            "kv_cache_mb": kv_cache_mb,
+            "total_mb": total,
+        }
 
 
 class AutoBalanceProber:
@@ -853,6 +963,27 @@ class AutoBalanceProber:
                 "Escolha um modelo menor compatível com este hardware",
             ],
         }
+        _auto_balance_log(
+            "=== HARDWARE CAPACITY FAILURE ===\n"
+            "  reason=%s\n"
+            "  model=%s path=%s\n"
+            "  estimated_model_mb=?\n"
+            "  total_vram_mb=%d total_vram_gb=%.2f\n"
+            "  active_gpus=%s\n"
+            "  gpu_details=%s\n"
+            "  context_size=%d parallel_slots=%d\n"
+            "  message=%s",
+            reason,
+            model_name,
+            request.path,
+            total_vram_mb,
+            total_gb,
+            active_indices,
+            gpu_rows,
+            request.context_size,
+            request.parallel_slots,
+            message,
+        )
         return message, failure
 
     def __init__(self, process_manager, config_manager, gpu_manager, log_manager):
@@ -898,10 +1029,10 @@ class AutoBalanceProber:
             return int(cpu_config["weight"])
         return 0
 
-    def _cache_model_vram_estimate(self, request, estimated_mb: int) -> None:
-        """Share VRAM estimate with GPUManager / LoadDistributor during probes."""
+    def _cache_model_vram_estimate(self, request, est: Dict[str, int]) -> None:
+        """Share VRAM estimate (weights_mb) with GPUManager / LoadDistributor during probes."""
         try:
-            self.gpu_manager._cached_model_vram_mb = estimated_mb
+            self.gpu_manager._cached_model_vram_mb = est["weights_mb"]
         except AttributeError:
             pass
 
@@ -945,17 +1076,23 @@ class AutoBalanceProber:
         spill_order: List[int],
         vram_by_index: Dict[int, int],
     ) -> Tuple[int, int, Optional[int], int]:
-        """Return (estimated_mb, planned_gpu_count, disk_mb, estimated_cpu)."""
-        estimated_mb = self.planner.estimate_model_vram_mb(
+        """Return (estimated_mb, planned_gpu_count, disk_mb, estimated_cpu).
+
+        *estimated_mb* é o **weights_mb** (sem KV-cache), que é o que a
+        cascata usa para distribuir pesos via --tensor-split.
+        """
+        est = self.planner.estimate_model_vram_mb(
             request.path, request.context_size, request.parallel_slots
         )
+        weights_mb = est["weights_mb"]
+        total_mb = est["total_mb"]
         disk_mb = self.planner.model_weights_mb_from_disk(request.path)
         planned_gpus = self.planner.plan_min_gpu_count(
-            spill_order, vram_by_index, estimated_mb
+            spill_order, vram_by_index, weights_mb
         )
         total_vram = sum(vram_by_index.get(i, 0) for i in spill_order)
-        est_cpu = self.planner.estimate_cpu_spill_weight(total_vram, estimated_mb)
-        return estimated_mb, planned_gpus, disk_mb, est_cpu
+        est_cpu = self.planner.estimate_cpu_spill_weight(total_vram, weights_mb)
+        return total_mb, planned_gpus, disk_mb, est_cpu
 
     def _algorithmic_gpu_map(
         self,
@@ -1023,6 +1160,48 @@ class AutoBalanceProber:
             template_map, self._gpu_budget(cpu_weight)
         )
 
+    @staticmethod
+    def _phase1_gpu_attempt_label(
+        active_count: int,
+        spill_order: List[int],
+        weight_map: Dict[int, int],
+    ) -> str:
+        """Human-readable label matching the Fase 1 probe table."""
+        main_idx = spill_order[0]
+        if active_count <= 1:
+            return f"Tentativa {active_count}: Main GPU{main_idx} 100%"
+        parts = [f"GPU{idx}={weight_map.get(idx, 0)}%" for idx in spill_order[:active_count]]
+        return (
+            f"Tentativa {active_count}: Main + {active_count - 1}ª GPU "
+            f"(cascata: {', '.join(parts)})"
+        )
+
+    def _budget_selected_indices(
+        self,
+        weight_map: Dict[int, int],
+        spill_order: Optional[List[int]],
+        selected_indices: Optional[List[int]] = None,
+    ) -> List[int]:
+        """GPUs that actually participate in the current weight trial.
+
+        Unlike the UI ``active_indices`` (all checked GPUs), this list only
+        includes devices with weight > 0 in *weight_map*, preserving spill
+        order.  Using the full UI selection in ``enforce_device_budget`` would
+        incorrectly apply MIN_SPILL floors to idle GPUs (e.g. turning a
+        GPU2=100% probe into 80/10/10).
+        """
+        if spill_order:
+            active = [idx for idx in spill_order if weight_map.get(idx, 0) > 0]
+            if active:
+                return active
+            main_idx = spill_order[0]
+            if main_idx in weight_map:
+                return [main_idx]
+        active = self.planner.active_subset(weight_map)
+        if active:
+            return active
+        return list(selected_indices or [])
+
     def _finalize_cpu_split(
         self,
         gpu_map: Dict[int, int],
@@ -1032,8 +1211,13 @@ class AutoBalanceProber:
         spill_order: Optional[List[int]] = None,
         selected_indices: Optional[List[int]] = None,
         pinned_map: Optional[Dict[int, int]] = None,
+        skip_floors: bool = False,
     ) -> Tuple[Dict[int, int], int]:
-        """Finalize CPU split. CPU spill only when explicitly confirmed (OOM path)."""
+        """Finalize CPU split. CPU spill only when explicitly confirmed (OOM path).
+
+        When *skip_floors* is True, minimum weight floors are NOT applied,
+        used during empirical probes so the trial weight_map is passed through.
+        """
         cfg = dict(cpu_config)
         if cpu_spill_allowed is not None:
             cfg["cpu_spill_allowed"] = cpu_spill_allowed
@@ -1045,6 +1229,7 @@ class AutoBalanceProber:
             spill_order=spill_order,
             selected_indices=selected_indices,
             pinned_map=pinned_map,
+            skip_floors=skip_floors,
         )
 
     def _resolve_probe_cpu_weight(
@@ -1084,7 +1269,9 @@ class AutoBalanceProber:
         current_gpu_sum = sum(weight_map.values())
         current_weight = weight_map.get(target_idx, 0)
         new_weight = max(MIN_GPU_WEIGHT, min(100, int(new_weight)))
-        floors = self.planner.gpu_weight_floors(spill_order, selected_indices)
+        floors = self.planner.gpu_weight_floors_for_maximize(
+            weight_map, spill_order
+        )
         cpu_spill_allowed = bool(cpu_config.get("cpu_spill_allowed"))
         cpu_enabled = (
             bool(cpu_config.get("enabled"))
@@ -1189,124 +1376,23 @@ class AutoBalanceProber:
     def discover(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
-        """Auto-balance analítico determinístico (ADR-002/003).
+        """Auto-balance empírico com sondagem de OOM (ADR-002 atualizado).
 
-        Calcula a distribuição via cascata estrita por prioridade
-        (:class:`LoadDistributor`) — sem sondagem de OOM — e inicia o modelo
-        com os pesos resultantes. Retorna o mesmo contrato 4-tupla que o fluxo
-        anterior: ``(success, gpu_weights, message, failure)``.
+        Testa configurações iterativamente via probes, começando com 1 GPU
+        (main) e escalando: se OOM → adiciona próxima GPU na ordem de spill;
+        se OOM com todas GPUs → CPU offload (10% em 10%). Fase 2 otimiza
+        VRAM por GPU via binary search. A mesma lógica de priorização
+        (main → secundárias → CPU) mantida do código original.
         """
-        all_gpus = self.gpu_manager.detect_gpus()
-        if not all_gpus:
-            return False, request.gpu_weights, "Nenhuma GPU detectada.", None
+        try:
+            return self._discover_empirical(request)
+        except AutoBalanceCancelled:
+            return False, request.gpu_weights, "Auto-balance cancelado pelo usuário.", None
 
-        vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
-        active_indices = [
-            w.index
-            for w in request.gpu_weights
-            if w.active and w.device == "gpu"
-        ]
-        if not active_indices:
-            return False, request.gpu_weights, "Selecione pelo menos uma GPU.", None
-
-        main_weight = next((w for w in request.gpu_weights if w.is_main), None)
-        main_index = (
-            main_weight.index
-            if main_weight
-            else max(active_indices, key=lambda i: vram_by_index.get(i, 0))
-        )
-        if main_index not in active_indices:
-            main_index = active_indices[0]
-
-        priority_order = self.planner.spill_order(main_index, active_indices)
-        cpu_config = self._cpu_config_from_request(request)
-        cpu_enabled = bool(cpu_config.get("enabled"))
-
-        estimated_mb = self.planner.estimate_model_vram_mb(
-            request.path, request.context_size, request.parallel_slots
-        )
-        self._cache_model_vram_estimate(request, estimated_mb)
-        self._raise_if_cancelled()
-
-        # Cascata estrita por prioridade (fonte única da verdade). Pins são
-        # ignorados sob Auto-Balance (ADR-001).
-        active_vram = {i: vram_by_index.get(i, 0) for i in active_indices}
-        result = LoadDistributor.distribute(
-            gpu_vram=active_vram,
-            priority_order=priority_order,
-            estimated_model_vram_mb=estimated_mb,
-            cpu_enabled=cpu_enabled,
-        )
-
-        if not result.is_feasible:
-            self.process_manager.stop()
-            msg, failure = self.build_hardware_capacity_failure(
-                request,
-                all_gpus,
-                active_indices,
-                vram_by_index,
-                reason="no_feasible_split",
-            )
-            return False, request.gpu_weights, msg, failure
-
-        weight_map = {i: int(p) for i, p in result.gpu_weights.items()}
-        if not weight_map:  # tamanho desconhecido — tudo na principal
-            weight_map = {main_index: 100}
-        cpu_weight = int(result.cpu_weight)
-
-        gpu_weights = self.planner.to_gpu_weights(
-            all_gpus,
-            weight_map,
-            main_index,
-            set(),  # sem pins sob Auto-Balance
-            cpu_weight=cpu_weight,
-            cpu_pinned=False,
-            cpu_valve_enabled=cpu_enabled,
-        )
-        ok, budget_err = self.planner.validate_device_budget_from_weights(
-            gpu_weights
-        )
-        if not ok:
-            logger.error(f"Auto-balance saved weights invalid: {budget_err}")
-            msg, failure = self.build_hardware_capacity_failure(
-                request,
-                all_gpus,
-                active_indices,
-                vram_by_index,
-                reason="invalid_device_budget",
-            )
-            return False, request.gpu_weights, msg, failure
-
-        # Aplica o plano: inicia o modelo com os pesos da cascata.
-        self.process_manager.start(
-            model_path=request.path,
-            gpu_weights=gpu_weights,
-            context_size=request.context_size,
-            mmproj_path=request.mmproj_path,
-            split_mode=request.split_mode,
-            parallel_slots=request.parallel_slots,
-            batch_size=request.batch_size,
-            thinking_enabled=request.thinking_enabled,
-            mtp_enabled=request.mtp_enabled,
-            mtp_draft_tokens=request.mtp_draft_tokens,
-            cpu_enabled=cpu_enabled,
-        )
-
-        weight_label = self.planner.format_weights_with_cpu(
-            weight_map, priority_order, cpu_weight
-        )
-        msg = f"Balance otimizado por cascata ({weight_label})."
-        logger.info(f"Auto-balance success (analytic): {msg}")
-        return True, gpu_weights, msg, None
-
-    def _discover_empirical_deprecated(
+    def _discover_empirical(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
-        """DEPRECATED (ADR-002): sondagem empírica por OOM.
-
-        Mantido apenas para referência/rollback; não está mais no caminho de
-        decisão do Auto-Balance, que agora é analítico (ver :meth:`discover`).
-        """
+        """Empírico: sondagem iterativa por OOM com mesma priorização do fonte."""
         all_gpus = self.gpu_manager.detect_gpus()
         if not all_gpus:
             return False, request.gpu_weights, "Nenhuma GPU detectada.", None
@@ -1336,8 +1422,54 @@ class AutoBalanceProber:
         estimated_mb, planned_gpus, disk_mb, est_cpu = self._model_plan_summary(
             request, spill_order, vram_by_index
         )
-        self._cache_model_vram_estimate(request, estimated_mb)
+        est = self.planner.estimate_model_vram_mb(
+            request.path, request.context_size, request.parallel_slots
+        )
+        self._cache_model_vram_estimate(request, est)
+        weights_mb = est["weights_mb"]
+        kv_cache_mb = est["kv_cache_mb"]
+        total_mb = est["total_mb"]
+        gpu_names = {g["index"]: g.get("name", f"GPU{g['index']}") for g in all_gpus}
+        model_name = os.path.basename(request.path) if request.path else "?"
+        total_active_vram = sum(vram_by_index.get(i, 0) for i in active_indices)
+        _auto_balance_log(
+            "=== Auto-balance EMPIRICAL START ===\n"
+            "  model=%s path=%s\n"
+            "  context_size=%d parallel_slots=%d\n"
+            "  weights_mb=%d (%.2f GB)  kv_cache_mb=%d  total_mb=%d (%.2f GB)\n"
+            "  active_gpus=%d | total_vram=%d MB (%.2f GB)\n"
+            "  gpu_vram={%s}\n"
+            "  gpu_names={%s}\n"
+            "  main_index=%d\n"
+            "  spill_order=%s\n"
+            "  cpu_enabled=%s\n"
+            "  pins_count=%d",
+            model_name,
+            request.path,
+            request.context_size,
+            request.parallel_slots,
+            weights_mb,
+            weights_mb / 1024.0,
+            kv_cache_mb,
+            total_mb,
+            total_mb / 1024.0,
+            len(active_indices),
+            total_active_vram,
+            total_active_vram / 1024.0,
+            ", ".join(f"{i}: {vram_by_index.get(i, 0)}" for i in active_indices),
+            ", ".join(f"{i}: {gpu_names.get(i, '?')}" for i in active_indices),
+            main_index,
+            spill_order,
+            cpu_enabled,
+            len([w for w in request.gpu_weights if w.pinned]),
+        )
         initial_cpu_weight = self._initial_cpu_weight(cpu_config)
+        # GPU-only config: CPU desabilitado explicitamente para Fases 1, 2 e 3
+        gpu_only_cpu_config = {
+            "enabled": False,
+            "pinned": False,
+            "weight": 0,
+        }
         attempt = 0
         plan_hint = (
             f"~{estimated_mb} MB"
@@ -1390,6 +1522,11 @@ class AutoBalanceProber:
         )
         self._raise_if_cancelled()
         if feasible is None:
+            _auto_balance_log(
+                "Fase 1 — GPUs esgotadas sem split viável; "
+                "tentando maximizar todas as GPUs antes de CPU",
+                level="warn",
+            )
             feasible, attempt, cpu_weight = self._try_full_gpu_maximize_before_cpu(
                 request,
                 all_gpus,
@@ -1402,6 +1539,12 @@ class AutoBalanceProber:
             )
         self._raise_if_cancelled()
         if feasible is None and cpu_enabled and not cpu_config.get("pinned"):
+            _auto_balance_log(
+                "Fase 1 — maximização GPU-only falhou; iniciando CPU offload "
+                "(último recurso, +%d%% por tentativa)",
+                CPU_OFFLOAD_STEP,
+                level="warn",
+            )
             feasible, attempt, cpu_weight = self._escalate_cpu_until_feasible(
                 request,
                 all_gpus,
@@ -1426,10 +1569,23 @@ class AutoBalanceProber:
             )
             return False, request.gpu_weights, msg, failure
 
+        weight_label = self.planner.format_weights_with_cpu(
+            feasible, spill_order, cpu_weight
+        )
+        _auto_balance_log(
+            "=== Auto-balance: Fase 1 viavel ===\n"
+            "  weight_label=%s\n"
+            "  weight_map={%s}\n"
+            "  cpu_weight=%d",
+            weight_label,
+            ", ".join(f"{i}: {w}%" for i, w in feasible.items()),
+            cpu_weight,
+        )
+
         attempt += 1
         self._set_progress(
             attempt,
-            "Fase 1 concluida — maximizando VRAM por GPU",
+            "Fase 1 concluida — removendo GPUs desnecessarias",
             weight_map=feasible,
             all_gpus=all_gpus,
             main_index=main_index,
@@ -1438,16 +1594,53 @@ class AutoBalanceProber:
             cpu_config=cpu_config,
         )
 
-        phase2_cpu_config = {
-            **cpu_config,
-            "cpu_spill_allowed": cpu_weight > 0,
-        }
-        optimized, attempt, cpu_weight = self._maximize_vram_per_gpu(
+        trimmed, attempt, cpu_weight = self._trim_trailing_spill_gpus(
             request,
             all_gpus,
             main_index,
             spill_order,
             feasible,
+            pinned_map,
+            active_indices,
+            attempt,
+            cpu_config,
+            cpu_weight,
+        )
+        self._raise_if_cancelled()
+
+        attempt += 1
+        self._set_progress(
+            attempt,
+            "Fase 1b concluida — maximizando VRAM por GPU",
+            weight_map=trimmed,
+            all_gpus=all_gpus,
+            main_index=main_index,
+            pinned_map=pinned_map,
+            cpu_weight=cpu_weight,
+            cpu_config=cpu_config,
+        )
+
+        # CPU completamente desabilitado durante Fase 2 (GPU-only)
+        _auto_balance_log(
+            "=== Fase 2 PREPARANDO ===\n"
+            "  trimmed={%s} main_index=%d cpu_enabled=%s",
+            ", ".join(f"{i}: {w}%" for i, w in trimmed.items()),
+            main_index,
+            cpu_enabled,
+        )
+        phase2_cpu_config = {
+            "enabled": False,
+            "pinned": False,
+            "weight": 0,
+            "cpu_spill_allowed": False,
+        }
+        _auto_balance_log("=== Fase 2 INICIO (maximizar VRAM, GPU-only) ===")
+        optimized, attempt, cpu_weight = self._maximize_vram_per_gpu(
+            request,
+            all_gpus,
+            main_index,
+            spill_order,
+            trimmed,
             vram_by_index,
             pinned_map,
             attempt,
@@ -1455,15 +1648,54 @@ class AutoBalanceProber:
             cpu_weight,
             active_indices=active_indices,
         )
+        _auto_balance_log(
+            "=== Fase 2 CONCLUIDA ===\n"
+            "  weight_map={%s}\n"
+            "  cpu_weight=%d",
+            ", ".join(f"{i}: {w}%" for i, w in optimized.items()),
+            cpu_weight,
+        )
         self._raise_if_cancelled()
 
+        # === Fase 3 — fine-tuning: sobe main GPU 1% por 1% até OOM ===
+        attempt += 1
+        self._set_progress(
+            attempt,
+            "Fase 3 iniciada — fine-tuning 1% na main GPU",
+            weight_map=optimized,
+            all_gpus=all_gpus,
+            main_index=main_index,
+            pinned_map=pinned_map,
+            cpu_weight=cpu_weight,
+            cpu_config=cpu_config,
+        )
+
+        optimized, attempt = self._fine_tune_main_gpu_weight(
+            request,
+            all_gpus,
+            main_index,
+            spill_order,
+            optimized,
+            vram_by_index,
+            pinned_map,
+            active_indices,
+            attempt,
+            cpu_config,
+            cpu_weight,
+        )
+        self._raise_if_cancelled()
+
+        budget_selected = self._budget_selected_indices(
+            optimized, spill_order, active_indices
+        )
         optimized, cpu_weight = self._finalize_cpu_split(
             optimized,
             cpu_config,
             cpu_spill_allowed=(cpu_weight > 0),
             spill_order=spill_order,
-            selected_indices=active_indices,
+            selected_indices=budget_selected,
             pinned_map=pinned_map,
+            skip_floors=True,
         )
         ok, budget_err = self.planner.validate_device_budget(optimized, cpu_weight)
         if not ok:
@@ -1474,6 +1706,18 @@ class AutoBalanceProber:
                 active_indices,
                 vram_by_index,
                 reason="invalid_device_budget",
+            )
+            return False, request.gpu_weights, msg, failure
+
+        ok, cpu_err = self.planner.validate_cpu_not_dominant(optimized, cpu_weight)
+        if not ok:
+            logger.error(f"Auto-balance CPU dominant rejected: {cpu_err}")
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="cpu_dominant",
             )
             return False, request.gpu_weights, msg, failure
 
@@ -1505,8 +1749,35 @@ class AutoBalanceProber:
         weight_label = self.planner.format_weights_with_cpu(
             optimized, spill_order, cpu_weight
         )
+        _auto_balance_log(
+            "=== Auto-balance: peso final ===\n"
+            "  weight_label=%s\n"
+            "  weight_map={%s}\n"
+            "  cpu_weight=%d",
+            weight_label,
+            ", ".join(f"{i}: {w}%" for i, w in optimized.items()),
+            cpu_weight,
+        )
+
+        before = self._capture_hardware_snapshot("BEFORE_FINAL")
+        _auto_balance_log(
+            "=== HARDWARE SNAPSHOT BEFORE FINAL ===\n"
+            "  gpus=[%s]",
+            "; ".join(
+                f"GPU{g['index']}: used={g['mem_used_mb']:.0f}MB "
+                f"total={g['mem_total_mb']:.0f}MB util={g['util_pct']:.0f}%"
+                for g in before["gpus"]
+            ),
+        )
+
         msg = f"Balance otimizado ({weight_label}). {vram_summary}"
-        logger.info(f"Auto-balance success: {msg}")
+        _auto_balance_log(
+            "=== Auto-balance SUCCESS ===\n"
+            "  message=%s\n"
+            "  gpu_weights_exported=%d entries",
+            msg,
+            len(gpu_weights),
+        )
         return True, gpu_weights, msg, None
 
     def _try_full_gpu_maximize_before_cpu(
@@ -1596,6 +1867,13 @@ class AutoBalanceProber:
         estimated_model_mb: int = 0,
         allow_cpu: bool = True,
     ) -> Tuple[Optional[Dict[int, int]], int, int, int]:
+        """Fase 1 — GPUs primeiro, CPU como último recurso (probe iterativo).
+
+        Tentativa 1: main 100% → OOM → +1 GPU (cascata)
+        Tentativa 2..N: main + spill GPUs (pesos cascata) → OOM → +1 GPU
+        Após esgotar GPUs: se *allow_cpu*, CPU +10% por vez; senão retorna None
+        (caller tenta maximizar GPUs e depois :meth:`_escalate_cpu_until_feasible`).
+        """
         max_active = len(spill_order)
         active_count = 1
         cpu_enabled = bool(cpu_config.get("enabled"))
@@ -1603,6 +1881,10 @@ class AutoBalanceProber:
         cpu_weight = self._initial_cpu_weight(cpu_config)
         planned_gpus = self.planner.plan_min_gpu_count(
             spill_order, vram_by_index, estimated_model_mb
+        )
+        _auto_balance_log(
+            "=== Fase 1 INICIO (GPUs primeiro%s) ===",
+            ", CPU permitido neste passo" if allow_cpu and cpu_enabled else "",
         )
         weight_map = self._algorithmic_gpu_map(
             spill_order,
@@ -1622,12 +1904,16 @@ class AutoBalanceProber:
             label = self.planner.format_weights_with_cpu(
                 weight_map, spill_order, cpu_weight
             )
+            attempt_label = self._phase1_gpu_attempt_label(
+                active_count, spill_order, weight_map
+            )
+            _auto_balance_log("Fase 1 — %s", attempt_label)
             phase_hint = ""
             if estimated_model_mb > 0 and active_count < planned_gpus:
                 phase_hint = f" (modelo ~{estimated_model_mb} MB, meta {planned_gpus} GPU(s))"
             self._set_progress(
                 attempt,
-                f"Fase 1 — encaixar modelo{phase_hint}: {label}",
+                f"Fase 1 — {attempt_label}{phase_hint}",
                 weight_map=weight_map,
                 all_gpus=all_gpus,
                 main_index=main_index,
@@ -1651,18 +1937,44 @@ class AutoBalanceProber:
             if outcome == "cancelled":
                 raise AutoBalanceCancelled()
             if outcome == "ready":
+                budget_selected = self._budget_selected_indices(
+                    weight_map, spill_order, active_indices
+                )
                 weight_map, cpu_weight = self._finalize_cpu_split(
                     weight_map,
                     cpu_config,
                     cpu_spill_allowed=(cpu_weight > 0),
                     spill_order=spill_order,
-                    selected_indices=active_indices,
+                    selected_indices=budget_selected,
                     pinned_map=pinned_map,
                 )
-                return dict(weight_map), active_count, attempt, cpu_weight
+                ok, err = self.planner.validate_cpu_not_dominant(
+                    weight_map, cpu_weight
+                )
+                if not ok:
+                    _auto_balance_log(
+                        "_find_feasible_split: REJECTED cpu_dominant — %s",
+                        err,
+                        level="warn",
+                    )
+                    # Treat as OOM to force new configuration
+                    outcome = "oom"
+                else:
+                    _auto_balance_log(
+                        "Fase 1 — %s → READY",
+                        attempt_label,
+                    )
+                    return dict(weight_map), active_count, attempt, cpu_weight
 
             if outcome == "oom" or outcome in ("timeout", "crashed"):
                 if active_count < max_active:
+                    _auto_balance_log(
+                        "Fase 1 — %s → %s; adicionar %dª GPU",
+                        attempt_label,
+                        outcome.upper(),
+                        active_count + 1,
+                        level="warn",
+                    )
                     active_count += 1
                     cpu_weight = self._initial_cpu_weight(cpu_config)
                     weight_map = self._algorithmic_gpu_map(
@@ -1678,6 +1990,11 @@ class AutoBalanceProber:
                     continue
 
                 if allow_cpu and cpu_enabled and not cpu_pinned:
+                    _auto_balance_log(
+                        "Fase 1 — todas as GPUs esgotadas → CPU offload +%d%%",
+                        CPU_OFFLOAD_STEP,
+                        level="warn",
+                    )
                     new_map, new_cpu = self._escalate_cpu_offload(
                         weight_map,
                         cpu_weight,
@@ -1709,9 +2026,14 @@ class AutoBalanceProber:
         *,
         estimated_model_mb: int = 0,
     ) -> Tuple[Optional[Dict[int, int]], int, int]:
-        """After all GPUs are active, shift spill to CPU (secondary GPUs first)."""
+        """Fase 1 último recurso: todas GPUs ativas + CPU offload em +10%."""
         max_active = len(spill_order)
         cpu_weight = self._initial_cpu_weight(cpu_config)
+        _auto_balance_log(
+            "=== Fase 1 CPU (último recurso) — %d GPU(s) ativas, CPU +%d%% por tentativa ===",
+            max_active,
+            CPU_OFFLOAD_STEP,
+        )
         weight_map = self._algorithmic_gpu_map(
             spill_order,
             active_indices,
@@ -1723,10 +2045,22 @@ class AutoBalanceProber:
         if weight_map is None:
             return None, attempt, cpu_weight
 
-        if estimated_model_mb <= 0:
-            estimated_model_mb = self.planner.estimate_model_vram_mb(
+        # Primeira tentativa CPU já com +10% (não repetir probe GPU-only).
+        weight_map, cpu_weight = self._escalate_cpu_offload(
+            weight_map,
+            cpu_weight,
+            spill_order,
+            active_indices,
+            vram_by_index,
+            pinned_map,
+        )
+        if weight_map is None:
+            return None, attempt, cpu_weight
+
+        est = self.planner.estimate_model_vram_mb(
                 request.path, request.context_size, request.parallel_slots
-            )
+            ) if estimated_model_mb <= 0 else {"total_mb": estimated_model_mb}
+        total_mb = est.get("total_mb", 0)
         max_attempts = max(90 // CPU_OFFLOAD_STEP + 5, 20)
         while attempt < max_attempts and cpu_weight < 90:
             self._raise_if_cancelled()
@@ -1735,14 +2069,143 @@ class AutoBalanceProber:
                 weight_map, spill_order, cpu_weight
             )
             cpu_hint = (
-                f" (~{estimated_model_mb} MB no disco+ctx)"
-                if estimated_model_mb > 0
+                f" (~{total_mb} MB no disco+ctx)"
+                if total_mb > 0
                 else ""
+            )
+            cpu_attempt = max(1, cpu_weight // CPU_OFFLOAD_STEP)
+            _auto_balance_log(
+                "Fase 1 — Tentativa CPU %d: CPU offload %d%% | %s",
+                cpu_attempt,
+                cpu_weight,
+                label,
             )
             self._set_progress(
                 attempt,
-                f"Fase 1 — offload CPU{cpu_hint}: {label}",
+                f"Fase 1 — CPU offload{cpu_hint}: {label}",
                 weight_map=weight_map,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+                cpu_weight=cpu_weight,
+                cpu_config=cpu_config,
+            )
+            cpu_probe_config = {
+                **cpu_config,
+                "cpu_spill_allowed": cpu_weight > 0,
+            }
+            outcome = self._probe_start(
+                request,
+                weight_map,
+                main_index,
+                all_gpus,
+                attempt,
+                cpu_weight=cpu_weight,
+                cpu_config=cpu_probe_config,
+                spill_order=spill_order,
+                selected_indices=active_indices,
+                pinned_map=pinned_map,
+            )
+            if outcome == "cancelled":
+                raise AutoBalanceCancelled()
+            if outcome == "ready":
+                budget_selected = self._budget_selected_indices(
+                    weight_map, spill_order, active_indices
+                )
+                weight_map, cpu_weight = self._finalize_cpu_split(
+                    weight_map,
+                    cpu_config,
+                    cpu_spill_allowed=(cpu_weight > 0),
+                    spill_order=spill_order,
+                    selected_indices=budget_selected,
+                    pinned_map=pinned_map,
+                )
+                ok, err = self.planner.validate_cpu_not_dominant(
+                    weight_map, cpu_weight
+                )
+                if not ok:
+                    _auto_balance_log(
+                        "_escalate_cpu_until_feasible: REJECTED cpu_dominant — %s",
+                        err,
+                        level="warn",
+                    )
+                    # Treat as OOM to force CPU escalation
+                    outcome = "oom"
+                else:
+                    _auto_balance_log(
+                        "Fase 1 — Tentativa CPU %d%% → READY",
+                        cpu_weight,
+                    )
+                    return dict(weight_map), attempt, cpu_weight
+
+            if outcome in ("oom", "timeout", "crashed"):
+                new_map, new_cpu = self._escalate_cpu_offload(
+                    weight_map,
+                    cpu_weight,
+                    spill_order,
+                    active_indices,
+                    vram_by_index,
+                    pinned_map,
+                )
+                if new_map is None:
+                    _auto_balance_log(
+                        "Fase 1 — CPU offload esgotado (max %d%%) → FALHA",
+                        cpu_weight,
+                        level="error",
+                    )
+                    return None, attempt, cpu_weight
+                _auto_balance_log(
+                    "Fase 1 — CPU %d%% → %s; escalando para CPU=%d%%",
+                    cpu_weight,
+                    outcome.upper(),
+                    new_cpu,
+                    level="warn",
+                )
+                weight_map = new_map
+                cpu_weight = new_cpu
+                continue
+
+            return None, attempt, cpu_weight
+
+        return None, attempt, cpu_weight
+
+    def _trim_trailing_spill_gpus(
+        self,
+        request,
+        all_gpus: List[dict],
+        main_index: int,
+        spill_order: List[int],
+        weight_map: Dict[int, int],
+        pinned_map: Dict[int, int],
+        active_indices: List[int],
+        attempt: int,
+        cpu_config: Dict[str, Any],
+        cpu_weight: int,
+    ) -> Tuple[Dict[int, int], int, int]:
+        """Remove trailing spill GPUs when the model still loads (probe-ready)."""
+        optimized = dict(weight_map)
+        main_idx = spill_order[0]
+
+        for idx in reversed(spill_order[1:]):
+            self._raise_if_cancelled()
+            if idx in pinned_map:
+                continue
+            spill_w = optimized.get(idx, 0)
+            if spill_w <= 0:
+                continue
+
+            trial = dict(optimized)
+            trial[idx] = 0
+            trial[main_idx] = trial.get(main_idx, 0) + spill_w
+
+            attempt += 1
+            label = self.planner.format_weights_with_cpu(
+                trial, spill_order, cpu_weight
+            )
+            self._set_progress(
+                attempt,
+                f"Fase 1b — remover GPU{idx}: {label}",
+                weight_map=trial,
                 all_gpus=all_gpus,
                 main_index=main_index,
                 pinned_map=pinned_map,
@@ -1751,7 +2214,7 @@ class AutoBalanceProber:
             )
             outcome = self._probe_start(
                 request,
-                weight_map,
+                trial,
                 main_index,
                 all_gpus,
                 attempt,
@@ -1764,34 +2227,24 @@ class AutoBalanceProber:
             if outcome == "cancelled":
                 raise AutoBalanceCancelled()
             if outcome == "ready":
-                weight_map, cpu_weight = self._finalize_cpu_split(
-                    weight_map,
-                    cpu_config,
-                    cpu_spill_allowed=(cpu_weight > 0),
-                    spill_order=spill_order,
-                    selected_indices=active_indices,
-                    pinned_map=pinned_map,
+                _auto_balance_log(
+                    "TRIM: GPU%d removida — %d%% redistribuido para GPU%d | %s",
+                    idx,
+                    spill_w,
+                    main_idx,
+                    label,
                 )
-                return dict(weight_map), attempt, cpu_weight
-
-            if outcome in ("oom", "timeout", "crashed"):
-                new_map, new_cpu = self._escalate_cpu_offload(
-                    weight_map,
-                    cpu_weight,
-                    spill_order,
-                    active_indices,
-                    vram_by_index,
-                    pinned_map,
+                optimized = trial
+            else:
+                _auto_balance_log(
+                    "TRIM: GPU%d mantida (%d%%) — probe=%s",
+                    idx,
+                    spill_w,
+                    outcome,
+                    level="warn",
                 )
-                if new_map is None:
-                    return None, attempt, cpu_weight
-                weight_map = new_map
-                cpu_weight = new_cpu
-                continue
 
-            return None, attempt, cpu_weight
-
-        return None, attempt, cpu_weight
+        return optimized, attempt, cpu_weight
 
     def _maximize_vram_per_gpu(
         self,
@@ -1808,23 +2261,45 @@ class AutoBalanceProber:
         *,
         active_indices: Optional[List[int]] = None,
     ) -> Tuple[Dict[int, int], int, int]:
-        """For each selected GPU in spill order, binary-search max weight until VRAM ~full."""
+        """Binary-search each GPU's max weight, in spill order, until VRAM ~full.
+
+        Cláusula pétrea (cascata estrita): preenche cada GPU até seu cap de VRAM
+        (~95–99%) **na ordem de prioridade** antes que a próxima receba a sobra.
+        Para cada GPU (main → secundárias por ordem de spill) sobe-se o peso
+        reclamando das GPUs posteriores na cascata (até 0); GPUs anteriores nunca
+        são reduzidas, então a main mantém prioridade absoluta. A última GPU da
+        ordem não tem doadora posterior — vira no-op e absorve o restante.
+        """
+        _auto_balance_log(
+            "Fase 2: input weight_map={%s} main_index=%d",
+            ", ".join(f"{i}: {w}%" for i, w in weight_map.items()),
+            main_index,
+        )
         optimized = dict(weight_map)
         selected = active_indices or self.planner.active_subset(optimized)
-        active_ordered = [idx for idx in spill_order if idx in selected]
+        active_ordered = [
+            idx
+            for idx in spill_order
+            if idx in selected and optimized.get(idx, 0) > 0
+        ]
 
         for target_idx in active_ordered:
             self._raise_if_cancelled()
             if target_idx in pinned_map:
-                logger.info(
-                    f"Auto-balance GPU {target_idx}: fixada em "
-                    f"{pinned_map[target_idx]}% (ignorada na fase 2)"
+                _auto_balance_log(
+                    "Fase 2: GPU%d fixada em %d%% (ignorada)",
+                    target_idx,
+                    pinned_map[target_idx],
                 )
                 continue
 
-            lo = max(optimized.get(target_idx, 0), self.planner.gpu_weight_floors(
-                spill_order, selected
-            ).get(target_idx, MIN_GPU_WEIGHT))
+            maximize_floors = self.planner.gpu_weight_floors_for_maximize(
+                optimized, spill_order
+            )
+            lo = max(
+                optimized.get(target_idx, 0),
+                maximize_floors.get(target_idx, MIN_GPU_WEIGHT),
+            )
             hi = self._max_gpu_weight_for_maximize(
                 optimized,
                 spill_order,
@@ -1948,7 +2423,241 @@ class AutoBalanceProber:
                 pinned_map=pinned_map,
             )
 
+        ok, err = self.planner.validate_cpu_not_dominant(
+            optimized, cpu_weight
+        )
+        if not ok:
+            _auto_balance_log(
+                "_maximize_vram_per_gpu: REJECTED cpu_dominant — %s",
+                err,
+                level="warn",
+            )
+
         return optimized, attempt, cpu_weight
+
+    def _fine_tune_main_gpu_weight(
+        self,
+        request,
+        all_gpus: List[dict],
+        main_index: int,
+        spill_order: List[int],
+        optimized: Dict[int, int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        active_indices: List[int],
+        attempt: int,
+        cpu_config: Dict[str, Any],
+        cpu_weight: int,
+    ) -> Tuple[Dict[int, int], int]:
+        """Fase 3 — fine-tuning: sobe main GPU 1% por 1% até OOM.
+
+        GPU-ONLY: CPU completamente desabilitado. Apenas GPUs participam.
+        O último % sem OOM na main GPU é o máximo potencial.
+        """
+        if not spill_order:
+            return optimized, attempt
+
+        current_main_weight = optimized.get(main_index, 0)
+        if current_main_weight >= 100:
+            _auto_balance_log(
+                "Fase 3: GPU%d já está em 100%% — pulando fine-tuning",
+                main_index,
+            )
+            return optimized, attempt
+
+        # Encontra o peso máximo das GPUs secundárias ativas
+        secondary_total = sum(
+            optimized.get(idx, 0) for idx in spill_order[1:] if optimized.get(idx, 0) > 0
+        )
+        # Máximo teórico: main = 100
+        max_main = min(100, current_main_weight + secondary_total)
+
+        # CPU completamente desabilitado na Fase 3 (GPU-only)
+        gpu_only_config = {"enabled": False, "pinned": False, "weight": 0}
+
+        _auto_balance_log(
+            "=== Fase 3 INICIO (fine-tuning 1%%, GPU-only) ===\n"
+            "  main_gpu=%d current_weight=%d%% max_possible=%d%%\n"
+            "  secondary_total=%d%% CPU=desabilitado",
+            main_index,
+            current_main_weight,
+            max_main,
+            secondary_total,
+        )
+
+        lo = current_main_weight + FINE_TUNE_STEP
+        hi = max_main
+        best_weight = current_main_weight
+        best_map = dict(optimized)
+
+        while lo <= hi:
+            self._raise_if_cancelled()
+            main_weight = lo
+            # Calcula o trial: sobe main, reduz secundárias (GPU-only)
+            trial = self._adjust_main_fine_tune(
+                optimized,
+                spill_order,
+                main_index,
+                main_weight,
+                pinned_map,
+            )
+
+            if trial is None:
+                break
+
+            attempt += 1
+            gpu_name = next(
+                (g["name"] for g in all_gpus if g["index"] == main_index),
+                f"GPU{main_index}",
+            )
+            self._set_progress(
+                attempt,
+                f"Fase 3 — fine-tuning {gpu_name}: testando {main_weight}%",
+                weight_map=trial,
+                all_gpus=all_gpus,
+                main_index=main_index,
+                pinned_map=pinned_map,
+                cpu_weight=0,
+                cpu_config=gpu_only_config,
+            )
+
+            outcome = self._probe_start(
+                request,
+                trial,
+                main_index,
+                all_gpus,
+                attempt,
+                cpu_weight=0,
+                cpu_config=gpu_only_config,
+                spill_order=spill_order,
+                selected_indices=active_indices,
+                pinned_map=pinned_map,
+            )
+
+            if outcome == "cancelled":
+                raise AutoBalanceCancelled()
+
+            if outcome == "ready":
+                best_weight = main_weight
+                best_map = dict(trial)
+                _auto_balance_log(
+                    "Fase 3 — GPU%d=%d%% → READY (novo melhor)",
+                    main_index,
+                    main_weight,
+                )
+                lo = main_weight + FINE_TUNE_STEP
+            else:
+                # OOM ou crashed — este peso é demais, tenta menos
+                _auto_balance_log(
+                    "Fase 3 — GPU%d=%d%% → %s (limit reached)",
+                    main_index,
+                    main_weight,
+                    outcome.upper(),
+                    level="warn",
+                )
+                # Não precisa baixar hi, porque já sabemos que lo é o limite
+                break
+
+        if best_weight > current_main_weight:
+            _auto_balance_log(
+                "=== Fase 3 CONCLUIDA ===\n"
+                "  GPU%d weight: %d%% → %d%% (+%d%%)\n"
+                "  weight_map={%s}",
+                main_index,
+                current_main_weight,
+                best_weight,
+                best_weight - current_main_weight,
+                ", ".join(f"{i}: {w}%" for i, w in best_map.items()),
+            )
+        else:
+            _auto_balance_log(
+                "Fase 3: sem incremento possivel — main GPU%d ja em %d%%",
+                main_index,
+                current_main_weight,
+                level="warn",
+            )
+
+        return best_map, attempt
+
+    def _adjust_main_fine_tune(
+        self,
+        optimized: Dict[int, int],
+        spill_order: List[int],
+        main_index: int,
+        new_main_weight: int,
+        pinned_map: Dict[int, int],
+    ) -> Optional[Dict[int, int]]:
+        """Adjust weights for fine-tuning: raise main GPU, drain secondaries.
+
+        Takes slack from secondary GPUs in spill order (down to 0), respecting
+        pinned GPUs. Returns a valid weight map that sums to 100.
+        """
+        pinned_map = pinned_map or {}
+        new_main_weight = max(0, min(100, new_main_weight))
+
+        active = [idx for idx in spill_order if optimized.get(idx, 0) > 0]
+        if main_index not in active:
+            return None
+
+        trial = {i: optimized.get(i, 0) for i in active}
+        delta = new_main_weight - trial[main_index]
+        trial[main_index] = new_main_weight
+
+        if delta == 0:
+            return trial if sum(trial.values()) == 100 else None
+
+        if delta > 0:
+            # Need to drain secondary GPUs
+            donors = [
+                i for i in active
+                if i != main_index and i not in pinned_map
+            ]
+            # Sort by spill order (later spill GPUs give first)
+            donors.sort(key=lambda i: spill_order.index(i), reverse=True)
+
+            need = delta
+            for donor in donors:
+                if spill_order.index(donor) <= spill_order.index(main_index):
+                    continue
+                take = min(trial[donor], need)
+                trial[donor] -= take
+                need -= take
+                if need == 0:
+                    break
+
+            if need > 0:
+                # Not enough secondary capacity — check if we can stay within 100
+                if sum(trial.values()) - need <= 100:
+                    # Just reduce and keep what we can
+                    for donor in donors:
+                        if need <= 0:
+                            break
+                        take = min(trial[donor], need)
+                        trial[donor] -= take
+                        need -= take
+                    return trial if sum(trial.values()) <= 100 else None
+                return None
+        else:
+            # Main weight decreased — redistribute to secondaries
+            receivers = [
+                i for i in active
+                if i != main_index and i not in pinned_map
+            ]
+            receivers.sort(key=lambda i: spill_order.index(i), reverse=True)
+
+            give = -delta
+            for recv in receivers:
+                if spill_order.index(recv) <= spill_order.index(main_index):
+                    continue
+                trial[recv] += give
+                give = 0
+                break
+            if give > 0:
+                return None
+
+        if sum(trial.values()) != 100:
+            return None
+        return trial
 
     def _probe_start(
         self,
@@ -1968,13 +2677,17 @@ class AutoBalanceProber:
             return "cancelled"
         cpu_config = cpu_config or {}
         cpu_spill_allowed = cpu_weight > 0 or bool(cpu_config.get("pinned"))
+        budget_selected = self._budget_selected_indices(
+            weight_map, spill_order, selected_indices
+        )
         synced_map, probe_cpu = self._finalize_cpu_split(
             weight_map,
             cpu_config,
             cpu_spill_allowed=cpu_spill_allowed,
             spill_order=spill_order,
-            selected_indices=selected_indices,
+            selected_indices=budget_selected,
             pinned_map=pinned_map,
+            skip_floors=True,
         )
         gpu_weights = self.planner.to_gpu_weights(
             all_gpus,
@@ -1984,6 +2697,24 @@ class AutoBalanceProber:
             cpu_pinned=bool(cpu_config.get("pinned") and probe_cpu > 0),
             cpu_valve_enabled=bool(cpu_config.get("enabled")),
         )
+
+        gpu_weight_details = ", ".join(
+            f"{w.device}[{w.index}]={w.weight}%" for w in gpu_weights if w.active
+        )
+        _auto_balance_log(
+            "PROBE #%d START (gpus=%d): weight_map={%s} synced={%s} cpu=%d->%d [%s]",
+            attempt,
+            len(budget_selected),
+            ", ".join(f"{i}: {w}%" for i, w in weight_map.items()),
+            ", ".join(
+                f"{i}: {synced_map.get(i, 0)}%"
+                for i in sorted(set(list(weight_map.keys()) + list(synced_map.keys())))
+            ),
+            cpu_weight,
+            probe_cpu,
+            gpu_weight_details,
+        )
+
         self.process_manager.stop()
         try:
             self.process_manager.start(
@@ -2000,16 +2731,70 @@ class AutoBalanceProber:
                 total_layers=request.total_layers,
             )
         except Exception as exc:
-            logger.error(f"Auto-balance start failed: {exc}")
+            logger.error(
+                "Auto-balance probe #%d: START EXCEPTION model=%s error=%s",
+                attempt,
+                request.path,
+                exc,
+            )
             return "crashed"
-        return self._wait_for_outcome()
+        outcome = self._wait_for_outcome()
+        _auto_balance_log(
+            "PROBE #%d RESULT: %s | synced={%s} cpu=%d",
+            attempt,
+            outcome,
+            ", ".join(f"{i}: {synced_map.get(i, 0)}%" for i in synced_map),
+            probe_cpu,
+            level="warn" if outcome in ("oom", "timeout", "crashed") else "info",
+        )
+        return outcome
 
     def _get_vram_pct(self, gpu_index: int) -> float:
         metrics = self.gpu_manager.get_metrics()
         for gpu in metrics.get("gpus", []):
             if gpu.get("index") == gpu_index:
-                return float(gpu.get("vram_pct", 0))
+                pct = float(gpu.get("vram_pct", 0))
+                logger.debug(
+                    "_get_vram_pct: gpu=%d vram_pct=%.1f",
+                    gpu_index,
+                    pct,
+                )
+                return pct
+        logger.debug("_get_vram_pct: gpu=%d not found in metrics", gpu_index)
         return 0.0
+
+    def _capture_hardware_snapshot(self, label: str) -> Dict[str, Any]:
+        """Captura snapshot completo de hardware (GPUs + CPU/RAM)."""
+        metrics = self.gpu_manager.get_metrics()
+        gpu_details = []
+        for gpu in metrics.get("gpus", []):
+            gpu_details.append({
+                "index": gpu["index"],
+                "mem_used_mb": float(gpu.get("mem_used", 0)),
+                "mem_total_mb": float(gpu.get("mem_total", 0)),
+                "vram_pct": gpu.get("vram_pct", 0),
+                "util_pct": float(gpu.get("util", 0)),
+                "temp_c": float(gpu.get("temp", 0)) if gpu.get("temp") else 0,
+                "power_w": float(gpu.get("power", 0)) if gpu.get("power") else 0,
+            })
+
+        vm = psutil.virtual_memory() if "psutil" in globals() or hasattr(psutil, "virtual_memory") else None
+        ram_total = vm.total // (1024 * 1024) if vm else 0
+        ram_used = vm.used // (1024 * 1024) if vm else 0
+        ram_pct = vm.percent if vm else 0
+        cpu_percent = metrics.get("cpu", 0)
+
+        return {
+            "label": label,
+            "gpus": gpu_details,
+            "ram_used_mb": ram_used,
+            "ram_total_mb": ram_total,
+            "ram_pct": ram_pct,
+            "cpu_pct": cpu_percent,
+            "cpu_name": metrics.get("cpu_name", "Unknown"),
+            "cpu_temp": metrics.get("cpu_temp"),
+            "cpu_power": metrics.get("cpu_power"),
+        }
 
     def _vram_summary(
         self, weight_map: Dict[int, int], spill_order: List[int]
@@ -2020,7 +2805,13 @@ class AutoBalanceProber:
                 continue
             pct = self._get_vram_pct(idx)
             parts.append(f"GPU{idx} VRAM {pct:.0f}%")
-        return "; ".join(parts)
+        summary = "; ".join(parts) if parts else "N/A"
+        logger.info(
+            "_vram_summary: weight_map={%s} -> summary=%s",
+            ", ".join(f"{i}: {w}%" for i, w in weight_map.items()),
+            summary,
+        )
+        return summary
 
     def _set_progress(
         self,
@@ -2056,6 +2847,11 @@ class AutoBalanceProber:
                 selected_indices=selected_indices,
                 pinned_map=pinned_map,
             )
+            # Progress display: only mark CPU when it actually carries load in
+            # THIS probe (or is pinned). During GPU-only phases (1, 1b, 2, 3)
+            # progress_cpu is 0, so the CPU valve must show unmarked even when
+            # the user enabled it — it only re-appears once spill is in use.
+            cpu_in_use = progress_cpu > 0 or bool(cpu_config.get("pinned"))
             weights = self.planner.to_gpu_weights(
                 all_gpus,
                 progress_map,
@@ -2063,7 +2859,7 @@ class AutoBalanceProber:
                 pinned_indices,
                 cpu_weight=progress_cpu,
                 cpu_pinned=bool(cpu_config.get("pinned") and progress_cpu > 0),
-                cpu_valve_enabled=bool(cpu_config.get("enabled")),
+                cpu_valve_enabled=cpu_in_use,
             )
             state["gpu_weights"] = [w.model_dump() for w in weights]
         self.process_manager.recovery_state = state
@@ -2072,23 +2868,60 @@ class AutoBalanceProber:
         path = self.log_manager.get_server_log_path()
         deadline = time.time() + PROBE_TIMEOUT_SEC
         last_pos = 0
+        start_time = time.time()
 
         while time.time() < deadline:
             if self.process_manager.auto_balance_cancel_requested:
                 self.process_manager.stop()
+                elapsed = time.time() - start_time
+                logger.info(
+                    "_wait_for_outcome: CANCELLED after %.1fs (log=%s)",
+                    elapsed,
+                    path,
+                )
                 return "cancelled"
             if not self._process_alive():
+                elapsed = time.time() - start_time
+                logger.info(
+                    "_wait_for_outcome: CRASHED after %.1fs (log=%s)",
+                    elapsed,
+                    path,
+                )
                 return "crashed"
 
             chunk, last_pos = self._read_log_since(path, last_pos)
             if chunk:
                 if OOM_PATTERNS.search(chunk):
+                    elapsed = time.time() - start_time
+                    # Log as 3 primeiras linhas do log do servidor para diagnóstico
+                    preview_lines = chunk.strip().split("\n")[:3]
+                    logger.warning(
+                        "_wait_for_outcome: OOM detected after %.1fs (log=%s) | preview=%s",
+                        elapsed,
+                        path,
+                        preview_lines,
+                    )
                     return "oom"
                 if READY_PATTERNS.search(chunk):
+                    elapsed = time.time() - start_time
+                    ready_lines = chunk.strip().split("\n")[:3]
+                    logger.info(
+                        "_wait_for_outcome: READY after %.1fs (log=%s) | preview=%s",
+                        elapsed,
+                        path,
+                        ready_lines,
+                    )
                     return "ready"
 
             time.sleep(POLL_INTERVAL_SEC)
 
+        elapsed = time.time() - start_time
+        logger.warning(
+            "_wait_for_outcome: TIMEOUT after %.1fs (log=%s, last_pos=%d)",
+            elapsed,
+            path,
+            last_pos,
+        )
         return "timeout"
 
     def _process_alive(self) -> bool:
