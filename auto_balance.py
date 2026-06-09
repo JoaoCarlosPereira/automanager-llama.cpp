@@ -1915,7 +1915,10 @@ class AutoBalanceProber:
             return False, request.gpu_weights, msg, failure
 
         pinned_indices: Set[int] = set(pinned_map.keys())
-        cpu_valve = bool(cpu_config.get("enabled"))
+        # Final result: deactivate any device that ends at 0%. GPUs at 0% are
+        # already inactive (to_gpu_weights sets active=weight>0); the CPU valve
+        # must likewise be unchecked when it carries no load.
+        cpu_active = bool(cpu_config.get("enabled")) and cpu_weight > 0
         gpu_weights = self.planner.to_gpu_weights(
             all_gpus,
             optimized,
@@ -1923,7 +1926,7 @@ class AutoBalanceProber:
             pinned_indices,
             cpu_weight=cpu_weight,
             cpu_pinned=bool(cpu_config.get("pinned") and cpu_weight > 0),
-            cpu_valve_enabled=cpu_valve,
+            cpu_valve_enabled=cpu_active,
         )
         ok, budget_err = self.planner.validate_device_budget_from_weights(
             gpu_weights

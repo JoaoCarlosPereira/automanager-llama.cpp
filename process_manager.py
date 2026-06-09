@@ -339,12 +339,50 @@ class ProcessManager:
                         "hardware_incapable_message": None,
                     },
                 )
+                # Leave the model loaded with the final auto-balanced weights
+                # (reload so the running server matches the chosen split, not
+                # whatever the last probe happened to leave running).
+                final_cpu_enabled = any(
+                    w.device == "cpu" and w.active and w.weight > 0
+                    for w in gpu_weights
+                )
+                model_loaded = False
+                try:
+                    self.start(
+                        model_path=request.path,
+                        gpu_weights=gpu_weights,
+                        context_size=request.context_size,
+                        mmproj_path=request.mmproj_path,
+                        split_mode=request.split_mode,
+                        parallel_slots=request.parallel_slots,
+                        batch_size=request.batch_size,
+                        thinking_enabled=request.thinking_enabled,
+                        mtp_enabled=request.mtp_enabled,
+                        mtp_draft_tokens=request.mtp_draft_tokens,
+                        total_layers=request.total_layers,
+                        cpu_enabled=final_cpu_enabled,
+                    )
+                    model_loaded = True
+                    logger.info(
+                        "Auto-balance: modelo recarregado com o split final"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Auto-balance: falha ao recarregar o modelo final: %s",
+                        exc,
+                    )
+                # active=False signals the frontend that auto-balance finished
+                # (it polls for !recovery.active to apply the final weights). The
+                # loaded model is reflected by the live process (data.running),
+                # not by recovery.active — keeping it True would stick the UI on
+                # "REALOCANDO...".
                 self.recovery_state = {
                     "active": False,
                     "failed": False,
                     "message": message,
                     "auto_balance": False,
                     "auto_balance_completed": True,
+                    "model_loaded": model_loaded,
                     "gpu_weights": saved_weights,
                 }
             else:

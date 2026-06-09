@@ -1494,7 +1494,7 @@ class TestDiscoverPhaseHandoff:
         # (CPU rows may be omitted entirely while unused — both are acceptable.)
         assert pm.recovery_states, "expected progress updates to be recorded"
 
-        # Scope chosen by the user: the saved result preserves the CPU valve the
-        # user enabled, so the final CPU entry stays present (spill still allowed).
+        # Resultado GPU-only: a CPU termina com 0% e deve ser desmarcada
+        # (linha de CPU ausente/inativa) antes de finalizar.
         cpu = next((w for w in weights if w.device == "cpu"), None)
-        assert cpu is not None and cpu.weight == 0.0
+        assert cpu is None
