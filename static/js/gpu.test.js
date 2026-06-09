@@ -29,6 +29,8 @@ const {
     collectDeviceWeightsFromUI,
     getActiveWeightTotal,
     updateMtpBadge,
+    onAutoBalanceToggle,
+    clearGpuPins,
 } = gpu;
 
 const PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576];
@@ -354,6 +356,8 @@ describe('pin, listeners e applyGpuWeightsToUI', () => {
     });
 
     test('bindGpuManualListeners aplica ring em pins ja marcados', () => {
+        // Pins só valem no modo manual (Auto-Balance desligado).
+        document.getElementById('auto-balance-toggle').checked = false;
         document.querySelector('.gpu-pin').checked = true;
         bindGpuManualListeners();
         expect(document.querySelector('.gpu-weight').classList.contains('ring-2')).toBe(true);
@@ -901,5 +905,65 @@ describe('updateMtpBadge', () => {
         const badge = document.getElementById('mtp-badge');
         expect(badge.innerText).toBe('OFF');
         expect(badge.className).toContain('text-slate-500');
+    });
+});
+
+describe('Auto-Balance limpa pins (task_05)', () => {
+    test('ligar o toggle desmarca todos os pins e remove o anel âmbar', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(p => {
+            p.checked = true;
+        });
+        const w0 = document.querySelector('.gpu-row .gpu-weight');
+        w0.classList.add('ring-2', 'ring-amber-500/40');
+
+        const toggle = document.getElementById('auto-balance-toggle');
+        toggle.checked = true;
+        onAutoBalanceToggle(toggle);
+
+        const pins = document.querySelectorAll('.gpu-pin, .cpu-pin');
+        expect([...pins].every(p => p.checked === false)).toBe(true);
+        expect(w0.className).not.toContain('ring-amber-500/40');
+    });
+
+    test('com Auto-Balance ligado os pins ficam desabilitados', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        const toggle = document.getElementById('auto-balance-toggle');
+        toggle.checked = true;
+        onAutoBalanceToggle(toggle);
+        const pins = document.querySelectorAll('.gpu-pin, .cpu-pin');
+        expect([...pins].every(p => p.disabled === true)).toBe(true);
+    });
+
+    test('desligar o Auto-Balance reabilita os pins', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        const toggle = document.getElementById('auto-balance-toggle');
+        toggle.checked = false;
+        onAutoBalanceToggle(toggle);
+        const pins = document.querySelectorAll('.gpu-pin, .cpu-pin');
+        expect([...pins].every(p => p.disabled === false)).toBe(true);
+    });
+
+    test('collectDeviceWeightsFromUI envia pinned=false sob Auto-Balance', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(p => {
+            p.checked = true;
+        });
+        const toggle = document.getElementById('auto-balance-toggle');
+        toggle.checked = true;
+        onAutoBalanceToggle(toggle);
+        const weights = collectDeviceWeightsFromUI();
+        expect(weights.every(w => w.pinned === false)).toBe(true);
+    });
+
+    test('bindGpuManualListeners aplica o estado inicial do toggle', () => {
+        setupGpuDom({ gpuCount: 2, withCpu: true });
+        document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(p => {
+            p.checked = true;
+        });
+        document.getElementById('auto-balance-toggle').checked = true;
+        bindGpuManualListeners();
+        const pins = document.querySelectorAll('.gpu-pin, .cpu-pin');
+        expect([...pins].every(p => p.checked === false && p.disabled === true)).toBe(true);
     });
 });

@@ -189,6 +189,11 @@ export function bindGpuManualListeners() {
         getRowWeightInput(pin.closest('.gpu-row, .cpu-row'))
             ?.classList.add('ring-2', 'ring-amber-500/40');
     });
+    const abToggle = document.getElementById('auto-balance-toggle');
+    if (abToggle) {
+        abToggle.addEventListener('change', () => onAutoBalanceToggle(abToggle));
+        onAutoBalanceToggle(abToggle);  // aplica estado inicial
+    }
 }
 
 export function applyGpuWeightsToUI(weights, duringAutoBalance) {
@@ -331,6 +336,25 @@ export function onGpuPinToggle(pinCheckbox) {
         }
     }
     redistributeUnpinnedWeights(weightInput);
+}
+
+export function clearGpuPins() {
+    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
+        pin.checked = false;
+        const row = pin.closest('.gpu-row, .cpu-row');
+        const weightInput = row ? getRowWeightInput(row) : null;
+        if (weightInput) weightInput.classList.remove('ring-2', 'ring-amber-500/40');
+    });
+}
+
+export function onAutoBalanceToggle(toggle) {
+    // Sob Auto-Balance, a cascata controla 100% da distribuição: limpa e
+    // desabilita os pins (ADR-001). Ao desligar, reabilita os controles.
+    const active = !!(toggle && toggle.checked);
+    if (active) clearGpuPins();
+    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
+        pin.disabled = active;
+    });
 }
 
 export function onContextSizeCustomInput() {
