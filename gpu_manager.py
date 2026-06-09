@@ -18,6 +18,8 @@ class OffloadPlan(NamedTuple):
     gpu_pct: float
     cpu_pct: float
     tensor_split: List[str]
+    # False when the model does not fit and CPU is disabled (block with alert).
+    is_feasible: bool = True
 
 import psutil
 
@@ -466,6 +468,23 @@ class GPUManager(GPUDetector):
             tensor_split=self.compute_tensor_split(gpu_weights),
         )
 
+    @staticmethod
+    def _build_priority_order(gpu_weights: List[GPUWeight]) -> List[int]:
+        """GPU indices in priority order: main first, then by ascending index.
+
+        Implements the cascade priority of ADR-001. Considers only active GPU
+        entries with weight > 0.
+        """
+        gpu_entries = [
+            w for w in gpu_weights
+            if w.device == "gpu" and w.active and w.weight > 0
+        ]
+        ordered = sorted(int(w.index) for w in gpu_entries)
+        main_idx = next((int(w.index) for w in gpu_entries if w.is_main), None)
+        if main_idx is not None and main_idx in ordered:
+            return [main_idx] + [i for i in ordered if i != main_idx]
+        return ordered
+
     def _compute_offload_plan_with_lu(
         self,
         gpu_weights: List[GPUWeight],
@@ -473,7 +492,12 @@ class GPUManager(GPUDetector):
         cpu_enabled: bool,
         active_gpus: List[GPUWeight],
     ) -> OffloadPlan:
-        """Compute offload plan using LoadDistributor when cpu_enabled is explicit."""
+        """Compute the offload plan via the strict priority-fill cascade.
+
+        Used when ``cpu_enabled`` is explicit (True/False). Delegates the
+        distribution to :class:`LoadDistributor` (single source of truth) and
+        maps the result to an :class:`OffloadPlan`. See ADR-003.
+        """
         gpu_pct = self.sum_active_weight(gpu_weights, "gpu")
         cpu_pct = self.sum_active_weight(gpu_weights, "cpu")
 
@@ -497,10 +521,13 @@ class GPUManager(GPUDetector):
         if hasattr(self, '_cached_model_vram_mb') and self._cached_model_vram_mb:
             model_vram_mb = self._cached_model_vram_mb
 
+        # Priority order for the strict cascade: main GPU first, then the
+        # remaining active GPUs by ascending index (ADR-001).
+        priority_order = self._build_priority_order(gpu_weights)
+
         result = LoadDistributor.distribute(
             gpu_vram=vram_dict,
-            gpu_weights=gpu_weight_dict,
-            total_layers=total_layers,
+            priority_order=priority_order,
             estimated_model_vram_mb=model_vram_mb,
             cpu_enabled=cpu_enabled,
         )
@@ -529,6 +556,7 @@ class GPUManager(GPUDetector):
             gpu_pct=final_gpu_pct,
             cpu_pct=final_cpu_pct,
             tensor_split=self.compute_tensor_split(gpu_weights),
+            is_feasible=result.is_feasible,
         )
 
     def get_visible_devices(self, gpu_weights: List[GPUWeight]) -> Optional[str]:

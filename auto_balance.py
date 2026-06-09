@@ -17,6 +17,7 @@ import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from schemas import GPUWeight
+from load_distributor import LoadDistributor
 
 logger = logging.getLogger("automanager")
 
@@ -1188,6 +1189,124 @@ class AutoBalanceProber:
     def discover(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
+        """Auto-balance analítico determinístico (ADR-002/003).
+
+        Calcula a distribuição via cascata estrita por prioridade
+        (:class:`LoadDistributor`) — sem sondagem de OOM — e inicia o modelo
+        com os pesos resultantes. Retorna o mesmo contrato 4-tupla que o fluxo
+        anterior: ``(success, gpu_weights, message, failure)``.
+        """
+        all_gpus = self.gpu_manager.detect_gpus()
+        if not all_gpus:
+            return False, request.gpu_weights, "Nenhuma GPU detectada.", None
+
+        vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
+        active_indices = [
+            w.index
+            for w in request.gpu_weights
+            if w.active and w.device == "gpu"
+        ]
+        if not active_indices:
+            return False, request.gpu_weights, "Selecione pelo menos uma GPU.", None
+
+        main_weight = next((w for w in request.gpu_weights if w.is_main), None)
+        main_index = (
+            main_weight.index
+            if main_weight
+            else max(active_indices, key=lambda i: vram_by_index.get(i, 0))
+        )
+        if main_index not in active_indices:
+            main_index = active_indices[0]
+
+        priority_order = self.planner.spill_order(main_index, active_indices)
+        cpu_config = self._cpu_config_from_request(request)
+        cpu_enabled = bool(cpu_config.get("enabled"))
+
+        estimated_mb = self.planner.estimate_model_vram_mb(
+            request.path, request.context_size, request.parallel_slots
+        )
+        self._cache_model_vram_estimate(request, estimated_mb)
+        self._raise_if_cancelled()
+
+        # Cascata estrita por prioridade (fonte única da verdade). Pins são
+        # ignorados sob Auto-Balance (ADR-001).
+        active_vram = {i: vram_by_index.get(i, 0) for i in active_indices}
+        result = LoadDistributor.distribute(
+            gpu_vram=active_vram,
+            priority_order=priority_order,
+            estimated_model_vram_mb=estimated_mb,
+            cpu_enabled=cpu_enabled,
+        )
+
+        if not result.is_feasible:
+            self.process_manager.stop()
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="no_feasible_split",
+            )
+            return False, request.gpu_weights, msg, failure
+
+        weight_map = {i: int(p) for i, p in result.gpu_weights.items()}
+        if not weight_map:  # tamanho desconhecido — tudo na principal
+            weight_map = {main_index: 100}
+        cpu_weight = int(result.cpu_weight)
+
+        gpu_weights = self.planner.to_gpu_weights(
+            all_gpus,
+            weight_map,
+            main_index,
+            set(),  # sem pins sob Auto-Balance
+            cpu_weight=cpu_weight,
+            cpu_pinned=False,
+            cpu_valve_enabled=cpu_enabled,
+        )
+        ok, budget_err = self.planner.validate_device_budget_from_weights(
+            gpu_weights
+        )
+        if not ok:
+            logger.error(f"Auto-balance saved weights invalid: {budget_err}")
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="invalid_device_budget",
+            )
+            return False, request.gpu_weights, msg, failure
+
+        # Aplica o plano: inicia o modelo com os pesos da cascata.
+        self.process_manager.start(
+            model_path=request.path,
+            gpu_weights=gpu_weights,
+            context_size=request.context_size,
+            mmproj_path=request.mmproj_path,
+            split_mode=request.split_mode,
+            parallel_slots=request.parallel_slots,
+            batch_size=request.batch_size,
+            thinking_enabled=request.thinking_enabled,
+            mtp_enabled=request.mtp_enabled,
+            mtp_draft_tokens=request.mtp_draft_tokens,
+            cpu_enabled=cpu_enabled,
+        )
+
+        weight_label = self.planner.format_weights_with_cpu(
+            weight_map, priority_order, cpu_weight
+        )
+        msg = f"Balance otimizado por cascata ({weight_label})."
+        logger.info(f"Auto-balance success (analytic): {msg}")
+        return True, gpu_weights, msg, None
+
+    def _discover_empirical_deprecated(
+        self, request
+    ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
+        """DEPRECATED (ADR-002): sondagem empírica por OOM.
+
+        Mantido apenas para referência/rollback; não está mais no caminho de
+        decisão do Auto-Balance, que agora é analítico (ver :meth:`discover`).
+        """
         all_gpus = self.gpu_manager.detect_gpus()
         if not all_gpus:
             return False, request.gpu_weights, "Nenhuma GPU detectada.", None

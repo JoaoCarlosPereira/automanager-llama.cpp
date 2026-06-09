@@ -236,6 +236,13 @@ async def start_model(
         "auto_balance": False,
     }
 
+    # Sob Auto-Balance, a cascata controla 100% da distribuição: pins são
+    # ignorados (ADR-001). Normaliza no ponto único de entrada, garantindo o
+    # comportamento mesmo em chamadas diretas à API.
+    if req.auto_balance:
+        for w in req.gpu_weights:
+            w.pinned = False
+
     # Auto-detect total_layers from model file
     total_layers = req.total_layers if req.total_layers and req.total_layers > 0 else 0
     try:
