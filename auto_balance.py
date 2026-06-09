@@ -27,6 +27,8 @@ PROBE_TIMEOUT_SEC = 180
 POLL_INTERVAL_SEC = 1.0
 VRAM_SETTLE_SEC = 4.0
 TARGET_VRAM_PCT = 93.0
+DEVICE_BUDGET_TOTAL = 100
+DEVICE_BUDGET_TOLERANCE = 1
 FAILURE_HARDWARE_CAPACITY = "hardware_capacity_exceeded"
 
 # CPU offload constants
@@ -193,7 +195,12 @@ class AutoBalancePlanner:
         target_total: int = 100,
     ) -> Optional[Dict[int, int]]:
         if not pinned_map:
-            return weight_map
+            total = sum(weight_map.values())
+            if total == target_total:
+                return dict(weight_map)
+            if total <= 0:
+                return None
+            return AutoBalancePlanner.scale_weight_map(weight_map, target_total)
         unpinned = [i for i in active_indices if i not in pinned_map]
         merged = dict(weight_map)
         merged.update(pinned_map)
@@ -310,6 +317,74 @@ class AutoBalancePlanner:
             if weight_map.get(idx, 0) > 0
         ]
         return ", ".join(parts)
+
+    @staticmethod
+    def validate_device_budget(
+        gpu_map: Dict[int, int],
+        cpu_weight: int,
+        *,
+        tolerance: int = DEVICE_BUDGET_TOLERANCE,
+    ) -> Tuple[bool, str]:
+        """Return whether GPU + CPU weights sum to ``DEVICE_BUDGET_TOTAL``."""
+        gpu_sum = sum(gpu_map.values())
+        total = gpu_sum + int(cpu_weight)
+        if abs(total - DEVICE_BUDGET_TOTAL) <= tolerance:
+            return True, ""
+        return (
+            False,
+            f"Pesos somam {total}% (GPU {gpu_sum}% + CPU {cpu_weight}%; "
+            f"esperado {DEVICE_BUDGET_TOTAL}%).",
+        )
+
+    @staticmethod
+    def enforce_device_budget(
+        gpu_map: Dict[int, int],
+        cpu_config: Dict[str, Any],
+    ) -> Tuple[Dict[int, int], int]:
+        """Normalize GPU/CPU weights so the active budget sums to exactly 100%."""
+        if not cpu_config.get("enabled"):
+            active = AutoBalancePlanner.active_subset(gpu_map)
+            if not active:
+                return dict(gpu_map), 0
+            scaled = AutoBalancePlanner.scale_weight_map(
+                {idx: gpu_map[idx] for idx in active},
+                DEVICE_BUDGET_TOTAL,
+            )
+            merged = dict(gpu_map)
+            merged.update(scaled)
+            for idx in merged:
+                if idx not in active:
+                    merged[idx] = 0
+            return merged, 0
+
+        if cpu_config.get("pinned"):
+            pinned_w = int(cpu_config["weight"])
+            gpu_target = max(0, DEVICE_BUDGET_TOTAL - pinned_w)
+            scaled = AutoBalancePlanner.scale_weight_map(gpu_map, gpu_target)
+            return scaled, pinned_w
+
+        gpu_sum = sum(gpu_map.values())
+        cpu_weight = max(0, DEVICE_BUDGET_TOTAL - gpu_sum)
+        if gpu_sum + cpu_weight > DEVICE_BUDGET_TOTAL:
+            gpu_target = DEVICE_BUDGET_TOTAL - cpu_weight
+            gpu_map = AutoBalancePlanner.scale_weight_map(gpu_map, gpu_target)
+        return dict(gpu_map), cpu_weight
+
+    @staticmethod
+    def validate_device_budget_from_weights(
+        weights: List[GPUWeight],
+        *,
+        tolerance: float = DEVICE_BUDGET_TOLERANCE,
+    ) -> Tuple[bool, str]:
+        """Validate an exported ``GPUWeight`` list sums to 100% on active devices."""
+        active = [w for w in weights if w.active]
+        total = sum(w.weight for w in active)
+        if abs(total - DEVICE_BUDGET_TOTAL) <= tolerance:
+            return True, ""
+        return (
+            False,
+            f"Pesos ativos somam {total:.1f}% (esperado {DEVICE_BUDGET_TOTAL}%).",
+        )
 
     @staticmethod
     def format_weights_with_cpu(
@@ -587,20 +662,7 @@ class AutoBalanceProber:
         cpu_config: Dict[str, Any],
     ) -> Tuple[Dict[int, int], int]:
         """Finalize CPU split. No 70% cap — CPU uses what's needed as spill-over."""
-        if not cpu_config.get("enabled"):
-            return gpu_map, 0
-
-        if cpu_config.get("pinned"):
-            pinned_w = int(cpu_config["weight"])
-            return (
-                self.planner.scale_weight_map(gpu_map, 100 - pinned_w),
-                pinned_w,
-            )
-
-        gpu_sum = sum(gpu_map.values())
-        raw_cpu = max(0, 100 - gpu_sum)
-        # No cap — return raw CPU weight
-        return gpu_map, raw_cpu
+        return self.planner.enforce_device_budget(gpu_map, cpu_config)
 
     def _resolve_probe_cpu_weight(
         self,
@@ -668,7 +730,11 @@ class AutoBalanceProber:
         if delta > 0 and delta <= current_cpu:
             trial = dict(weight_map)
             trial[target_idx] = new_weight
-            return trial
+            ok, _ = self.planner.validate_device_budget(
+                trial, max(0, current_cpu - delta)
+            )
+            if ok:
+                return trial
         return None
 
     def _max_gpu_weight_for_maximize(
@@ -803,7 +869,20 @@ class AutoBalanceProber:
         self._raise_if_cancelled()
 
         optimized, cpu_weight = self._finalize_cpu_split(optimized, cpu_config)
+        ok, budget_err = self.planner.validate_device_budget(optimized, cpu_weight)
+        if not ok:
+            logger.error(f"Auto-balance budget invalid after finalize: {budget_err}")
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="invalid_device_budget",
+            )
+            return False, request.gpu_weights, msg, failure
+
         pinned_indices: Set[int] = set(pinned_map.keys())
+        cpu_valve = bool(cpu_config.get("enabled"))
         gpu_weights = self.planner.to_gpu_weights(
             all_gpus,
             optimized,
@@ -811,7 +890,21 @@ class AutoBalanceProber:
             pinned_indices,
             cpu_weight=cpu_weight,
             cpu_pinned=bool(cpu_config.get("pinned") and cpu_weight > 0),
+            cpu_valve_enabled=cpu_valve,
         )
+        ok, budget_err = self.planner.validate_device_budget_from_weights(
+            gpu_weights
+        )
+        if not ok:
+            logger.error(f"Auto-balance saved weights invalid: {budget_err}")
+            msg, failure = self.build_hardware_capacity_failure(
+                request,
+                all_gpus,
+                active_indices,
+                vram_by_index,
+                reason="invalid_device_budget",
+            )
+            return False, request.gpu_weights, msg, failure
         vram_summary = self._vram_summary(optimized, spill_order)
         weight_label = self.planner.format_weights_with_cpu(
             optimized, spill_order, cpu_weight
@@ -879,6 +972,9 @@ class AutoBalanceProber:
             if outcome == "cancelled":
                 raise AutoBalanceCancelled()
             if outcome == "ready":
+                weight_map, cpu_weight = self._finalize_cpu_split(
+                    weight_map, cpu_config
+                )
                 return dict(weight_map), active_count, attempt, cpu_weight
 
             if outcome == "oom" or outcome in ("timeout", "crashed"):
@@ -1075,12 +1171,14 @@ class AutoBalanceProber:
         if self.process_manager.auto_balance_cancel_requested:
             return "cancelled"
         cpu_config = cpu_config or {}
+        synced_map, probe_cpu = self._finalize_cpu_split(weight_map, cpu_config)
         gpu_weights = self.planner.to_gpu_weights(
             all_gpus,
-            weight_map,
+            synced_map,
             main_index,
-            cpu_weight=cpu_weight,
-            cpu_pinned=bool(cpu_config.get("pinned") and cpu_weight > 0),
+            cpu_weight=probe_cpu,
+            cpu_pinned=bool(cpu_config.get("pinned") and probe_cpu > 0),
+            cpu_valve_enabled=bool(cpu_config.get("enabled")),
         )
         self.process_manager.stop()
         try:
@@ -1142,13 +1240,17 @@ class AutoBalanceProber:
         if weight_map is not None and all_gpus is not None and main_index is not None:
             pinned_indices = set((pinned_map or {}).keys())
             cpu_config = cpu_config or {}
+            progress_map, progress_cpu = self._finalize_cpu_split(
+                weight_map, cpu_config
+            )
             weights = self.planner.to_gpu_weights(
                 all_gpus,
-                weight_map,
+                progress_map,
                 main_index,
                 pinned_indices,
-                cpu_weight=cpu_weight,
-                cpu_pinned=bool(cpu_config.get("pinned") and cpu_weight > 0),
+                cpu_weight=progress_cpu,
+                cpu_pinned=bool(cpu_config.get("pinned") and progress_cpu > 0),
+                cpu_valve_enabled=bool(cpu_config.get("enabled")),
             )
             state["gpu_weights"] = [w.model_dump() for w in weights]
         self.process_manager.recovery_state = state
@@ -1202,6 +1304,7 @@ def _to_gpu_weights(
     *,
     cpu_weight: int = 0,
     cpu_pinned: bool = False,
+    cpu_valve_enabled: bool = False,
 ) -> List[GPUWeight]:
     pinned_indices = pinned_indices or set()
     result: List[GPUWeight] = []
@@ -1220,13 +1323,13 @@ def _to_gpu_weights(
                 device="gpu",
             )
         )
-    if cpu_weight > 0:
+    if cpu_valve_enabled or cpu_weight > 0:
         result.append(
             GPUWeight(
                 index=-1,
                 weight=float(cpu_weight),
                 name="CPU",
-                active=True,
+                active=cpu_valve_enabled or cpu_weight > 0,
                 is_main=False,
                 pinned=cpu_pinned,
                 device="cpu",

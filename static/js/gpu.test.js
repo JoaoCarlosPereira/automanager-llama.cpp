@@ -782,6 +782,68 @@ describe('CPU desmarcada — contrato de offload', () => {
     });
 });
 
+describe('auto-balance budget UI', () => {
+    beforeEach(() => {
+        setupGpuDom({ gpuCount: 3, withCpu: true, cpuChecked: true });
+    });
+
+    test('applyGpuWeightsToUI zera CPU stale quando payload omitido', () => {
+        document.querySelector('.cpu-checkbox').checked = true;
+        document.querySelector('.cpu-weight').value = '10';
+
+        applyGpuWeightsToUI([
+            { index: 0, weight: 43, active: true, device: 'gpu' },
+            { index: 1, weight: 47, active: true, device: 'gpu' },
+            { index: 2, weight: 10, active: true, is_main: true, device: 'gpu' },
+        ]);
+
+        expect(document.querySelector('.cpu-weight').value).toBe('0');
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+    });
+
+    test('estado valido sem offload GPU 43/47/10 CPU 0 exibe 100%', () => {
+        applyGpuWeightsToUI([
+            { index: 0, weight: 43, active: true, device: 'gpu' },
+            { index: 1, weight: 47, active: true, device: 'gpu' },
+            { index: 2, weight: 10, active: true, is_main: true, device: 'gpu' },
+            { index: -1, weight: 0, active: true, device: 'cpu' },
+        ]);
+        expect(document.querySelector('.gpu-row[data-index="0"] .gpu-weight').value).toBe('43');
+        expect(document.querySelector('.gpu-row[data-index="1"] .gpu-weight').value).toBe('47');
+        expect(document.querySelector('.gpu-row[data-index="2"] .gpu-weight').value).toBe('10');
+        expect(document.querySelector('.cpu-weight').value).toBe('0');
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+        expect(validateDeviceWeights(collectDeviceWeightsFromUI()).ok).toBe(true);
+    });
+
+    test('estado valido com offload CPU 10 GPU 39/42/9 exibe 100%', () => {
+        applyGpuWeightsToUI([
+            { index: 0, weight: 39, active: true, device: 'gpu' },
+            { index: 1, weight: 42, active: true, device: 'gpu' },
+            { index: 2, weight: 9, active: true, is_main: true, device: 'gpu' },
+            { index: -1, weight: 10, active: true, device: 'cpu' },
+        ]);
+        expect(document.querySelector('.gpu-row[data-index="0"] .gpu-weight').value).toBe('39');
+        expect(document.querySelector('.gpu-row[data-index="1"] .gpu-weight').value).toBe('42');
+        expect(document.querySelector('.gpu-row[data-index="2"] .gpu-weight').value).toBe('9');
+        expect(document.querySelector('.cpu-weight').value).toBe('10');
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+        expect(validateDeviceWeights(collectDeviceWeightsFromUI()).ok).toBe(true);
+    });
+
+    test('applyGpuWeightsToUI cpu valve ativa com peso zero mantem 100%', () => {
+        applyGpuWeightsToUI([
+            { index: 0, weight: 43, active: true, device: 'gpu' },
+            { index: 1, weight: 47, active: true, device: 'gpu' },
+            { index: 2, weight: 10, active: true, is_main: true, device: 'gpu' },
+            { index: -1, weight: 0, active: true, device: 'cpu' },
+        ]);
+        expect(document.querySelector('.cpu-checkbox').checked).toBe(true);
+        expect(document.querySelector('.cpu-weight').value).toBe('0');
+        expect(document.getElementById('total-percent').innerText).toBe('CARGA TOTAL: 100%');
+    });
+});
+
 describe('collectDeviceWeightsFromUI — distribuição percentual', () => {
     beforeEach(() => {
         setupGpuDom({ gpuCount: 2, withCpu: true, cpuChecked: true });

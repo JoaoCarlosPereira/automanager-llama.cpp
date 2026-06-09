@@ -193,6 +193,9 @@ export function bindGpuManualListeners() {
 
 export function applyGpuWeightsToUI(weights, duringAutoBalance) {
     if (!weights || !Array.isArray(weights)) return;
+    const cpuPayload = weights.find(
+        w => w.device === 'cpu' || w.index === CPU_INDEX
+    );
     weights.forEach(w => {
         const row = findDeviceRow(w);
         if (!row) return;
@@ -213,6 +216,13 @@ export function applyGpuWeightsToUI(weights, duringAutoBalance) {
             else input.classList.remove('ring-2', 'ring-amber-500/40');
         }
     });
+    const cpuRow = document.querySelector('.cpu-row');
+    if (cpuRow && !cpuPayload) {
+        const input = getRowWeightInput(cpuRow);
+        if (input && (duringAutoBalance || document.activeElement !== input)) {
+            input.value = '0';
+        }
+    }
     updateTotal();
 }
 
