@@ -239,8 +239,9 @@ def test_validate_weights_three_gpus_plus_cpu(gpu_mgr):
 
 
 def _fake_metrics(vram_by_index):
+    # get_metrics() emite "mem_total" (string MiB), não "vram_total_mb".
     return {"gpus": [
-        {"index": i, "vram_total_mb": v} for i, v in vram_by_index.items()
+        {"index": i, "mem_total": str(v)} for i, v in vram_by_index.items()
     ]}
 
 
@@ -296,3 +297,46 @@ def test_offload_plan_cascata_cpu_off_infeasivel(gpu_mgr):
     ]
     plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=False)
     assert plan.is_feasible is False
+
+
+def test_offload_plan_reads_mem_total_key_not_all_cpu(gpu_mgr):
+    """Regressão: get_metrics usa 'mem_total'; VRAM deve ser lida (não 0).
+
+    Antes da correção, a chave errada ('vram_total_mb') zerava a VRAM e jogava
+    100% na CPU mesmo com GPUs com folga.
+    """
+    gpu_mgr.get_metrics = lambda: {
+        "gpus": [
+            {"index": 0, "mem_total": "24000"},
+            {"index": 1, "mem_total": "16000"},
+        ]
+    }
+    gpu_mgr._cached_model_vram_mb = 20000  # cabe na 3090
+    weights = [
+        GPUWeight(index=0, weight=50, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=50, name="P100", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    assert plan.cpu_pct == 0.0          # nada na CPU
+    assert plan.gpu_pct == 100.0        # tudo nas GPUs
+    assert plan.n_gpu_layers == 80
+
+
+def test_offload_plan_maxes_gpus_then_spills_remainder_to_cpu(gpu_mgr):
+    """Modelo > soma das GPUs → GPUs no máximo (98%) e só o restante na CPU."""
+    gpu_mgr.get_metrics = lambda: {
+        "gpus": [
+            {"index": 0, "mem_total": "24000"},
+            {"index": 1, "mem_total": "16000"},
+        ]
+    }
+    gpu_mgr._cached_model_vram_mb = 60000  # excede ~39200 de caps
+    weights = [
+        GPUWeight(index=0, weight=50, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=50, name="P100", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    # GPUs absorvem o máximo (~39200/60000 ≈ 65%); CPU só o restante (~35%).
+    assert plan.gpu_pct > 60.0
+    assert 0 < plan.cpu_pct < 40.0
+    assert 0 < plan.n_gpu_layers < 80

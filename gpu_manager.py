@@ -507,15 +507,30 @@ class GPUManager(GPUDetector):
             if w.device == "gpu" and w.active and w.weight > 0:
                 gpu_weight_dict[int(w.index)] = int(round(w.weight))
 
-        # Get VRAM info from metrics
-        vram_dict = {}
-        for w in gpu_weights:
-            if w.device == "gpu":
-                metrics = self.get_metrics()
-                for gpu in metrics.get("gpus", []):
-                    if gpu.get("index") == w.index:
-                        vram_dict[int(w.index)] = int(gpu.get("vram_total_mb", 0))
-                        break
+        # Get total VRAM (MB) per GPU from live metrics. get_metrics() emits
+        # ``mem_total`` (MiB, from nvidia-smi); accept legacy keys as fallback.
+        metrics = self.get_metrics()
+        vram_by_index = {}
+        for gpu in metrics.get("gpus", []):
+            try:
+                idx = int(gpu.get("index"))
+            except (TypeError, ValueError):
+                continue
+            raw = (
+                gpu.get("mem_total")
+                or gpu.get("vram_total_mb")
+                or gpu.get("vram")
+                or 0
+            )
+            try:
+                vram_by_index[idx] = int(float(raw))
+            except (TypeError, ValueError):
+                vram_by_index[idx] = 0
+        vram_dict = {
+            int(w.index): vram_by_index.get(int(w.index), 0)
+            for w in gpu_weights
+            if w.device == "gpu"
+        }
 
         model_vram_mb = 0
         if hasattr(self, '_cached_model_vram_mb') and self._cached_model_vram_mb:
