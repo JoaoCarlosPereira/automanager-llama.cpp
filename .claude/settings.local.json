@@ -2,7 +2,26 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Read(///192.168.2.118/automanager//**)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(python -m pytest tests/unit/test_auto_balance.py::TestDiscoverPhaseHandoff -q)",
+      "Bash(python -m pytest tests/unit/test_auto_balance.py tests/unit/test_cpu_offload_respect_config.py -q)",
+      "Bash(python -m pytest tests/integration/test_api_endpoints.py -q)",
+      "Bash(python -m pytest tests/unit/test_load_distributor_cascade.py tests/unit/test_auto_balance.py -q)",
+      "Bash(python -m pytest tests/unit/test_auto_balance.py::TestPhase2MaximizeFloors -q)",
+      "Bash(python -m pytest tests/unit -q)",
+      "Bash(cd //192.168.2.118/automanager && wc -l logs/auto_balance.log && echo \"---FIRST RUN MARKERS---\" && grep -n \"EMPIRICAL START\\\\|Fase 3\\\\|Fase 2\\\\|peso final\\\\|SUCCESS\\\\|HARDWARE CAPACITY\\\\|FALHA\\\\|INFEASIBLE\" logs/auto_balance.log | tail -60)",
+      "Bash(cd //192.168.2.118/automanager && ls -t logs/*.log 2>/dev/null && echo \"---\" && grep -rn \"get_server_log_path\\\\|server_log\\\\|llama.*log\" log_manager.py | head -20)",
+      "Bash(cd //192.168.2.118/automanager && echo \"=== size/mtime ===\" && ls -la logs/server.log && echo \"=== last 50 lines ===\" && tail -50 logs/server.log)",
+      "Bash(cd //192.168.2.118/automanager && echo \"=== paths.json ===\" && cat paths.json 2>/dev/null; echo \"=== manager.log around the run \\(20:49-20:50\\) ===\" && grep -n \"20:49\\\\|20:50\" logs/manager.log | grep -i \"error\\\\|crash\\\\|oom\\\\|exit\\\\|fail\\\\|command\\\\|llama\\\\|cuda\\\\|memory\\\\|spawn\\\\|start\" | head -40)",
+      "Bash(python -c \"import auto_balance; print\\('import OK'\\); print\\('has AutoBalanceServerCrashed:', hasattr\\(auto_balance, 'AutoBalanceServerCrashed'\\)\\); print\\('FAILURE_SERVER_CRASH:', auto_balance.FAILURE_SERVER_CRASH\\)\")",
+      "Bash(python -m pytest tests/unit/test_auto_balance.py -q)",
+      "Bash(sed -n '1,60p' tests/unit/test_oom_watchdog.py)",
+      "Bash(python -m pytest tests/unit/test_auto_balance.py::TestCrashVsOom -q)",
+      "Bash(cd //192.168.2.118/automanager && python -m pytest tests/unit -q 2>&1 | tail -6)",
+      "Bash(cd //192.168.2.118/automanager && echo \"===== auto_balance.log \\(size\\) =====\" && wc -l logs/auto_balance.log && echo \"===== full auto_balance.log =====\" && cat logs/auto_balance.log)",
+      "Bash(cd //192.168.2.118/automanager && echo \"=== manager.log: starts/binds/listening after 21:42 ===\" && grep -nE \"21:4[3-9]|21:5[0-9]|22:[0-5][0-9]\" logs/manager.log | grep -iE \"START:|listening|bind|tensor-split|server \\(started|listening\\)|model loaded|oom|error\" | tail -30)"
     ]
   }
 }

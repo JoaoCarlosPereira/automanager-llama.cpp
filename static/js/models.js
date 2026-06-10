@@ -400,7 +400,7 @@ export async function startModel(path, elementId) {
     const mtpToggleEl = document.getElementById('mtp-toggle');
     const mtpEnabled = mtpToggleEl ? mtpToggleEl.checked : false;
     const mtpDraftRaw = parseInt(document.getElementById('mtp-draft-tokens')?.value, 10);
-    const mtpDraftTokens = Math.max(1, Math.min(6, Number.isFinite(mtpDraftRaw) ? mtpDraftRaw : 3));
+    const mtpDraftTokens = Number.isFinite(mtpDraftRaw) && mtpDraftRaw >= 1 ? mtpDraftRaw : 3;
     document.getElementById('parallel-slots').value = parallelSlots;
     document.getElementById('status-badge').innerHTML = autoBalance
         ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'
@@ -451,6 +451,13 @@ export async function startModel(path, elementId) {
         }
     } catch (e) {
         alert("Erro ao iniciar modelo.");
+    }
+    if (!startData.probing && startData.mtp_applied !== undefined) {
+        if (!startData.mtp_applied && startData.mtp_reason) {
+            window.showMtpWarning(startData.mtp_reason);
+        } else {
+            window.hideMtpWarning();
+        }
     }
     setTimeout(window.updateStatus, 2000);
 }

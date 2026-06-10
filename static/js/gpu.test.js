@@ -29,6 +29,8 @@ const {
     collectDeviceWeightsFromUI,
     getActiveWeightTotal,
     updateMtpBadge,
+    showMtpWarning,
+    hideMtpWarning,
     onAutoBalanceToggle,
     clearGpuPins,
 } = gpu;
@@ -88,6 +90,9 @@ function setupGpuDom({ gpuCount = 2, withCpu = false, cpuChecked = true } = {}) 
         <input type="checkbox" id="mtp-toggle"/>
         <span id="mtp-badge"></span>
         <input id="mtp-draft-tokens" value="3"/>
+        <div id="mtp-warning" class="hidden">
+            <p id="mtp-warning-msg"></p>
+        </div>
         <span id="total-percent"></span>
         <span id="auto-balance-badge" class=""></span>
         <button id="auto-balance-cancel-btn" class="hidden"></button>
@@ -905,6 +910,33 @@ describe('updateMtpBadge', () => {
         const badge = document.getElementById('mtp-badge');
         expect(badge.innerText).toBe('OFF');
         expect(badge.className).toContain('text-slate-500');
+    });
+});
+
+describe('MTP warning banner', () => {
+    test('showMtpWarning remove hidden e define mensagem', () => {
+        const el = document.getElementById('mtp-warning');
+        el.classList.add('hidden');
+        showMtpWarning('Modelo não suporta MTP');
+        expect(el.classList.contains('hidden')).toBe(false);
+        expect(document.getElementById('mtp-warning-msg').textContent).toBe('Modelo não suporta MTP');
+    });
+
+    test('hideMtpWarning adiciona hidden', () => {
+        const el = document.getElementById('mtp-warning');
+        el.classList.remove('hidden');
+        hideMtpWarning();
+        expect(el.classList.contains('hidden')).toBe(true);
+    });
+
+    test('showMtpWarning sem elementos retorna sem erro', () => {
+        document.getElementById('mtp-warning').remove();
+        expect(() => showMtpWarning('test')).not.toThrow();
+    });
+
+    test('hideMtpWarning sem elemento retorna sem erro', () => {
+        document.getElementById('mtp-warning').remove();
+        expect(() => hideMtpWarning()).not.toThrow();
     });
 });
 

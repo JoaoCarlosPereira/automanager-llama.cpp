@@ -4,7 +4,8 @@ import { cancelAutoBalance } from './gpu.js';
 import {
     syncContextSizeCustomVisibility, onContextSizePresetChange, onContextSizeCustomInput,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
-    hideAutoBalanceCapacityAlert, } from './gpu.js';
+    hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
+} from './gpu.js';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads,
@@ -46,6 +47,8 @@ win.updateTotal = updateTotal;
 win.balanceWeights = balanceWeights;
 win.resetToDefaults = resetToDefaults;
 win.hideAutoBalanceCapacityAlert = hideAutoBalanceCapacityAlert;
+win.showMtpWarning = showMtpWarning;
+win.hideMtpWarning = hideMtpWarning;
 win.getModelButtonsHtml = getModelButtonsHtml;
 win.updateModels = updateModels;
 win.saveModelsDir = saveModelsDir;

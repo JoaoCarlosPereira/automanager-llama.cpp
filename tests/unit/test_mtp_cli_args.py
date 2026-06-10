@@ -15,32 +15,44 @@ def gpu_mgr():
 
 def test_mtp_cli_args_disabled():
     mgr = MagicMock()
-    assert mtp_cli_args(False, 3, "/models/a.gguf", mgr) == []
+    flags, applied, reason = mtp_cli_args(False, 3, "/models/a.gguf", mgr)
+    assert flags == []
+    assert applied is False
     mgr.detect_model_mtp.assert_not_called()
 
 
 def test_mtp_cli_args_incompatible_model():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = False
-    assert mtp_cli_args(True, 3, "/models/a.gguf", mgr) == []
+    flags, applied, reason = mtp_cli_args(True, 3, "/models/a.gguf", mgr)
+    assert flags == []
+    assert applied is False
+    assert "MTP" in reason
 
 
 def test_mtp_cli_args_enabled_compatible():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = True
-    assert mtp_cli_args(True, 3, "/models/mtp.gguf", mgr) == [
-        "--spec-type",
-        "draft-mtp",
-        "--spec-draft-n-max",
-        "3",
-    ]
+    flags, applied, reason = mtp_cli_args(True, 3, "/models/mtp.gguf", mgr)
+    assert flags == ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+    assert applied is True
+    assert reason == ""
 
 
-def test_mtp_cli_args_clamps_draft_tokens():
+def test_mtp_cli_args_clamps_draft_tokens_high():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = True
-    args = mtp_cli_args(True, 99, "/models/mtp.gguf", mgr)
-    assert args[-1] == "6"
+    flags, applied, reason = mtp_cli_args(True, 99, "/models/mtp.gguf", mgr)
+    assert flags[-1] == "64"
+    assert applied is True
+
+
+def test_mtp_cli_args_draft_tokens_default():
+    mgr = MagicMock()
+    mgr.detect_model_mtp.return_value = True
+    flags, applied, reason = mtp_cli_args(True, None, "/models/mtp.gguf", mgr)
+    assert flags[-1] == "3"
+    assert applied is True
 
 
 def test_detect_model_mtp_parses_nextn_predict_layers(gpu_mgr):

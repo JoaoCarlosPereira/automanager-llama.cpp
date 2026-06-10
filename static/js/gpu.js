@@ -527,3 +527,17 @@ export function updateMtpBadge(enabled) {
         ? 'text-[9px] font-black uppercase tracking-wider text-amber-400'
         : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
 }
+
+export function showMtpWarning(reason) {
+    const el = document.getElementById('mtp-warning');
+    const msgEl = document.getElementById('mtp-warning-msg');
+    if (!el || !msgEl) return;
+    msgEl.textContent = reason;
+    el.classList.remove('hidden');
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+export function hideMtpWarning() {
+    const el = document.getElementById('mtp-warning');
+    if (el) el.classList.add('hidden');
+}

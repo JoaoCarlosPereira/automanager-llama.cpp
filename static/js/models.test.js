@@ -695,7 +695,36 @@ test('startModel envia mtp_enabled e mtp_draft_tokens no payload', async () => {
 
     const body = JSON.parse(fetch.mock.calls[0][1].body);
     expect(body.mtp_enabled).toBe(true);
-    expect(body.mtp_draft_tokens).toBe(6);
+    expect(body.mtp_draft_tokens).toBe(99);
+});
+
+test('startModel com mtp_applied=false exibe warning banner', async () => {
+    const path = '/media/mtp-nn.gguf';
+    state.currentSelectedModel = path;
+    document.getElementById('mtp-toggle').checked = true;
+    document.getElementById('mtp-draft-tokens').value = '3';
+    fetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ probing: false, mtp_applied: false, mtp_reason: 'Modelo sem head MTP' }),
+    });
+
+    await startModel(path, 'mtp-nn-id');
+
+    expect(window.showMtpWarning).toHaveBeenCalledWith('Modelo sem head MTP');
+});
+
+test('startModel com mtp_applied=true esconde warning banner', async () => {
+    const path = '/media/mtp-ok.gguf';
+    state.currentSelectedModel = path;
+    document.getElementById('mtp-toggle').checked = true;
+    fetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ probing: false, mtp_applied: true, mtp_reason: '' }),
+    });
+
+    await startModel(path, 'mtp-ok-id');
+
+    expect(window.hideMtpWarning).toHaveBeenCalled();
 });
 
 test('startModel com erro da API', async () => {

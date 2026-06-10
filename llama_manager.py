@@ -1185,8 +1185,8 @@ def _build_html(
                                 </label>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
-                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tokens de predição MTP (--spec-draft-n-max); valores típicos 2–3; aplica apenas com MTP ligado"><i class="fas fa-forward text-amber-400 mr-2"></i>MTP Tok:</label>
-                                <input type="number" id="mtp-draft-tokens" value="{DEFAULT_MTP_DRAFT_TOKENS}" min="1" max="6"
+                                <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap" title="Tokens de predição MTP (--spec-draft-n-max); quanto maior, mais tokens tenta prever por passo"><i class="fas fa-forward text-amber-400 mr-2"></i>MTP Tok:</label>
+                                <input type="number" id="mtp-draft-tokens" value="{DEFAULT_MTP_DRAFT_TOKENS}" min="1"
                                        class="w-16 bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 text-xs md:text-sm font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all text-center">
                             </div>
                         </div>
@@ -1227,6 +1227,18 @@ def _build_html(
                             </button>
                         </div>
                         <span id="total-percent" class="text-xs md:text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl transition-all duration-300">CARGA TOTAL: 100%</span>
+                    </div>
+                    <div id="mtp-warning" class="hidden mt-4 p-4 md:p-5 rounded-2xl border border-amber-500/40 bg-amber-950/30">
+                        <div class="flex gap-4 items-start">
+                            <div class="w-10 h-10 rounded-xl bg-amber-500/20 flex items-center justify-center shrink-0">
+                                <i class="fas fa-bolt text-amber-400"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-[10px] font-black uppercase tracking-widest text-amber-400 mb-1">MTP não foi aplicado</p>
+                                <p id="mtp-warning-msg" class="text-xs md:text-sm text-amber-100/80 leading-relaxed"></p>
+                                <p class="mt-2 text-[10px] text-slate-400">Use um modelo GGUF com suporte a Multi-Token Prediction (heads MTP embutidos). Os modelos compatíveis têm <code class="text-amber-300/80">nextn_predict_layers &gt; 0</code>.</p>
+                            </div>
+                        </div>
                     </div>
                     <div id="auto-balance-capacity-alert" class="hidden mt-6 p-5 md:p-6 rounded-2xl border border-red-500/40 bg-red-950/40">
                         <div class="flex gap-4 items-start">

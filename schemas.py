@@ -6,8 +6,6 @@ DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
 DEFAULT_MTP_ENABLED = False
 DEFAULT_MTP_DRAFT_TOKENS = 3
-MTP_DRAFT_TOKENS_MIN = 1
-MTP_DRAFT_TOKENS_MAX = 6
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 
 
@@ -33,11 +31,7 @@ class StartRequest(BaseModel):
     manual_gpu_override: bool = False
     thinking_enabled: bool = True
     mtp_enabled: bool = DEFAULT_MTP_ENABLED
-    mtp_draft_tokens: int = Field(
-        default=DEFAULT_MTP_DRAFT_TOKENS,
-        ge=MTP_DRAFT_TOKENS_MIN,
-        le=MTP_DRAFT_TOKENS_MAX,
-    )
+    mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS
     total_layers: int = 0  # 0 = auto-detect from model file
     cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
 

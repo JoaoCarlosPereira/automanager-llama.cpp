@@ -34,11 +34,12 @@ def test_start_request_mtp_valid_values():
     assert req.mtp_draft_tokens == 2
 
 
-@pytest.mark.parametrize("invalid_tokens", [0, 7, -1])
-def test_start_request_mtp_draft_tokens_out_of_range(invalid_tokens):
-    with pytest.raises(ValidationError):
-        StartRequest(
+def test_start_request_mtp_draft_tokens_any_value_accepted():
+    """After removing the clamp, any integer value is accepted."""
+    for val in [0, 1, 7, 50, 100, -5, 0]:
+        req = StartRequest(
             path="/models/a.gguf",
             gpu_weights=_minimal_gpu_weights(),
-            mtp_draft_tokens=invalid_tokens,
+            mtp_draft_tokens=val,
         )
+        assert req.mtp_draft_tokens == val

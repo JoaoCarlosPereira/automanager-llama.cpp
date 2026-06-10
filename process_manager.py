@@ -23,8 +23,6 @@ from schemas import (
     DEFAULT_MTP_DRAFT_TOKENS,
     DEFAULT_PARALLEL_SLOTS,
     GPUWeight,
-    MTP_DRAFT_TOKENS_MAX,
-    MTP_DRAFT_TOKENS_MIN,
     StartRequest,
 )
 
@@ -81,23 +79,19 @@ def mtp_cli_args(
     mtp_enabled: bool,
     mtp_draft_tokens: int,
     model_path: str,
-    gpu_manager: GPUManager,
-) -> List[str]:
-    """Build llama-server flags for Multi-Token Prediction when applicable."""
+    gpu_manager: "GPUManager",
+):
+    """Build llama-server flags for Multi-Token Prediction."""
     if not mtp_enabled:
-        return []
-    if not gpu_manager.detect_model_mtp(model_path):
-        logger.info(
-            "MTP requested but model has no MTP head, skipping flags"
-        )
-        return []
-    n = max(
-        MTP_DRAFT_TOKENS_MIN,
-        min(MTP_DRAFT_TOKENS_MAX, mtp_draft_tokens or DEFAULT_MTP_DRAFT_TOKENS),
+        return ([], False, "MTP desativado na configuracao")
+
+    # Forcamos a ativacao se solicitado pelo usuario (Opcao B)
+    n = max(1, min(64, mtp_draft_tokens or 1))
+    return (
+        ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(n)],
+        True,
+        "",
     )
-    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(n)]
-
-
 class ProcessManager:
     """Manages llama-server process lifecycle."""
 
@@ -535,11 +529,10 @@ class ProcessManager:
             cmd.append("--mmproj-auto")
 
         cmd.extend(reasoning_cli_args(thinking_enabled))
-        mtp_args = mtp_cli_args(
+        mtp_args, mtp_applied, mtp_reason = mtp_cli_args(
             mtp_enabled, mtp_draft_tokens, model_path, self.gpu_manager
         )
         cmd.extend(mtp_args)
-        mtp_applied = bool(mtp_args)
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -586,6 +579,8 @@ class ProcessManager:
                 return {
                     "message": "Started",
                     "pid": self._current_process.pid,
+                    "mtp_applied": mtp_applied,
+                    "mtp_reason": mtp_reason,
                 }
         except FileNotFoundError:
             logger.error("llama-server nao encontrado ao iniciar processo")
