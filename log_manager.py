@@ -10,15 +10,11 @@ from typing import Optional
 from fastapi.responses import StreamingResponse
 
 from paths import (
-    INSTALL_ROOT,
     LOGS_DIR,
     MANAGER_LOG_PATH,
     SERVER_LOG_PATH,
 )
 
-PROJECT_ROOT = INSTALL_ROOT
-LEGACY_SERVER_LOG_PATH = "/root/llama_server.log"
-LEGACY_MANAGER_LOG_PATH = "/root/manager.log"
 MAX_LOG_SIZE = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
 
@@ -26,7 +22,7 @@ logger = logging.getLogger("automanager")
 
 
 class LogManager:
-    """Project-local logs with rotation; dual-write to legacy paths when possible."""
+    """Project-local logs with rotation."""
 
     def __init__(
         self,
@@ -34,7 +30,7 @@ class LogManager:
         server_log_path: Optional[str] = None,
         manager_log_path: Optional[str] = None,
     ):
-        self._project_root = project_root or PROJECT_ROOT
+        self._project_root = project_root or os.path.dirname(os.path.abspath(__file__))
         self._logs_dir = os.path.join(self._project_root, "logs")
         self._server_log_path = server_log_path or os.path.join(
             self._logs_dir, "server.log"
@@ -70,29 +66,15 @@ class LogManager:
             except OSError:
                 pass
 
-        try:
-            os.makedirs(os.path.dirname(LEGACY_MANAGER_LOG_PATH), exist_ok=True)
-            if not any(
-                isinstance(h, logging.FileHandler)
-                and getattr(h, "baseFilename", "") == LEGACY_MANAGER_LOG_PATH
-                for h in root_logger.handlers
-            ):
-                legacy = logging.FileHandler(LEGACY_MANAGER_LOG_PATH)
-                legacy.setFormatter(formatter)
-                root_logger.addHandler(legacy)
-        except OSError:
-            pass
-
     def get_server_log_path(self) -> str:
         return self._server_log_path
 
     def clear_server_log(self) -> None:
-        for path in (self._server_log_path, LEGACY_SERVER_LOG_PATH):
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write("")
-            except OSError:
-                pass
+        try:
+            with open(self._server_log_path, "w", encoding="utf-8") as f:
+                f.write("")
+        except OSError:
+            pass
 
     def open_server_log_append(self):
         """Open server log for subprocess stdout (append)."""

@@ -176,9 +176,8 @@ def test_html_contains_log_terminal(html):
     assert "Limpar" in html
 
 
-def test_html_contains_pacman_canvas(html):
-    assert 'id="pacman-background"' in html
-    assert 'aria-hidden="true"' in html
+def test_html_does_not_contain_pacman_canvas(html):
+    assert 'id="pacman-background"' not in html
 
 
 def test_html_contains_active_model_card(html):
@@ -187,9 +186,9 @@ def test_html_contains_active_model_card(html):
     assert 'id="uptime-val"' in html
 
 
-def test_html_serves_external_js_scripts(html):
+def test_html_serves_dashboard_js(html):
     assert 'type="module" src="/static/js/index.js?v=' in html
-    assert 'src="/static/js/pacman_bg.js?v=' in html
+    assert 'src="/static/js/pacman_bg.js?v=' not in html
 
 
 def test_html_contains_version_update_modal(html):

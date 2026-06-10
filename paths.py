@@ -16,21 +16,8 @@ DEFAULT_PATH_ENTRIES: Dict[str, str] = {
     "logs_dir": "logs",
 }
 
-LEGACY_PATH_ENTRIES: Dict[str, str] = {
-    "models_dir": "/media/docker/models",
-    "config_file": "/root/automanager_config.json",
-    "logs_dir": "logs",
-}
-
 
 def _default_entries(install_root: str) -> Dict[str, str]:
-    legacy_models = LEGACY_PATH_ENTRIES["models_dir"]
-    legacy_config = LEGACY_PATH_ENTRIES["config_file"]
-    in_legacy_layout = os.path.normpath(install_root).startswith("/root")
-    if in_legacy_layout and (
-        os.path.isdir(legacy_models) or os.path.isfile(legacy_config)
-    ):
-        return dict(LEGACY_PATH_ENTRIES)
     return dict(DEFAULT_PATH_ENTRIES)
 
 

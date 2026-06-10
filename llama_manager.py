@@ -45,9 +45,6 @@ from schemas import (
     VersionCheckResponse,
     VersionCommit,
 )
-from gpu_manager import GPUDetector
-from model_manager import ModelScanner
-from config_manager import ConfigManager, TokenManager
 from paths import INSTALL_ROOT, ensure_directories, reload_module_paths, update_models_dir
 from version_manager import check_for_updates
 from llama_server_bin import get_llama_server_bin
@@ -1057,16 +1054,13 @@ def _build_html(
         @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(5px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         .model-item-container.active-selection {{ border-color: rgba(59, 130, 246, 0.8) !important; background-color: rgba(30, 41, 59, 0.8) !important; box-shadow: 0 0 15px rgba(59, 130, 246, 0.3); }}
         .model-item-container.running-now {{ border-color: rgba(16, 185, 129, 0.5) !important; background-color: rgba(6, 78, 59, 0.2) !important; }}
-        #pacman-background {{ position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 0; opacity: 0.35; pointer-events: none; }}
         #dashboard {{ position: relative; z-index: 1; }}
         .btn-gradient {{ background: linear-gradient(135deg, #1e30f3 0%, #e21e80 100%); }}
         .text-gradient {{ background: linear-gradient(315deg, #1e30f3 0%, #e21e80 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
         .metric-dimmed {{ opacity: 0.45; filter: grayscale(0.4); }}
-        @media (prefers-reduced-motion: reduce) {{ #pacman-background {{ display: none; }} }}
     </style>
 </head>
 <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
-    <canvas id="pacman-background" aria-hidden="true"></canvas>
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
@@ -1396,7 +1390,6 @@ def _build_html(
         }};
     </script>
     <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>
-    <script src="/static/js/pacman_bg.js?v={_DASHBOARD_JS_V}"></script>
 </body>
 </html>"""
 

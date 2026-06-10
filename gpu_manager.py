@@ -660,35 +660,3 @@ class GPUManager(GPUDetector):
         except Exception as exc:
             logger.warning(f"Could not detect MTP for {model_path}: {exc}")
         return False
-
-    def validate_weights(self, gpu_weights: List[GPUWeight]) -> Tuple[bool, str]:
-        """Validate that active device weights form a valid offload plan.
-
-        Validation rules:
-
-        1. **Sum == 100 %** (±1 % tolerance) across all active devices
-           (GPU + CPU).
-
-        :returns: ``(ok, error_message)`` — ``ok`` is ``True`` when all
-                  rules pass; otherwise ``error_message`` explains the first
-                  failing rule.
-        """
-        active = [w for w in gpu_weights if w.active]
-        if not active:
-            return False, "Nenhum dispositivo ativo selecionado."
-
-        has_active_gpu = any(w.device == "gpu" for w in active)
-        if not has_active_gpu:
-            return False, (
-                "Selecione pelo menos uma GPU ativa. "
-                "Offload apenas em CPU não é suportado."
-            )
-
-        total = sum(w.weight for w in active)
-        if abs(total - 100.0) > 1.0:
-            return False, (
-                f"Pesos ativos somam {total:.1f}% (esperado ~100%). "
-                "Ajuste os pesos para somar 100%."
-            )
-
-        return True, ""
