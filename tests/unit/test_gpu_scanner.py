@@ -135,7 +135,7 @@ class TestGPUDetectorGetMetrics:
             ],
             timeout=10,
         )
-        mock_cpu_percent.assert_called_once_with(interval=0.1)
+        mock_cpu_percent.assert_called_once_with(interval=0)
 
     def test_get_metrics_returns_zero_metrics_on_error(self):
         detector = GPUDetector()

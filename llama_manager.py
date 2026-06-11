@@ -7,6 +7,7 @@ tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 
 import json
 import os
+import asyncio
 import signal
 import socket
 import subprocess
@@ -864,6 +865,11 @@ async def index(request: Request):
     )
     models = models_data["models"]
     projectors = models_data["projectors"]
+    model_configs = config.get("model_configs", {})
+    default_model = config.get("default_model")
+    default_models_list = config.get("default_models")
+    if isinstance(default_models_list, list) and default_models_list:
+        default_model = default_models_list[0]
 
     # Build GPU rows
     max_vram = max((g["vram"] for g in gpus), default=0)

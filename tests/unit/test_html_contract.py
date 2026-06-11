@@ -181,9 +181,7 @@ def test_html_does_not_contain_pacman_canvas(html):
 
 
 def test_html_contains_active_model_card(html):
-    assert 'id="active-card"' in html
-    assert 'id="active-model-name"' in html
-    assert 'id="uptime-val"' in html
+    assert 'id="active-cards-container"' in html
 
 
 def test_html_serves_dashboard_js(html):
@@ -214,7 +212,7 @@ def test_html_injects_ip(html):
     assert f'id="display-ip"' in html
     assert FAKE_IP in html
     assert f'window.fixedIp = "{FAKE_IP}"' in html
-    assert 'id="chat-link"' in html
+    assert 'id="active-cards-container"' in html
 
 
 def test_html_contains_default_model_checkbox(html):

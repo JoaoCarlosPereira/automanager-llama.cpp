@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from config_manager import ConfigManager, TokenManager
+from config_manager import ConfigManager, TokenManager, normalize_model_path
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_config_update_model_settings(config_manager):
         "gpu_weights": [{"index": 0, "weight": 100, "name": "GPU", "active": True}],
     }
     config_manager.update_model_settings(model_path, settings)
-    saved = config_manager.load()["model_configs"][model_path]
+    saved = config_manager.get_model_settings(model_path)
     assert saved["context_size"] == 8192
     assert saved["mmproj_path"] == "/models/llama.mmproj"
     assert saved["gpu_weights"] == settings["gpu_weights"]
@@ -114,7 +114,7 @@ def test_config_normalizes_model_path_keys(config_manager):
     assert saved["thinking_enabled"] is False
     loaded = config_manager.load()["model_configs"]
     assert len(loaded) == 1
-    assert next(iter(loaded.keys())).replace("\\", "/") == model_path
+    assert normalize_model_path(next(iter(loaded.keys()))) == normalize_model_path(model_path)
 
 
 def test_config_partial_update_preserves_mtp_fields(config_manager):
@@ -172,7 +172,7 @@ def test_config_partial_update_preserves_hardware_incapable(config_manager):
 def test_config_set_and_get_default_model(config_manager):
     model_path = "/models/default.gguf"
     config_manager.set_default_model(model_path)
-    assert config_manager.get_default_models() == [model_path]
+    assert config_manager.get_default_models() == [normalize_model_path(model_path)]
 
 
 def test_config_clear_default_model(config_manager):
