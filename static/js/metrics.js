@@ -66,14 +66,20 @@ export async function updateStatus() {
             badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
             badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE';
             card.classList.remove('hidden');
-            document.getElementById('active-model-name').innerText = `${currentInst.model} (Porta ${currentInst.port})`;
+            document.getElementById('active-model-name').innerText = `${currentInst.model}`;
+            const titleEl = document.getElementById('active-panel-title');
+            if (titleEl) {
+                const count = state.activeInstances.length;
+                const idx = state.activeInstances.indexOf(currentInst) + 1;
+                titleEl.innerText = count > 1 ? `Motor de Computação ${idx}/${count} (Porta ${currentInst.port})` : 'Motor de Computação Primário';
+            }
             
             const controls = document.getElementById('active-instance-controls');
             if (controls) {
                 controls.innerHTML = `
-                    <a href="/ui/${currentInst.port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
-                        <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
-                    </a>
+                    <button onclick="openNativeChat(${currentInst.port}, '${currentInst.model}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+                        <i class="fas fa-comments text-[8px]"></i> CHAT
+                    </button>
                     <button onclick="stopModel(${currentInst.port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
                         ENCERRAR
                     </button>
@@ -89,7 +95,8 @@ export async function updateStatus() {
             
             const chatLink = document.getElementById('chat-link');
             if (chatLink) {
-                chatLink.href = `http://${window.fixedIp}:${currentInst.port}/`;
+                chatLink.onclick = () => window.openNativeChat(currentInst.port, currentInst.model);
+                chatLink.href = 'javascript:void(0)';
                 chatLink.classList.remove('pointer-events-none', 'opacity-40');
                 chatLink.setAttribute('aria-disabled', 'false');
 
@@ -189,19 +196,22 @@ export function updateTabs() {
         return;
     }
 
-    const tabsHtml = state.activeInstances.map(inst => {
-        const isActive = inst.port === state.currentActivePort;
-        const activeClass = isActive 
-            ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20' 
-            : 'bg-slate-800/50 text-slate-400 border-slate-700 hover:bg-slate-700/50';
-        
-        return `
-            <button onclick="switchInstance(${inst.port})" class="px-4 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeClass}">
-                <i class="fas fa-cube ${isActive ? 'text-blue-200' : 'text-slate-500'}"></i>
-                ${inst.model} <span class="opacity-50 font-mono text-[9px]">: ${inst.port}</span>
-            </button>
-        `;
-    }).join('');
+        const tabsHtml = state.activeInstances.map(inst => {
+            const isActive = inst.port === state.currentActivePort;
+            const isMain = inst.port === 8085;
+            const activeClass = isActive 
+                ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20' 
+                : 'bg-slate-800/50 text-slate-400 border-slate-700 hover:bg-slate-700/50';
+            
+            const badge = isMain ? '<span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-[7px] text-blue-300 ml-1 border border-blue-500/20">PRINCIPAL</span>' : '';
+
+            return `
+                <button onclick="switchInstance(${inst.port})" class="px-4 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeClass}">
+                    <i class="fas fa-cube ${isActive ? 'text-blue-200' : 'text-slate-500'}"></i>
+                    ${inst.model} ${badge}
+                </button>
+            `;
+        }).join('');
     
     container.innerHTML = tabsHtml;
 }

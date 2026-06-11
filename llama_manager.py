@@ -562,12 +562,13 @@ async def openai_proxy(request: Request, path: str, _auth: str = Depends(get_cur
 async def ui_proxy(request: Request, port: int, path: str):
     """
     Proxy web UI requests to a specific llama-server instance.
-    Note: Token check is omitted for UI to allow direct browser navigation,
-    but it's protected because it only proxies to localhost and paths are specific.
+    Injects a <base> tag into HTML to fix relative asset paths.
     """
     # Simple path mapping for the llama.cpp UI
-    if not path:
-        path = "index.html"
+    is_index = False
+    if not path or path == "index.html":
+        path = ""
+        is_index = True
     
     target_url = f"http://127.0.0.1:{port}/{path}"
     query = str(request.query_params)
@@ -576,8 +577,28 @@ async def ui_proxy(request: Request, port: int, path: str):
 
     headers = dict(request.headers)
     headers.pop("host", None)
+    # Important: some UIs check referer for CSRF
+    # headers.pop("referer", None) 
 
     try:
+        if is_index:
+            # Fetch index and rewrite
+            resp = await client.get(target_url, headers=headers, timeout=10.0)
+            if resp.status_code == 200:
+                html = resp.text
+                base_tag = f'<base href="/ui/{port}/">'
+                # Insert base tag after <head>
+                if "<head>" in html:
+                    html = html.replace("<head>", f"<head>{base_tag}")
+                else:
+                    html = f"<head>{base_tag}</head>{html}"
+                
+                # SvelteKit specific: fix __sveltekit__ base if found
+                html = html.replace("base: new URL('.', location).pathname.slice(0, -1)", f'base: "/ui/{port}"')
+
+                return HTMLResponse(content=html, status_code=200)
+        
+        # Proxy other assets/API calls directly
         resp = await client.request(
             request.method, 
             target_url, 
@@ -1265,6 +1286,30 @@ def _build_html(
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
+    
+    <!-- Modal de Chat Nativo -->
+    <div id="native-chat-modal" class="fixed inset-0 z-[100] hidden bg-slate-950/90 backdrop-blur-md">
+        <div class="flex flex-col h-screen">
+            <div class="px-6 py-4 bg-slate-900 border-b border-slate-800 flex justify-between items-center">
+                <div class="flex items-center gap-4">
+                    <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white">
+                        <i class="fas fa-comments"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-white text-sm" id="chat-modal-title">Chat Nativo</h3>
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest" id="chat-modal-subtitle">llama.cpp interface</p>
+                    </div>
+                </div>
+                <button onclick="closeNativeChat()" class="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-500 transition-all">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="flex-1 bg-white">
+                <iframe id="native-chat-frame" src="" class="w-full h-full border-none"></iframe>
+            </div>
+        </div>
+    </div>
+
     <div id="dashboard" class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10" style="display: {'block' if is_authenticated else 'none'};">
         <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
             <div class="flex items-center gap-4 md:gap-6">
@@ -1464,7 +1509,7 @@ def _build_html(
                                 <i class="fas fa-robot text-2xl md:text-3xl"></i>
                             </div>
                             <div class="min-w-0 flex-1">
-                                <p class="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2 font-mono">Motor de Computação Primário</p>
+                                <p id="active-panel-title" class="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2 font-mono">Motor de Computação Primário</p>
                                 <h2 id="active-model-name" class="text-xl md:text-2xl font-bold text-white truncate max-w-[200px] sm:max-w-md">--</h2>
                                 <div class="flex gap-4 mt-3">
                                     <div class="flex items-center gap-2 text-[10px] font-mono text-slate-400">

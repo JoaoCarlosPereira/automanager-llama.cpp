@@ -13,7 +13,7 @@ from typing import List, Optional, Dict
 import psutil
 from fastapi import HTTPException
 
-from config_manager import ConfigManager, TokenManager
+from config_manager import ConfigManager, TokenManager, normalize_model_path
 from gpu_manager import GPUManager, DEFAULT_TOTAL_LAYERS
 from llama_server_bin import resolve_llama_server_bin
 from log_manager import LogManager
@@ -146,6 +146,7 @@ class ProcessManager:
                         if port is None:
                             port = SERVER_PORT
 
+                        model_path = normalize_model_path(model_path)
                         found_pids.add(proc.info["pid"])
                         inst = {
                             "running": True,

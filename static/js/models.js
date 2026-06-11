@@ -171,9 +171,9 @@ export function getModelButtonsHtml(path, elementId, isRunning) {
 
     if (isRunning) {
         return `<div class="flex items-center gap-3">
-            <a href="/ui/${port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
-                <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
-            </a>
+            <button onclick="openNativeChat(${port}, '${m_js.split('/').pop()}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+                <i class="fas fa-comments text-[8px]"></i> ABRIR CHAT
+            </button>
             <button onclick="stopModel(${port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
                 ENCERRAR
             </button>
@@ -330,7 +330,11 @@ export async function updateModels() {
             const incapableRow = modelIncapableRowClass(incapable);
             const historyIcon = m.last_config && !incapable ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
             
-            const inst = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+            const inst = (state.activeInstances || []).find(i => {
+                if (!i.model_path) return false;
+                const i_path = i.model_path.replace(/\\\\/g, '/').replace(/\\/g, '/');
+                return i_path === m_js || i_path.endsWith('/' + m_js) || m_js.endsWith('/' + i_path);
+            });
             const isRunning = !!inst;
             const isActive = state.currentSelectedModel === m_js ? 'active-selection' : '';
             const runningClass = isRunning ? 'running-now' : '';
@@ -338,7 +342,7 @@ export async function updateModels() {
             const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
             const visionControls = buildModelVisionControlsHtml(m, m_js);
             
-            const isDefault = (cfg.default_models || []).includes(m_js);
+            const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
 
             return `<div id="${hashId}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass} ${incapableRow}" data-path="${m_js}" data-hardware-incapable="${incapable}">
                 <div class="w-full cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
@@ -492,6 +496,9 @@ export async function startModel(path, elementId) {
             return;
         }
         const startData = await res.json();
+        if (startData.port) {
+            state.currentActivePort = startData.port;
+        }
         if (startData.probing) {
             state.manualGpuOverride = false;
             state.autoBalancePending = true;
@@ -518,8 +525,9 @@ export async function startModel(path, elementId) {
 }
 
 export async function stopModel(port = null) {
+    const targetPort = port || state.currentActivePort;
     if (confirm("ENCERRAR PROCESSO?")) {
-        const url = port ? `/stop?port=${port}` : '/stop';
+        const url = targetPort ? `/stop?port=${targetPort}` : '/stop';
         const res = await apiFetch(url, {method: 'POST'});
         if (!sessionExpiredHandled && res.ok) setTimeout(window.updateStatus, 1000);
     }

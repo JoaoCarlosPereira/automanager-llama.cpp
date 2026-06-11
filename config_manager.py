@@ -41,8 +41,10 @@ logger = logging.getLogger("automanager")
 
 
 def normalize_model_path(model_path: str) -> str:
-    """Canonical model path key for model_configs (forward slashes)."""
-    return os.path.normpath(model_path).replace("\\", "/")
+    """Canonical model path key for model_configs (absolute path + forward slashes)."""
+    if not model_path:
+        return ""
+    return os.path.abspath(model_path).replace("\\", "/")
 
 
 def lookup_model_config(model_configs: dict, model_path: str) -> dict:
