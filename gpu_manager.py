@@ -23,6 +23,20 @@ class OffloadPlan(NamedTuple):
 
 import psutil
 
+# Simple path normalization for caching (avoids import from config_manager)
+def _norm_path_for_cache(p: str) -> str:
+    """Normalize path for cache key."""
+    if not p:
+        return ""
+    try:
+        import os
+        return os.path.abspath(p).replace("\\", "/")
+    except Exception:
+        return p.replace("\\", "/")
+
+# Alias for discoverability
+normalize_model_path_for_cache = _norm_path_for_cache
+
 from llama_server_bin import get_llama_server_bin
 from schemas import GPUWeight
 from load_distributor import LoadDistributor, DistributionResult
@@ -161,6 +175,15 @@ class GPUDetector:
         self._metrics_cache: Dict[str, Any] = {}
         self._metrics_cache_time: float = 0.0
         self._metrics_cache_ttl: float = 2.0  # seconds
+        self._gpus_cache: List[Dict[str, Any]] = []
+        self._gpus_cache_time: float = 0.0
+        self._gpus_cache_ttl: float = 60.0  # seconds — GPU list rarely changes
+        self._cpu_info_cache: CPUInfo = CPUInfo(name="", ram_total_mb=0, ram_used_mb=0)
+        self._cpu_info_cache_time: float = 0.0
+        self._cpu_info_cache_ttl: float = 60.0  # seconds — CPU info rarely changes
+        self._model_layers_cache: Dict[str, Tuple[float, int]] = {}
+        self._model_layers_cache_ttl: float = 300.0  # 5 minutes — model files rarely change
+        self._model_mtp_cache: Dict[str, Tuple[float, bool]] = {}
 
     def _read_cpu_power_w(self) -> Optional[float]:
         """Estimate CPU package power (RAPL delta or hwmon instantaneous)."""
@@ -189,6 +212,12 @@ class GPUDetector:
 
     def detect_gpus(self) -> List[Dict[str, Any]]:
         """Detect GPUs using llama-server --help first, fallback to nvidia-smi."""
+        # Cache results — GPU hardware topology does not change at runtime
+        now = time.monotonic()
+        if self._gpus_cache and (now - self._gpus_cache_time) < self._gpus_cache_ttl:
+            return self._gpus_cache
+
+        result: List[Dict[str, Any]] = []
         try:
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -208,7 +237,7 @@ class GPUDetector:
                     "vram": int(vram),
                 })
             if gpus:
-                return gpus
+                result = gpus
         except Exception:
             pass
 
@@ -219,21 +248,22 @@ class GPUDetector:
                  "--format=csv,noheader,nounits"],
                 timeout=10,
             ).decode()
-            gpus = []
             for line in output.strip().split("\n"):
                 if not line.strip():
                     continue
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 3:
-                    gpus.append({
+                    result.append({
                         "index": int(parts[0]),
                         "name": parts[1],
                         "vram": int(parts[2]),
                     })
-            return gpus
         except Exception as e:
             logger.error(f"GPU detection error: {e}")
-            return []
+
+        self._gpus_cache = result
+        self._gpus_cache_time = now
+        return result
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get real-time hardware metrics including CPU name and RAM details."""
@@ -285,7 +315,7 @@ class GPUDetector:
             )
             cpu_power = _format_metric_watts(self._read_cpu_power_w())
             result = {
-                "cpu": psutil.cpu_percent(interval=0.1),
+                "cpu": psutil.cpu_percent(interval=0),
                 "cpu_name": cpu_name,
                 "cpu_temp": cpu_temp,
                 "cpu_power": cpu_power,
@@ -316,6 +346,11 @@ class GPUDetector:
 
     def detect_cpu_info(self) -> CPUInfo:
         """Detect CPU name and RAM stats (cross-platform)."""
+        # Cache — CPU/RAM topology rarely changes at runtime
+        now = time.monotonic()
+        if (now - self._cpu_info_cache_time) < self._cpu_info_cache_ttl:
+            return self._cpu_info_cache
+
         # --- CPU name ---
         cpu_name = ""
         try:
@@ -355,11 +390,13 @@ class GPUDetector:
         # --- RAM (psutil, cross-platform) ---
         ram_total_mb, ram_used_mb, _ = _system_ram_mb()
 
-        return CPUInfo(
+        self._cpu_info_cache = CPUInfo(
             name=cpu_name,
             ram_total_mb=ram_total_mb,
             ram_used_mb=ram_used_mb,
         )
+        self._cpu_info_cache_time = now
+        return self._cpu_info_cache
 
 
 
@@ -639,10 +676,17 @@ class GPUManager(GPUDetector):
 
         Uses ``llama-server --model-info`` to read ``n_layer`` from the model metadata.
         Falls back to :data:`DEFAULT_TOTAL_LAYERS` when detection fails.
-
-        :param model_path: path to the GGUF model file.
-        :returns: integer number of layers.
+        Results are cached per-model path for 5 minutes.
         """
+        # Use cached value if available
+        norm = normalize_model_path_for_cache(model_path)
+        now = time.monotonic()
+        if norm in self._model_layers_cache:
+            cached_time, cached_val = self._model_layers_cache[norm]
+            if (now - cached_time) < self._model_layers_cache_ttl:
+                return cached_val
+
+        result = DEFAULT_TOTAL_LAYERS
         try:
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -654,13 +698,25 @@ class GPUManager(GPUDetector):
             ).decode(errors="replace")
             match = re.search(r"n_layer\s*=\s*(\d+)", output)
             if match:
-                return int(match.group(1))
+                result = int(match.group(1))
         except Exception as exc:
             logger.warning(f"Could not detect model layers for {model_path}: {exc}")
-        return DEFAULT_TOTAL_LAYERS
+
+        self._model_layers_cache[norm] = (now, result)
+        return result
 
     def detect_model_mtp(self, model_path: str) -> bool:
-        """Return True when GGUF metadata declares MTP heads (nextn_predict_layers > 0)."""
+        """Return True when GGUF metadata declares MTP heads (nextn_predict_layers > 0).
+        Results are cached per-model path for 5 minutes.
+        """
+        norm = _norm_path_for_cache(model_path)
+        now = time.monotonic()
+        if norm in self._model_mtp_cache:
+            cached_time, cached_val = self._model_mtp_cache[norm]
+            if (now - cached_time) < self._model_layers_cache_ttl:
+                return cached_val
+
+        result = False
         try:
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -672,7 +728,9 @@ class GPUManager(GPUDetector):
             ).decode(errors="replace")
             match = re.search(r"nextn_predict_layers\s*=\s*(\d+)", output)
             if match:
-                return int(match.group(1)) > 0
+                result = int(match.group(1)) > 0
         except Exception as exc:
             logger.warning(f"Could not detect MTP for {model_path}: {exc}")
-        return False
+
+        self._model_mtp_cache[norm] = (now, result)
+        return result

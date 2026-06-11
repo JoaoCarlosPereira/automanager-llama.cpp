@@ -168,6 +168,10 @@ export function getModelButtonsHtml(path, elementId, isRunning) {
     const m_js = path.replace(/\\/g, '/');
     const inst = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
     const port = inst ? inst.port : 8085;
+    if (isRunning && !inst) {
+        // Force recalculation: if marked running but no instance found, update models
+        setTimeout(() => window.updateModels(), 100);
+    }
 
     if (isRunning) {
         return `<div class="flex items-center gap-3">
@@ -332,8 +336,7 @@ export async function updateModels() {
             
             const inst = (state.activeInstances || []).find(i => {
                 if (!i.model_path) return false;
-                const i_path = i.model_path.replace(/\\\\/g, '/').replace(/\\/g, '/');
-                return i_path === m_js || i_path.endsWith('/' + m_js) || m_js.endsWith('/' + i_path);
+                return i.model_path.replace(/\\/g, '/') === m_js;
             });
             const isRunning = !!inst;
             const isActive = state.currentSelectedModel === m_js ? 'active-selection' : '';

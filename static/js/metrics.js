@@ -13,20 +13,27 @@ export async function updateStatus() {
         if (sessionExpiredHandled || !res.ok) return;
         const data = await res.json();
         const badge = document.getElementById('status-badge');
-        const card = document.getElementById('active-card');
 
         state.activeInstances = data.instances || [];
         updateTabs();
 
-        // Determinar qual instância mostrar no card ativo
-        let currentInst = state.activeInstances.find(i => i.port === state.currentActivePort);
-        if (!currentInst && state.activeInstances.length > 0) {
-            currentInst = state.activeInstances[0];
-            state.currentActivePort = currentInst.port;
+        // Determinar qual instância é a principal (porta 8085 ou a primeira)
+        let mainInst = state.activeInstances.find(i => i.port === 8085)
+            || state.activeInstances[0];
+
+        // Garantir que currentActivePort esteja sincronizado
+        if (mainInst && state.activeInstances.length > 0) {
+            const portExists = state.activeInstances.some(i => i.port === state.currentActivePort);
+            if (!portExists) {
+                state.currentActivePort = mainInst.port;
+            }
         }
 
-        if (currentInst) {
-            const config = currentInst.config;
+        const hasInstances = state.activeInstances.length > 0;
+
+        // --- Sincronizar config da instância principal no painel global ---
+        if (mainInst) {
+            const config = mainInst.config;
             if (config && config.path) {
                 window.modelConfigs[config.path] = window.modelConfigs[config.path] || {};
                 Object.assign(window.modelConfigs[config.path], config);
@@ -63,67 +70,37 @@ export async function updateStatus() {
                 }
             }
 
-            badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
-            badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE';
-            card.classList.remove('hidden');
-            document.getElementById('active-model-name').innerText = `${currentInst.model}`;
-            const titleEl = document.getElementById('active-panel-title');
-            if (titleEl) {
-                const count = state.activeInstances.length;
-                const idx = state.activeInstances.indexOf(currentInst) + 1;
-                titleEl.innerText = count > 1 ? `Motor de Computação ${idx}/${count} (Porta ${currentInst.port})` : 'Motor de Computação Primário';
-            }
-            
-            const controls = document.getElementById('active-instance-controls');
-            if (controls) {
-                controls.innerHTML = `
-                    <button onclick="openNativeChat(${currentInst.port}, '${currentInst.model}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
-                        <i class="fas fa-comments text-[8px]"></i> CHAT
-                    </button>
-                    <button onclick="stopModel(${currentInst.port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
-                        ENCERRAR
-                    </button>
-                `;
-            }
-            
-            if (!state.logStream || state.logStreamPort !== currentInst.port) {
-                startLogs(currentInst.port);
-            }
-            
-            updateUptime(currentInst.start_time);
-            state.currentRunningModelPath = currentInst.model_path;
-            
-            const chatLink = document.getElementById('chat-link');
-            if (chatLink) {
-                chatLink.onclick = () => window.openNativeChat(currentInst.port, currentInst.model);
-                chatLink.href = 'javascript:void(0)';
-                chatLink.classList.remove('pointer-events-none', 'opacity-40');
-                chatLink.setAttribute('aria-disabled', 'false');
+            state.currentRunningModelPath = mainInst.model_path;
 
-                const apiLink = document.getElementById('api-link');
-                if (apiLink) apiLink.innerText = `http://${window.fixedIp}:${currentInst.port}/v1`;
-            }
+            const apiLink = document.getElementById('api-link');
+            if (apiLink) apiLink.innerText = `http://${window.fixedIp}:${mainInst.port}/v1`;
         } else {
-            state.startTime = null;
-            badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase';
-            badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE';
-            card.classList.add('hidden');
-            const controlsOff = document.getElementById('active-instance-controls');
-            if (controlsOff) controlsOff.innerHTML = '';
             if (state.logStream) { 
                 state.logStream.abort(); 
                 state.logStream = null; 
                 state.logStreamPort = null;
             }
             state.currentRunningModelPath = null;
-            const chatLinkOff = document.getElementById('chat-link');
-            if (chatLinkOff) {
-                chatLinkOff.classList.add('pointer-events-none', 'opacity-40');
-                chatLinkOff.setAttribute('aria-disabled', 'true');
-            }
         }
 
-        // --- Lógica de Auto-Balance / Recovery (Geralmente na porta 8085 ou principal) ---
+        // --- Renderizar cards de todas as instâncias ---
+        renderActiveCards();
+
+        // --- Status badge ---
+        if (hasInstances) {
+            badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
+            badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-emerald-500 animate-pulse"></div> ONLINE';
+        } else {
+            badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase';
+            badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE';
+        }
+
+        // --- Log stream para a instância ativa ---
+        if (mainInst && (!state.logStream || state.logStreamPort !== mainInst.port)) {
+            startLogs(mainInst.port);
+        }
+
+        // --- Lógica de Auto-Balance / Recovery ---
         const autoBalancing = !!(data.recovery && data.recovery.active && data.recovery.auto_balance);
         syncAutoBalanceCancelButton(autoBalancing);
         
@@ -156,10 +133,6 @@ export async function updateStatus() {
             }
         }
 
-        if (data.recovery && data.recovery.failed && !state.autoBalancePending) {
-             // ... handle failure ...
-        }
-
         if (data.recovery && data.recovery.active) {
             badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-amber-500/50 text-amber-500 uppercase';
             badge.innerHTML = data.recovery.auto_balance 
@@ -169,8 +142,8 @@ export async function updateStatus() {
 
         // Atualizar lista de modelos para refletir quais estão rodando
         document.querySelectorAll('.model-item-container').forEach(el => {
-            const m_js = el.dataset.path.replace(/\\/g, '/');
-            const isRunning = state.activeInstances.some(i => i.model_path.replace(/\\/g, '/') === m_js);
+            const m_js = normalizePath(el.dataset.path);
+            const isRunning = state.activeInstances.some(i => normalizePath(i.model_path) === m_js);
             const actionBtnContainer = el.querySelector('.action-btn-container');
 
             if (isRunning) el.classList.add('running-now');
@@ -185,6 +158,92 @@ export async function updateStatus() {
             }
         });
     } catch (e) { console.error("updateStatus error:", e); }
+}
+
+function normalizePath(p) {
+    return (p || '').replace(/\\/g, '/');
+}
+
+function renderActiveCards() {
+    const container = document.getElementById('active-cards-container');
+    if (!container) return;
+
+    if (state.activeInstances.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const mainInst = state.activeInstances.find(i => i.port === 8085)
+        || state.activeInstances[0];
+    const count = state.activeInstances.length;
+    let html = '';
+
+    for (const inst of state.activeInstances) {
+        const port = inst.port;
+        const isActive = port === state.currentActivePort;
+        const isMain = port === 8085;
+        const modelName = inst.model || 'Modelo';
+        const modelPath = inst.model_path || '';
+        const config = inst.config || {};
+
+        const titleText = count > 1
+            ? `Motor de Computação ${state.activeInstances.indexOf(inst) + 1}/${count} (Porta ${port})`
+            : 'Motor de Computação Primário';
+
+        const cardBorder = isActive
+            ? 'border-blue-500/50 shadow-lg shadow-blue-500/10'
+            : 'border-blue-500/30 shadow-md shadow-blue-500/5';
+
+        const uptimeText = inst.start_time
+            ? (() => {
+                const diff = Math.floor(Date.now() / 1000 - inst.start_time);
+                const h = Math.floor(diff / 3600);
+                const m = Math.floor((diff % 3600) / 60);
+                const s = diff % 60;
+                return `${h}h ${m}m ${s}s`;
+            })()
+            : 'Calculando...';
+
+        const normalizedName = normalizePath(modelPath);
+
+        html += `
+        <div class="active-instance-card bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] border ${cardBorder} transition-all duration-500 ${isActive ? '' : 'opacity-80'}" data-port="${port}">
+            <div class="flex flex-col lg:flex-row items-center justify-between gap-6 md:gap-8">
+                <div class="flex items-center gap-4 md:gap-6 w-full lg:w-auto lg:flex-1">
+                    <div class="w-12 h-12 md:w-16 md:h-16 rounded-2xl md:rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0">
+                        <i class="fas fa-robot text-lg md:text-2xl"></i>
+                    </div>
+                    <div class="min-w-0 flex-1">
+                        <p class="text-blue-400 text-[9px] md:text-[10px] font-black uppercase tracking-[0.3em] mb-1 font-mono">${titleText}</p>
+                        <h2 class="text-base md:text-xl font-bold text-white truncate">${modelName}</h2>
+                        <div class="flex gap-4 mt-2">
+                            <div class="flex items-center gap-2 text-[9px] md:text-[10px] font-mono text-slate-400">
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                Ativo há: <span>${uptimeText}</span>
+                            </div>
+                            ${isMain ? '<span class="text-[8px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded border border-blue-500/20 font-black">PRINCIPAL</span>' : ''}
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-3 shrink-0 w-full lg:w-auto">
+                    <button onclick="openNativeChat(${port}, '${modelName.replace(/'/g, "\\'")}')" class="px-4 md:px-6 py-2.5 md:py-3 btn-gradient text-white rounded-2xl text-[9px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-2 md:gap-3 uppercase tracking-widest whitespace-nowrap">
+                        <i class="fas fa-comments text-[9px] md:text-sm"></i> <span class="hidden sm:inline">ABRIR CHAT</span><span class="sm:hidden">CHAT</span>
+                    </button>
+                    <button onclick="stopModel(${port})" class="px-4 md:px-6 py-2.5 md:py-3 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[9px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
+                        ENCERRAR
+                    </button>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+
+    // Atualizar api-link com a porta da instância principal
+    if (mainInst) {
+        const apiLink = document.getElementById('api-link');
+        if (apiLink) apiLink.innerText = `http://${window.fixedIp}:${mainInst.port}/v1`;
+    }
 }
 
 export function updateTabs() {

@@ -33,7 +33,7 @@ from config_manager import (
 )
 from gpu_manager import GPUManager
 from log_manager import LogManager, logger
-from process_manager import ProcessManager, OOMWatchdog
+from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
     BATCH_SIZE_PRESETS,
@@ -267,10 +267,25 @@ async def change_password(
 
 # --- llma-server Control ---
 
+# Lightweight cache for /status (psutil.process_iter is blocking)
+_status_cache: dict = {}
+_status_cache_time: float = 0.0
+_STATUS_CACHE_TTL: float = 1.0  # seconds
+
 
 @app.get("/status")
 async def get_status(_auth: str = Depends(get_current_auth)):
-    return process_manager.get_status()
+    global _status_cache, _status_cache_time
+    loop = asyncio.get_event_loop()
+    # Check sync cache first to avoid executor overhead
+    now = time.monotonic()
+    if _status_cache and (now - _status_cache_time) < _STATUS_CACHE_TTL:
+        return _status_cache
+
+    result = await loop.run_in_executor(None, process_manager.get_status)
+    _status_cache = result
+    _status_cache_time = now
+    return result
 
 
 @app.post("/start")
@@ -323,7 +338,7 @@ async def start_model(
             "auto_balance_profile": False,
         },
     )
-    return process_manager.start(
+    result = process_manager.start(
         model_path=req.path,
         gpu_weights=req.gpu_weights,
         context_size=req.context_size,
@@ -338,11 +353,15 @@ async def start_model(
         cpu_enabled=req.cpu_enabled,
         port=req.port,
     )
+    _invalidate_models_cache()
+    return result
 
 
 @app.post("/stop")
 async def stop_model(port: Optional[int] = None, _auth: str = Depends(get_current_auth)):
-    return process_manager.stop(port=port)
+    result = process_manager.stop(port=port)
+    _invalidate_status_cache()
+    return result
 
 
 @app.post("/auto-balance/cancel")
@@ -355,15 +374,56 @@ async def cancel_auto_balance(_auth: str = Depends(get_current_auth)):
 
 @app.get("/metrics")
 async def get_metrics(_auth: str = Depends(get_current_auth)):
-    return gpu_manager.get_metrics()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, gpu_manager.get_metrics)
 
 
 # --- Model Management ---
 
+# Cache for the expensive model scan (os.walk + disk stats)
+_models_cache: dict = {}
+_models_cache_time: float = 0.0
+_MODELS_CACHE_TTL: float = 5.0  # seconds — models don't change while running
+
+# Cache for the dashboard GET / endpoint (chained blocking calls)
+_dashboard_cache: dict = {}
+_dashboard_cache_time: float = 0.0
+_DASHBOARD_CACHE_TTL: float = 30.0  # seconds — dashboard data is semi-static
+
+
+def _invalidate_models_cache() -> None:
+    """Clear the models and dashboard cache (call after model operations that change the filesystem)."""
+    global _models_cache, _models_cache_time, _dashboard_cache, _dashboard_cache_time
+    _models_cache = {}
+    _models_cache_time = 0.0
+    _dashboard_cache = {}
+    _dashboard_cache_time = 0.0
+
+
+def _invalidate_status_cache() -> None:
+    """Clear the status cache (call after process changes)."""
+    global _status_cache, _status_cache_time
+    _status_cache = {}
+    _status_cache_time = 0.0
+
+
+async def _scan_models_async() -> dict:
+    """Run the blocking model scan off the event loop thread with caching."""
+    global _models_cache, _models_cache_time
+    now = time.monotonic()
+    if _models_cache and (now - _models_cache_time) < _MODELS_CACHE_TTL:
+        return _models_cache
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, model_scanner.scan)
+    _models_cache = result
+    _models_cache_time = now
+    return result
+
 
 @app.get("/models")
 async def list_models(_auth: str = Depends(get_current_auth)):
-    return model_scanner.scan()
+    return await _scan_models_async()
 
 
 @app.post("/models/dir")
@@ -384,7 +444,8 @@ async def set_models_dir(
     model_scanner.models_dir = paths.models_dir
     download_mgr.models_dir = paths.models_dir
     logger.info("models_dir atualizado para %s", paths.models_dir)
-    return model_scanner.scan()
+    _invalidate_models_cache()
+    return await _scan_models_async()
 
 
 @app.post("/rename")
@@ -392,6 +453,7 @@ async def rename_model(
     req: RenameRequest, _auth: str = Depends(get_current_auth)
 ):
     new_path = model_scanner.rename_model(req.path, req.new_name)
+    _invalidate_models_cache()
     return {"status": "renamed", "new_path": new_path}
 
 
@@ -400,6 +462,7 @@ async def delete_model(
     req: DeleteRequest, _auth: str = Depends(get_current_auth)
 ):
     model_scanner.delete_model(req.path)
+    _invalidate_models_cache()
     return {"status": "deleted"}
 
 
@@ -787,15 +850,20 @@ async def index(request: Request):
         session_token and auth_manager.verify_session(session_token)
     )
 
-    models_data = model_scanner.scan()
+    # Run blocking calls off the event loop thread
+    loop = asyncio.get_event_loop()
+    models_data, gpus, cpu_info, config, status = await loop.run_in_executor(
+        None,
+        lambda: (
+            model_scanner.scan(),
+            gpu_manager.detect_gpus(),
+            gpu_manager.detect_cpu_info(),
+            config_manager.load(),
+            process_manager.get_status(),
+        ),
+    )
     models = models_data["models"]
     projectors = models_data["projectors"]
-    gpus = gpu_manager.detect_gpus()
-    cpu_info = gpu_manager.detect_cpu_info()
-    config = config_manager.load()
-    default_model = config.get("default_model")
-    model_configs = config.get("model_configs", {})
-    status = process_manager.get_status()
 
     # Build GPU rows
     max_vram = max((g["vram"] for g in gpus), default=0)
@@ -1501,37 +1569,8 @@ def _build_html(
                 <div id="instance-tabs" class="flex flex-wrap gap-2 mb-6 overflow-x-auto pb-2 custom-scroll">
                     <!-- Tabs serão injetadas via JS -->
                 </div>
-                <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] border border-blue-500/30 hidden transition-all duration-700">
-
-                    <div class="flex flex-col lg:flex-row items-center justify-between gap-8 md:gap-10">
-                        <div class="flex items-center gap-5 md:gap-8 w-full">
-                            <div class="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0">
-                                <i class="fas fa-robot text-2xl md:text-3xl"></i>
-                            </div>
-                            <div class="min-w-0 flex-1">
-                                <p id="active-panel-title" class="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2 font-mono">Motor de Computação Primário</p>
-                                <h2 id="active-model-name" class="text-xl md:text-2xl font-bold text-white truncate max-w-[200px] sm:max-w-md">--</h2>
-                                <div class="flex gap-4 mt-3">
-                                    <div class="flex items-center gap-2 text-[10px] font-mono text-slate-400">
-                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                                        Ativo há: <span id="uptime-val">Calculando...</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <!-- Botões de Ação Rápida para a Instância Ativa -->
-                            <div id="active-instance-controls" class="flex flex-wrap items-center gap-3 shrink-0">
-                                <!-- Injetado via JS -->
-                            </div>
-                        </div>
-                        <div class="flex flex-col sm:flex-row gap-4 md:gap-6 w-full lg:w-auto">
-                            <a id="chat-link" href="#" target="_blank" class="px-6 md:px-10 py-4 btn-gradient text-white rounded-2xl text-[10px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-3 md:gap-4 uppercase tracking-widest whitespace-nowrap pointer-events-none opacity-40" aria-disabled="true">
-                                <i class="fas fa-comments text-sm"></i> ABRIR CHAT
-                            </a>
-                            <button onclick="stopModel()" class="px-6 md:px-10 py-4 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[10px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
-                                ENCERRAR
-                            </button>
-                        </div>
-                    </div>
+                <div id="active-cards-container" class="space-y-6">
+                    <!-- Cards de instâncias serão injetados via JS -->
                 </div>
                 <div class="glass rounded-[2rem] overflow-hidden shadow-2xl border border-slate-800">
                     <div class="px-6 md:px-10 py-4 bg-slate-900/60 border-b border-slate-800 flex justify-between items-center">
@@ -1742,7 +1781,11 @@ def _auto_start_default_model() -> None:
                 port += 1
             assigned_ports.add(port)
 
-            process_manager.start(
+            # Wait for port to be truly free before starting
+            if not process_manager._wait_port_released(port, timeout=5.0):
+                logger.warning(f"Auto-start: port {port} may not be fully released")
+
+            start_result = process_manager.start(
                 model_path=model_path,
                 gpu_weights=weights,
                 context_size=context_size,
@@ -1756,9 +1799,9 @@ def _auto_start_default_model() -> None:
                 total_layers=saved_cfg.get("total_layers", 0),
                 port=port
             )
-            logger.info(f"Auto-start: {model_path} started on port {port}")
+            logger.info(f"Auto-start: {model_path} started on port {port} (result: {start_result})")
             # Small delay between starts to avoid resource contention peaks
-            time.sleep(2)
+            time.sleep(3)
         except Exception as e:
             logger.error(f"Auto-start error for {model_path}: {e}")
 

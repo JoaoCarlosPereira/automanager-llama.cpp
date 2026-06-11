@@ -89,7 +89,6 @@ win.closeNativeChat = () => {
     }
 };
 
-document.getElementById('chat-link').href = `http://${window.fixedIp}:8085/`;
 document.getElementById('api-link').innerText = `http://${window.fixedIp}:[PORTA]/v1`;
 
 if (document.getElementById('dashboard').style.display !== 'none') {
