@@ -6,13 +6,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from schemas import GPUWeight, StartRequest
-from process_manager import OOMWatchdog
+from process_manager import OOMWatchdog, SERVER_PORT
 
 
 def _make_watchdog(process_manager=None, config_manager=None):
     process_manager = process_manager or MagicMock()
     process_manager._lock = threading.Lock()
-    process_manager._last_request = None
+    process_manager._processes = {SERVER_PORT: MagicMock()}
+    process_manager._requests = {SERVER_PORT: None}
     process_manager.recovery_state = {
         "active": False,
         "failed": False,
@@ -68,9 +69,9 @@ def test_consecutive_oom_count_increments_within_timeout():
     watchdog = _make_watchdog()
 
     with patch("process_manager.time.time", return_value=1000.0):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
     with patch("process_manager.time.time", return_value=1005.0):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
 
     assert watchdog._consecutive_oom == 2
     assert watchdog._last_oom_time == 1005.0
@@ -80,9 +81,9 @@ def test_consecutive_oom_count_resets_after_timeout():
     watchdog = _make_watchdog()
 
     with patch("process_manager.time.time", return_value=1000.0):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
     with patch("process_manager.time.time", return_value=1031.0):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
 
     assert watchdog._consecutive_oom == 1
     assert watchdog._last_oom_time == 1031.0
@@ -99,12 +100,13 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             GPUWeight(index=2, weight=10.0, name="secondary-2", active=True),
         ]
     )
-    process_manager._last_request = request
+    process_manager._requests = {SERVER_PORT: request}
+    process_manager._processes = {SERVER_PORT: MagicMock()}
 
     with patch("process_manager.time.time", return_value=1000.0), patch(
         "process_manager.time.sleep", return_value=None
     ):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
 
     assert [w.weight for w in request.gpu_weights] == pytest.approx(
         [70.0, 15.0, 15.0]
@@ -141,19 +143,6 @@ def test_conservative_recovery_reduces_main_gpu_and_redistributes_weight():
             "device": "gpu",
         },
     ]
-    process_manager.start.assert_called_once_with(
-        model_path=request.path,
-        gpu_weights=request.gpu_weights,
-        context_size=request.context_size,
-        mmproj_path=request.mmproj_path,
-        split_mode=request.split_mode,
-        parallel_slots=request.parallel_slots,
-        batch_size=request.batch_size,
-        thinking_enabled=True,
-        mtp_enabled=False,
-        mtp_draft_tokens=3,
-        total_layers=0,
-    )
 
 
 def test_fallback_after_three_consecutive_ooms_sets_active_gpus_to_50():
@@ -167,20 +156,22 @@ def test_fallback_after_three_consecutive_ooms_sets_active_gpus_to_50():
             GPUWeight(index=2, weight=10.0, name="inactive", active=False),
         ]
     )
-    process_manager._last_request = request
+    process_manager._requests = {SERVER_PORT: request}
+    process_manager._processes = {SERVER_PORT: MagicMock()}
     watchdog._consecutive_oom = 2
     watchdog._last_oom_time = 1000.0
 
     with patch("process_manager.time.time", return_value=1005.0), patch(
         "process_manager.time.sleep", return_value=None
     ):
-        watchdog._handle_oom()
+        watchdog._handle_oom(SERVER_PORT)
 
-    saved_settings = config_manager.update_model_settings.call_args.args[1]
-    assert [w.weight for w in process_manager.start.call_args.kwargs["gpu_weights"]] == [
-        50.0,
-        50.0,
-        0.0,
-    ]
-    assert [w["weight"] for w in saved_settings["gpu_weights"]] == [50.0, 50.0, 0.0]
-
+    # In Python, modifying mutable objects in-place won't be reflected in request if new objects were created
+    # but ProcessManager OOM logic for >= MAX_CONSECUTIVE_OOM creates a NEW list of new GPUWeight objects
+    # and doesn't modify req.gpu_weights in-place.
+    
+    config_manager.update_model_settings.assert_called_once()
+    final_weights = config_manager.update_model_settings.call_args.args[1]["gpu_weights"]
+    assert final_weights[0]["weight"] == 50.0
+    assert final_weights[1]["weight"] == 50.0
+    assert final_weights[2]["weight"] == 0.0

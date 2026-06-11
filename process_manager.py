@@ -8,7 +8,7 @@ import signal
 import logging
 import subprocess
 import threading
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import psutil
 from fastapi import HTTPException
@@ -68,6 +68,8 @@ def mtp_cli_args(
         True,
         "",
     )
+
+
 class ProcessManager:
     """Manages llama-server process lifecycle."""
 
@@ -82,8 +84,8 @@ class ProcessManager:
         self.token_mgr = token_manager
         self.gpu_manager = gpu_manager
         self.log_manager = log_manager
-        self._current_process: Optional[subprocess.Popen] = None
-        self._last_request: Optional[StartRequest] = None
+        self._processes: Dict[int, subprocess.Popen] = {}
+        self._requests: Dict[int, StartRequest] = {}
         self._lock = threading.Lock()
         self._recovery_state = {
             "active": False,
@@ -93,6 +95,7 @@ class ProcessManager:
         }
         self._auto_balance_active = False
         self._auto_balance_cancel = False
+        self._auto_balance_port = SERVER_PORT
 
     @property
     def auto_balance_active(self) -> bool:
@@ -116,9 +119,9 @@ class ProcessManager:
 
     def get_status(self) -> dict:
         recovery = self.recovery_state
-        status = {"running": False, "recovery": recovery}
-        if recovery.get("auto_balance") and recovery.get("gpu_weights"):
-            status["config"] = {"gpu_weights": recovery["gpu_weights"]}
+        instances = []
+        found_pids = set()
+
         for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
             try:
                 name = proc.info["name"] or ""
@@ -128,55 +131,83 @@ class ProcessManager:
                 ):
                     model_name = None
                     model_path = None
+                    port = None
                     for i in range(len(cmdline) - 1):
                         if cmdline[i] in ["-m", "--model"]:
                             model_name = os.path.basename(cmdline[i + 1])
                             model_path = cmdline[i + 1]
-                            break
+                        if cmdline[i] in ["-p", "--port"]:
+                            try:
+                                port = int(cmdline[i + 1])
+                            except (ValueError, TypeError):
+                                pass
+
                     if model_name:
-                        status.update(
-                            {
-                                "running": True,
-                                "pid": proc.info["pid"],
-                                "model": model_name,
-                                "model_path": model_path,
-                                "start_time": proc.info["create_time"],
-                            }
-                        )
+                        if port is None:
+                            port = SERVER_PORT
+
+                        found_pids.add(proc.info["pid"])
+                        inst = {
+                            "running": True,
+                            "pid": proc.info["pid"],
+                            "model": model_name,
+                            "model_path": model_path,
+                            "start_time": proc.info["create_time"],
+                            "port": port,
+                        }
                         with self._lock:
-                            if self._last_request:
-                                status["config"] = {
-                                    "path": self._last_request.path,
-                                    "context_size": self._last_request.context_size,
-                                    "parallel_slots": self._last_request.parallel_slots,
-                                    "batch_size": self._last_request.batch_size,
-                                    "split_mode": self._last_request.split_mode,
+                            req = self._requests.get(port)
+                            if req:
+                                inst["config"] = {
+                                    "path": req.path,
+                                    "context_size": req.context_size,
+                                    "parallel_slots": req.parallel_slots,
+                                    "batch_size": req.batch_size,
+                                    "split_mode": req.split_mode,
                                     "gpu_weights": [
                                         w.model_dump()
                                         if hasattr(w, "model_dump")
                                         else w
-                                        for w in self._last_request.gpu_weights
+                                        for w in req.gpu_weights
                                     ],
-                                    "mmproj_path": self._last_request.mmproj_path,
-                                    "thinking_enabled": (
-                                        self._last_request.thinking_enabled
-                                    ),
-                                    "mtp_enabled": self._last_request.mtp_enabled,
-                                    "mtp_draft_tokens": (
-                                        self._last_request.mtp_draft_tokens
-                                    ),
+                                    "mmproj_path": req.mmproj_path,
+                                    "thinking_enabled": req.thinking_enabled,
+                                    "mtp_enabled": req.mtp_enabled,
+                                    "mtp_draft_tokens": req.mtp_draft_tokens,
                                 }
-                        return status
+                        instances.append(inst)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        return status
+
+        with self._lock:
+            dead_ports = [
+                p
+                for p, proc in self._processes.items()
+                if proc.pid not in found_pids
+            ]
+            for p in dead_ports:
+                self._processes.pop(p, None)
+
+        main_inst = next(
+            (i for i in instances if i["port"] == SERVER_PORT), None
+        ) or (instances[0] if instances else None)
+
+        res = {
+            "running": len(instances) > 0,
+            "instances": instances,
+            "recovery": recovery,
+        }
+        if main_inst:
+            res.update(main_inst)
+
+        return res
 
     @staticmethod
     def _is_port_free(port: int) -> bool:
         """True when nothing is listening on *port* (connect is refused)."""
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return False  # something answered -> still bound
+                return False
         except (ConnectionRefusedError, socket.timeout, OSError):
             return True
 
@@ -185,59 +216,45 @@ class ProcessManager:
         port: int = SERVER_PORT,
         timeout: float = PORT_RELEASE_TIMEOUT_SEC,
     ) -> bool:
-        """Block until *port* is free, or *timeout* elapses.
-
-        Prevents the next start()/probe from failing with
-        "couldn't bind HTTP server socket" while the just-killed server is still
-        releasing the socket.
-        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._is_port_free(port):
                 return True
             time.sleep(PORT_RELEASE_POLL_SEC)
-        free = self._is_port_free(port)
-        if not free:
-            logger.warning(
-                "Port %d still bound after %.1fs wait — start() may fail to bind",
-                port,
-                timeout,
-            )
-        return free
+        return self._is_port_free(port)
 
-    def stop(self) -> dict:
-        if os.name == "posix":
-            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+    def stop(self, port: Optional[int] = None) -> dict:
+        if port is None:
+            port = SERVER_PORT
+
         with self._lock:
-            proc = self._current_process
-            if proc:
-                try:
-                    if os.name == "posix":
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    else:
-                        proc.kill()
-                except (ProcessLookupError, OSError):
-                    pass
-                self._current_process = None
-            self._last_request = None
-        # Reap the killed process and wait for the OS to release the port so a
-        # follow-up start() can bind it (fixes transient probe bind crashes).
-        if proc is not None:
+            proc = self._processes.pop(port, None)
+
+        if proc:
             try:
+                if os.name == "posix":
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
                 proc.wait(timeout=PORT_RELEASE_TIMEOUT_SEC)
             except (subprocess.TimeoutExpired, ValueError, OSError):
                 pass
-        self._wait_port_released()
-        if not self.auto_balance_active:
+
+        self._wait_port_released(port)
+
+        if port == SERVER_PORT and not self.auto_balance_active:
             self.recovery_state = {
                 "active": False,
                 "failed": False,
                 "message": "",
                 "auto_balance": False,
             }
-        self.log_manager.clear_server_log()
-        logger.info("llama-server stopped")
-        return {"message": "Stopped"}
+
+        logger.info(f"llama-server on port {port} stopped")
+        return {"message": f"Instancia na porta {port} encerrada"}
 
     def cancel_auto_balance(self) -> dict:
         """Request cancellation of the running auto-balance probe loop."""
@@ -248,7 +265,7 @@ class ProcessManager:
                     detail="Nenhum auto-balance em andamento.",
                 )
             self._auto_balance_cancel = True
-        self.stop()
+        self.stop(self._auto_balance_port)
         logger.info("Auto-balance cancel requested by user")
         return {"message": "Cancelando auto-balance..."}
 
@@ -261,6 +278,11 @@ class ProcessManager:
                     detail="Auto-balance ja esta em andamento.",
                 )
             self._auto_balance_cancel = False
+            port = request.port or SERVER_PORT
+            if request.port is None:
+                while not self._is_port_free(port):
+                    port += 1
+            self._auto_balance_port = port
 
         thread = threading.Thread(
             target=self._run_auto_balance,
@@ -288,6 +310,8 @@ class ProcessManager:
             prober = AutoBalanceProber(
                 self, self.config, self.gpu_manager, self.log_manager
             )
+            # Monkeypatch request to use our allocated port
+            request.port = self._auto_balance_port
             success, gpu_weights, message, failure = prober.discover(request)
             if success:
                 saved_weights = [w.model_dump() for w in gpu_weights]
@@ -309,9 +333,6 @@ class ProcessManager:
                         "hardware_incapable_message": None,
                     },
                 )
-                # Leave the model loaded with the final auto-balanced weights
-                # (reload so the running server matches the chosen split, not
-                # whatever the last probe happened to leave running).
                 final_cpu_enabled = any(
                     w.device == "cpu" and w.active and w.weight > 0
                     for w in gpu_weights
@@ -331,6 +352,7 @@ class ProcessManager:
                         mtp_draft_tokens=request.mtp_draft_tokens,
                         total_layers=request.total_layers,
                         cpu_enabled=final_cpu_enabled,
+                        port=self._auto_balance_port,
                     )
                     model_loaded = True
                     logger.info(
@@ -341,11 +363,6 @@ class ProcessManager:
                         "Auto-balance: falha ao recarregar o modelo final: %s",
                         exc,
                     )
-                # active=False signals the frontend that auto-balance finished
-                # (it polls for !recovery.active to apply the final weights). The
-                # loaded model is reflected by the live process (data.running),
-                # not by recovery.active — keeping it True would stick the UI on
-                # "REALOCANDO...".
                 self.recovery_state = {
                     "active": False,
                     "failed": False,
@@ -391,7 +408,7 @@ class ProcessManager:
                     "failure_details": failure,
                 }
         except AutoBalanceCancelled:
-            self.stop()
+            self.stop(self._auto_balance_port)
             self.recovery_state = {
                 "active": False,
                 "failed": False,
@@ -402,7 +419,7 @@ class ProcessManager:
             logger.info("Auto-balance cancelled")
         except Exception as exc:
             logger.exception(f"Auto-balance error: {exc}")
-            self.stop()
+            self.stop(self._auto_balance_port)
             self.recovery_state = {
                 "active": False,
                 "failed": True,
@@ -430,12 +447,17 @@ class ProcessManager:
         mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS,
         total_layers: int = 0,
         cpu_enabled: Optional[bool] = None,
+        port: Optional[int] = None,
     ) -> dict:
-        self.stop()
+        if port is None:
+            port = SERVER_PORT
+            while not self._is_port_free(port):
+                port += 1
+
+        self.stop(port)
 
         gpu_weights = self.gpu_manager.normalize_gpu_weights(gpu_weights)
 
-        # Validate GPU weights only (cpu_enabled is controlled by checkbox valve)
         ok, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
         if not ok:
             raise HTTPException(status_code=400, detail=err)
@@ -479,7 +501,7 @@ class ProcessManager:
             "--host",
             "0.0.0.0",
             "--port",
-            str(SERVER_PORT),
+            str(port),
             "--tools",
             "all",
             "--parallel",
@@ -518,9 +540,9 @@ class ProcessManager:
             "LD_LIBRARY_PATH", ""
         )
 
-        self.log_manager.clear_server_log()
+        self.log_manager.clear_server_log(port)
         logger.info(
-            f"START: {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
+            f"START (port {port}): {' '.join(cmd)} (CUDA_VISIBLE_DEVICES={visible}, "
             f"ctx_per_slot={context_size}, server_ctx={server_ctx_size}, "
             f"batch_size={batch_size}, thinking_enabled={thinking_enabled}, "
             f"mtp_enabled={mtp_enabled}, mtp_draft_tokens={mtp_draft_tokens}, "
@@ -530,7 +552,7 @@ class ProcessManager:
         )
 
         try:
-            log_file = self.log_manager.open_server_log_append()
+            log_file = self.log_manager.open_server_log_append(port)
             popen_kwargs = {
                 "stdout": log_file,
                 "stderr": subprocess.STDOUT,
@@ -539,8 +561,9 @@ class ProcessManager:
             if os.name == "posix":
                 popen_kwargs["preexec_fn"] = os.setsid
             with self._lock:
-                self._current_process = subprocess.Popen(cmd, **popen_kwargs)
-                self._last_request = StartRequest(
+                proc = subprocess.Popen(cmd, **popen_kwargs)
+                self._processes[port] = proc
+                self._requests[port] = StartRequest(
                     path=model_path,
                     mmproj_path=mmproj_path,
                     gpu_weights=gpu_weights,
@@ -551,10 +574,12 @@ class ProcessManager:
                     thinking_enabled=thinking_enabled,
                     mtp_enabled=mtp_enabled,
                     mtp_draft_tokens=mtp_draft_tokens,
+                    port=port,
                 )
                 return {
                     "message": "Started",
-                    "pid": self._current_process.pid,
+                    "pid": proc.pid,
+                    "port": port,
                     "mtp_applied": mtp_applied,
                     "mtp_reason": mtp_reason,
                 }
@@ -573,7 +598,7 @@ class ProcessManager:
 
 
 class OOMWatchdog(threading.Thread):
-    """Monitors server log for OOM and auto-recovers."""
+    """Monitors server logs for OOM and auto-recovers."""
 
     OOM_PATTERNS = re.compile(
         r"(?i)(out of memory|cuda error|malloc failed|c10\.Error)"
@@ -601,17 +626,22 @@ class OOMWatchdog(threading.Thread):
 
     def run(self) -> None:
         logger.info("OOMWatchdog started")
-        path = self.log_manager.get_server_log_path()
         while not self._stopping:
             try:
-                if os.path.exists(path):
-                    self._check_log(path)
+                ports = []
+                with self.process_manager._lock:
+                    ports = list(self.process_manager._processes.keys())
+
+                for port in ports:
+                    path = self.log_manager.get_server_log_path(port)
+                    if os.path.exists(path):
+                        self._check_log(path, port)
                 time.sleep(5)
             except Exception as e:
                 logger.error(f"Watchdog error: {e}")
                 time.sleep(5)
 
-    def _check_log(self, path: str) -> None:
+    def _check_log(self, path: str, port: int) -> None:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 f.seek(0, os.SEEK_END)
@@ -620,14 +650,14 @@ class OOMWatchdog(threading.Thread):
                     if not line:
                         break
                     if self.OOM_PATTERNS.search(line):
-                        self._handle_oom()
+                        self._handle_oom(port)
                         break
         except OSError:
             pass
 
-    def _handle_oom(self) -> None:
+    def _handle_oom(self, port: int) -> None:
         if self.process_manager.auto_balance_active:
-            logger.info("OOM ignored during auto-balance probing")
+            logger.info(f"OOM on port {port} ignored during auto-balance probing")
             return
 
         now = time.time()
@@ -638,10 +668,10 @@ class OOMWatchdog(threading.Thread):
             self._last_oom_time = now
             consecutive = self._consecutive_oom
 
-        logger.warning(f"OOM detected! Consecutive: {consecutive}")
+        logger.warning(f"OOM detected on port {port}! Consecutive: {consecutive}")
         pm = self.process_manager
         with pm._lock:
-            req = pm._last_request
+            req = pm._requests.get(port)
             if not req:
                 return
 
@@ -649,7 +679,7 @@ class OOMWatchdog(threading.Thread):
             pm.recovery_state = {
                 "active": True,
                 "failed": False,
-                "message": "OOM repetido. Divisao 50/50.",
+                "message": f"OOM repetido na porta {port}. Divisao 50/50.",
                 "auto_balance": False,
             }
             new_weights = [
@@ -665,7 +695,7 @@ class OOMWatchdog(threading.Thread):
             pm.recovery_state = {
                 "active": True,
                 "failed": False,
-                "message": "OOM detectado. Reduzindo carga...",
+                "message": f"OOM na porta {port}. Reduzindo carga...",
                 "auto_balance": False,
             }
             weights = list(req.gpu_weights)
@@ -674,7 +704,7 @@ class OOMWatchdog(threading.Thread):
                 pm.recovery_state = {
                     "active": False,
                     "failed": True,
-                    "message": "Single GPU ou sem pesos.",
+                    "message": f"Single GPU ou sem pesos (porta {port}).",
                     "auto_balance": False,
                 }
                 return
@@ -697,6 +727,8 @@ class OOMWatchdog(threading.Thread):
                 "mtp_enabled": req.mtp_enabled,
                 "mtp_draft_tokens": req.mtp_draft_tokens,
                 "gpu_weights": [w.model_dump() for w in new_weights],
+                "auto_balance": False,
+                "auto_balance_profile": False,
             },
         )
 
@@ -713,17 +745,20 @@ class OOMWatchdog(threading.Thread):
                 mtp_enabled=req.mtp_enabled,
                 mtp_draft_tokens=req.mtp_draft_tokens,
                 total_layers=getattr(req, "total_layers", 0),
+                port=port,
             )
+            logger.info(f"OOM: Instancia na porta {port} reiniciada com novo split")
         except Exception as e:
-            logger.error(f"Recovery start failed: {e}")
+            logger.error(f"OOM: Falha ao reiniciar instancia na porta {port}: {e}")
 
         time.sleep(3)
-        pm.recovery_state = {
-            "active": False,
-            "failed": False,
-            "message": "",
-            "auto_balance": False,
-        }
+        if port == SERVER_PORT:
+            pm.recovery_state = {
+                "active": False,
+                "failed": False,
+                "message": f"Recuperado (OOM porta {port})",
+                "auto_balance": False,
+            }
 
     def stop(self) -> None:
         self._stopping = True

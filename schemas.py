@@ -34,6 +34,7 @@ class StartRequest(BaseModel):
     mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS
     total_layers: int = 0  # 0 = auto-detect from model file
     cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
+    port: Optional[int] = None  # Porta específica para o modelo
 
 
 class DeleteRequest(BaseModel):

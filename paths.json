@@ -1,0 +1,5 @@
+{
+  "models_dir": "/media/docker/models",
+  "config_file": "data/automanager_config.json",
+  "logs_dir": "logs"
+}

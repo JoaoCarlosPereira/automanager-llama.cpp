@@ -173,7 +173,9 @@ class TestGPUDetectorDetectCpuInfo:
 
         with patch("gpu_manager.psutil.virtual_memory", return_value=virtual_memory), patch(
             "gpu_manager.platform.processor", return_value=""
-        ), patch("gpu_manager.platform.machine", return_value=""), patch.dict(
+        ), patch("gpu_manager.platform.machine", return_value=""), patch(
+            "builtins.open", side_effect=FileNotFoundError
+        ), patch.dict(
             "sys.modules", {"winreg": mock_winreg}
         ):
             result = GPUDetector().detect_cpu_info()

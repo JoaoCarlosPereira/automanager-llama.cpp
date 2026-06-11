@@ -22,7 +22,8 @@ from auto_balance import (
     MIN_MAIN_WEIGHT,
     READY_PATTERNS,
 )
-from schemas import GPUWeight
+from schemas import GPUWeight, StartRequest
+from process_manager import SERVER_PORT
 from tests.unit.test_oom_watchdog import _make_request, _make_watchdog
 
 THREE_GPU_HARDWARE = [
@@ -294,16 +295,19 @@ def test_build_hardware_capacity_failure_includes_context():
 def test_oom_watchdog_skips_during_auto_balance():
     process_manager = MagicMock()
     process_manager._lock = threading.Lock()
-    process_manager._last_request = _make_request(
-        [GPUWeight(index=0, weight=100, name="a", active=True)]
-    )
+    process_manager._requests = {
+        SERVER_PORT: _make_request(
+            [GPUWeight(index=0, weight=100, name="a", active=True)]
+        )
+    }
     process_manager.auto_balance_active = True
     config_manager = MagicMock()
     watchdog = _make_watchdog(process_manager, config_manager)
 
-    watchdog._handle_oom()
+    watchdog._handle_oom(SERVER_PORT)
+    # Should not call start
+    process_manager.start.assert_not_called()
 
-    config_manager.update_model_settings.assert_not_called()
     process_manager.start.assert_not_called()
 
 

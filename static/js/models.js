@@ -165,18 +165,18 @@ export function initDashboard() {
 }
 
 export function getModelButtonsHtml(path, elementId, isRunning) {
+    const m_js = path.replace(/\\/g, '/');
+    const inst = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+    const port = inst ? inst.port : 8085;
+
     if (isRunning) {
         return `<div class="flex items-center gap-3">
-            <a href="http://${window.fixedIp}:8085/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+            <a href="http://${window.fixedIp}:${port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
                 <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
             </a>
-            <button onclick="stopModel()" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
+            <button onclick="stopModel(${port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
                 ENCERRAR
             </button>
-            <div class="flex items-center gap-2 text-[9px] font-mono text-emerald-400 bg-emerald-500/5 px-3 py-2 rounded-xl border border-emerald-500/10">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span id="uptime-val">--</span>
-            </div>
         </div>`;
     }
     return `<button onclick="startModel('${path}', '${elementId}')" class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all">
@@ -504,9 +504,10 @@ export async function startModel(path, elementId) {
     setTimeout(window.updateStatus, 2000);
 }
 
-export async function stopModel() {
+export async function stopModel(port = null) {
     if (confirm("ENCERRAR PROCESSO?")) {
-        const res = await apiFetch('/stop', {method: 'POST'});
+        const url = port ? `/stop?port=${port}` : '/stop';
+        const res = await apiFetch(url, {method: 'POST'});
         if (!sessionExpiredHandled && res.ok) setTimeout(window.updateStatus, 1000);
     }
 }

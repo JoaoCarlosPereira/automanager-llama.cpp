@@ -4,6 +4,8 @@ export const state = {
     startTime: null,
     currentSelectedModel: null,
     currentRunningModelPath: null,
+    activeInstances: [],
+    currentActivePort: 8085,
     manualGpuOverride: false,
     autoBalancePending: false,
     metricsTimer: null,

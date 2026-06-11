@@ -1,0 +1,526 @@
+{
+  "admin_password_hash": "$2b$12$mN/hpDvInSkbzT8mb3lALutMBnyQXYrlSVw/42X1652Wsz8D/Rb3e",
+  "api_token": "sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b",
+  "model_configs": {
+    "/media/docker/models/Llama-3_3-Nemotron-Super-49B-v1_5-Q4_K_M/Llama-3_3-Nemotron-Super-49B-v1_5-Q4_K_M.gguf": {
+      "context_size": 205000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 10.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 10.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 60.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 20.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": true,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 4,
+      "last_started": "2026-06-09T21:20:03.966663",
+      "hardware_incapable_message": "N\u00e3o foi poss\u00edvel carregar \"Llama-3_3-Nemotron-Super-49B-v1_5-Q4_K_M.gguf\" em nenhuma divis\u00e3o testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~56.0 GB de VRAM em 3 GPU(s)) com contexto 205000 e 1 slot(s)."
+    },
+    "/media/docker/models/Llama-3.3-70B-Instruct-Q4_K_M/Llama-3.3-70B-Instruct-Q4_K_M.gguf": {
+      "context_size": 65536,
+      "parallel_slots": 1,
+      "batch_size": 2048,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 25.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 25.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 25.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 25.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 3,
+      "last_started": "2026-06-09T21:24:05.209888"
+    },
+    "/media/docker/models/Qwen3.6-27B-Q4_K_M/Qwen3.6-27B-Q4_K_M.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": "/media/docker/models/Qwen3.6-27B-Q4_K_M/mmproj-F16.gguf",
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 30.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 70.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 6,
+      "last_started": "2026-06-10T01:45:06.544767",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/Qwen3.6-27B-Q8_0/Qwen3.6-27B-Q8_0.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 8192,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 37.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 4.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 59.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": true,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 6,
+      "last_started": "2026-06-10T00:18:35.997210",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 28.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 27.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 45.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 4,
+      "last_started": "2026-06-10T01:52:16.474555",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/Qwen3.6-27B-MTP-UD-Q4_K_XL/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 30.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 70.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 2,
+      "last_started": "2026-06-10T01:40:45.497537",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/Qwen3.6/Qwen3.6-35B-Q4.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": "/media/docker/models/Qwen3.6/mmproj-F16.gguf",
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 14.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 14.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 72.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 6,
+      "last_started": "2026-06-10T01:56:23.424847",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": "/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/mmproj-F16.gguf",
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 15.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 85.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "thinking_enabled": false,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 2,
+      "last_started": "2026-06-11T01:53:29.360972",
+      "hardware_incapable_message": null
+    },
+    "/media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 100.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 0.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": false,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 2,
+      "last_started": "2026-06-10T13:11:42.405753"
+    },
+    "/media/docker/models/Qwen3.5-9B-UD-Q4_K_XL/Qwen3.5-9B-UD-Q4_K_XL.gguf": {
+      "context_size": 201000,
+      "parallel_slots": 1,
+      "batch_size": 16384,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 100.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 0.0,
+          "name": "NVIDIA GeForce RTX 3090",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "Xeon CPU E5-2676 v3",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "mtp_enabled": true,
+      "mtp_draft_tokens": 2,
+      "last_started": "2026-06-10T13:21:00.352288"
+    }
+  },
+  "default_model": "/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf",
+  "force_password_change": false
+}

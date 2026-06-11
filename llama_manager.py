@@ -12,10 +12,11 @@ import socket
 import subprocess
 import threading
 import time
+import httpx
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -314,30 +315,6 @@ async def start_model(
     if req.auto_balance:
         return process_manager.start_auto_balance(req)
 
-    if req.manual_gpu_override:
-        config_manager.update_model_settings(
-            req.path,
-            {
-                **base_settings,
-                "gpu_weights": [w.model_dump() for w in req.gpu_weights],
-                "auto_balance_profile": False,
-            },
-        )
-        return process_manager.start(
-            model_path=req.path,
-            gpu_weights=req.gpu_weights,
-            context_size=req.context_size,
-            mmproj_path=req.mmproj_path,
-            split_mode=req.split_mode,
-            parallel_slots=req.parallel_slots,
-            batch_size=req.batch_size,
-            thinking_enabled=req.thinking_enabled,
-            mtp_enabled=req.mtp_enabled,
-            mtp_draft_tokens=req.mtp_draft_tokens,
-            total_layers=total_layers,
-            cpu_enabled=req.cpu_enabled,
-        )
-
     config_manager.update_model_settings(
         req.path,
         {
@@ -359,12 +336,13 @@ async def start_model(
         mtp_draft_tokens=req.mtp_draft_tokens,
         total_layers=total_layers,
         cpu_enabled=req.cpu_enabled,
+        port=req.port,
     )
 
 
 @app.post("/stop")
-async def stop_model(_auth: str = Depends(get_current_auth)):
-    return process_manager.stop()
+async def stop_model(port: Optional[int] = None, _auth: str = Depends(get_current_auth)):
+    return process_manager.stop(port=port)
 
 
 @app.post("/auto-balance/cancel")
@@ -490,9 +468,91 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 @app.get("/logs")
 async def stream_logs(
     request: Request,
+    port: Optional[int] = None,
     _auth: str = Depends(get_current_auth),
 ):
-    return log_manager.stream_logs(stop_event=shutdown_event, request=request)
+    return log_manager.stream_logs(stop_event=shutdown_event, request=request, port=port)
+
+
+# --- OpenAI Proxy (Multi-Model Support) ---
+
+# Client HTTP compartilhado para o proxy
+client = httpx.AsyncClient()
+
+
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def openai_proxy(request: Request, path: str):
+    """
+    Proxy OpenAI-compatible requests to the correct llama-server instance
+    based on the 'model' field in the request body.
+    """
+    body = await request.body()
+    requested_model = None
+
+    # Tentar extrair o modelo do corpo (JSON)
+    if body:
+        try:
+            data = json.loads(body)
+            requested_model = data.get("model")
+        except json.JSONDecodeError:
+            pass
+
+    status = process_manager.get_status()
+    instances = status.get("instances", [])
+
+    if not instances:
+        raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
+
+    target_instance = None
+    if requested_model:
+        # Procurar por nome exato ou basename
+        for inst in instances:
+            if inst["model"] == requested_model or inst["model_path"] == requested_model:
+                target_instance = inst
+                break
+        
+        if not target_instance:
+             # Fallback: se o usuário pediu um modelo mas ele não está rodando, 
+             # opcionalmente poderíamos tentar carregar, mas por agora retornamos erro.
+             raise HTTPException(status_code=404, detail=f"Modelo '{requested_model}' nao esta carregado.")
+    else:
+        # Se nenhum modelo foi especificado, usar o da porta 8085 (default)
+        target_instance = next((i for i in instances if i["port"] == 8085), instances[0])
+
+    target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
+    
+    # Repassar headers, removendo o host original
+    headers = dict(request.headers)
+    headers.pop("host", None)
+
+    try:
+        # Encaminhar a requisição
+        if request.method == "POST":
+            # Streaming support
+            if requested_model and data.get("stream"):
+                async def stream_generator():
+                    async with client.stream(
+                        "POST", target_url, content=body, headers=headers, timeout=None
+                    ) as response:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
+                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+            
+            resp = await client.post(target_url, content=body, headers=headers, timeout=None)
+        elif request.method == "GET":
+            resp = await client.get(target_url, params=request.query_params, headers=headers)
+        else:
+            # Outros métodos simples
+            resp = await client.request(request.method, target_url, content=body, headers=headers)
+
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=dict(resp.headers)
+        )
+    except httpx.RequestError as exc:
+        logger.error(f"Proxy error to port {target_instance['port']}: {exc}")
+        raise HTTPException(status_code=502, detail="Erro ao conectar na instancia do modelo")
 
 
 # --- System Management ---
@@ -1353,7 +1413,11 @@ def _build_html(
                         </div>
                     </div>
                 </div>
+                <div id="instance-tabs" class="flex flex-wrap gap-2 mb-6 overflow-x-auto pb-2 custom-scroll">
+                    <!-- Tabs serão injetadas via JS -->
+                </div>
                 <div id="active-card" class="bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] border border-blue-500/30 hidden transition-all duration-700">
+
                     <div class="flex flex-col lg:flex-row items-center justify-between gap-8 md:gap-10">
                         <div class="flex items-center gap-5 md:gap-8 w-full">
                             <div class="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0">

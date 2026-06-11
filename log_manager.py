@@ -34,7 +34,7 @@ class LogManager:
     ):
         self._project_root = project_root or os.path.dirname(os.path.abspath(__file__))
         self._logs_dir = os.path.join(self._project_root, "logs")
-        self._server_log_path = server_log_path or os.path.join(
+        self._default_server_log_path = server_log_path or os.path.join(
             self._logs_dir, "server.log"
         )
         self._manager_log_path = manager_log_path or os.path.join(
@@ -42,7 +42,7 @@ class LogManager:
         )
         os.makedirs(self._logs_dir, exist_ok=True)
         self._setup_manager_logging()
-        self._setup_server_log_rotation()
+        self._setup_server_log_rotation(self._default_server_log_path)
 
     def _setup_manager_logging(self) -> None:
         root_logger = logging.getLogger("automanager")
@@ -69,21 +69,21 @@ class LogManager:
             except OSError:
                 pass
 
-    def _setup_server_log_rotation(self) -> None:
+    def _setup_server_log_rotation(self, path: str) -> None:
         """Ensure server.log has rotation to prevent disk exhaustion."""
         try:
-            if os.path.exists(self._server_log_path):
-                size = os.path.getsize(self._server_log_path)
+            if os.path.exists(path):
+                size = os.path.getsize(path)
                 if size > MAX_LOG_SIZE:
-                    self._rotate_server_log()
+                    self._rotate_server_log(path)
         except OSError:
             pass
 
-    def _rotate_server_log(self) -> None:
+    def _rotate_server_log(self, path: str) -> None:
         """Manually rotate server.log using the same pattern as manager.log."""
         for i in range(LOG_BACKUP_COUNT - 1, 0, -1):
-            src = f"{self._server_log_path}.{i}"
-            dst = f"{self._server_log_path}.{i + 1}"
+            src = f"{path}.{i}"
+            dst = f"{path}.{i + 1}"
             try:
                 if os.path.exists(src):
                     os.replace(src, dst)
@@ -91,33 +91,34 @@ class LogManager:
                 pass
         # Move current log to .1
         try:
-            if os.path.exists(self._server_log_path):
-                os.replace(self._server_log_path, f"{self._server_log_path}.1")
+            if os.path.exists(path):
+                os.replace(path, f"{path}.1")
         except OSError:
             pass
 
-    def get_server_log_path(self) -> str:
-        return self._server_log_path
+    def _get_path(self, port: Optional[int] = None) -> str:
+        if port is None or port == 8085:
+            return self._default_server_log_path
+        return os.path.join(self._logs_dir, f"server_{port}.log")
 
-    def clear_server_log(self) -> None:
+    def get_server_log_path(self, port: Optional[int] = None) -> str:
+        return self._get_path(port)
+
+    def clear_server_log(self, port: Optional[int] = None) -> None:
+        path = self._get_path(port)
         try:
-            with open(self._server_log_path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("")
         except OSError:
             pass
 
-    def open_server_log_append(self):
+    def open_server_log_append(self, port: Optional[int] = None):
         """Open server log for subprocess stdout (append) with rotation check."""
-        os.makedirs(os.path.dirname(self._server_log_path), exist_ok=True)
+        path = self._get_path(port)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         # Check if rotation is needed before opening
-        try:
-            if os.path.exists(self._server_log_path):
-                size = os.path.getsize(self._server_log_path)
-                if size > MAX_LOG_SIZE:
-                    self._rotate_server_log()
-        except OSError:
-            pass
-        return open(self._server_log_path, "a", encoding="utf-8")
+        self._setup_server_log_rotation(path)
+        return open(path, "a", encoding="utf-8")
 
     async def _stream_should_stop(
         self,
@@ -134,8 +135,9 @@ class LogManager:
         self,
         stop_event: Optional[threading.Event] = None,
         request: Optional[Request] = None,
+        port: Optional[int] = None,
     ) -> StreamingResponse:
-        path = self._server_log_path
+        path = self._get_path(port)
 
         async def generate():
             if not os.path.exists(path):
