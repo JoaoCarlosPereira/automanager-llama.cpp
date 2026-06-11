@@ -6,13 +6,23 @@ import logging
 import hashlib
 import secrets
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
-from passlib.context import CryptContext
+import bcrypt
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def _hash_password_bcrypt(password: str) -> str:
+    """Hash password using bcrypt."""
+    return bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+
+def _verify_password_bcrypt(password: str, hashed: str) -> bool:
+    """Verify password against bcrypt hash."""
+    return bcrypt.checkpw(
+        password.encode("utf-8"), hashed.encode("utf-8")
+    )
 
 from paths import CONFIG_PATH
 from schemas import (
@@ -115,7 +125,7 @@ class ConfigManager:
             "mtp_draft_tokens": merged.get(
                 "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
             ),
-            "last_started": datetime.utcnow().isoformat(),
+            "last_started": datetime.now(timezone.utc).isoformat(),
         }
         if "hardware_incapable_message" in merged:
             entry["hardware_incapable_message"] = merged["hardware_incapable_message"]
@@ -181,19 +191,18 @@ class AuthManager:
         config = self.config.load()
         if "admin_password_hash" not in config:
             # Default password: "admin" — force user to change on first login
-            config["admin_password_hash"] = self._hash_password("admin")
+            config["admin_password_hash"] = _hash_password_bcrypt("admin")
             config["force_password_change"] = True
             self.config.save(config)
 
     def _hash_password(self, password: str) -> str:
         """Hash password using bcrypt (slow, salted)."""
-        return pwd_context.hash(password)
+        return _hash_password_bcrypt(password)
 
     def _verify_password(self, password: str, hashed: str) -> bool:
         """Verify password, migrating SHA-256 hashes to bcrypt."""
-        # Check if it's bcrypt first
-        if hashed.startswith("$2") or hashed.startswith("$3") or hashed.startswith("$4"):
-            return pwd_context.verify(password, hashed)
+        if _verify_password_bcrypt(password, hashed):
+            return True
         # Legacy SHA-256 hash — migrate to bcrypt
         legacy_hash = hashlib.sha256(password.encode()).hexdigest()
         if legacy_hash == hashed:
@@ -213,7 +222,7 @@ class AuthManager:
             return None
         session_token = secrets.token_urlsafe(32)
         with self._lock:
-            self._sessions[session_token] = datetime.utcnow()
+            self._sessions[session_token] = datetime.now(timezone.utc)
         force_change = config.get("force_password_change", False)
         return {"token": session_token, "force_password_change": force_change}
 
@@ -222,12 +231,12 @@ class AuthManager:
             last_seen = self._sessions.get(session_token)
             if last_seen is None:
                 return False
-            idle = (datetime.utcnow() - last_seen).total_seconds()
+            idle = (datetime.now(timezone.utc) - last_seen).total_seconds()
             if idle > SESSION_IDLE_SECONDS:
                 del self._sessions[session_token]
                 logger.info("Session expired due to inactivity")
                 return False
-            self._sessions[session_token] = datetime.utcnow()
+            self._sessions[session_token] = datetime.now(timezone.utc)
             return True
 
     def logout(self, session_token: str) -> None:

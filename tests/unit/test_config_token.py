@@ -181,7 +181,7 @@ def test_config_clear_default_model(config_manager):
 
 
 def test_auth_session_expires_after_idle(auth_manager):
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from config_manager import SESSION_IDLE_SECONDS
 
@@ -193,7 +193,7 @@ def test_auth_session_expires_after_idle(auth_manager):
         token = result
     assert auth_manager.verify_session(token) is True
 
-    stale = datetime.utcnow() - timedelta(seconds=SESSION_IDLE_SECONDS + 1)
+    stale = datetime.now(timezone.utc) - timedelta(seconds=SESSION_IDLE_SECONDS + 1)
     auth_manager._sessions[token] = stale
     assert auth_manager.verify_session(token) is False
     assert token not in auth_manager._sessions

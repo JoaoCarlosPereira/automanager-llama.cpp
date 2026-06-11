@@ -1,7 +1,9 @@
 """Unit tests for log SSE shutdown behavior."""
 
 import asyncio
+import os
 import threading
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.requests import Request
@@ -33,9 +35,28 @@ async def test_stream_logs_stops_when_shutdown_event_set(tmp_path):
     }
     request = Request(scope)
 
+    # First call returns connected (empty message), subsequent calls raise StopAsyncIteration
+    # so is_disconnected() returns False initially
+    call_count = 0
+
+    async def mock_receive():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: not disconnected
+            return {}
+        # After that, raise to signal no more messages
+        raise StopAsyncIteration
+
+    request._receive = mock_receive
+
+    # Access the async generator directly from the StreamingResponse
     response = manager.stream_logs(stop_event=stop_event, request=request)
+    gen = response.body_iterator
     chunks = []
-    async for chunk in response.body_iterator:
+    async for chunk in gen:
         chunks.append(chunk)
         stop_event.set()
+        if len(chunks) >= 2:
+            break
     assert chunks

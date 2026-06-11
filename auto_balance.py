@@ -59,9 +59,11 @@ def _ensure_auto_balance_log() -> None:
 def _auto_balance_log(msg: str, *args, level: str = "info", **kwargs) -> None:
     """Write formatted *msg* to both the main manager log AND the dedicated file."""
     _ensure_auto_balance_log()
-    fn = getattr(_ab_logger, level, _ab_logger.info)
+    # Map deprecated "warn" to "warning"
+    log_level = "warning" if level == "warn" else level
+    fn = getattr(_ab_logger, log_level, _ab_logger.info)
     fn(msg, *args, **kwargs)
-    fn = getattr(logger, level, logger.info)
+    fn = getattr(logger, log_level, logger.info)
     fn(msg, *args, **kwargs)
 
 READY_PATTERNS = re.compile(
