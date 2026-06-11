@@ -40,6 +40,7 @@ class LogManager:
         )
         os.makedirs(self._logs_dir, exist_ok=True)
         self._setup_manager_logging()
+        self._setup_server_log_rotation()
 
     def _setup_manager_logging(self) -> None:
         root_logger = logging.getLogger("automanager")
@@ -66,6 +67,33 @@ class LogManager:
             except OSError:
                 pass
 
+    def _setup_server_log_rotation(self) -> None:
+        """Ensure server.log has rotation to prevent disk exhaustion."""
+        try:
+            if os.path.exists(self._server_log_path):
+                size = os.path.getsize(self._server_log_path)
+                if size > MAX_LOG_SIZE:
+                    self._rotate_server_log()
+        except OSError:
+            pass
+
+    def _rotate_server_log(self) -> None:
+        """Manually rotate server.log using the same pattern as manager.log."""
+        for i in range(LOG_BACKUP_COUNT - 1, 0, -1):
+            src = f"{self._server_log_path}.{i}"
+            dst = f"{self._server_log_path}.{i + 1}"
+            try:
+                if os.path.exists(src):
+                    os.replace(src, dst)
+            except OSError:
+                pass
+        # Move current log to .1
+        try:
+            if os.path.exists(self._server_log_path):
+                os.replace(self._server_log_path, f"{self._server_log_path}.1")
+        except OSError:
+            pass
+
     def get_server_log_path(self) -> str:
         return self._server_log_path
 
@@ -77,8 +105,16 @@ class LogManager:
             pass
 
     def open_server_log_append(self):
-        """Open server log for subprocess stdout (append)."""
+        """Open server log for subprocess stdout (append) with rotation check."""
         os.makedirs(os.path.dirname(self._server_log_path), exist_ok=True)
+        # Check if rotation is needed before opening
+        try:
+            if os.path.exists(self._server_log_path):
+                size = os.path.getsize(self._server_log_path)
+                if size > MAX_LOG_SIZE:
+                    self._rotate_server_log()
+        except OSError:
+            pass
         return open(self._server_log_path, "a", encoding="utf-8")
 
     def stream_logs(self, stop_event: Optional[threading.Event] = None) -> StreamingResponse:

@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional
 
 from config_manager import (
@@ -108,6 +109,38 @@ if os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
+# ─────────────────────────────────────────────────────────
+# Security Headers Middleware
+# ─────────────────────────────────────────────────────────
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; "
+            "font-src 'self' https://cdnjs.cloudflare.com; "
+            "connect-src 'self' ws://localhost:8000 http://localhost:8085; "
+            "img-src 'self' data: blob:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=()"
+        )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
 def _dashboard_js_version() -> str:
     """Cache-bust dashboard bundles when any core JS file changes."""
     js_dir = os.path.join(_static_dir, "js")
@@ -179,16 +212,29 @@ def optional_auth(request: Request) -> Optional[str]:
 
 @app.post("/api/auth/login")
 async def api_login(req: LoginRequest):
-    session_token = auth_manager.authenticate(req.username, req.password)
-    if not session_token:
+    if len(req.username) < 1 or len(req.username) > 128:
+        raise HTTPException(status_code=400, detail="Nome de usuario invalido")
+    if len(req.password) > 256:
+        raise HTTPException(status_code=400, detail="Senha muito longa")
+    result = auth_manager.authenticate(req.username, req.password)
+    if not result:
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
-    response = JSONResponse({"status": "ok"})
+    # Backward compatible: handle both old (string) and new (dict) return formats
+    if isinstance(result, dict):
+        session_token = result.get("token", result.get("session_token"))
+        force_change = result.get("force_password_change", False)
+    else:
+        session_token = result
+        force_change = False
+    response = JSONResponse({"status": "ok", "force_password_change": force_change})
     response.set_cookie(
         key="session_token",
         value=session_token,
         httponly=True,
+        secure=True,
         samesite="lax",
         max_age=3600,
+        path="/",
     )
     return response
 
@@ -428,7 +474,7 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 
 
 @app.get("/logs")
-async def stream_logs():
+async def stream_logs(_auth: str = Depends(get_current_auth)):
     return log_manager.stream_logs(stop_event=shutdown_event)
 
 
@@ -482,7 +528,7 @@ def _execute_shutdown():
     """Execute poweroff command."""
     logger.info("Solicitado desligamento do sistema")
     try:
-        os.system("poweroff")
+        subprocess.run(["poweroff"], check=False)
     except Exception as e:
         logger.error(f"Erro ao desligar: {e}")
 
@@ -493,13 +539,19 @@ def _execute_update():
     app_dir = os.path.dirname(os.path.abspath(__file__))
     try:
         # Git pull
-        result = os.system(f'cd "{app_dir}" && git pull')
-        if result != 0:
-            logger.error(f"Git pull falhou com codigo {result}")
+        result = subprocess.run(
+            ["git", "-C", app_dir, "pull"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            logger.error(f"Git pull falhou: {result.stderr}")
         # Restart service
-        result = os.system("sudo systemctl restart llama-manager.service")
-        if result != 0:
-            logger.error(f"Systemctl restart falhou com codigo {result}")
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "llama-manager.service"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            logger.error(f"Systemctl restart falhou: {result.stderr}")
         else:
             logger.info("Servico reiniciado com sucesso")
     except Exception as e:
