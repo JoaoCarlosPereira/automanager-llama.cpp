@@ -1,5 +1,6 @@
 """Log file management, rotation, and SSE streaming."""
 
+import asyncio
 import os
 import time
 import logging
@@ -7,6 +8,7 @@ import threading
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
+from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 from paths import (
@@ -117,25 +119,40 @@ class LogManager:
             pass
         return open(self._server_log_path, "a", encoding="utf-8")
 
-    def stream_logs(self, stop_event: Optional[threading.Event] = None) -> StreamingResponse:
+    async def _stream_should_stop(
+        self,
+        stop_event: Optional[threading.Event],
+        request: Optional[Request],
+    ) -> bool:
+        if stop_event and stop_event.is_set():
+            return True
+        if request is not None and await request.is_disconnected():
+            return True
+        return False
+
+    def stream_logs(
+        self,
+        stop_event: Optional[threading.Event] = None,
+        request: Optional[Request] = None,
+    ) -> StreamingResponse:
         path = self._server_log_path
 
-        def generate():
+        async def generate():
             if not os.path.exists(path):
                 yield "data: Arquivo de log nao encontrado.\n\n"
                 return
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 existing = f.readlines()
                 for line in existing[-500:]:
-                    if stop_event and stop_event.is_set():
+                    if await self._stream_should_stop(stop_event, request):
                         return
                     yield f"data: {line}"
                 while True:
-                    if stop_event and stop_event.is_set():
+                    if await self._stream_should_stop(stop_event, request):
                         return
                     line = f.readline()
                     if not line:
-                        time.sleep(0.5)
+                        await asyncio.sleep(0.5)
                         continue
                     yield f"data: {line}"
 

@@ -7,6 +7,7 @@ tensor split management, OOM auto-recovery, and real-time hardware monitoring.
 
 import json
 import os
+import signal
 import socket
 import threading
 import time
@@ -474,8 +475,11 @@ async def renew_api_key(_auth: str = Depends(get_current_auth)):
 
 
 @app.get("/logs")
-async def stream_logs(_auth: str = Depends(get_current_auth)):
-    return log_manager.stream_logs(stop_event=shutdown_event)
+async def stream_logs(
+    request: Request,
+    _auth: str = Depends(get_current_auth),
+):
+    return log_manager.stream_logs(stop_event=shutdown_event, request=request)
 
 
 # --- System Management ---
@@ -1450,77 +1454,112 @@ def _build_html(
 # Startup event — auto-start default model + OOM watchdog
 # ─────────────────────────────────────────────────────────
 
+GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
+
+
+def _chain_shutdown_signals() -> None:
+    """Set shutdown_event on SIGTERM/SIGINT before uvicorn drains SSE streams."""
+    if os.name != "posix":
+        return
+
+    def _wrap(sig: signal.Signals):
+        previous = signal.getsignal(sig)
+
+        def handler(signum, frame):
+            shutdown_event.set()
+            if callable(previous) and previous not in (
+                signal.SIG_IGN,
+                signal.SIG_DFL,
+            ):
+                previous(signum, frame)
+
+        signal.signal(sig, handler)
+
+    _wrap(signal.SIGTERM)
+    _wrap(signal.SIGINT)
+
+
+def _auto_start_default_model() -> None:
+    """Load the default model in the background so HTTP starts immediately."""
+    default_model = config_manager.get_default_model()
+    if not default_model or not os.path.exists(default_model):
+        return
+    if process_manager.get_status().get("running"):
+        return
+
+    logger.info(f"Auto-start: {default_model}")
+    try:
+        saved_cfg = config_manager.get_model_settings(default_model)
+        if saved_cfg.get("gpu_weights"):
+            weights = [
+                GPUWeight(**w) if isinstance(w, dict) else w
+                for w in saved_cfg["gpu_weights"]
+            ]
+            weights = gpu_manager.normalize_gpu_weights(weights)
+            context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
+            parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
+            batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
+            mmproj_path = saved_cfg.get("mmproj_path")
+            split_mode = saved_cfg.get("split_mode", "layer")
+            thinking_enabled = saved_cfg.get("thinking_enabled", True)
+            mtp_enabled = saved_cfg.get("mtp_enabled", False)
+            mtp_draft_tokens = saved_cfg.get(
+                "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
+            )
+        else:
+            gpus = gpu_manager.detect_gpus()
+            weights = []
+            max_vram = max((g["vram"] for g in gpus), default=0)
+            main_gpu_idx = next(
+                (g["index"] for g in gpus if g["vram"] == max_vram), -1
+            )
+            for g in gpus:
+                val = 100.0 if g["index"] == main_gpu_idx else 0.0
+                weights.append(
+                    GPUWeight(
+                        index=g["index"],
+                        weight=val,
+                        name=g["name"],
+                    )
+                )
+            context_size = DEFAULT_CONTEXT_SIZE
+            parallel_slots = DEFAULT_PARALLEL_SLOTS
+            batch_size = DEFAULT_BATCH_SIZE
+            mmproj_path = None
+            split_mode = "layer"
+            thinking_enabled = True
+            mtp_enabled = False
+            mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
+
+        process_manager.start(
+            model_path=default_model,
+            gpu_weights=weights,
+            context_size=context_size,
+            mmproj_path=mmproj_path,
+            split_mode=split_mode,
+            parallel_slots=parallel_slots,
+            batch_size=batch_size,
+            thinking_enabled=thinking_enabled,
+            mtp_enabled=mtp_enabled,
+            mtp_draft_tokens=mtp_draft_tokens,
+            total_layers=saved_cfg.get("total_layers", 0),
+        )
+    except Exception as e:
+        logger.error(f"Auto-start error: {e}")
+
 
 @app.on_event("startup")
 async def startup_event():
     """Start OOM watchdog, download runner, and optionally auto-start default model."""
+    _chain_shutdown_signals()
     get_llama_server_bin()
     oom_watchdog.start()
     threading.Thread(target=_run_downloads, args=(shutdown_event,), daemon=True).start()
-
-    # Auto-start default model
-    default_model = config_manager.get_default_model()
-    if default_model and os.path.exists(default_model):
-        if not process_manager.get_status().get("running"):
-            logger.info(f"Auto-start: {default_model}")
-            try:
-                saved_cfg = config_manager.get_model_settings(default_model)
-                if saved_cfg.get("gpu_weights"):
-                    weights = [
-                        GPUWeight(**w) if isinstance(w, dict) else w
-                        for w in saved_cfg["gpu_weights"]
-                    ]
-                    weights = gpu_manager.normalize_gpu_weights(weights)
-                    context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
-                    parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
-                    batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
-                    mmproj_path = saved_cfg.get("mmproj_path")
-                    split_mode = saved_cfg.get("split_mode", "layer")
-                    thinking_enabled = saved_cfg.get("thinking_enabled", True)
-                    mtp_enabled = saved_cfg.get("mtp_enabled", False)
-                    mtp_draft_tokens = saved_cfg.get(
-                        "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
-                    )
-                else:
-                    gpus = gpu_manager.detect_gpus()
-                    weights = []
-                    max_vram = max((g["vram"] for g in gpus), default=0)
-                    main_gpu_idx = next(
-                        (g["index"] for g in gpus if g["vram"] == max_vram), -1
-                    )
-                    for g in gpus:
-                        val = 100.0 if g["index"] == main_gpu_idx else 0.0
-                        weights.append(
-                            GPUWeight(
-                                index=g["index"],
-                                weight=val,
-                                name=g["name"],
-                            )
-                        )
-                    context_size = DEFAULT_CONTEXT_SIZE
-                    parallel_slots = DEFAULT_PARALLEL_SLOTS
-                    batch_size = DEFAULT_BATCH_SIZE
-                    mmproj_path = None
-                    split_mode = "layer"
-                    thinking_enabled = True
-                    mtp_enabled = False
-                    mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
-
-                process_manager.start(
-                    model_path=default_model,
-                    gpu_weights=weights,
-                    context_size=context_size,
-                    mmproj_path=mmproj_path,
-                    split_mode=split_mode,
-                    parallel_slots=parallel_slots,
-                    batch_size=batch_size,
-                    thinking_enabled=thinking_enabled,
-                    mtp_enabled=mtp_enabled,
-                    mtp_draft_tokens=mtp_draft_tokens,
-                    total_layers=saved_cfg.get("total_layers", 0),
-                )
-            except Exception as e:
-                logger.error(f"Auto-start error: {e}")
+    threading.Thread(
+        target=_auto_start_default_model,
+        daemon=True,
+        name="auto-start",
+    ).start()
 
 
 @app.on_event("shutdown")
@@ -1569,4 +1608,9 @@ def get_local_ip() -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=MANAGER_PORT)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=MANAGER_PORT,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
+    )

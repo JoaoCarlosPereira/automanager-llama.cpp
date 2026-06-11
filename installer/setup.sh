@@ -108,6 +108,8 @@ Type=simple
 User=root
 WorkingDirectory=${PROJECT_DIR}
 ExecStart=${VENV_DIR}/bin/python ${PROJECT_DIR}/llama_manager.py
+ExecStop=/bin/sh -c '/usr/bin/pkill -9 -f llama-server 2>/dev/null || true'
+TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
 Environment=PATH=${VENV_DIR}/bin:/usr/local/cuda/bin:/usr/bin:/bin
