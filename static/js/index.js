@@ -64,29 +64,10 @@ win.clearCompletedDownloads = clearCompletedDownloads;
 win.checkForUpdates = checkForUpdates;
 win.dismissVersionModal = dismissVersionModal;
 
-win.openNativeChat = (port, modelName) => {
-    const modal = document.getElementById('native-chat-modal');
-    const frame = document.getElementById('native-chat-frame');
-    const title = document.getElementById('chat-modal-title');
-    const subtitle = document.getElementById('chat-modal-subtitle');
-    
-    if (modal && frame) {
-        title.innerText = `Chat Nativo: ${modelName || 'Modelo'}`;
-        subtitle.innerText = `Instância na porta ${port}`;
-        frame.src = `/ui/${port}/`;
-        modal.classList.remove('hidden');
-        document.body.style.overflow = 'hidden';
-    }
-};
+win.getInstanceChatUrl = (port) => `${window.location.origin}/ui/${port}/`;
 
-win.closeNativeChat = () => {
-    const modal = document.getElementById('native-chat-modal');
-    const frame = document.getElementById('native-chat-frame');
-    if (modal && frame) {
-        modal.classList.add('hidden');
-        frame.src = '';
-        document.body.style.overflow = '';
-    }
+win.openNativeChat = (port) => {
+    window.open(win.getInstanceChatUrl(port), '_blank', 'noopener,noreferrer');
 };
 
 document.getElementById('api-link').innerText = `http://${window.fixedIp}:[PORTA]/v1`;

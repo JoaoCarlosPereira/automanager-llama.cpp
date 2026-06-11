@@ -15,7 +15,6 @@ export async function updateStatus() {
         const badge = document.getElementById('status-badge');
 
         state.activeInstances = data.instances || [];
-        updateTabs();
 
         // Determinar qual instância é a principal (porta 8085 ou a primeira)
         let mainInst = state.activeInstances.find(i => i.port === 8085)
@@ -226,9 +225,9 @@ function renderActiveCards() {
                     </div>
                 </div>
                 <div class="flex flex-wrap items-center gap-3 shrink-0 w-full lg:w-auto">
-                    <button onclick="openNativeChat(${port}, '${modelName.replace(/'/g, "\\'")}')" class="px-4 md:px-6 py-2.5 md:py-3 btn-gradient text-white rounded-2xl text-[9px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-2 md:gap-3 uppercase tracking-widest whitespace-nowrap">
+                    <a href="/ui/${port}/" target="_blank" rel="noopener noreferrer" class="px-4 md:px-6 py-2.5 md:py-3 btn-gradient text-white rounded-2xl text-[9px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-2 md:gap-3 uppercase tracking-widest whitespace-nowrap">
                         <i class="fas fa-comments text-[9px] md:text-sm"></i> <span class="hidden sm:inline">ABRIR CHAT</span><span class="sm:hidden">CHAT</span>
-                    </button>
+                    </a>
                     <button onclick="stopModel(${port})" class="px-4 md:px-6 py-2.5 md:py-3 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/30 rounded-2xl text-[9px] md:text-xs font-black transition-all active:scale-95 uppercase tracking-widest whitespace-nowrap">
                         ENCERRAR
                     </button>
@@ -245,44 +244,6 @@ function renderActiveCards() {
         if (apiLink) apiLink.innerText = `http://${window.fixedIp}:${mainInst.port}/v1`;
     }
 }
-
-export function updateTabs() {
-    const container = document.getElementById('instance-tabs');
-    if (!container) return;
-    
-    if (state.activeInstances.length <= 1) {
-        container.innerHTML = '';
-        return;
-    }
-
-        const tabsHtml = state.activeInstances.map(inst => {
-            const isActive = inst.port === state.currentActivePort;
-            const isMain = inst.port === 8085;
-            const activeClass = isActive 
-                ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20' 
-                : 'bg-slate-800/50 text-slate-400 border-slate-700 hover:bg-slate-700/50';
-            
-            const badge = isMain ? '<span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-[7px] text-blue-300 ml-1 border border-blue-500/20">PRINCIPAL</span>' : '';
-
-            return `
-                <button onclick="switchInstance(${inst.port})" class="px-4 py-2 rounded-xl border text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${activeClass}">
-                    <i class="fas fa-cube ${isActive ? 'text-blue-200' : 'text-slate-500'}"></i>
-                    ${inst.model} ${badge}
-                </button>
-            `;
-        }).join('');
-    
-    container.innerHTML = tabsHtml;
-}
-
-window.switchInstance = (port) => {
-    state.currentActivePort = port;
-    const inst = state.activeInstances.find(i => i.port === port);
-    if (inst && inst.model_path) {
-        state.currentSelectedModel = inst.model_path.replace(/\\/g, '/');
-    }
-    updateStatus();
-};
 
 export function ensureStatusPolling(fast) {
     const ms = fast ? 1000 : 3000;

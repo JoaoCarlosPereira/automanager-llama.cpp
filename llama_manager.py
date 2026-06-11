@@ -1360,29 +1360,6 @@ def _build_html(
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
-    
-    <!-- Modal de Chat Nativo -->
-    <div id="native-chat-modal" class="fixed inset-0 z-[100] hidden bg-slate-950/90 backdrop-blur-md">
-        <div class="flex flex-col h-screen">
-            <div class="px-6 py-4 bg-slate-900 border-b border-slate-800 flex justify-between items-center">
-                <div class="flex items-center gap-4">
-                    <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white">
-                        <i class="fas fa-comments"></i>
-                    </div>
-                    <div>
-                        <h3 class="font-bold text-white text-sm" id="chat-modal-title">Chat Nativo</h3>
-                        <p class="text-[10px] text-slate-500 uppercase tracking-widest" id="chat-modal-subtitle">llama.cpp interface</p>
-                    </div>
-                </div>
-                <button onclick="closeNativeChat()" class="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-500 transition-all">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-            <div class="flex-1 bg-white">
-                <iframe id="native-chat-frame" src="" class="w-full h-full border-none"></iframe>
-            </div>
-        </div>
-    </div>
 
     <div id="dashboard" class="max-w-[1800px] mx-auto px-4 md:px-8 pt-6 md:pt-10" style="display: {'block' if is_authenticated else 'none'};">
         <header class="flex flex-col md:flex-row items-center justify-between mb-8 md:mb-10 glass p-4 md:p-5 rounded-3xl md:rounded-[2rem] gap-4">
@@ -1571,9 +1548,6 @@ def _build_html(
                             </button>
                         </div>
                     </div>
-                </div>
-                <div id="instance-tabs" class="flex flex-wrap gap-2 mb-6 overflow-x-auto pb-2 custom-scroll">
-                    <!-- Tabs serão injetadas via JS -->
                 </div>
                 <div id="active-cards-container" class="space-y-6">
                     <!-- Cards de instâncias serão injetados via JS -->

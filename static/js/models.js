@@ -175,9 +175,9 @@ export function getModelButtonsHtml(path, elementId, isRunning) {
 
     if (isRunning) {
         return `<div class="flex items-center gap-3">
-            <button onclick="openNativeChat(${port}, '${m_js.split('/').pop()}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+            <a href="/ui/${port}/" target="_blank" rel="noopener noreferrer" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
                 <i class="fas fa-comments text-[8px]"></i> ABRIR CHAT
-            </button>
+            </a>
             <button onclick="stopModel(${port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
                 ENCERRAR
             </button>
