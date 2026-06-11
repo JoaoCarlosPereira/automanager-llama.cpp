@@ -172,12 +172,15 @@ def test_config_partial_update_preserves_hardware_incapable(config_manager):
 def test_config_set_and_get_default_model(config_manager):
     model_path = "/models/default.gguf"
     config_manager.set_default_model(model_path)
-    assert config_manager.get_default_model() == model_path
+    assert config_manager.get_default_models() == [model_path]
 
 
 def test_config_clear_default_model(config_manager):
-    config_manager.set_default_model(None)
-    assert config_manager.get_default_model() is None
+    # Setup initial default
+    config_manager.set_default_model("/some/path")
+    # Clear it
+    config_manager.set_default_model("/some/path", add=False)
+    assert config_manager.get_default_models() == []
 
 
 def test_auth_session_expires_after_idle(auth_manager):

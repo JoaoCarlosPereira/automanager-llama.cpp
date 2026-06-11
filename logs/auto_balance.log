@@ -4090,3 +4090,873 @@
   gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
   context_size=4096 parallel_slots=1
   message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:36:54,126 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-7/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:36:54,134 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:36:54,175 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,176 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,176 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,176 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:36:54,177 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,178 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,181 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,183 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:36:54,186 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:36:54,187 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,199 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,202 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:36:54,204 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,204 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:36:54,206 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,209 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,211 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,213 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,216 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,216 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,217 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:36:54,219 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,220 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:36:54,223 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,223 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:36:54,230 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:36:54,233 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:36:54,234 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,250 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,250 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,250 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,251 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:36:54,252 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,252 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:36:54,252 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:36:54,252 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:54,253 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:36:54,254 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,254 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:36:54,255 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:36:54,255 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:36:54,255 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,256 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:36:54,256 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:55,278 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,279 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:55,279 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,280 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:36:55,280 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,280 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,281 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,281 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,281 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,283 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,284 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,285 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,287 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:36:55,288 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,288 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,289 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,289 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,289 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,291 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,292 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,292 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:36:55,298 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:55,298 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,298 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:55,299 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:36:55,299 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,300 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:36:55,300 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,300 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:36:55,301 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:36:55,303 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,304 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,304 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,305 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,305 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,305 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,307 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,308 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,308 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,311 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,311 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,312 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:36:55,312 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,312 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,313 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,313 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,313 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:36:55,314 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:36:55,315 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,316 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,316 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:55,318 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:36:55,319 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,320 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:37:39,905 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-8/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:37:39,913 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:37:39,953 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,954 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,954 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:37:39,955 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,955 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,956 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,958 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,959 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,960 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,962 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,962 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,962 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:37:39,965 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:37:39,966 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,977 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,979 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:37:39,981 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,981 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:37:39,983 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,985 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,986 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,986 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,988 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,991 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:40,019 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,021 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,021 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,021 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:37:40,024 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,024 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,025 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:37:40,025 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:37:40,027 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:37:40,029 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:37:40,035 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:37:40,038 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:37:40,038 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,040 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:37:40,041 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,052 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,053 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,053 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,053 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:37:40,054 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,054 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:37:40,055 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:37:40,055 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:40,055 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:37:40,056 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,057 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:37:40,057 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:37:40,057 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:37:40,058 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,058 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:37:40,059 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:41,013 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,013 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:37:41,015 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,015 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,015 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,016 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,016 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,018 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,018 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,019 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,021 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:37:41,022 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,022 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,022 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,023 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,023 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,025 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,025 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,026 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:37:41,028 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:41,028 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,029 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:41,029 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:37:41,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,030 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:37:41,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:37:41,034 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,034 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,035 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,035 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,035 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,036 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,037 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,038 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,038 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,041 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,041 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,042 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:37:41,042 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,043 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,043 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,043 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,043 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:37:41,044 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:37:41,045 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,046 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,046 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:41,049 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:37:41,049 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,050 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:38:06,976 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-9/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:38:06,985 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:38:07,025 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,026 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:38:07,027 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,029 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,031 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,033 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:38:07,036 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:38:07,037 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,050 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,053 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:38:07,055 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,057 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,058 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,058 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,060 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,062 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,065 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,065 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,065 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,066 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:38:07,068 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,069 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:38:07,073 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,073 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:38:07,080 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:38:07,083 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:38:07,083 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,085 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:38:07,085 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,097 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,097 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,098 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:38:07,099 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,099 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:38:07,099 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:38:07,100 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:07,100 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:38:07,101 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,101 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:38:07,102 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:38:07,102 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:38:07,102 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,103 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:38:07,103 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:08,086 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,087 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:08,087 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,088 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:38:08,088 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,088 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,089 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,089 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,089 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,091 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,092 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,092 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,095 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:38:08,095 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,095 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,096 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,096 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,096 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,098 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,099 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,099 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:38:08,101 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,102 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:38:08,103 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,103 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:38:08,103 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:38:08,107 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,107 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,108 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,108 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,108 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,108 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,110 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,111 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,111 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,113 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:38:08,115 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,115 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,115 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,115 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,116 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:38:08,116 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:38:08,118 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,118 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,119 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:08,121 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:38:08,121 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,122 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).

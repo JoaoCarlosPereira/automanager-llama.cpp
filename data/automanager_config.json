@@ -426,7 +426,16 @@
       "gpu_weights": [
         {
           "index": 0,
-          "weight": 100.0,
+          "weight": 0.0,
+          "name": "Tesla P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 15.0,
           "name": "Tesla P100-PCIE-16GB",
           "active": true,
           "is_main": false,
@@ -434,19 +443,10 @@
           "device": "gpu"
         },
         {
-          "index": 1,
-          "weight": 0.0,
-          "name": "Tesla P100-PCIE-16GB",
-          "active": false,
-          "is_main": false,
-          "pinned": false,
-          "device": "gpu"
-        },
-        {
           "index": 2,
-          "weight": 0.0,
+          "weight": 85.0,
           "name": "NVIDIA GeForce RTX 3090",
-          "active": false,
+          "active": true,
           "is_main": true,
           "pinned": false,
           "device": "gpu"
@@ -465,9 +465,10 @@
       "auto_balance": false,
       "auto_balance_profile": false,
       "hardware_incapable": false,
+      "thinking_enabled": true,
       "mtp_enabled": false,
       "mtp_draft_tokens": 2,
-      "last_started": "2026-06-10T13:11:42.405753"
+      "last_started": "2026-06-11T03:18:03.451518+00:00"
     },
     "/media/docker/models/Qwen3.5-9B-UD-Q4_K_XL/Qwen3.5-9B-UD-Q4_K_XL.gguf": {
       "context_size": 201000,
@@ -521,6 +522,6 @@
       "last_started": "2026-06-10T13:21:00.352288"
     }
   },
-  "default_model": "/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf",
-  "force_password_change": false
+  "force_password_change": false,
+  "default_models": []
 }

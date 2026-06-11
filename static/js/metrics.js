@@ -68,6 +68,18 @@ export async function updateStatus() {
             card.classList.remove('hidden');
             document.getElementById('active-model-name').innerText = `${currentInst.model} (Porta ${currentInst.port})`;
             
+            const controls = document.getElementById('active-instance-controls');
+            if (controls) {
+                controls.innerHTML = `
+                    <a href="/ui/${currentInst.port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+                        <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
+                    </a>
+                    <button onclick="stopModel(${currentInst.port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
+                        ENCERRAR
+                    </button>
+                `;
+            }
+            
             if (!state.logStream || state.logStreamPort !== currentInst.port) {
                 startLogs(currentInst.port);
             }
@@ -89,6 +101,8 @@ export async function updateStatus() {
             badge.className = 'px-5 md:px-8 py-2 md:py-3 rounded-2xl text-[10px] md:text-xs font-black tracking-[0.2em] flex items-center gap-3 md:gap-4 glass border-slate-700/50 text-slate-500 uppercase';
             badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE';
             card.classList.add('hidden');
+            const controlsOff = document.getElementById('active-instance-controls');
+            if (controlsOff) controlsOff.innerHTML = '';
             if (state.logStream) { 
                 state.logStream.abort(); 
                 state.logStream = null; 
@@ -194,6 +208,10 @@ export function updateTabs() {
 
 window.switchInstance = (port) => {
     state.currentActivePort = port;
+    const inst = state.activeInstances.find(i => i.port === port);
+    if (inst && inst.model_path) {
+        state.currentSelectedModel = inst.model_path.replace(/\\/g, '/');
+    }
     updateStatus();
 };
 

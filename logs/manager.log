@@ -18027,3 +18027,2009 @@ To add an exception for this directory, call:
 2026-06-11 03:15:07,876 - INFO - llama-server on port 8085 stopped
 2026-06-11 03:15:08,025 - WARNING - Could not detect model layers for /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf: Command '['/home/joao/llama.cpp/build/bin/llama-server', '--model-info', '/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf']' returned non-zero exit status 1.
 2026-06-11 03:15:08,026 - INFO - START (port 8085): /home/joao/llama.cpp/build/bin/llama-server -m /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf -ngl 999 --flash-attn on --host 0.0.0.0 --port 8085 --tools all --parallel 1 --ctx-size 201000 --batch-size 16384 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.1500,0.8500 --api-key sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b --mmproj /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/mmproj-F16.gguf --reasoning off --reasoning-budget 0 --spec-type draft-mtp --spec-draft-n-max 2 (CUDA_VISIBLE_DEVICES=1,2, ctx_per_slot=201000, server_ctx=201000, batch_size=16384, thinking_enabled=False, mtp_enabled=True, mtp_draft_tokens=2, mtp_applied=True, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:16:15,684 - INFO - Verificacao de versao iniciada em /home/joao/automanager-llama.cpp
+2026-06-11 03:16:16,133 - INFO - Versao atualizada (branch=main, ref=17e2cb2)
+2026-06-11 03:17:47,438 - WARNING - Could not detect model layers for /media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf: Command '['/home/joao/llama.cpp/build/bin/llama-server', '--model-info', '/media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf']' returned non-zero exit status 1.
+2026-06-11 03:17:47,442 - INFO - llama-server on port 8086 stopped
+2026-06-11 03:17:47,444 - INFO - START (port 8086): /home/joao/llama.cpp/build/bin/llama-server -m /media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf -ngl 999 --flash-attn on --host 0.0.0.0 --port 8086 --tools all --parallel 1 --ctx-size 201000 --batch-size 16384 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=201000, server_ctx=201000, batch_size=16384, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=2, mtp_applied=False, gpu_pct=100.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:18:03,450 - WARNING - Could not detect model layers for /media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf: Command '['/home/joao/llama.cpp/build/bin/llama-server', '--model-info', '/media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf']' returned non-zero exit status 1.
+2026-06-11 03:18:03,454 - INFO - llama-server on port 8087 stopped
+2026-06-11 03:18:03,632 - INFO - START (port 8087): /home/joao/llama.cpp/build/bin/llama-server -m /media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf -ngl 999 --flash-attn on --host 0.0.0.0 --port 8087 --tools all --parallel 1 --ctx-size 201000 --batch-size 16384 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.1500,0.8500 --api-key sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=1,2, ctx_per_slot=201000, server_ctx=201000, batch_size=16384, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=2, mtp_applied=False, gpu_pct=100.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:18:22,801 - INFO - Verificacao de versao iniciada em /home/joao/automanager-llama.cpp
+2026-06-11 03:18:23,278 - INFO - Versao atualizada (branch=main, ref=17e2cb2)
+2026-06-11 03:18:40,527 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:18:48,099 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:18:53,814 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:18:58,956 - INFO - Verificacao de versao iniciada em /home/joao/automanager-llama.cpp
+2026-06-11 03:18:59,406 - INFO - Versao atualizada (branch=main, ref=17e2cb2)
+2026-06-11 03:19:01,907 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:20:37,307 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:22:45,209 - INFO - Encerrando Automanager Llama.cpp...
+2026-06-11 03:22:45,210 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:22:45,950 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:22:45,950 - INFO - OOMWatchdog started
+2026-06-11 03:22:46,038 - INFO - Auto-start: /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf
+2026-06-11 03:22:46,039 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:22:46,201 - WARNING - Could not detect model layers for /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf: Command '['/home/joao/llama.cpp/build/bin/llama-server', '--model-info', '/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf']' returned non-zero exit status 1.
+2026-06-11 03:22:46,203 - INFO - START (port 8085): /home/joao/llama.cpp/build/bin/llama-server -m /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 201000 --batch-size 16384 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.1500,0.8500 --api-key sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b --mmproj /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/mmproj-F16.gguf --reasoning off --reasoning-budget 0 --spec-type draft-mtp --spec-draft-n-max 2 (CUDA_VISIBLE_DEVICES=1,2, ctx_per_slot=201000, server_ctx=201000, batch_size=16384, thinking_enabled=False, mtp_enabled=True, mtp_draft_tokens=2, mtp_applied=True, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:26:59,694 - INFO - Encerrando Automanager Llama.cpp...
+2026-06-11 03:27:00,210 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:27:00,925 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:27:00,925 - INFO - OOMWatchdog started
+2026-06-11 03:27:01,015 - INFO - Auto-start: /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf
+2026-06-11 03:27:01,016 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:27:01,165 - WARNING - Could not detect model layers for /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf: Command '['/home/joao/llama.cpp/build/bin/llama-server', '--model-info', '/media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf']' returned non-zero exit status 1.
+2026-06-11 03:27:01,167 - INFO - START (port 8085): /home/joao/llama.cpp/build/bin/llama-server -m /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 201000 --batch-size 16384 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.1500,0.8500 --api-key sk-663716e7698c407d3d55df1ed123249ced6a5e62b756093b --mmproj /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/mmproj-F16.gguf --reasoning off --reasoning-budget 0 --spec-type draft-mtp --spec-draft-n-max 2 (CUDA_VISIBLE_DEVICES=1,2, ctx_per_slot=201000, server_ctx=201000, batch_size=16384, thinking_enabled=False, mtp_enabled=True, mtp_draft_tokens=2, mtp_applied=True, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:31:19,122 - INFO - Proxy request from 172.29.138.11: POST /v1/chat/completions
+2026-06-11 03:31:31,496 - INFO - Proxy request from 172.29.138.11: POST /v1/chat/completions
+2026-06-11 03:36:34,305 - INFO - Encerrando Automanager Llama.cpp...
+2026-06-11 03:36:34,871 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:36:35,576 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:36:35,577 - INFO - OOMWatchdog started
+2026-06-11 03:36:35,578 - INFO - Auto-start requested for: /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf
+2026-06-11 03:36:35,579 - ERROR - Auto-start error for /media/docker/models/Qwen3.6-35B-A3B-UD-Q4_K_M/Qwen3.6-35B.gguf: name 'SERVER_PORT' is not defined
+2026-06-11 03:36:46,139 - INFO - Verificacao de versao iniciada em /home/joao/automanager-llama.cpp
+2026-06-11 03:36:46,874 - INFO - Versao atualizada (branch=main, ref=17e2cb2)
+2026-06-11 03:36:54,126 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-7/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:36:54,126 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-7/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:36:54,134 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:36:54,135 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:36:54,137 - WARNING - OOM detected on port 8085! Consecutive: 1
+2026-06-11 03:36:54,175 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,176 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,176 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,176 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,176 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,176 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,176 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:36:54,177 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:36:54,177 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,177 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,177 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,178 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,178 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,178 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,179 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,180 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,180 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,181 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,181 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:54,183 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,184 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:36:54,184 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:36:54,186 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:36:54,186 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:36:54,187 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,187 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,195 - WARNING - _wait_for_outcome: OOM-on-exit after 0.0s (log=/tmp/server.log) | preview=['ggml CUDA error: out of memory']
+2026-06-11 03:36:54,197 - WARNING - _wait_for_outcome: CRASHED after 0.0s (log=/tmp/server.log) | preview=["error: unknown model architecture 'qwen3-next'"]
+2026-06-11 03:36:54,199 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,200 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,202 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,203 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:36:54,204 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:36:54,204 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,204 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,204 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:36:54,204 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:36:54,206 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,206 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,208 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:36:54,209 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,209 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,211 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,211 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:36:54,213 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,213 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:36:54,215 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,216 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,216 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,216 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,216 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,216 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,217 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:36:54,217 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:36:54,219 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,219 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,220 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:36:54,220 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:36:54,220 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:36:54,221 - INFO - Auto-balance: split GPU-only viável (principal maximizado): GPU2=45%, GPU0=28%, GPU1=27%
+2026-06-11 03:36:54,223 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,223 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:36:54,223 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,223 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:36:54,224 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:36:54,230 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:36:54,231 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:36:54,231 - INFO - Auto-balance GPU 2: weight=80% vram=0.0%
+2026-06-11 03:36:54,231 - INFO - Auto-balance GPU 0: weight=10% vram=0.0%
+2026-06-11 03:36:54,232 - INFO - Auto-balance GPU 1: weight=10% vram=0.0%
+2026-06-11 03:36:54,233 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:36:54,234 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:36:54,234 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,234 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,236 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:36:54,250 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,250 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:54,250 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,250 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:54,250 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:36:54,251 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,251 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:36:54,251 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:36:54,252 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,252 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,252 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:36:54,252 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:36:54,252 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:36:54,252 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:36:54,252 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:54,253 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:54,253 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:36:54,253 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:36:54,253 - INFO - Auto-balance GPU 2: weight=81% vram=96.0%
+2026-06-11 03:36:54,254 - INFO - Auto-balance GPU 0: weight=19% vram=19.0%
+2026-06-11 03:36:54,254 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,254 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,254 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:36:54,254 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:36:54,255 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:36:54,255 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:36:54,255 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:36:54,255 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:36:54,255 - INFO - _vram_summary: weight_map={2: 81%, 0: 19%} -> summary=GPU2 VRAM 97%; GPU0 VRAM 18%
+2026-06-11 03:36:54,255 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,255 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:36:54,256 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:36:54,256 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:36:54,256 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:54,256 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:54,935 - INFO - Session expired due to inactivity
+2026-06-11 03:36:55,018 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,021 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.5000,0.5000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,025 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,032 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:36:55,038 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:36:55,144 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,148 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:36:55,151 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:36:55,257 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,270 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 70 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.7143,0.2857 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=70, n_cpu_layers=30)
+2026-06-11 03:36:55,275 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.6000,0.4000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,278 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,278 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,279 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:55,279 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:36:55,279 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,279 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,280 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:36:55,280 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:36:55,280 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,280 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,280 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,281 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,281 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,281 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,281 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,281 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,281 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,282 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,283 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:36:55,283 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,284 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,284 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,284 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,285 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,285 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,287 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:36:55,288 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:36:55,288 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,288 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,288 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,288 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,289 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,289 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,289 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,289 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,289 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,289 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,291 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:36:55,291 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,291 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,292 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,292 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,292 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:36:55,292 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:36:55,298 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:55,298 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:36:55,298 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,298 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:36:55,298 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:55,299 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:36:55,299 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:36:55,299 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:36:55,299 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,299 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,300 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:36:55,300 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:36:55,300 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,300 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:36:55,300 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:36:55,301 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:36:55,301 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:36:55,301 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:36:55,303 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,304 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,304 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,304 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,304 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,305 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,305 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,305 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,305 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,305 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,305 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,306 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:36:55,307 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:36:55,307 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,307 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:36:55,308 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,308 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,308 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,308 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:36:55,311 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,311 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:36:55,311 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,311 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,312 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:36:55,312 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:36:55,312 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,312 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,312 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,312 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:36:55,313 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,313 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:36:55,313 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,313 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,313 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:36:55,313 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:36:55,314 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:36:55,314 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:36:55,315 - INFO - _vram_summary: weight_map={0: 50%, 1: 20%} -> summary=GPU0 VRAM 0%; GPU1 VRAM 0%
+2026-06-11 03:36:55,315 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,315 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:36:55,316 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,316 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:36:55,316 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:55,316 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:36:55,318 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:36:55,319 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:36:55,319 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,319 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:36:55,320 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:36:55,320 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:36:55,331 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:36:55,335 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 6 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=20.0, cpu_pct=80.0, n_gpu_layers=6, n_cpu_layers=26)
+2026-06-11 03:36:55,347 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,351 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:36:55,410 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:36:55,412 - ERROR - GPU detection error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:36:55,417 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:36:55,417 - ERROR - System metrics error: ram metrics unavailable
+2026-06-11 03:36:55,419 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:36:55,730 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:36:55,730 - ERROR - System metrics error: ram down
+2026-06-11 03:36:55,732 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:36:55,776 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:36:55,781 - WARNING - Could not detect MTP for /fake/model.gguf: boom
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 2
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:17:11,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 3
+1970-01-01 00:16:45,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+2026-06-11 03:36:55,835 - WARNING - Could not detect model layers for /fake/model.gguf: not found
+2026-06-11 03:36:55,842 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,848 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:36:55,853 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:36:55,858 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,863 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,869 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 56 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=56, n_cpu_layers=24)
+2026-06-11 03:36:55,875 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=200.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,880 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:36:55,885 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:36:56,394 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:36:56,414 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,415 - WARNING - Diretorio nao e um repositorio git: /tmp/automanager-test
+2026-06-11 03:36:56,416 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,416 - INFO - Versao atualizada (branch=main, ref=aaa1111)
+2026-06-11 03:36:56,417 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,418 - INFO - Atualizacao disponivel (branch=main, ahead=2, aaa1111 -> ddd4444)
+2026-06-11 03:36:56,419 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,419 - WARNING - git fetch falhou (branch=main): fatal: could not read from remote
+2026-06-11 03:36:56,420 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,421 - WARNING - git fetch expirou apos 30s (branch=main)
+2026-06-11 03:36:56,422 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,422 - INFO - Versao atualizada (branch=feature/foo, ref=1111111)
+2026-06-11 03:36:56,423 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:36:56,424 - INFO - Atualizacao disponivel (branch=main, ahead=12, local00 -> remote0)
+2026-06-11 03:37:39,905 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-8/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:37:39,905 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-8/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:37:39,913 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:37:39,913 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:37:39,916 - WARNING - OOM detected on port 8085! Consecutive: 1
+2026-06-11 03:37:39,953 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,954 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,954 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,954 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,954 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:39,954 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:37:39,955 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:37:39,955 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,955 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,955 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,956 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,956 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,957 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,957 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,958 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,958 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,959 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,959 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,959 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:37:39,960 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,960 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:39,962 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,962 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:39,962 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,962 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:39,962 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:37:39,963 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:37:39,965 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:37:39,965 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:37:39,966 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,966 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,973 - WARNING - _wait_for_outcome: OOM-on-exit after 0.0s (log=/tmp/server.log) | preview=['ggml CUDA error: out of memory']
+2026-06-11 03:37:39,975 - WARNING - _wait_for_outcome: CRASHED after 0.0s (log=/tmp/server.log) | preview=["error: unknown model architecture 'qwen3-next'"]
+2026-06-11 03:37:39,977 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,977 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,979 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,979 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:37:39,980 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:37:39,981 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,981 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,981 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:37:39,981 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:37:39,983 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,983 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,985 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,985 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,986 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,986 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:37:39,986 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,986 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,988 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,988 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:37:39,991 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:39,991 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:37:40,019 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:37:40,020 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,020 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,021 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,021 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,021 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,021 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,021 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:37:40,022 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:37:40,024 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,024 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,024 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,024 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,025 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:37:40,025 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:37:40,025 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:37:40,025 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:37:40,025 - INFO - Auto-balance: split GPU-only viável (principal maximizado): GPU2=45%, GPU0=28%, GPU1=27%
+2026-06-11 03:37:40,027 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,027 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:37:40,028 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:37:40,029 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:37:40,029 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:37:40,035 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:37:40,035 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:37:40,035 - INFO - Auto-balance GPU 2: weight=80% vram=0.0%
+2026-06-11 03:37:40,036 - INFO - Auto-balance GPU 0: weight=10% vram=0.0%
+2026-06-11 03:37:40,036 - INFO - Auto-balance GPU 1: weight=10% vram=0.0%
+2026-06-11 03:37:40,038 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:37:40,038 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:37:40,038 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,038 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,040 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:37:40,040 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:37:40,041 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,041 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:37:40,052 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,052 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:40,053 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,053 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:40,053 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,053 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:37:40,053 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:40,053 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:37:40,054 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:37:40,054 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,054 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,054 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:37:40,055 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:37:40,055 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:37:40,055 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:37:40,055 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:40,055 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:40,055 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:37:40,055 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:37:40,056 - INFO - Auto-balance GPU 2: weight=81% vram=96.0%
+2026-06-11 03:37:40,056 - INFO - Auto-balance GPU 0: weight=19% vram=19.0%
+2026-06-11 03:37:40,056 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,057 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,057 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:37:40,057 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:37:40,057 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:37:40,057 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:37:40,057 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:37:40,058 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:37:40,058 - INFO - _vram_summary: weight_map={2: 81%, 0: 19%} -> summary=GPU2 VRAM 97%; GPU0 VRAM 18%
+2026-06-11 03:37:40,058 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,058 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:37:40,058 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:37:40,058 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:37:40,059 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:40,059 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:40,701 - INFO - Session expired due to inactivity
+2026-06-11 03:37:40,754 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:40,757 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.5000,0.5000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:40,762 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:40,768 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:37:40,774 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:37:40,879 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:40,884 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:37:40,886 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:37:40,992 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,005 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 70 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.7143,0.2857 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=70, n_cpu_layers=30)
+2026-06-11 03:37:41,010 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.6000,0.4000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,013 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,013 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,013 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:41,014 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:37:41,014 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:37:41,015 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,015 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,015 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,015 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,015 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,015 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,016 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,016 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,016 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,016 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,017 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:37:41,018 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,018 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,018 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,019 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,019 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,019 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,021 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:37:41,021 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:37:41,022 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,022 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,022 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,022 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,022 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,023 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,023 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,023 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,023 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,023 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,025 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:37:41,025 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,025 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,025 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,026 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,026 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:37:41,026 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:37:41,028 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:41,028 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:37:41,028 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,029 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:37:41,029 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:41,029 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:37:41,029 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:37:41,029 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:37:41,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,030 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:37:41,030 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:37:41,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:37:41,031 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:37:41,034 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,034 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,034 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,034 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,035 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,035 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,035 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,035 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,035 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,035 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,036 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,036 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:37:41,037 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:37:41,037 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,037 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:37:41,038 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,038 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,038 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,039 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:37:41,041 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,041 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:37:41,041 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,042 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,042 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:37:41,042 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:37:41,042 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,042 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,043 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,043 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:37:41,043 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,043 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:37:41,043 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,043 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,043 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:37:41,044 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:37:41,044 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:37:41,044 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:37:41,045 - INFO - _vram_summary: weight_map={0: 50%, 1: 20%} -> summary=GPU0 VRAM 0%; GPU1 VRAM 0%
+2026-06-11 03:37:41,045 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,046 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:37:41,046 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,046 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:37:41,046 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:41,047 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:37:41,049 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:37:41,049 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:37:41,049 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,049 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:37:41,050 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:37:41,050 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:37:41,062 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:37:41,066 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 6 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=20.0, cpu_pct=80.0, n_gpu_layers=6, n_cpu_layers=26)
+2026-06-11 03:37:41,076 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,080 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:37:41,138 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:37:41,141 - ERROR - GPU detection error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:37:41,145 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:37:41,145 - ERROR - System metrics error: ram metrics unavailable
+2026-06-11 03:37:41,147 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:37:41,450 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:37:41,450 - ERROR - System metrics error: ram down
+2026-06-11 03:37:41,452 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:37:41,491 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:37:41,494 - WARNING - Could not detect MTP for /fake/model.gguf: boom
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 2
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:17:11,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 3
+1970-01-01 00:16:45,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+2026-06-11 03:37:41,582 - WARNING - Could not detect model layers for /fake/model.gguf: not found
+2026-06-11 03:37:41,587 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,592 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:37:41,596 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:37:41,602 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,606 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,610 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 56 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=56, n_cpu_layers=24)
+2026-06-11 03:37:41,615 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=200.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,619 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:37:41,624 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:37:42,201 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:37:42,220 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,220 - WARNING - Diretorio nao e um repositorio git: /tmp/automanager-test
+2026-06-11 03:37:42,221 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,221 - INFO - Versao atualizada (branch=main, ref=aaa1111)
+2026-06-11 03:37:42,223 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,223 - INFO - Atualizacao disponivel (branch=main, ahead=2, aaa1111 -> ddd4444)
+2026-06-11 03:37:42,224 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,224 - WARNING - git fetch falhou (branch=main): fatal: could not read from remote
+2026-06-11 03:37:42,225 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,226 - WARNING - git fetch expirou apos 30s (branch=main)
+2026-06-11 03:37:42,227 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,227 - INFO - Versao atualizada (branch=feature/foo, ref=1111111)
+2026-06-11 03:37:42,229 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:37:42,229 - INFO - Atualizacao disponivel (branch=main, ahead=12, local00 -> remote0)
+2026-06-11 03:38:06,976 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-9/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:38:06,976 - INFO - estimate_model_vram_mb [DISK] model=/tmp/pytest-of-root/pytest-9/test_estimate_model_vram_uses_0/qwen-49b.gguf disk_mb=100 runtime_overhead_mb=256 weights_mb=356 kv_cache_mb=6553 total_mb=6909
+2026-06-11 03:38:06,985 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:38:06,985 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=huge-model.gguf path=/models/huge-model.gguf
+  estimated_model_mb=?
+  total_vram_mb=24576 total_vram_gb=24.00
+  active_gpus=[0]
+  gpu_details=[{'index': 0, 'name': 'RTX 3090', 'vram_mb': 24576}]
+  context_size=32768 parallel_slots=2
+  message=Não foi possível carregar "huge-model.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~24.0 GB de VRAM em 1 GPU(s)) com contexto 32768 e 2 slot(s).
+2026-06-11 03:38:06,987 - WARNING - OOM detected on port 8085! Consecutive: 1
+2026-06-11 03:38:07,025 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,026 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,026 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,026 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:38:07,026 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%)
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=90%, GPU0=10%) → OOM; adicionar 3ª GPU
+2026-06-11 03:38:07,027 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,027 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=80%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,027 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=70%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,028 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=60%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,028 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=50%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,029 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,029 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=40%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,030 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=30%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,030 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=20%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,031 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - INFO - Fase 1 — Tentativa 3: Main + 2ª GPU (cascata: GPU2=10%, GPU0=10%, GPU1=10%)
+2026-06-11 03:38:07,031 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,032 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:07,033 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,034 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:38:07,034 - INFO - Fase 1 — Tentativa 1: Main GPU2 100% → READY
+2026-06-11 03:38:07,036 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:38:07,036 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=10->0 [gpu[0]=100.0%, cpu[-1]=0.0%]
+2026-06-11 03:38:07,037 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,037 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,045 - WARNING - _wait_for_outcome: OOM-on-exit after 0.0s (log=/tmp/server.log) | preview=['ggml CUDA error: out of memory']
+2026-06-11 03:38:07,048 - WARNING - _wait_for_outcome: CRASHED after 0.0s (log=/tmp/server.log) | preview=["error: unknown model architecture 'qwen3-next'"]
+2026-06-11 03:38:07,050 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,050 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,052 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 2/2 (provável porta/transitório)
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,053 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,053 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:38:07,053 - ERROR - PROBE #1 → CRASH persistente (não-OOM, 1.0s após 2 retries) — abortando auto-balance
+2026-06-11 03:38:07,055 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,055 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,057 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,057 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,058 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,058 - WARNING - PROBE #1 → CRASH (não-OOM, 1.0s) — retry 1/2 (provável porta/transitório)
+2026-06-11 03:38:07,058 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,058 - INFO - PROBE #1 RESULT: ready | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,060 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,060 - INFO - PROBE #1 START (gpus=1): weight_map={0: 100%} synced={0: 100%} cpu=0->0 [gpu[0]=100.0%]
+2026-06-11 03:38:07,062 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,062 - WARNING - PROBE #1 RESULT: crashed | synced={0: 100%} cpu=0
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,064 - INFO - estimate_model_vram_mb [DISK] model=/models/Qwen3-Coder-Next.gguf disk_mb=20000 runtime_overhead_mb=1000 weights_mb=21000 kv_cache_mb=409 total_mb=21409
+2026-06-11 03:38:07,065 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,065 - INFO - === Auto-balance EMPIRICAL START ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=21000 (20.51 GB)  kv_cache_mb=409  total_mb=21409 (20.91 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,065 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,065 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,065 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,065 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,066 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:38:07,066 - ERROR - === SERVER CRASH FAILURE (não-OOM) ===
+  model=Qwen3-Coder-Next.gguf path=/models/Qwen3-Coder-Next.gguf
+  elapsed=1.0s crashed_split={2: 100} cpu=0%
+  server_log=/tmp/server.log
+  log_tail=['unknown architecture']
+  message=O servidor encerrou inesperadamente (~1.0s) ao carregar "Qwen3-Coder-Next.gguf", sem indício de falta de memória (OOM). Isso indica incompatibilidade do modelo/binário llama.cpp ou um parâmetro de inicialização inválido — não falta de VRAM. O auto-balance foi interrompido.
+2026-06-11 03:38:07,068 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,068 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,069 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:38:07,069 - INFO - Fase 1c — principal 45% → READY (GPU2=45%, GPU0=28%, GPU1=27%)
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:38:07,069 - WARNING - Fase 1c — principal 46% → oom; reduzindo principal
+2026-06-11 03:38:07,070 - INFO - Auto-balance: split GPU-only viável (principal maximizado): GPU2=45%, GPU0=28%, GPU1=27%
+2026-06-11 03:38:07,073 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,073 - INFO - === Fase 1c — busca GPU-only (maximizar principal) ===
+  principal=GPU2 faixa=[43%, 50%] resto por VRAM em [0, 1]
+2026-06-11 03:38:07,073 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,073 - WARNING - Fase 1c — principal 47% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 45% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 44% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:38:07,074 - WARNING - Fase 1c — principal 43% → oom; reduzindo principal
+2026-06-11 03:38:07,080 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:38:07,080 - INFO - Fase 2: input weight_map={2: 80%, 0: 10%, 1: 10%} main_index=2
+2026-06-11 03:38:07,081 - INFO - Auto-balance GPU 2: weight=80% vram=0.0%
+2026-06-11 03:38:07,081 - INFO - Auto-balance GPU 0: weight=10% vram=0.0%
+2026-06-11 03:38:07,081 - INFO - Auto-balance GPU 1: weight=10% vram=0.0%
+2026-06-11 03:38:07,083 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:38:07,083 - INFO - TRIM: GPU1 removida — 10% redistribuido para GPU2 | GPU2=90%, GPU0=10%
+2026-06-11 03:38:07,083 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,083 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,085 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:38:07,085 - WARNING - TRIM: GPU1 mantida (10%) — probe=oom
+2026-06-11 03:38:07,085 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,086 - WARNING - TRIM: GPU0 mantida (10%) — probe=oom
+2026-06-11 03:38:07,097 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,097 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=3 | total_vram=57344 MB (56.00 GB)
+  gpu_vram={0: 16384, 1: 16384, 2: 24576}
+  gpu_names={0: Tesla P100-PCIE-16GB, 1: Tesla P100-PCIE-16GB, 2: NVIDIA GeForce RTX 3090}
+  main_index=2
+  spill_order=[2, 0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:07,097 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,097 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 1: Main GPU2 100%
+2026-06-11 03:38:07,098 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,098 - WARNING - Fase 1 — Tentativa 1: Main GPU2 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%)
+2026-06-11 03:38:07,098 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:38:07,099 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU2=81%, GPU0=19%) → READY
+2026-06-11 03:38:07,099 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,099 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,099 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:38:07,099 - WARNING - TRIM: GPU0 mantida (19%) — probe=oom
+2026-06-11 03:38:07,099 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:38:07,099 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={2: 81%, 0: 19%} main_index=2 cpu_enabled=True
+2026-06-11 03:38:07,100 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:07,100 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:07,100 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:38:07,100 - INFO - Fase 2: input weight_map={2: 81%, 0: 19%} main_index=2
+2026-06-11 03:38:07,101 - INFO - Auto-balance GPU 2: weight=81% vram=96.0%
+2026-06-11 03:38:07,101 - INFO - Auto-balance GPU 0: weight=19% vram=19.0%
+2026-06-11 03:38:07,101 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,101 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,101 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:38:07,101 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=2 current_weight=81% max_possible=100%
+  secondary_total=19% CPU=desabilitado
+2026-06-11 03:38:07,102 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:38:07,102 - WARNING - Fase 3 — GPU2=82% → OOM (limit reached)
+2026-06-11 03:38:07,102 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:38:07,102 - WARNING - Fase 3: sem incremento possivel — main GPU2 ja em 81%
+2026-06-11 03:38:07,102 - INFO - _vram_summary: weight_map={2: 81%, 0: 19%} -> summary=GPU2 VRAM 97%; GPU0 VRAM 18%
+2026-06-11 03:38:07,102 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,102 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU2=81%, GPU0=19%
+  weight_map={2: 81%, 0: 19%}
+  cpu_weight=0
+2026-06-11 03:38:07,103 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:38:07,103 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[GPU0: used=2949MB total=16384MB util=0%; GPU1: used=0MB total=16384MB util=0%; GPU2: used=23839MB total=24576MB util=0%]
+2026-06-11 03:38:07,103 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:07,103 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU2=81%, GPU0=19%). GPU2 VRAM 97%; GPU0 VRAM 18%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:07,750 - INFO - Session expired due to inactivity
+2026-06-11 03:38:07,826 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:07,830 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.5000,0.5000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:07,833 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:07,841 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:38:07,846 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:38:07,952 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:07,956 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:38:07,959 - ERROR - GPU metrics error: not enough values to unpack (expected 2, got 0)
+2026-06-11 03:38:08,064 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=0.0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,076 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 70 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 0.7143,0.2857 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=70, n_cpu_layers=30)
+2026-06-11 03:38:08,081 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 1 --split-mode layer --tensor-split 0.6000,0.4000 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0,1, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,086 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,087 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,087 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:08,087 - INFO - === Fase 1 INICIO (GPUs primeiro) ===
+2026-06-11 03:38:08,087 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,087 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,088 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:38:08,088 - INFO - Fase 1 — Tentativa 1: Main GPU0 100% → READY
+2026-06-11 03:38:08,088 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,088 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,088 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,089 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,089 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,089 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,089 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,089 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,089 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,090 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,091 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:38:08,091 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,091 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,092 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,092 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,092 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,092 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,095 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:38:08,095 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=20000 (19.53 GB)  kv_cache_mb=0  total_mb=20000 (19.53 GB)
+  active_gpus=1 | total_vram=24000 MB (23.44 GB)
+  gpu_vram={0: 24000}
+  gpu_names={0: GPU0}
+  main_index=0
+  spill_order=[0]
+  cpu_enabled=True
+  pins_count=1
+2026-06-11 03:38:08,095 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,095 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,095 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,096 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,096 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,096 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,096 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,096 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,096 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,097 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,098 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:38:08,098 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,098 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,099 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,099 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,099 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:38:08,099 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=1 entries
+2026-06-11 03:38:08,101 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:08,101 - INFO - === Fase 1 INICIO (GPUs primeiro, CPU permitido neste passo) ===
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 1: Main GPU0 100%
+2026-06-11 03:38:08,102 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:08,102 - WARNING - Fase 1 — Tentativa 1: Main GPU0 100% → OOM; adicionar 2ª GPU
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:38:08,102 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=90%, GPU1=10%)
+2026-06-11 03:38:08,103 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,103 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,103 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:38:08,103 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=80%, GPU1=10%)
+2026-06-11 03:38:08,103 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,104 - WARNING - Fase 1 — todas as GPUs esgotadas → CPU offload +10%
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%)
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:38:08,104 - INFO - Fase 1 — Tentativa 2: Main + 1ª GPU (cascata: GPU0=70%, GPU1=10%) → READY
+2026-06-11 03:38:08,107 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,107 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=30000 (29.30 GB)  kv_cache_mb=0  total_mb=30000 (29.30 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,107 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,107 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,108 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,108 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 100%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,108 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,108 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,108 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,108 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,108 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,109 - INFO - Fase 3: GPU0 já está em 100% — pulando fine-tuning
+2026-06-11 03:38:08,110 - INFO - _vram_summary: weight_map={0: 100%} -> summary=GPU0 VRAM 0%
+2026-06-11 03:38:08,110 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,110 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=100%
+  weight_map={0: 100%}
+  cpu_weight=0
+2026-06-11 03:38:08,111 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,111 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,111 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,111 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=100%). GPU0 VRAM 0%
+  gpu_weights_exported=2 entries
+2026-06-11 03:38:08,113 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,114 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=True
+  pins_count=0
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:38:08,114 - WARNING - Fase 1 — maximização GPU-only falhou; iniciando CPU offload (último recurso, +10% por tentativa)
+2026-06-11 03:38:08,115 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,115 - INFO - === Auto-balance: Fase 1 viavel ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,115 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,115 - INFO - === Fase 2 PREPARANDO ===
+  trimmed={0: 50%, 1: 20%} main_index=0 cpu_enabled=True
+2026-06-11 03:38:08,115 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,115 - INFO - === Fase 2 INICIO (maximizar VRAM, GPU-only) ===
+2026-06-11 03:38:08,115 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,116 - INFO - === Fase 2 CONCLUIDA ===
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,116 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:38:08,116 - INFO - === Fase 3 INICIO (fine-tuning 1%, GPU-only) ===
+  main_gpu=0 current_weight=50% max_possible=70%
+  secondary_total=20% CPU=desabilitado
+2026-06-11 03:38:08,116 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:38:08,116 - WARNING - Fase 3: sem incremento possivel — main GPU0 ja em 50%
+2026-06-11 03:38:08,118 - INFO - _vram_summary: weight_map={0: 50%, 1: 20%} -> summary=GPU0 VRAM 0%; GPU1 VRAM 0%
+2026-06-11 03:38:08,118 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,118 - INFO - === Auto-balance: peso final ===
+  weight_label=GPU0=50%, GPU1=20%, CPU=30%
+  weight_map={0: 50%, 1: 20%}
+  cpu_weight=30
+2026-06-11 03:38:08,118 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,119 - INFO - === HARDWARE SNAPSHOT BEFORE FINAL ===
+  gpus=[]
+2026-06-11 03:38:08,119 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:08,119 - INFO - === Auto-balance SUCCESS ===
+  message=Balance otimizado (GPU0=50%, GPU1=20%, CPU=30%). GPU0 VRAM 0%; GPU1 VRAM 0%
+  gpu_weights_exported=3 entries
+2026-06-11 03:38:08,121 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:38:08,121 - INFO - === Auto-balance EMPIRICAL START ===
+  model=test.gguf path=/models/test.gguf
+  context_size=4096 parallel_slots=1
+  weights_mb=70000 (68.36 GB)  kv_cache_mb=0  total_mb=70000 (68.36 GB)
+  active_gpus=2 | total_vram=40000 MB (39.06 GB)
+  gpu_vram={0: 24000, 1: 16000}
+  gpu_names={0: GPU0, 1: GPU1}
+  main_index=0
+  spill_order=[0, 1]
+  cpu_enabled=False
+  pins_count=0
+2026-06-11 03:38:08,121 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,122 - WARNING - Fase 1 — cascata GPU-only deu OOM; buscando split GPU-only maximizando o principal (resto balanceado por VRAM) antes do CPU
+2026-06-11 03:38:08,122 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:38:08,122 - INFO - === HARDWARE CAPACITY FAILURE ===
+  reason=no_feasible_split
+  model=test.gguf path=/models/test.gguf
+  estimated_model_mb=?
+  total_vram_mb=40000 total_vram_gb=39.06
+  active_gpus=[0, 1]
+  gpu_details=[{'index': 0, 'name': 'GPU0', 'vram_mb': 24000}, {'index': 1, 'name': 'GPU1', 'vram_mb': 16000}]
+  context_size=4096 parallel_slots=1
+  message=Não foi possível carregar "test.gguf" em nenhuma divisão testada entre as GPUs selecionadas. O modelo excede a capacidade do hardware atual (~39.1 GB de VRAM em 2 GPU(s)) com contexto 4096 e 1 slot(s).
+2026-06-11 03:38:08,133 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:38:08,137 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 6 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=20.0, cpu_pct=80.0, n_gpu_layers=6, n_cpu_layers=26)
+2026-06-11 03:38:08,149 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,153 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key sk-test --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:38:08,211 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:38:08,214 - ERROR - GPU detection error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:38:08,219 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:38:08,219 - ERROR - System metrics error: ram metrics unavailable
+2026-06-11 03:38:08,221 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:38:08,529 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:38:08,530 - ERROR - System metrics error: ram down
+2026-06-11 03:38:08,532 - ERROR - GPU metrics error: Command 'nvidia-smi' returned non-zero exit status 1.
+2026-06-11 03:38:08,572 - INFO - llama-server encontrado: /home/joao/llama.cpp/build/bin/llama-server
+2026-06-11 03:38:08,575 - WARNING - Could not detect MTP for /fake/model.gguf: boom
+2026-06-11 03:38:08,583 - INFO - Proxy request from testclient: POST /v1/chat/completions
+2026-06-11 03:38:08,588 - INFO - Proxy request from testclient: POST /v1/chat/completions
+2026-06-11 03:38:08,592 - INFO - Proxy request from testclient: POST /v1/chat/completions
+2026-06-11 03:38:08,597 - INFO - Proxy request from testclient: POST /v1/chat/completions
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 2
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:17:11,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - WARNING - OOM detected on port 8085! Consecutive: 1
+1970-01-01 00:16:40,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+1970-01-01 00:16:45,000 - WARNING - OOM detected on port 8085! Consecutive: 3
+1970-01-01 00:16:45,000 - INFO - OOM: Instancia na porta 8085 reiniciada com novo split
+2026-06-11 03:38:08,630 - WARNING - Could not detect model layers for /fake/model.gguf: not found
+2026-06-11 03:38:08,636 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,641 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 22 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=22, n_cpu_layers=10)
+2026-06-11 03:38:08,645 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:38:08,649 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,654 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,660 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 56 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=70.0, cpu_pct=30.0, n_gpu_layers=56, n_cpu_layers=24)
+2026-06-11 03:38:08,664 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=200.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,669 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 999 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=100.0, cpu_pct=0, n_gpu_layers=999, n_cpu_layers=0)
+2026-06-11 03:38:08,673 - INFO - START (port 8085): /usr/bin/llama-server -m /fake/model.gguf -ngl 0 --flash-attn on --host 127.0.0.1 --port 8085 --tools all --parallel 1 --ctx-size 8192 --batch-size 2048 --mlock --main-gpu 0 --split-mode layer --tensor-split 1.0 --api-key test-token --mmproj-auto --reasoning on (CUDA_VISIBLE_DEVICES=0, ctx_per_slot=8192, server_ctx=8192, batch_size=2048, thinking_enabled=True, mtp_enabled=False, mtp_draft_tokens=3, mtp_applied=False, gpu_pct=0, cpu_pct=0, n_gpu_layers=0, n_cpu_layers=32)
+2026-06-11 03:38:09,181 - INFO - llama-server on port 8085 stopped
+2026-06-11 03:38:09,200 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,201 - WARNING - Diretorio nao e um repositorio git: /tmp/automanager-test
+2026-06-11 03:38:09,202 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,202 - INFO - Versao atualizada (branch=main, ref=aaa1111)
+2026-06-11 03:38:09,203 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,203 - INFO - Atualizacao disponivel (branch=main, ahead=2, aaa1111 -> ddd4444)
+2026-06-11 03:38:09,205 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,205 - WARNING - git fetch falhou (branch=main): fatal: could not read from remote
+2026-06-11 03:38:09,206 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,206 - WARNING - git fetch expirou apos 30s (branch=main)
+2026-06-11 03:38:09,208 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,208 - INFO - Versao atualizada (branch=feature/foo, ref=1111111)
+2026-06-11 03:38:09,209 - INFO - Verificacao de versao iniciada em /tmp/automanager-test
+2026-06-11 03:38:09,209 - INFO - Atualizacao disponivel (branch=main, ahead=12, local00 -> remote0)

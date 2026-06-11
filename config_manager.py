@@ -136,13 +136,35 @@ class ConfigManager:
         model_configs[norm] = entry
         self.save(config)
 
-    def set_default_model(self, path: Optional[str]) -> None:
+    def set_default_model(self, path: Optional[str], add: bool = True) -> None:
         config = self.load()
-        config["default_model"] = path
+        defaults = config.get("default_models", [])
+        if not isinstance(defaults, list):
+            # Migrate legacy single default_model if it exists
+            legacy = config.get("default_model")
+            defaults = [legacy] if legacy else []
+        
+        if path:
+            norm = normalize_model_path(path)
+            if add:
+                if norm not in defaults:
+                    defaults.append(norm)
+            else:
+                if norm in defaults:
+                    defaults.remove(norm)
+        
+        config["default_models"] = defaults
+        # Clear legacy field for cleanliness
+        config.pop("default_model", None)
         self.save(config)
 
-    def get_default_model(self) -> Optional[str]:
-        return self.load().get("default_model")
+    def get_default_models(self) -> list[str]:
+        config = self.config.load() if hasattr(self, "config") else self.load()
+        defaults = config.get("default_models")
+        if isinstance(defaults, list):
+            return defaults
+        legacy = config.get("default_model")
+        return [legacy] if legacy else []
 
 
 class TokenManager:

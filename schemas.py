@@ -65,6 +65,7 @@ class SetThinkingRequest(BaseModel):
 
 class SetDefaultRequest(BaseModel):
     path: Optional[str] = None
+    add: bool = True
 
 
 class RenameRequest(BaseModel):

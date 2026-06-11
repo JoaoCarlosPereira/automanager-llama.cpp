@@ -481,11 +481,14 @@ client = httpx.AsyncClient()
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-async def openai_proxy(request: Request, path: str):
+async def openai_proxy(request: Request, path: str, _auth: str = Depends(get_current_auth)):
     """
     Proxy OpenAI-compatible requests to the correct llama-server instance
     based on the 'model' field in the request body.
     """
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info(f"Proxy request from {client_ip}: {request.method} /v1/{path}")
+    
     body = await request.body()
     requested_model = None
 
@@ -553,6 +556,43 @@ async def openai_proxy(request: Request, path: str):
     except httpx.RequestError as exc:
         logger.error(f"Proxy error to port {target_instance['port']}: {exc}")
         raise HTTPException(status_code=502, detail="Erro ao conectar na instancia do modelo")
+
+
+@app.api_route("/ui/{port}/{path:path}", methods=["GET", "POST", "OPTIONS"])
+async def ui_proxy(request: Request, port: int, path: str):
+    """
+    Proxy web UI requests to a specific llama-server instance.
+    Note: Token check is omitted for UI to allow direct browser navigation,
+    but it's protected because it only proxies to localhost and paths are specific.
+    """
+    # Simple path mapping for the llama.cpp UI
+    if not path:
+        path = "index.html"
+    
+    target_url = f"http://127.0.0.1:{port}/{path}"
+    query = str(request.query_params)
+    if query:
+        target_url += f"?{query}"
+
+    headers = dict(request.headers)
+    headers.pop("host", None)
+
+    try:
+        resp = await client.request(
+            request.method, 
+            target_url, 
+            content=await request.body(), 
+            headers=headers,
+            timeout=10.0
+        )
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=dict(resp.headers)
+        )
+    except httpx.RequestError as exc:
+        logger.error(f"UI Proxy error to port {port}: {exc}")
+        raise HTTPException(status_code=502, detail="Interface do modelo inacessivel")
 
 
 # --- System Management ---
@@ -647,7 +687,7 @@ async def get_config(_auth: str = Depends(get_current_auth)):
 async def set_default(
     req: SetDefaultRequest, _auth: str = Depends(get_current_auth)
 ):
-    config_manager.set_default_model(req.path)
+    config_manager.set_default_model(req.path, add=req.add)
     return {"status": "ok"}
 
 
@@ -1423,7 +1463,7 @@ def _build_html(
                             <div class="w-16 h-16 rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0">
                                 <i class="fas fa-robot text-2xl md:text-3xl"></i>
                             </div>
-                            <div class="min-w-0">
+                            <div class="min-w-0 flex-1">
                                 <p class="text-blue-400 text-[10px] font-black uppercase tracking-[0.3em] mb-2 font-mono">Motor de Computação Primário</p>
                                 <h2 id="active-model-name" class="text-xl md:text-2xl font-bold text-white truncate max-w-[200px] sm:max-w-md">--</h2>
                                 <div class="flex gap-4 mt-3">
@@ -1432,6 +1472,10 @@ def _build_html(
                                         Ativo há: <span id="uptime-val">Calculando...</span>
                                     </div>
                                 </div>
+                            </div>
+                            <!-- Botões de Ação Rápida para a Instância Ativa -->
+                            <div id="active-instance-controls" class="flex flex-wrap items-center gap-3 shrink-0">
+                                <!-- Injetado via JS -->
                             </div>
                         </div>
                         <div class="flex flex-col sm:flex-row gap-4 md:gap-6 w-full lg:w-auto">
@@ -1589,72 +1633,89 @@ def _chain_shutdown_signals() -> None:
 
 
 def _auto_start_default_model() -> None:
-    """Load the default model in the background so HTTP starts immediately."""
-    default_model = config_manager.get_default_model()
-    if not default_model or not os.path.exists(default_model):
-        return
-    if process_manager.get_status().get("running"):
+    """Load the default models in the background so HTTP starts immediately."""
+    default_models = config_manager.get_default_models()
+    if not default_models:
         return
 
-    logger.info(f"Auto-start: {default_model}")
-    try:
-        saved_cfg = config_manager.get_model_settings(default_model)
-        if saved_cfg.get("gpu_weights"):
-            weights = [
-                GPUWeight(**w) if isinstance(w, dict) else w
-                for w in saved_cfg["gpu_weights"]
-            ]
-            weights = gpu_manager.normalize_gpu_weights(weights)
-            context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
-            parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
-            batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
-            mmproj_path = saved_cfg.get("mmproj_path")
-            split_mode = saved_cfg.get("split_mode", "layer")
-            thinking_enabled = saved_cfg.get("thinking_enabled", True)
-            mtp_enabled = saved_cfg.get("mtp_enabled", False)
-            mtp_draft_tokens = saved_cfg.get(
-                "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
-            )
-        else:
-            gpus = gpu_manager.detect_gpus()
-            weights = []
-            max_vram = max((g["vram"] for g in gpus), default=0)
-            main_gpu_idx = next(
-                (g["index"] for g in gpus if g["vram"] == max_vram), -1
-            )
-            for g in gpus:
-                val = 100.0 if g["index"] == main_gpu_idx else 0.0
-                weights.append(
-                    GPUWeight(
-                        index=g["index"],
-                        weight=val,
-                        name=g["name"],
-                    )
+    logger.info(f"Auto-start requested for: {', '.join(default_models)}")
+    
+    # Track assigned ports to avoid collisions during batch start
+    assigned_ports = set()
+
+    for model_path in default_models:
+        if not os.path.exists(model_path):
+            logger.warning(f"Auto-start: model file not found: {model_path}")
+            continue
+
+        try:
+            saved_cfg = config_manager.get_model_settings(model_path)
+            if saved_cfg.get("gpu_weights"):
+                weights = [
+                    GPUWeight(**w) if isinstance(w, dict) else w
+                    for w in saved_cfg["gpu_weights"]
+                ]
+                weights = gpu_manager.normalize_gpu_weights(weights)
+                context_size = saved_cfg.get("context_size", DEFAULT_CONTEXT_SIZE)
+                parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
+                batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
+                mmproj_path = saved_cfg.get("mmproj_path")
+                split_mode = saved_cfg.get("split_mode", "layer")
+                thinking_enabled = saved_cfg.get("thinking_enabled", True)
+                mtp_enabled = saved_cfg.get("mtp_enabled", False)
+                mtp_draft_tokens = saved_cfg.get(
+                    "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
                 )
-            context_size = DEFAULT_CONTEXT_SIZE
-            parallel_slots = DEFAULT_PARALLEL_SLOTS
-            batch_size = DEFAULT_BATCH_SIZE
-            mmproj_path = None
-            split_mode = "layer"
-            thinking_enabled = True
-            mtp_enabled = False
-            mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
+            else:
+                gpus = gpu_manager.detect_gpus()
+                weights = []
+                max_vram = max((g["vram"] for g in gpus), default=0)
+                main_gpu_idx = next(
+                    (g["index"] for g in gpus if g["vram"] == max_vram), -1
+                )
+                for g in gpus:
+                    val = 100.0 if g["index"] == main_gpu_idx else 0.0
+                    weights.append(
+                        GPUWeight(
+                            index=g["index"],
+                            weight=val,
+                            name=g["name"],
+                        )
+                    )
+                context_size = DEFAULT_CONTEXT_SIZE
+                parallel_slots = DEFAULT_PARALLEL_SLOTS
+                batch_size = DEFAULT_BATCH_SIZE
+                mmproj_path = None
+                split_mode = "layer"
+                thinking_enabled = True
+                mtp_enabled = False
+                mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
 
-        process_manager.start(
-            model_path=default_model,
-            gpu_weights=weights,
-            context_size=context_size,
-            mmproj_path=mmproj_path,
-            split_mode=split_mode,
-            parallel_slots=parallel_slots,
-            batch_size=batch_size,
-            thinking_enabled=thinking_enabled,
-            mtp_enabled=mtp_enabled,
-            mtp_draft_tokens=mtp_draft_tokens,
-            total_layers=saved_cfg.get("total_layers", 0),
-        )
-    except Exception as e:
-        logger.error(f"Auto-start error: {e}")
+            # Auto-allocate port for this model
+            port = SERVER_PORT
+            while port in assigned_ports or not process_manager._is_port_free(port):
+                port += 1
+            assigned_ports.add(port)
+
+            process_manager.start(
+                model_path=model_path,
+                gpu_weights=weights,
+                context_size=context_size,
+                mmproj_path=mmproj_path,
+                split_mode=split_mode,
+                parallel_slots=parallel_slots,
+                batch_size=batch_size,
+                thinking_enabled=thinking_enabled,
+                mtp_enabled=mtp_enabled,
+                mtp_draft_tokens=mtp_draft_tokens,
+                total_layers=saved_cfg.get("total_layers", 0),
+                port=port
+            )
+            logger.info(f"Auto-start: {model_path} started on port {port}")
+            # Small delay between starts to avoid resource contention peaks
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"Auto-start error for {model_path}: {e}")
 
 
 @app.on_event("startup")

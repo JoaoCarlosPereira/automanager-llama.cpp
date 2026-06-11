@@ -1,0 +1,47 @@
+0.00.051.857 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.051.860 I device_info:
+0.00.172.045 I   - CUDA0   : Tesla P100-PCIE-16GB (16269 MiB, 16013 MiB free)
+0.00.172.058 I   - CPU     : Intel(R) Xeon(R) CPU E5-2676 v3 @ 2.40GHz (64137 MiB, 64137 MiB free)
+0.00.172.155 I system_info: n_threads = 12 (n_threads_batch = 12) / 24 | CUDA : ARCHS = 600,860 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.172.203 I srv          init: running without SSL
+0.00.172.231 I srv          init: api_keys: ****093b
+0.00.172.246 I srv          init: using 23 threads for HTTP server
+0.00.172.417 W srv  llama_server: -----------------
+0.00.172.419 W srv  llama_server: Built-in tools are enabled, do not expose server to untrusted environments
+0.00.172.420 W srv  llama_server: This feature is EXPERIMENTAL and may be changed in the future
+0.00.172.420 W srv  llama_server: -----------------
+0.00.172.428 I srv         start: binding port with default address family
+0.00.173.683 I srv  llama_server: loading model
+0.00.173.697 I srv    load_model: loading model '/media/docker/models/gemma-4-12b-it-Q4_K_M/gemma-4-12b.gguf'
+0.00.173.766 I common_init_result: fitting params to device memory ...
+0.00.173.766 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.01.843.777 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.844.262 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.850.747 W load: control-looking token:      1 '<eos>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.869.173 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+0.16.317.567 W llama_context: n_ctx_seq (201216) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.16.429.821 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.16.539.860 I srv    load_model: initializing slots, n_slots = 1
+0.16.604.571 W common_speculative_init: no implementations specified for speculative decoding
+0.16.604.578 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 201216
+0.16.605.479 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.16.605.481 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.16.605.482 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.16.605.482 I srv    load_model: context checkpoints enabled, max = 32, min spacing = 256
+0.16.605.542 W srv          init: --cache-idle-slots requires --kv-unified, disabling
+0.16.617.373 I init: chat template, example_format: '<|turn>system
+<|think|>
+You are a helpful assistant<turn|>
+<|turn>user
+Hello<turn|>
+<|turn>model
+Hi there<turn|>
+<|turn>user
+How are you?<turn|>
+<|turn>model
+'
+0.16.618.639 I srv          init: init: chat template, thinking = 1
+0.16.618.699 I srv  llama_server: model loaded
+0.16.618.704 I srv  llama_server: server is listening on http://0.0.0.0:8086
+0.16.618.710 I srv  update_slots: all slots are idle
+4.57.114.881 I srv    operator(): operator(): cleaning up before exit...

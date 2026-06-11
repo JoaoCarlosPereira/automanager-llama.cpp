@@ -171,7 +171,7 @@ export function getModelButtonsHtml(path, elementId, isRunning) {
 
     if (isRunning) {
         return `<div class="flex items-center gap-3">
-            <a href="http://${window.fixedIp}:${port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
+            <a href="/ui/${port}/" target="_blank" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-lg shadow-blue-600/20 transition-all whitespace-nowrap">
                 <i class="fas fa-comments text-[8px]"></i> ABRIR INTERFACE
             </a>
             <button onclick="stopModel(${port})" class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 text-[9px] font-black rounded-xl transition-all uppercase tracking-widest whitespace-nowrap">
@@ -186,6 +186,14 @@ export function getModelButtonsHtml(path, elementId, isRunning) {
 
 export function selectModel(path, elementId) {
     state.currentSelectedModel = path;
+    
+    // Se o modelo selecionado já estiver rodando, sincronizar a aba ativa
+    const m_js = path.replace(/\\/g, '/');
+    const inst = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+    if (inst) {
+        state.currentActivePort = inst.port;
+    }
+
     document.querySelectorAll('.model-item-container').forEach(el => {
         el.classList.remove('active-selection');
     });
@@ -234,14 +242,14 @@ export function applyModelConfig(path) {
 }
 
 export async function setDefaultModel(checkbox, path) {
-    if (checkbox.checked) document.querySelectorAll('.model-default-checkbox').forEach(cb => {
-        if (cb !== checkbox) cb.checked = false;
-    });
     try {
         await fetch('/set_default', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path: checkbox.checked ? path : null}),
+            body: JSON.stringify({
+                path: path,
+                add: checkbox.checked
+            }),
         });
     } catch (e) {
         alert("Erro ao salvar configuracao.");
@@ -321,12 +329,17 @@ export async function updateModels() {
             const incapableBadge = modelIncapableBadgeHtml(incapable);
             const incapableRow = modelIncapableRowClass(incapable);
             const historyIcon = m.last_config && !incapable ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
-            const isRunning = state.currentRunningModelPath && m_js === state.currentRunningModelPath.replace(/\\/g, '/');
+            
+            const inst = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+            const isRunning = !!inst;
             const isActive = state.currentSelectedModel === m_js ? 'active-selection' : '';
             const runningClass = isRunning ? 'running-now' : '';
             const hashId = m.id;
             const buttonsHtml = getModelButtonsHtml(m_js, hashId, isRunning);
             const visionControls = buildModelVisionControlsHtml(m, m_js);
+            
+            const isDefault = (cfg.default_models || []).includes(m_js);
+
             return `<div id="${hashId}" class="model-item-container group flex flex-col gap-4 p-4 md:p-5 mb-3 md:mb-4 bg-slate-800/40 backdrop-blur-md rounded-2xl hover:bg-slate-700/60 transition-all duration-300 border border-slate-700/50 hover:border-blue-500/50 shadow-lg ${isActive} ${runningClass} ${incapableRow}" data-path="${m_js}" data-hardware-incapable="${incapable}">
                 <div class="w-full cursor-pointer" onclick="selectModel('${m_js}', '${hashId}')">
                     <div class="flex items-start gap-2 md:gap-3 mb-1 md:mb-2 flex-wrap">
@@ -349,7 +362,7 @@ export async function updateModels() {
                     </div>
                     <div class="flex flex-col items-center gap-1 md:gap-1.5">
                         <span class="text-[8px] md:text-[10px] font-black text-slate-600 uppercase tracking-tighter">Padrão</span>
-                        <input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${m.path === cfg.default_model ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')">
+                        <input type="checkbox" class="model-default-checkbox w-4 h-4 md:w-5 md:h-5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')">
                     </div>
                     <div class="action-btn-container">${buttonsHtml}</div>
                 </div>

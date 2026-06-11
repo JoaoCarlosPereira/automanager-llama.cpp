@@ -499,7 +499,7 @@ class ProcessManager:
             "--flash-attn",
             "on",
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--port",
             str(port),
             "--tools",

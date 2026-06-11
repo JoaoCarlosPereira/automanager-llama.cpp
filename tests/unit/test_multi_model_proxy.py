@@ -3,7 +3,7 @@ import json
 import httpx
 from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
-from llama_manager import app, process_manager
+from llama_manager import app, process_manager, get_current_auth
 
 client = TestClient(app)
 
@@ -25,6 +25,12 @@ def mock_instances():
 async def mock_aiter(items):
     for item in items:
         yield item
+
+@pytest.fixture(autouse=True)
+def override_auth():
+    app.dependency_overrides[get_current_auth] = lambda: "test_token"
+    yield
+    app.dependency_overrides.clear()
 
 @patch("llama_manager.process_manager.get_status")
 @patch("llama_manager.client.request")
