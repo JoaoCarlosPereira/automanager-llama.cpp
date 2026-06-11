@@ -112,6 +112,29 @@ export function formatRepoStorageLabel(storage) {
     return `${used} / ${total} GB`;
 }
 
+function resolveModelPathForSettings() {
+    const running = state.currentRunningModelPath
+        ? state.currentRunningModelPath.replace(/\\\\/g, '/')
+        : null;
+    return state.currentSelectedModel || running || window.__constants?.DEFAULT_MODEL || null;
+}
+
+async function persistThinkingEnabled(enabled) {
+    const modelPath = resolveModelPathForSettings();
+    if (!modelPath) return;
+    if (!window.modelConfigs[modelPath]) window.modelConfigs[modelPath] = {};
+    window.modelConfigs[modelPath].thinking_enabled = enabled;
+    try {
+        await apiFetch('/models/thinking', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model_path: modelPath, thinking_enabled: enabled}),
+        });
+    } catch (e) {
+        console.error('Erro ao salvar thinking_enabled:', e);
+    }
+}
+
 export function initDashboard() {
     bindGpuManualListeners();
     syncContextSizeCustomVisibility();
@@ -120,6 +143,7 @@ export function initDashboard() {
     if (thinkingToggle) {
         thinkingToggle.addEventListener('change', () => {
             updateThinkingBadge(thinkingToggle.checked);
+            persistThinkingEnabled(thinkingToggle.checked);
         });
     }
 
@@ -185,7 +209,7 @@ export function applyModelConfig(path) {
     const thinkingToggle = document.getElementById('thinking-toggle');
     if (thinkingToggle) {
         thinkingToggle.checked = cfg.thinking_enabled !== false;
-        updateThinkingBadge(cfg.thinking_enabled !== false);
+        updateThinkingBadge(thinkingToggle.checked);
     }
     const mtpToggle = document.getElementById('mtp-toggle');
     if (mtpToggle) {
@@ -377,9 +401,30 @@ export async function startModel(path, elementId) {
             + '\\n\\nDeseja tentar carregar mesmo assim?'
         )) return;
     }
+    const thinkingToggle = document.getElementById('thinking-toggle');
+    const thinkingEnabled = thinkingToggle ? thinkingToggle.checked : true;
+    const mtpToggleEl = document.getElementById('mtp-toggle');
+    const mtpEnabled = mtpToggleEl ? mtpToggleEl.checked : false;
+    const mtpDraftRawEarly = parseInt(document.getElementById('mtp-draft-tokens')?.value, 10);
+    const mtpDraftTokensEarly = Number.isFinite(mtpDraftRawEarly) && mtpDraftRawEarly >= 1
+        ? mtpDraftRawEarly
+        : 3;
+
     if (state.currentSelectedModel !== path) {
         selectModel(path, elementId);
         await new Promise(r => setTimeout(r, 100));
+        if (thinkingToggle) {
+            thinkingToggle.checked = thinkingEnabled;
+            updateThinkingBadge(thinkingEnabled);
+        }
+        if (mtpToggleEl) {
+            mtpToggleEl.checked = mtpEnabled;
+            updateMtpBadge(mtpEnabled);
+        }
+        const mtpDraftTokensEl = document.getElementById('mtp-draft-tokens');
+        if (mtpDraftTokensEl) {
+            mtpDraftTokensEl.value = String(mtpDraftTokensEarly);
+        }
     }
     document.getElementById('log-box').innerHTML = '';
     const weights = collectDeviceWeightsFromUI();
@@ -395,12 +440,7 @@ export async function startModel(path, elementId) {
     const autoBalance = document.getElementById('auto-balance-toggle').checked;
     const cpuRow = document.querySelector('.cpu-row');
     const cpuEnabled = cpuRow?.querySelector('.cpu-checkbox')?.checked ?? false;
-    const thinkingToggle = document.getElementById('thinking-toggle');
-    const thinkingEnabled = thinkingToggle ? thinkingToggle.checked : true;
-    const mtpToggleEl = document.getElementById('mtp-toggle');
-    const mtpEnabled = mtpToggleEl ? mtpToggleEl.checked : false;
-    const mtpDraftRaw = parseInt(document.getElementById('mtp-draft-tokens')?.value, 10);
-    const mtpDraftTokens = Number.isFinite(mtpDraftRaw) && mtpDraftRaw >= 1 ? mtpDraftRaw : 3;
+    const mtpDraftTokens = mtpDraftTokensEarly;
     document.getElementById('parallel-slots').value = parallelSlots;
     document.getElementById('status-badge').innerHTML = autoBalance
         ? '<i class="fas fa-circle-notch animate-spin mr-2 md:mr-3 text-sm md:text-lg"></i> AUTO BALANCE...'

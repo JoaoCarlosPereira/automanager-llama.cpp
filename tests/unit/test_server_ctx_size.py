@@ -26,22 +26,13 @@ def test_compute_server_ctx_size_clamps_invalid_inputs():
 
 
 def test_reasoning_cli_args_enabled():
-    assert reasoning_cli_args(True) == [
-        "--jinja",
-        "--reasoning",
-        "on",
-        "--chat-template-kwargs",
-        '{"enable_thinking":true}',
-    ]
+    assert reasoning_cli_args(True) == ["--reasoning", "on"]
 
 
-def test_reasoning_cli_args_disabled_forces_zero_budget_and_template_kwargs():
+def test_reasoning_cli_args_disabled_forces_zero_budget():
     assert reasoning_cli_args(False) == [
-        "--jinja",
         "--reasoning",
         "off",
         "--reasoning-budget",
         "0",
-        "--chat-template-kwargs",
-        '{"enable_thinking":false}',
     ]

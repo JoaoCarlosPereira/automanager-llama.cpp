@@ -55,6 +55,13 @@ class SetMmprojRequest(BaseModel):
     mmproj_path: Optional[str] = None
 
 
+class SetThinkingRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str
+    thinking_enabled: bool
+
+
 class SetDefaultRequest(BaseModel):
     path: Optional[str] = None
 

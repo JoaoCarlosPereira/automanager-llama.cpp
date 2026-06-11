@@ -67,6 +67,7 @@ def test_config_update_model_settings(config_manager):
     assert saved["gpu_weights"] == settings["gpu_weights"]
     assert saved["mtp_enabled"] is False
     assert saved["mtp_draft_tokens"] == 3
+    assert saved["thinking_enabled"] is True
     assert "last_started" in saved
 
 
@@ -79,6 +80,41 @@ def test_config_update_model_settings_mtp_fields(config_manager):
     saved = config_manager.get_model_settings(model_path)
     assert saved["mtp_enabled"] is True
     assert saved["mtp_draft_tokens"] == 5
+
+
+def test_config_update_model_settings_thinking_fields(config_manager):
+    model_path = "/models/qwen.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {"thinking_enabled": False},
+    )
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["thinking_enabled"] is False
+
+
+def test_config_partial_update_preserves_thinking_fields(config_manager):
+    model_path = "/models/qwen.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {"thinking_enabled": False},
+    )
+    config_manager.update_model_settings(model_path, {"context_size": 32768})
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["thinking_enabled"] is False
+    assert saved["context_size"] == 32768
+
+
+def test_config_normalizes_model_path_keys(config_manager):
+    model_path = "/models/qwen.gguf"
+    config_manager.update_model_settings(
+        "/models\\qwen.gguf",
+        {"thinking_enabled": False},
+    )
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["thinking_enabled"] is False
+    loaded = config_manager.load()["model_configs"]
+    assert len(loaded) == 1
+    assert next(iter(loaded.keys())).replace("\\", "/") == model_path
 
 
 def test_config_partial_update_preserves_mtp_fields(config_manager):

@@ -1,6 +1,5 @@
 """llama-server process lifecycle and OOM watchdog."""
 
-import json
 import os
 import re
 import socket
@@ -46,33 +45,10 @@ def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
 
 
 def reasoning_cli_args(thinking_enabled: bool) -> List[str]:
-    """
-    Build llama-server flags for reasoning/thinking mode.
-
-    Qwen3.x and Gemma4 read enable_thinking from the Jinja chat template;
-    --reasoning off / --reasoning-budget 0 alone are not enough on those models.
-    """
-    kwargs = json.dumps(
-        {"enable_thinking": thinking_enabled},
-        separators=(",", ":"),
-    )
+    """Build llama-server flags for reasoning/thinking mode."""
     if thinking_enabled:
-        return [
-            "--jinja",
-            "--reasoning",
-            "on",
-            "--chat-template-kwargs",
-            kwargs,
-        ]
-    return [
-        "--jinja",
-        "--reasoning",
-        "off",
-        "--reasoning-budget",
-        "0",
-        "--chat-template-kwargs",
-        kwargs,
-    ]
+        return ["--reasoning", "on"]
+    return ["--reasoning", "off", "--reasoning-budget", "0"]
 
 
 def mtp_cli_args(

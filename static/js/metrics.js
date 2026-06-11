@@ -21,6 +21,27 @@ export async function updateStatus() {
             if (state.currentSelectedModel === data.config.path) {
                 updateAutoBalanceProfileBadge(data.config.auto_balance_profile);
             }
+            const configPath = data.config.path.replace(/\\/g, '/');
+            const maySyncPanel = !state.currentSelectedModel
+                || state.currentSelectedModel === configPath;
+            if (maySyncPanel) {
+                const thinkingToggle = document.getElementById('thinking-toggle');
+                if (thinkingToggle && data.config.thinking_enabled !== undefined) {
+                    thinkingToggle.checked = !!data.config.thinking_enabled;
+                    updateThinkingBadge(!!data.config.thinking_enabled);
+                }
+                const mtpToggle = document.getElementById('mtp-toggle');
+                if (mtpToggle && data.config.mtp_enabled !== undefined) {
+                    mtpToggle.checked = !!data.config.mtp_enabled;
+                    updateMtpBadge(!!data.config.mtp_enabled);
+                }
+                if (data.config.mtp_draft_tokens) {
+                    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
+                    if (mtpDraftTokens) {
+                        mtpDraftTokens.value = String(data.config.mtp_draft_tokens);
+                    }
+                }
+            }
         }
 
         const autoBalancing = !!(data.recovery && data.recovery.active && data.recovery.auto_balance);
@@ -41,22 +62,6 @@ export async function updateStatus() {
                 const mmprojEl = document.getElementById('mmproj-path');
                 if (mmprojEl && data.config.mmproj_path !== undefined) {
                     mmprojEl.value = data.config.mmproj_path || '';
-                }
-                const thinkingToggle = document.getElementById('thinking-toggle');
-                if (thinkingToggle && data.config.thinking_enabled !== undefined) {
-                    thinkingToggle.checked = !!data.config.thinking_enabled;
-                    updateThinkingBadge(!!data.config.thinking_enabled);
-                }
-                const mtpToggle = document.getElementById('mtp-toggle');
-                if (mtpToggle && data.config.mtp_enabled !== undefined) {
-                    mtpToggle.checked = !!data.config.mtp_enabled;
-                    updateMtpBadge(!!data.config.mtp_enabled);
-                }
-                if (data.config.mtp_draft_tokens) {
-                    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
-                    if (mtpDraftTokens) {
-                        mtpDraftTokens.value = String(data.config.mtp_draft_tokens);
-                    }
                 }
             }
         }

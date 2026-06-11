@@ -23,9 +23,29 @@ from schemas import (
     DEFAULT_BATCH_SIZE,
 )
 
+DEFAULT_THINKING_ENABLED = True
+
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
 
 logger = logging.getLogger("automanager")
+
+
+def normalize_model_path(model_path: str) -> str:
+    """Canonical model path key for model_configs (forward slashes)."""
+    return os.path.normpath(model_path).replace("\\", "/")
+
+
+def lookup_model_config(model_configs: dict, model_path: str) -> dict:
+    """Return saved settings for *model_path*, tolerating legacy key variants."""
+    if not model_path:
+        return {}
+    norm = normalize_model_path(model_path)
+    if norm in model_configs:
+        return model_configs[norm]
+    for key, cfg in model_configs.items():
+        if normalize_model_path(key) == norm:
+            return cfg
+    return {}
 
 
 class ConfigManager:
@@ -59,13 +79,24 @@ class ConfigManager:
 
     def get_model_settings(self, model_path: str) -> dict:
         config = self.load()
-        return config.get("model_configs", {}).get(model_path, {})
+        return lookup_model_config(config.get("model_configs", {}), model_path)
 
     def update_model_settings(self, model_path: str, settings: dict) -> None:
         config = self.load()
         if "model_configs" not in config:
             config["model_configs"] = {}
-        prev = config["model_configs"].get(model_path, {})
+        model_configs = config["model_configs"]
+        norm = normalize_model_path(model_path)
+        prev = {}
+        legacy_key = None
+        if norm in model_configs:
+            prev = model_configs[norm]
+        else:
+            for key in list(model_configs.keys()):
+                if normalize_model_path(key) == norm:
+                    prev = model_configs[key]
+                    legacy_key = key
+                    break
         merged = {**prev, **settings}
         entry = {
             "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
@@ -77,6 +108,9 @@ class ConfigManager:
             "auto_balance": merged.get("auto_balance", False),
             "auto_balance_profile": merged.get("auto_balance_profile", False),
             "hardware_incapable": merged.get("hardware_incapable", False),
+            "thinking_enabled": merged.get(
+                "thinking_enabled", DEFAULT_THINKING_ENABLED
+            ),
             "mtp_enabled": merged.get("mtp_enabled", DEFAULT_MTP_ENABLED),
             "mtp_draft_tokens": merged.get(
                 "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
@@ -87,7 +121,9 @@ class ConfigManager:
             entry["hardware_incapable_message"] = merged["hardware_incapable_message"]
         elif prev.get("hardware_incapable_message") and not entry["hardware_incapable"]:
             entry["hardware_incapable_message"] = None
-        config["model_configs"][model_path] = entry
+        if legacy_key and legacy_key != norm:
+            del model_configs[legacy_key]
+        model_configs[norm] = entry
         self.save(config)
 
     def set_default_model(self, path: Optional[str]) -> None:

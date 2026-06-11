@@ -24,6 +24,7 @@ from config_manager import (
     ConfigManager,
     TokenManager,
     AuthManager,
+    lookup_model_config,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -40,6 +41,7 @@ from schemas import (
     DeleteRequest,
     DownloadRequest,
     SetMmprojRequest,
+    SetThinkingRequest,
     SetDefaultRequest,
     RenameRequest,
     LoginRequest,
@@ -432,6 +434,16 @@ async def set_model_mmproj(
     return {"status": "ok", "mmproj_path": req.mmproj_path}
 
 
+@app.post("/models/thinking")
+async def set_model_thinking(
+    req: SetThinkingRequest, _auth: str = Depends(get_current_auth)
+):
+    config_manager.update_model_settings(
+        req.model_path, {"thinking_enabled": req.thinking_enabled}
+    )
+    return {"status": "ok", "thinking_enabled": req.thinking_enabled}
+
+
 # --- Downloads ---
 
 
@@ -585,6 +597,21 @@ async def set_default(
 # Frontend (Steps 10–16)
 # Embedded SPA with login overlay, dashboard, and all JS
 # ─────────────────────────────────────────────────────────
+
+
+def _resolve_thinking_enabled(
+    status: dict, default_model: Optional[str], model_configs: dict
+) -> bool:
+    """UI/server default for thinking toggle from running or saved config."""
+    if status.get("running") and status.get("config"):
+        te = status["config"].get("thinking_enabled")
+        if te is not None:
+            return bool(te)
+    if default_model:
+        saved = lookup_model_config(model_configs, default_model)
+        if "thinking_enabled" in saved:
+            return bool(saved["thinking_enabled"])
+    return True
 
 
 def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
@@ -892,6 +919,15 @@ async def index(request: Request):
             f'<option value="{val}" class="bg-slate-900" {selected}>{val}</option>'
         )
 
+    thinking_enabled_ui = _resolve_thinking_enabled(
+        status, default_model, model_configs
+    )
+    thinking_checked = "checked" if thinking_enabled_ui else ""
+    thinking_badge_class = (
+        "text-violet-400" if thinking_enabled_ui else "text-slate-500"
+    )
+    thinking_badge_text = "ON" if thinking_enabled_ui else "OFF"
+
     # Model items
     model_items = ""
     for m in models:
@@ -902,12 +938,12 @@ async def index(request: Request):
         is_default = "checked" if m_path == default_model else ""
         stable_id = f"model-item-{abs(sum(ord(c) << (i % 8) for i, c in enumerate(m_path))) % 1000000}"
         initial_cfg_js = ""
-        if m_path in model_configs:
+        m_cfg = lookup_model_config(model_configs, m_path)
+        if m_cfg:
             initial_cfg_js = (
-                f"<script>window.modelConfigs['{m_js}'] = {json.dumps(model_configs[m_path])};</script>"
+                f"<script>window.modelConfigs['{m_js}'] = {json.dumps(m_cfg)};</script>"
             )
-        m_cfg = model_configs.get(m_path, {})
-        has_config = "text-blue-400" if m_path in model_configs else "text-slate-100"
+        has_config = "text-blue-400" if m_cfg else "text-slate-100"
         hardware_incapable = bool(m_cfg.get("hardware_incapable"))
         incapable_row_class = (
             "border-red-500/40 bg-red-950/20" if hardware_incapable else ""
@@ -930,7 +966,7 @@ async def index(request: Request):
                     <i class="fas fa-cube text-blue-400 text-[10px] mt-1"></i>
                     <p class="model-name text-sm font-bold {has_config} break-words">{m_name}</p>
                     {incapable_badge}
-                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_path in model_configs and not hardware_incapable else ''}
+                    {'<i class="fas fa-history text-[8px] text-blue-500/50 history-icon" title="Configuracao salva disponivel"></i>' if m_cfg and not hardware_incapable else ''}
                 </div>
                 <p class="text-[9px] text-slate-500 break-all uppercase tracking-tighter font-mono">{m_dir}</p>
             </div>
@@ -970,6 +1006,10 @@ async def index(request: Request):
         custom_ctx_value=custom_ctx_value,
         custom_ctx_class=custom_ctx_class,
         batch_opts=batch_opts,
+        thinking_checked=thinking_checked,
+        thinking_badge_class=thinking_badge_class,
+        thinking_badge_text=thinking_badge_text,
+        default_model=default_model,
         local_ip=local_ip,
         api_token=api_token,
         is_authenticated=is_authenticated,
@@ -985,6 +1025,10 @@ def _build_html(
     custom_ctx_value: str,
     custom_ctx_class: str,
     batch_opts: str,
+    thinking_checked: str,
+    thinking_badge_class: str,
+    thinking_badge_text: str,
+    default_model: Optional[str],
     local_ip: str,
     api_token: str,
     is_authenticated: bool,
@@ -1223,8 +1267,8 @@ def _build_html(
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
                                 <label class="text-[9px] font-black uppercase text-slate-400 tracking-widest whitespace-nowrap"><i class="fas fa-brain text-violet-400 mr-2"></i>Thinking:</label>
                                 <label class="flex items-center gap-2 cursor-pointer select-none bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-violet-500/30 transition-all">
-                                    <input type="checkbox" id="thinking-toggle" checked class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer">
-                                    <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider text-violet-400">ON</span>
+                                    <input type="checkbox" id="thinking-toggle" {thinking_checked} class="w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer">
+                                    <span id="thinking-badge" class="text-[9px] font-black uppercase tracking-wider {thinking_badge_class}">{thinking_badge_text}</span>
                                 </label>
                             </div>
                             <div class="flex items-center gap-2 border-l border-slate-800 pl-4 md:pl-6">
@@ -1443,6 +1487,7 @@ def _build_html(
             CONTEXT_K_MULTIPLIER: {CONTEXT_K_MULTIPLIER},
             DEFAULT_PARALLEL_SLOTS: {DEFAULT_PARALLEL_SLOTS},
             DEFAULT_BATCH_SIZE: {DEFAULT_BATCH_SIZE},
+            DEFAULT_MODEL: {json.dumps(default_model)},
         }};
     </script>
     <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>

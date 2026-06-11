@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import requests
 from fastapi import HTTPException
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, lookup_model_config
 from paths import MODELS_DIR
 from process_manager import ProcessManager
 logger = logging.getLogger("automanager")
@@ -144,9 +144,9 @@ class ModelScanner:
         config = self.config.load()
         model_configs = config.get("model_configs", {})
         for m in models:
-            m["last_config"] = model_configs.get(m["path"])
+            m["last_config"] = lookup_model_config(model_configs, m["path"]) or None
         for p in projectors:
-            p["last_config"] = model_configs.get(p["path"])
+            p["last_config"] = lookup_model_config(model_configs, p["path"]) or None
 
         for m in models:
             candidates = _projector_paths_for_model(m["path"], projectors)
