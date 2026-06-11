@@ -158,6 +158,9 @@ class GPUDetector:
 
     def __init__(self) -> None:
         self._rapl_prev: Optional[Tuple[float, int]] = None
+        self._metrics_cache: Dict[str, Any] = {}
+        self._metrics_cache_time: float = 0.0
+        self._metrics_cache_ttl: float = 2.0  # seconds
 
     def _read_cpu_power_w(self) -> Optional[float]:
         """Estimate CPU package power (RAPL delta or hwmon instantaneous)."""
@@ -191,8 +194,8 @@ class GPUDetector:
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f'"{bin_path}" --help 2>&1',
-                shell=True, env=env, timeout=10,
+                [bin_path, "--help"],
+                env=env, timeout=10, stderr=subprocess.STDOUT,
             ).decode()
             pattern = r"Device (\d+): (.*?), compute capability.*?, VRAM: (\d+) MiB"
             matches = re.findall(pattern, output)
@@ -234,6 +237,14 @@ class GPUDetector:
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get real-time hardware metrics including CPU name and RAM details."""
+        # Cache nvidia-smi calls to avoid excessive subprocess spawning
+        now = time.monotonic()
+        if (
+            self._metrics_cache
+            and (now - self._metrics_cache_time) < self._metrics_cache_ttl
+        ):
+            return self._metrics_cache
+
         gpus: List[Dict[str, Any]] = []
         try:
             output = subprocess.check_output(
@@ -273,7 +284,7 @@ class GPUDetector:
                 str(int(round(cpu_temp_c))) if cpu_temp_c is not None else None
             )
             cpu_power = _format_metric_watts(self._read_cpu_power_w())
-            return {
+            result = {
                 "cpu": psutil.cpu_percent(interval=0.1),
                 "cpu_name": cpu_name,
                 "cpu_temp": cpu_temp,
@@ -283,9 +294,13 @@ class GPUDetector:
                 "ram_used_mb": ram_used_mb,
                 "gpus": gpus,
             }
+            # Cache the result
+            self._metrics_cache = result
+            self._metrics_cache_time = now
+            return result
         except Exception as e:
             logger.error(f"System metrics error: {e}")
-            return {
+            cached = {
                 "cpu": 0,
                 "cpu_name": "Unknown CPU",
                 "cpu_temp": None,
@@ -295,6 +310,9 @@ class GPUDetector:
                 "ram_used_mb": 0,
                 "gpus": gpus,
             }
+            self._metrics_cache = cached
+            self._metrics_cache_time = now
+            return cached
 
     def detect_cpu_info(self) -> CPUInfo:
         """Detect CPU name and RAM stats (cross-platform)."""
@@ -631,8 +649,8 @@ class GPUManager(GPUDetector):
             env["CUDA_VISIBLE_DEVICES"] = ""
             bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f'"{bin_path}" --model-info "{model_path}" 2>&1',
-                shell=True, env=env, timeout=15,
+                [bin_path, "--model-info", model_path],
+                env=env, timeout=15, stderr=subprocess.STDOUT,
             ).decode(errors="replace")
             match = re.search(r"n_layer\s*=\s*(\d+)", output)
             if match:
@@ -649,10 +667,8 @@ class GPUManager(GPUDetector):
             env["CUDA_VISIBLE_DEVICES"] = ""
             bin_path = _llama_server_cmd()
             output = subprocess.check_output(
-                f'"{bin_path}" --model-info "{model_path}" 2>&1',
-                shell=True,
-                env=env,
-                timeout=15,
+                [bin_path, "--model-info", model_path],
+                env=env, timeout=15, stderr=subprocess.STDOUT,
             ).decode(errors="replace")
             match = re.search(r"nextn_predict_layers\s*=\s*(\d+)", output)
             if match:

@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from fastapi.security import HTTPAuthorizationCredentials
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 from paths import CONFIG_PATH
 from schemas import (
@@ -143,25 +146,40 @@ class AuthManager:
         if "admin_password_hash" not in config:
             # Default password: "admin" — force user to change on first login
             config["admin_password_hash"] = self._hash_password("admin")
+            config["force_password_change"] = True
             self.config.save(config)
 
-    @staticmethod
-    def _hash_password(password: str) -> str:
-        """Simple SHA-256 hash — in production, use bcrypt via passlib."""
-        return hashlib.sha256(password.encode()).hexdigest()
+    def _hash_password(self, password: str) -> str:
+        """Hash password using bcrypt (slow, salted)."""
+        return pwd_context.hash(password)
 
-    def authenticate(self, username: str, password: str) -> Optional[str]:
-        """Returns session token on success, None on failure."""
+    def _verify_password(self, password: str, hashed: str) -> bool:
+        """Verify password, migrating SHA-256 hashes to bcrypt."""
+        # Check if it's bcrypt first
+        if hashed.startswith("$2") or hashed.startswith("$3") or hashed.startswith("$4"):
+            return pwd_context.verify(password, hashed)
+        # Legacy SHA-256 hash — migrate to bcrypt
+        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+        if legacy_hash == hashed:
+            config = self.config.load()
+            config["admin_password_hash"] = self._hash_password(password)
+            config["force_password_change"] = False
+            self.config.save(config)
+            return True
+        return False
+
+    def authenticate(self, username: str, password: str) -> Optional[dict]:
+        """Returns session token dict on success, None on failure."""
         config = self.config.load()
         expected_hash = config.get("admin_password_hash", "")
-        actual_hash = hashlib.sha256(password.encode()).hexdigest()
-        if actual_hash != expected_hash:
+        if not self._verify_password(password, expected_hash):
             logger.warning(f"Failed login attempt for user: {username}")
             return None
         session_token = secrets.token_urlsafe(32)
         with self._lock:
             self._sessions[session_token] = datetime.utcnow()
-        return session_token
+        force_change = config.get("force_password_change", False)
+        return {"token": session_token, "force_password_change": force_change}
 
     def verify_session(self, session_token: str) -> bool:
         with self._lock:
@@ -185,9 +203,12 @@ class AuthManager:
 
     def change_password(self, old_password: str, new_password: str) -> bool:
         config = self.config.load()
-        current_hash = hashlib.sha256(old_password.encode()).hexdigest()
-        if config.get("admin_password_hash") != current_hash:
+        current_hash = config.get("admin_password_hash", "")
+        if not self._verify_password(old_password, current_hash):
+            return False
+        if len(new_password) < 4:
             return False
         config["admin_password_hash"] = self._hash_password(new_password)
+        config["force_password_change"] = False
         self.config.save(config)
         return True

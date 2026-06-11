@@ -4,8 +4,10 @@ import os
 import shutil
 import time
 import uuid
+import urllib.parse
 import logging
 import threading
+from ipaddress import ip_address, ip_network
 from typing import Dict, List, Optional
 
 import requests
@@ -16,6 +18,45 @@ from paths import MODELS_DIR
 from process_manager import ProcessManager
 logger = logging.getLogger("automanager")
 _GB = 1024**3
+
+# SSRF prevention — block private/reserved IP ranges
+_PRIVATE_NETWORKS = [
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("127.0.0.0/8"),
+    ip_network("169.254.0.0/16"),
+    ip_network("0.0.0.0/8"),
+    ip_network("::1"),
+    ip_network("fc00::/7"),
+    ip_network("fe80::/10"),
+    ip_network("127.0.0.0/8"),
+]
+
+# Max download size: 100 GB
+MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024 * 1024
+
+
+def _validate_download_url(url: str) -> bool:
+    """Prevent SSRF by blocking URLs to private/reserved IP ranges."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    # Block localhost-like names
+    if host.lower() in ("localhost", "localhost.localdomain", "metadata.google.internal", "instance-data"):
+        return False
+    # Block IPs in private/reserved ranges
+    try:
+        addr = ip_address(host)
+        for net in _PRIVATE_NETWORKS:
+            if addr in net:
+                return False
+    except ValueError:
+        pass  # Not an IP — could be DNS; allow but log
+    return True
 
 
 def _directory_size_bytes(path: str) -> int:
@@ -119,9 +160,11 @@ class ModelScanner:
         }
 
     def rename_model(self, old_path: str, new_name: str) -> str:
-        if not old_path.startswith(self.models_dir):
+        real_models_dir = os.path.realpath(self.models_dir)
+        real_old_path = os.path.realpath(old_path)
+        if not real_old_path.startswith(real_models_dir + os.sep):
             raise HTTPException(status_code=403, detail="Acesso negado")
-        if not os.path.exists(old_path):
+        if not os.path.exists(real_old_path):
             raise HTTPException(
                 status_code=404, detail="Arquivo nao encontrado"
             )
@@ -129,7 +172,7 @@ class ModelScanner:
         pm = self.process_manager
         status = pm.get_status()
         if status["running"]:
-            normalized_old = old_path.replace("\\", "/")
+            normalized_old = real_old_path.replace("\\", "/")
             normalized_run = status.get("model_path", "").replace("\\", "/")
             if normalized_old == normalized_run:
                 raise HTTPException(
@@ -137,7 +180,7 @@ class ModelScanner:
                     detail="Impossivel renomear modelo em execucao",
                 )
 
-        dir_name = os.path.dirname(old_path)
+        dir_name = os.path.dirname(real_old_path)
         if not new_name.endswith(".gguf"):
             new_name += ".gguf"
         new_path = os.path.join(dir_name, new_name)
@@ -147,30 +190,32 @@ class ModelScanner:
                 status_code=400, detail="Ja existe um arquivo com este nome"
             )
 
-        os.rename(old_path, new_path)
+        os.rename(real_old_path, new_path)
         data = self.config.load()
         updated = False
 
-        if data.get("default_model") == old_path:
+        if data.get("default_model") == real_old_path:
             data["default_model"] = new_path
             updated = True
 
-        if "model_configs" in data and old_path in data["model_configs"]:
+        if "model_configs" in data and real_old_path in data["model_configs"]:
             data["model_configs"][new_path] = data["model_configs"].pop(
-                old_path
+                real_old_path
             )
             updated = True
 
         if updated:
             self.config.save(data)
 
-        logger.info(f"Renamed: {old_path} -> {new_path}")
+        logger.info(f"Renamed: {real_old_path} -> {new_path}")
         return new_path
 
     def delete_model(self, file_path: str) -> None:
-        if not file_path.startswith(self.models_dir):
+        real_models_dir = os.path.realpath(self.models_dir)
+        real_file_path = os.path.realpath(file_path)
+        if not real_file_path.startswith(real_models_dir + os.sep):
             raise HTTPException(status_code=403, detail="Acesso negado")
-        if not os.path.exists(file_path):
+        if not os.path.exists(real_file_path):
             raise HTTPException(
                 status_code=404, detail="Arquivo nao encontrado"
             )
@@ -178,13 +223,13 @@ class ModelScanner:
         pm = self.process_manager
         status = pm.get_status()
         if status["running"]:
-            normalized = file_path.replace("\\", "/")
+            normalized = real_file_path.replace("\\", "/")
             normalized_run = status.get("model_path", "").replace("\\", "/")
             if normalized == normalized_run:
                 pm.stop()
 
-        os.remove(file_path)
-        logger.info(f"Deleted: {file_path}")
+        os.remove(real_file_path)
+        logger.info(f"Deleted: {real_file_path}")
 
 
 class DownloadManager:
@@ -202,6 +247,12 @@ class DownloadManager:
         filename: Optional[str] = None,
         model_path: Optional[str] = None,
     ) -> str:
+        # SSRF prevention
+        if not _validate_download_url(url):
+            raise HTTPException(
+                status_code=400,
+                detail="URL de download bloqueada por seguranca (SSRF prevention)"
+            )
         download_id = str(uuid.uuid4())
         if model_path:
             normalized_root = os.path.normpath(self.models_dir)
@@ -277,13 +328,19 @@ class DownloadManager:
             response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
+            # Block downloads exceeding max size
+            if total_size > MAX_DOWNLOAD_SIZE:
+                raise Exception(f"Download muito grande ({total_size / _GB:.1f} GB). Maximo: {MAX_DOWNLOAD_SIZE / _GB:.0f} GB")
             downloaded = 0
             start_time = time.time()
             with open(path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192 * 4):
                     if chunk:
-                        f.write(chunk)
                         downloaded += len(chunk)
+                        # Check max size during download
+                        if downloaded > MAX_DOWNLOAD_SIZE:
+                            raise Exception("Download excede tamanho maximo permitido (100GB)")
+                        f.write(chunk)
                         now = time.time()
                         elapsed = now - start_time
                         speed_bps = downloaded / elapsed if elapsed > 0 else 0
