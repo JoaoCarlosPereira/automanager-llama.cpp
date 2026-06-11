@@ -1161,6 +1161,9 @@ def _build_html(
     </style>
 </head>
 <body class="min-h-screen text-slate-200 pb-16 selection:bg-blue-500/30">
+    <script>
+        window.modelConfigs = {{}};
+    </script>
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
@@ -1480,7 +1483,6 @@ def _build_html(
     </div>
     <script>
         window.fixedIp = "{local_ip}";
-        window.modelConfigs = window.modelConfigs || {{}};
         window.__constants = {{
             CONTEXT_PRESET_VALUES: {json.dumps(CONTEXT_PRESET_VALUES)},
             DEFAULT_CONTEXT_SIZE: {DEFAULT_CONTEXT_SIZE},

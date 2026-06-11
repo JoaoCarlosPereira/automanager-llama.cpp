@@ -1,4 +1,4 @@
-import { state } from './state.js';
+﻿import { state } from './state.js';
 import { apiFetch, sessionExpiredHandled } from './auth.js';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
@@ -15,7 +15,8 @@ import { checkForUpdates } from './version.js';
 export function resolveMmprojPath(model) {
     const candidates = model.mmproj_candidates || [];
     if (!candidates.length) return null;
-    const cfg = window.modelConfigs[model.path] || model.last_config || {};
+    const modelJs = model.path.replace(/\\/g, '/');
+    const cfg = window.modelConfigs[modelJs] || model.last_config || {};
     const saved = cfg.mmproj_path;
     if (saved && candidates.includes(saved)) return saved;
     return candidates[0];
@@ -41,7 +42,8 @@ export function getSelectedMmprojForModel(modelPath) {
             return select.value;
         }
     }
-    const cfg = window.modelConfigs[modelPath];
+    const normalized = modelPath.replace(/\\/g, '/');
+    const cfg = window.modelConfigs[normalized];
     return cfg?.mmproj_path || null;
 }
 
@@ -114,7 +116,7 @@ export function formatRepoStorageLabel(storage) {
 
 function resolveModelPathForSettings() {
     const running = state.currentRunningModelPath
-        ? state.currentRunningModelPath.replace(/\\\\/g, '/')
+        ? state.currentRunningModelPath.replace(/\\/g, '/')
         : null;
     return state.currentSelectedModel || running || window.__constants?.DEFAULT_MODEL || null;
 }
@@ -303,7 +305,7 @@ export async function updateModels() {
         if (storageEl) {
             storageEl.innerText = formatRepoStorageLabel(data.storage);
             if (data.storage?.path) {
-                storageEl.title = `${data.storage.path} — usado / total`;
+                storageEl.title = `${data.storage.path} â€” usado / total`;
             }
         }
         const dirInput = document.getElementById('models-dir-input');
@@ -312,14 +314,14 @@ export async function updateModels() {
         }
         const oldContainer = document.getElementById('model-list-container');
         const newHtml = data.models.map(m => {
-            const m_js = m.path.replace(/\\\\\\\\/g, '/');
-            if (m.last_config) window.modelConfigs[m.path] = m.last_config;
+            const m_js = m.path.replace(/\\/g, '/');
+            if (m.last_config) window.modelConfigs[m_js] = m.last_config;
             const incapable = !!(m.last_config && m.last_config.hardware_incapable);
             const hasConfigClass = m.last_config && !incapable ? 'text-blue-400' : 'text-slate-100';
             const incapableBadge = modelIncapableBadgeHtml(incapable);
             const incapableRow = modelIncapableRowClass(incapable);
             const historyIcon = m.last_config && !incapable ? '<i class="fas fa-history text-[8px] text-blue-500/50" title="Configuração salva disponível"></i>' : '';
-            const isRunning = state.currentRunningModelPath && m_js === state.currentRunningModelPath.replace(/\\\\\\\\/g, '/');
+            const isRunning = state.currentRunningModelPath && m_js === state.currentRunningModelPath.replace(/\\/g, '/');
             const isActive = state.currentSelectedModel === m_js ? 'active-selection' : '';
             const runningClass = isRunning ? 'running-now' : '';
             const hashId = m.id;
