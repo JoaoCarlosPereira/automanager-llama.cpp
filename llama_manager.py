@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import threading
 import time
 
@@ -557,19 +558,16 @@ def _execute_update():
         # Git pull
         result = subprocess.run(
             ["git", "-C", app_dir, "pull"],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=60
         )
         if result.returncode != 0:
             logger.error(f"Git pull falhou: {result.stderr}")
-        # Restart service
-        result = subprocess.run(
-            ["sudo", "systemctl", "restart", "llama-manager.service"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            logger.error(f"Systemctl restart falhou: {result.stderr}")
         else:
-            logger.info("Servico reiniciado com sucesso")
+            logger.info("Git pull concluído com sucesso")
+            
+        # Restart service
+        # Use Popen to avoid waiting for a result that might be interrupted by the restart itself
+        subprocess.Popen(["systemctl", "restart", "llama-manager.service"])
     except Exception as e:
         logger.error(f"Erro na atualizacao: {e}")
 
