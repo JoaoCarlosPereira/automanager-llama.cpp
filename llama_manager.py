@@ -1560,7 +1560,7 @@ def _build_html(
                                 <div class="w-2 h-2 rounded-full bg-slate-700"></div>
                                 <div class="w-2 h-2 rounded-full bg-slate-700"></div>
                             </div>
-                            <p class="text-slate-400 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono ml-2 md:ml-4">Saída de logs do sistema</p>
+                            <p id="log-panel-title" class="text-slate-400 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono ml-2 md:ml-4">Saída de logs do sistema</p>
                         </div>
                         <button onclick="document.getElementById('log-box').innerHTML=''" class="text-[9px] md:text-[10px] text-slate-600 hover:text-blue-400 font-bold uppercase transition-colors tracking-widest">
                             <i class="fas fa-trash-alt mr-2"></i> Limpar

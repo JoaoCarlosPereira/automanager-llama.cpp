@@ -8,7 +8,7 @@ import {
 } from './gpu.js';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
-    updateDownloads, clearCompletedDownloads,
+    updateDownloads, clearCompletedDownloads, selectInstance,
 } from './metrics.js';
 import {
     initDashboard, getModelButtonsHtml, selectModel, applyModelConfig, setDefaultModel,
@@ -53,6 +53,7 @@ win.getModelButtonsHtml = getModelButtonsHtml;
 win.updateModels = updateModels;
 win.saveModelsDir = saveModelsDir;
 win.updateStatus = updateStatus;
+win.selectInstance = selectInstance;
 win.downloadModel = downloadModel;
 win.openVisionImportModal = openVisionImportModal;
 win.closeVisionImportModal = closeVisionImportModal;

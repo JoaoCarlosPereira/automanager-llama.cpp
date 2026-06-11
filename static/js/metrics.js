@@ -94,9 +94,11 @@ export async function updateStatus() {
             badge.innerHTML = '<div class="w-2 md:w-2.5 h-2 md:h-2.5 rounded-full bg-slate-600"></div> OFFLINE';
         }
 
-        // --- Log stream para a instância ativa ---
-        if (mainInst && (!state.logStream || state.logStreamPort !== mainInst.port)) {
-            startLogs(mainInst.port);
+        // --- Log stream para a instância selecionada ---
+        const logInst = state.activeInstances.find(i => i.port === state.currentActivePort)
+            || mainInst;
+        if (logInst && (!state.logStream || state.logStreamPort !== logInst.port)) {
+            startLogs(logInst.port);
         }
 
         // --- Lógica de Auto-Balance / Recovery ---
@@ -163,6 +165,28 @@ function normalizePath(p) {
     return (p || '').replace(/\\/g, '/');
 }
 
+function updateLogPanelTitle(port) {
+    const titleEl = document.getElementById('log-panel-title');
+    const inst = state.activeInstances.find(i => i.port === port);
+    if (!titleEl) return;
+    if (inst) {
+        titleEl.textContent = `Saída de logs — ${inst.model} (porta ${port})`;
+    } else {
+        titleEl.textContent = `Saída de logs — porta ${port}`;
+    }
+}
+
+export function selectInstance(port) {
+    const inst = state.activeInstances.find(i => i.port === port);
+    if (!inst) return;
+    state.currentActivePort = port;
+    if (inst.model_path) {
+        state.currentSelectedModel = normalizePath(inst.model_path);
+    }
+    renderActiveCards();
+    startLogs(port);
+}
+
 function renderActiveCards() {
     const container = document.getElementById('active-cards-container');
     if (!container) return;
@@ -206,7 +230,7 @@ function renderActiveCards() {
         const normalizedName = normalizePath(modelPath);
 
         html += `
-        <div class="active-instance-card bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] border ${cardBorder} transition-all duration-500 ${isActive ? '' : 'opacity-80'}" data-port="${port}">
+        <div class="active-instance-card bg-gradient-to-r from-blue-900/40 to-slate-900/40 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] border ${cardBorder} transition-all duration-500 cursor-pointer ${isActive ? 'ring-2 ring-blue-500/40' : 'opacity-80 hover:opacity-100'}" data-port="${port}" onclick="selectInstance(${port})" title="Clique para ver os logs desta instância">
             <div class="flex flex-col lg:flex-row items-center justify-between gap-6 md:gap-8">
                 <div class="flex items-center gap-4 md:gap-6 w-full lg:w-auto lg:flex-1">
                     <div class="w-12 h-12 md:w-16 md:h-16 rounded-2xl md:rounded-3xl bg-blue-600 flex items-center justify-center text-white shadow-2xl shadow-blue-500/40 shrink-0">
@@ -224,7 +248,7 @@ function renderActiveCards() {
                         </div>
                     </div>
                 </div>
-                <div class="flex flex-wrap items-center gap-3 shrink-0 w-full lg:w-auto">
+                <div class="flex flex-wrap items-center gap-3 shrink-0 w-full lg:w-auto" onclick="event.stopPropagation()">
                     <a href="/ui/${port}/" target="_blank" rel="noopener noreferrer" class="px-4 md:px-6 py-2.5 md:py-3 btn-gradient text-white rounded-2xl text-[9px] md:text-xs font-black transition-all shadow-xl shadow-blue-600/30 active:scale-95 flex items-center justify-center gap-2 md:gap-3 uppercase tracking-widest whitespace-nowrap">
                         <i class="fas fa-comments text-[9px] md:text-sm"></i> <span class="hidden sm:inline">ABRIR CHAT</span><span class="sm:hidden">CHAT</span>
                     </a>
@@ -308,12 +332,15 @@ export function updateUptime(serverStartTime) {
 export async function startLogs(port = null) {
     if (state.logStream) state.logStream.abort();
     state.logStream = new AbortController();
-    state.logStreamPort = port || state.currentActivePort;
+    const targetPort = port ?? state.currentActivePort;
+    state.logStreamPort = targetPort;
+    state.currentActivePort = targetPort;
     const box = document.getElementById('log-box');
-    box.innerHTML = `<div class="text-slate-500 italic">[Conectando logs da porta ${state.logStreamPort}...]</div>`;
+    updateLogPanelTitle(targetPort);
+    box.innerHTML = `<div class="text-slate-500 italic">[Conectando logs da porta ${targetPort}...]</div>`;
     
     try {
-        const url = port ? `/logs?port=${port}` : '/logs';
+        const url = `/logs?port=${targetPort}`;
         const response = await fetch(url, { signal: state.logStream.signal });
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
