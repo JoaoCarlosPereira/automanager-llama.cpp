@@ -25,63 +25,64 @@ def pm():
     return ProcessManager(config, token, GPUManager(), log_mgr)
 
 
-# ── validate_weights edge cases ───────────────────────────────────────────
+# ── validate_gpu_weights edge cases ───────────────────────────────────────────
 
 
-def test_validate_weights_cpu_unchecked_weight_zero_ok(gpu_mgr):
+def test_validate_gpu_weights_cpu_unchecked_weight_zero_ok(gpu_mgr):
     """CPU inactive (unchecked) with weight 0 — GPU-only 100% is valid."""
     weights = [
         GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=0, name="CPU", active=False, device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
     assert msg == ""
 
 
-def test_validate_weights_only_gpu_selected_ok(gpu_mgr):
+def test_validate_gpu_weights_only_gpu_selected_ok(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=60, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=1, weight=40, name="GPU1", active=True, device="gpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_cpu_only_rejected(gpu_mgr):
+def test_validate_gpu_weights_cpu_only_rejected(gpu_mgr):
     weights = [
         GPUWeight(index=-1, weight=100, name="CPU", active=True, device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "gpu" in msg.lower()
 
 
-def test_validate_weights_cpu_any_weight_ok(gpu_mgr):
+def test_validate_gpu_weights_cpu_any_weight_ok(gpu_mgr):
     """CPU weight has no cap — only sum validation matters."""
     weights = [
         GPUWeight(index=0, weight=20, name="GPU0", active=True, device="gpu"),
         GPUWeight(index=-1, weight=80, name="CPU", active=True, device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_sum_not_100_portuguese_message(gpu_mgr):
+def test_validate_gpu_weights_sum_not_100_portuguese_message(gpu_mgr):
+    """GPU-only weights must sum to ~100%."""
     weights = [
         GPUWeight(index=0, weight=50, name="GPU0", active=True, device="gpu"),
-        GPUWeight(index=-1, weight=30, name="CPU", active=True, device="cpu"),
+        GPUWeight(index=1, weight=30, name="GPU1", active=True, device="gpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "100" in msg
 
 
-def test_validate_weights_config_without_device_defaults_gpu(gpu_mgr):
+def test_validate_gpu_weights_config_without_device_defaults_gpu(gpu_mgr):
     """Backward compatibility: missing device field defaults to gpu."""
     weights = [GPUWeight(index=0, weight=100, name="GPU0", active=True)]
     assert weights[0].device == "gpu"
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
@@ -166,7 +167,7 @@ def test_start_without_active_cpu_rejects_partial_gpu_sum(pm):
     assert "100" in exc.value.detail
 
 
-def test_start_without_active_cpu_skips_full_validate_weights(pm):
+def test_start_without_active_cpu_skips_full_validate_gpu_weights(pm):
     """GPU-only path uses validate_gpu_weights (sum must be ~100%)."""
     weights = [
         GPUWeight(index=0, weight=100, name="GPU0", active=True, device="gpu"),

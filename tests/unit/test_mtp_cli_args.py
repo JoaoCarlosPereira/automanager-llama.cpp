@@ -21,13 +21,14 @@ def test_mtp_cli_args_disabled():
     mgr.detect_model_mtp.assert_not_called()
 
 
-def test_mtp_cli_args_incompatible_model():
+def test_mtp_cli_args_forced_enabled(gpu_mgr):
+    """MTP is forced on when requested (no model compatibility check)."""
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = False
     flags, applied, reason = mtp_cli_args(True, 3, "/models/a.gguf", mgr)
-    assert flags == []
-    assert applied is False
-    assert "MTP" in reason
+    assert flags == ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+    assert applied is True
+    assert reason == ""
 
 
 def test_mtp_cli_args_enabled_compatible():
@@ -48,10 +49,10 @@ def test_mtp_cli_args_clamps_draft_tokens_high():
 
 
 def test_mtp_cli_args_draft_tokens_default():
+    """When mtp_draft_tokens is None, default to 1 (not 3)."""
     mgr = MagicMock()
-    mgr.detect_model_mtp.return_value = True
     flags, applied, reason = mtp_cli_args(True, None, "/models/mtp.gguf", mgr)
-    assert flags[-1] == "3"
+    assert flags[-1] == "1"
     assert applied is True
 
 

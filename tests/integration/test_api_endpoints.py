@@ -47,7 +47,7 @@ class FakeAuthManager:
 
     def authenticate(self, username, password):
         if username == "admin" and password == "admin":
-            return self.valid_session
+            return {"token": self.valid_session, "force_password_change": False}
         return None
 
     def verify_session(self, session_token):
@@ -58,6 +58,9 @@ class FakeAuthManager:
 
     def logout(self, session_token):
         self.logged_out.append(session_token)
+
+    def change_password(self, old_password, new_password):
+        return True  # Fake success
 
     def change_password(self, old_password, new_password):
         return old_password == "admin" and bool(new_password)
@@ -82,7 +85,8 @@ def test_login_success_sets_session_cookie(client):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
+    assert "force_password_change" in response.json()
     assert client.cookies.get("session_token") == FakeAuthManager.valid_session
 
     set_cookie = response.headers["set-cookie"]
@@ -424,7 +428,7 @@ def test_app_gpu_manager_validate_weights_accepts_any_cpu_weight():
         GPUWeight(index=-1, weight=80.0, name="CPU", device="cpu"),
     ]
 
-    ok, msg = llama_manager.gpu_manager.validate_weights(weights)
+    ok, msg = llama_manager.gpu_manager.validate_gpu_weights(weights)
 
     assert ok is True
     assert msg == ""
@@ -436,7 +440,7 @@ def test_app_gpu_manager_validate_weights_accepts_cpu_at_70_percent():
         GPUWeight(index=-1, weight=70.0, name="CPU", device="cpu"),
     ]
 
-    ok, msg = llama_manager.gpu_manager.validate_weights(weights)
+    ok, msg = llama_manager.gpu_manager.validate_gpu_weights(weights)
 
     assert ok is True
     assert msg == ""

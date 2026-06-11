@@ -149,8 +149,12 @@ def test_auth_session_expires_after_idle(auth_manager):
 
     from config_manager import SESSION_IDLE_SECONDS
 
-    token = auth_manager.authenticate("admin", "admin")
-    assert token is not None
+    result = auth_manager.authenticate("admin", "admin")
+    assert result is not None
+    if isinstance(result, dict):
+        token = result["token"]
+    else:
+        token = result
     assert auth_manager.verify_session(token) is True
 
     stale = datetime.utcnow() - timedelta(seconds=SESSION_IDLE_SECONDS + 1)

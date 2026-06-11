@@ -1,4 +1,4 @@
-"""Unit tests for GPUManager compute_n_gpu_layers() and validate_weights()."""
+"""Unit tests for GPUManager compute_n_gpu_layers() and validate_gpu_weights()."""
 
 import pytest
 
@@ -123,115 +123,115 @@ def test_compute_n_gpu_layers_10_layers_rounding_boundary(gpu_mgr):
     assert gpu_mgr.compute_n_gpu_layers(weights, total_layers=10) == 5
 
 
-# ── validate_weights ──────────────────────────────────────────────────────
+# ── validate_gpu_weights ──────────────────────────────────────────────────────
 
 
-def test_validate_weights_gpu_only_100_ok(gpu_mgr):
+def test_validate_gpu_weights_gpu_only_100_ok(gpu_mgr):
     weights = [GPUWeight(index=0, weight=60, name="A", device="gpu"),
                GPUWeight(index=1, weight=40, name="B", device="gpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
     assert msg == ""
 
 
-def test_validate_weights_gpu_plus_cpu_ok(gpu_mgr):
+def test_validate_gpu_weights_gpu_plus_cpu_ok(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=70, name="A", device="gpu"),
         GPUWeight(index=0, weight=30, name="C", device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_sum_too_low(gpu_mgr):
+def test_validate_gpu_weights_sum_too_low(gpu_mgr):
     weights = [GPUWeight(index=0, weight=50, name="A", device="gpu"),
                GPUWeight(index=1, weight=30, name="B", device="gpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "somam" in msg.lower() or "100" in msg
 
 
-def test_validate_weights_sum_too_high(gpu_mgr):
+def test_validate_gpu_weights_sum_too_high(gpu_mgr):
     weights = [GPUWeight(index=0, weight=70, name="A", device="gpu"),
                GPUWeight(index=1, weight=50, name="B", device="gpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "somam" in msg.lower() or "100" in msg
 
 
-def test_validate_weights_cpu_any_weight_ok(gpu_mgr):
+def test_validate_gpu_weights_cpu_any_weight_ok(gpu_mgr):
     # 20 + 80 = 100 (sum OK), CPU = 80% — no CPU cap anymore
     weights = [
         GPUWeight(index=0, weight=20, name="A", device="gpu"),
         GPUWeight(index=0, weight=80, name="C", device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_cpu_at_70_ok(gpu_mgr):
+def test_validate_gpu_weights_cpu_at_70_ok(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=30, name="A", device="gpu"),
         GPUWeight(index=0, weight=70, name="C", device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_no_active_devices(gpu_mgr):
+def test_validate_gpu_weights_no_active_devices(gpu_mgr):
     weights = [GPUWeight(index=0, weight=0, name="A", device="gpu", active=False)]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "ativo" in msg.lower() or "active" in msg.lower()
 
 
-def test_validate_weights_cpu_only_rejected(gpu_mgr):
+def test_validate_gpu_weights_cpu_only_rejected(gpu_mgr):
     weights = [GPUWeight(index=-1, weight=100, name="C", device="cpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
     assert "gpu" in msg.lower()
 
 
-def test_validate_weights_inactive_excluded_from_sum(gpu_mgr):
+def test_validate_gpu_weights_inactive_excluded_from_sum(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=50, name="A", device="gpu"),
         GPUWeight(index=1, weight=50, name="B", device="gpu", active=False),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     # Only GPU 0 is active (50%), which fails sum != 100
     assert ok is False
 
 
-def test_validate_weights_cpu_0_ok(gpu_mgr):
+def test_validate_gpu_weights_cpu_0_ok(gpu_mgr):
     weights = [GPUWeight(index=0, weight=100, name="A", device="gpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_single_gpu_100(gpu_mgr):
+def test_validate_gpu_weights_single_gpu_100(gpu_mgr):
     weights = [GPUWeight(index=0, weight=100, name="A", device="gpu")]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_multiple_gpus_sum_100(gpu_mgr):
+def test_validate_gpu_weights_multiple_gpus_sum_100(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=40, name="A", device="gpu"),
         GPUWeight(index=1, weight=35, name="B", device="gpu"),
         GPUWeight(index=2, weight=25, name="C", device="gpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
-def test_validate_weights_three_gpus_plus_cpu(gpu_mgr):
+def test_validate_gpu_weights_three_gpus_plus_cpu(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=40, name="A", device="gpu"),
         GPUWeight(index=1, weight=30, name="B", device="gpu"),
         GPUWeight(index=2, weight=20, name="C", device="gpu"),
         GPUWeight(index=0, weight=10, name="D", device="cpu"),
     ]
-    ok, msg = gpu_mgr.validate_weights(weights)
+    ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is True
 
 
