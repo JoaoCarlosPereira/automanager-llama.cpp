@@ -514,15 +514,15 @@ export async function startModel(path, elementId) {
             }
             updateAutoBalanceProfileBadge(false);
         }
+        if (!startData.probing && startData.mtp_applied !== undefined) {
+            if (!startData.mtp_applied && startData.mtp_reason) {
+                window.showMtpWarning(startData.mtp_reason);
+            } else {
+                window.hideMtpWarning();
+            }
+        }
     } catch (e) {
         alert("Erro ao iniciar modelo.");
-    }
-    if (!startData.probing && startData.mtp_applied !== undefined) {
-        if (!startData.mtp_applied && startData.mtp_reason) {
-            window.showMtpWarning(startData.mtp_reason);
-        } else {
-            window.hideMtpWarning();
-        }
     }
     setTimeout(window.updateStatus, 2000);
 }
