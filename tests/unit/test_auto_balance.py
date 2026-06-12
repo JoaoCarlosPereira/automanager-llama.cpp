@@ -1380,7 +1380,7 @@ class TestDiscoverPhaseHandoff:
         def __init__(self):
             self.auto_balance_cancel_requested = False
             self._lock = threading.Lock()
-            self._current_process = None
+            self._processes = {}
             self.recovery_states = []
 
         @property
@@ -1391,11 +1391,18 @@ class TestDiscoverPhaseHandoff:
         def recovery_state(self, value):
             self.recovery_states.append(value)
 
-        def stop(self):
+        def stop(self, port=None):
             pass
 
         def start(self, **kwargs):
-            pass
+            # Record the dummy process in _processes
+            port = kwargs.get("port", 8085)
+            # We don't need a real process here, just something that responds to poll() if needed
+            # But the stub might not be used for poll() in most tests.
+            # If it is, we'll need to mock it better.
+            class DummyProc:
+                def poll(self): return None
+            self._processes[port] = DummyProc()
 
     def _build_prober(self, ready_rule, vram_pct_for_main):
         """Wire a prober whose probes/metrics derive from the live trial map.

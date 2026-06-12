@@ -24,6 +24,7 @@ from load_distributor import LoadDistributor
 from paths import INSTALL_ROOT
 
 logger = logging.getLogger("automanager")
+SERVER_PORT = 8085
 
 # -------------------------------------------------------------------------
 # Dedicated Auto-Balance log file (logs/auto_balance.log)
@@ -1156,6 +1157,7 @@ class AutoBalanceProber:
         self.gpu_manager = gpu_manager
         self.log_manager = log_manager
         self.planner = AutoBalancePlanner()
+        self.port = SERVER_PORT
         # Diagnostics from the last probe that died, used to build a clear
         # crash message (vs. an OOM) for the user.
         self._last_server_log_tail: List[str] = []
@@ -1570,6 +1572,7 @@ class AutoBalanceProber:
         VRAM por GPU via binary search. A mesma lógica de priorização
         (main → secundárias → CPU) mantida do código original.
         """
+        self.port = getattr(request, "port", None) or SERVER_PORT
         try:
             return self._discover_empirical(request)
         except AutoBalanceCancelled:
@@ -1578,7 +1581,7 @@ class AutoBalanceProber:
             # Non-OOM crash: the model cannot be loaded by this binary at all.
             # Stop any lingering process and report a clear crash (not a VRAM
             # capacity verdict) so the user fixes the real cause.
-            self.process_manager.stop()
+            self.process_manager.stop(self.port)
             msg, failure = self.build_server_crash_failure(request, crash)
             return False, request.gpu_weights, msg, failure
 
@@ -1754,7 +1757,7 @@ class AutoBalanceProber:
             )
         self._raise_if_cancelled()
         if feasible is None:
-            self.process_manager.stop()
+            self.process_manager.stop(self.port)
             msg, failure = self.build_hardware_capacity_failure(
                 request,
                 all_gpus,
@@ -2958,7 +2961,7 @@ class AutoBalanceProber:
 
         crash_retries = 0
         while True:
-            self.process_manager.stop()  # also waits for the port to be released
+            self.process_manager.stop(self.port)  # also waits for the port to be released
             try:
                 self.process_manager.start(
                     model_path=request.path,
@@ -2972,6 +2975,7 @@ class AutoBalanceProber:
                     mtp_enabled=request.mtp_enabled,
                     mtp_draft_tokens=request.mtp_draft_tokens,
                     total_layers=request.total_layers,
+                    port=self.port,
                 )
             except Exception as exc:
                 logger.error(
@@ -3165,7 +3169,7 @@ class AutoBalanceProber:
 
         while time.time() < deadline:
             if self.process_manager.auto_balance_cancel_requested:
-                self.process_manager.stop()
+                self.process_manager.stop(self.port)
                 elapsed = time.time() - start_time
                 logger.info(
                     "_wait_for_outcome: CANCELLED after %.1fs (log=%s)",
@@ -3239,7 +3243,7 @@ class AutoBalanceProber:
 
     def _process_alive(self) -> bool:
         with self.process_manager._lock:
-            proc = self.process_manager._current_process
+            proc = self.process_manager._processes.get(self.port)
         if proc is None:
             return False
         return proc.poll() is None
