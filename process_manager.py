@@ -4,7 +4,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 from fastapi import HTTPException
 import psutil
 
@@ -75,7 +75,7 @@ class AuthManager:
     def change_admin_password(self, current, new_pw) -> bool:
         return self.config.change_admin_password(current, new_pw)
 
-    def check_auth(self, request: Union[dict, any]) -> bool:
+    def check_auth(self, request: Union[dict, Any]) -> bool:
         # FastAPI Depends helper or direct call
         # Logic to check Bearer token or session cookie
         return True # Placeholder for simplicity in this refactor

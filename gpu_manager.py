@@ -684,7 +684,7 @@ class GPUManager(GPUDetector):
     def detect_model_layers(self, model_path: str) -> int:
         """Detect the number of transformer layers in a GGUF model file.
 
-        Uses ``llama-server --model-info`` to read ``n_layer`` from the model metadata.
+        Uses ``llama-server --model-info`` or ``llama-gguf`` to read metadata.
         Falls back to :data:`DEFAULT_TOTAL_LAYERS` when detection fails.
         Results are cached per-model path for 5 minutes.
         """
@@ -698,15 +698,30 @@ class GPUManager(GPUDetector):
 
         result = DEFAULT_TOTAL_LAYERS
         try:
-            env = os.environ.copy()
-            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            env["CUDA_VISIBLE_DEVICES"] = ""
             bin_path = _llama_server_cmd()
-            output = subprocess.check_output(
-                [bin_path, "--model-info", model_path],
-                env=env, timeout=15, stderr=subprocess.STDOUT,
-            ).decode(errors="replace")
-            match = re.search(r"n_layer\s*=\s*(\d+)", output)
+            bin_dir = os.path.dirname(bin_path)
+            
+            # Try llama-server --model-info first (legacy/custom builds)
+            output = ""
+            try:
+                env = os.environ.copy()
+                env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                env["CUDA_VISIBLE_DEVICES"] = ""
+                output = subprocess.check_output(
+                    [bin_path, "--model-info", model_path],
+                    env=env, timeout=15, stderr=subprocess.STDOUT,
+                ).decode(errors="replace")
+            except Exception:
+                # Fallback to llama-gguf if available in same dir
+                gguf_tool = os.path.join(bin_dir, "llama-gguf")
+                if os.path.exists(gguf_tool):
+                    output = subprocess.check_output(
+                        [gguf_tool, model_path, "r", "n"],
+                        timeout=15, stderr=subprocess.STDOUT,
+                    ).decode(errors="replace")
+
+            # Patterns: n_layer (model-info) or .block_count (llama-gguf)
+            match = re.search(r"(?:n_layer|\.block_count)\s*[=:]\s*(\d+)", output)
             if match:
                 result = int(match.group(1))
         except Exception as exc:
@@ -728,15 +743,27 @@ class GPUManager(GPUDetector):
 
         result = False
         try:
-            env = os.environ.copy()
-            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            env["CUDA_VISIBLE_DEVICES"] = ""
             bin_path = _llama_server_cmd()
-            output = subprocess.check_output(
-                [bin_path, "--model-info", model_path],
-                env=env, timeout=15, stderr=subprocess.STDOUT,
-            ).decode(errors="replace")
-            match = re.search(r"nextn_predict_layers\s*=\s*(\d+)", output)
+            bin_dir = os.path.dirname(bin_path)
+            
+            output = ""
+            try:
+                env = os.environ.copy()
+                env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                env["CUDA_VISIBLE_DEVICES"] = ""
+                output = subprocess.check_output(
+                    [bin_path, "--model-info", model_path],
+                    env=env, timeout=15, stderr=subprocess.STDOUT,
+                ).decode(errors="replace")
+            except Exception:
+                gguf_tool = os.path.join(bin_dir, "llama-gguf")
+                if os.path.exists(gguf_tool):
+                    output = subprocess.check_output(
+                        [gguf_tool, model_path, "r", "n"],
+                        timeout=15, stderr=subprocess.STDOUT,
+                    ).decode(errors="replace")
+
+            match = re.search(r"nextn_predict_layers\s*[=:]\s*(\d+)", output)
             if match:
                 result = int(match.group(1)) > 0
         except Exception as exc:

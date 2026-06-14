@@ -7,6 +7,7 @@ import time
 import re
 import glob
 import logging
+import uvicorn
 from typing import List, Optional, Tuple, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 
 from config_manager import ConfigManager
 from log_manager import LogManager, logger
+from llama_server_bin import get_llama_server_bin
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager
 from schemas import (
@@ -28,8 +30,8 @@ from schemas import (
     DownloadRequest,
     RenameRequest,
     SetDefaultRequest,
-    MMProjRequest,
-    ThinkingRequest,
+    SetMmprojRequest,
+    SetThinkingRequest,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -38,6 +40,9 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 
 # Version tracking
 _DASHBOARD_JS_V = "4.0.0"  # Major UI Refactor
+
+MANAGER_PORT = 8000
+GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
 
 app = FastAPI(title="Automanager Llama.cpp")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -54,8 +59,8 @@ token_manager = TokenManager(config_manager)
 process_manager.token_mgr = token_manager
 auth_manager = AuthManager(config_manager, token_manager)
 
-model_scanner = ModelScanner(config_manager)
-download_mgr = DownloadManager(config_manager, log_manager)
+model_scanner = ModelScanner(config_manager, process_manager)
+download_mgr = DownloadManager()
 oom_watchdog = OOMWatchdog(process_manager)
 
 shutdown_event = threading.Event()
@@ -262,7 +267,7 @@ async def get_config():
 
 
 @app.post("/models/mmproj")
-async def set_mmproj(req: MMProjRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(auth_manager.check_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"mmproj_path": req.mmproj_path})
@@ -270,7 +275,7 @@ async def set_mmproj(req: MMProjRequest, authenticated: bool = Depends(auth_mana
 
 
 @app.post("/models/thinking")
-async def set_thinking(req: ThinkingRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(auth_manager.check_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled})
@@ -1233,3 +1238,12 @@ def get_local_ip() -> str:
     finally:
         s.close()
     return ip
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=MANAGER_PORT,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
+    )
