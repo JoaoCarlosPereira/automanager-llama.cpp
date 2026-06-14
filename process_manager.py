@@ -16,7 +16,6 @@ from llama_server_bin import (
     is_turboquant_bin,
     supports_cli_flag,
     validate_turboquant_cache_types,
-    verbose_cli_args,
 )
 from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_CACHE_TYPE, TURBOQUANT_DEFAULT_CACHE_K, TURBOQUANT_DEFAULT_CACHE_V
 from paths import INSTALL_ROOT
@@ -525,8 +524,6 @@ class ProcessManager:
 
         if supports_cli_flag("--pinned-memory", llama_bin):
             cmd.append("--pinned-memory")
-
-        cmd.extend(verbose_cli_args(llama_bin))
 
         if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])

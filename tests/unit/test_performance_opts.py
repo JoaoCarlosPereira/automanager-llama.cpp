@@ -159,8 +159,7 @@ def test_process_manager_numa_distribute_for_multi_gpu(mock_exists, mock_bin):
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)
-@patch("process_manager.verbose_cli_args", return_value=["--verbose"])
-def test_process_manager_includes_verbose_logging(mock_verbose, mock_exists, mock_bin):
+def test_process_manager_omits_verbose_logging(mock_exists, mock_bin):
     config_mgr = MagicMock()
     token_mgr = MagicMock()
     token_mgr.get_or_create.return_value = "test-token"
@@ -188,7 +187,8 @@ def test_process_manager_includes_verbose_logging(mock_verbose, mock_exists, moc
             context_size=65536,
         )
         args = mock_popen.call_args[0][0]
-        assert "--verbose" in args
+        assert "--verbose" not in args
+        assert "--log-verbosity" not in args
         log_mgr.start_streaming.assert_called_once()
         assert log_mgr.start_streaming.call_args.kwargs.get("cmd") == args
 

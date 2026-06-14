@@ -47,13 +47,13 @@ def test_start_streaming_writes_command_header(tmp_path):
         stderr=subprocess.STDOUT,
         text=True,
     )
-    cmd = ["/usr/bin/llama-server", "-m", "model.gguf", "--verbose"]
+    cmd = ["/usr/bin/llama-server", "-m", "model.gguf"]
     manager.start_streaming(8085, proc, cmd=cmd)
     proc.wait(timeout=5)
     time.sleep(0.2)
     content = log_path.read_text(encoding="utf-8")
     assert "llama-server :8085" in content
-    assert "--verbose" in content
+    assert "model.gguf" in content
     assert "ready" in content
 
 
