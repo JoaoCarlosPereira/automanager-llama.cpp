@@ -59,6 +59,10 @@ class DownloadRequest(BaseModel):
     model_path: Optional[str] = None
 
 
+class DownloadCancelRequest(BaseModel):
+    download_id: str
+
+
 class SetMmprojRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 

@@ -274,6 +274,10 @@ export async function startSmartCalibration(path, tabId) {
         ubatch_size: tab.querySelector('.tab-pin-ubatch').checked,
         cache_type: tab.querySelector('.tab-pin-cache').checked,
         threads: tab.querySelector('.tab-pin-threads').checked,
+        thinking: tab.querySelector('.tab-pin-thinking')?.checked ?? false,
+        mtp: tab.querySelector('.tab-pin-mtp')?.checked ?? false,
+        numa: tab.querySelector('.tab-pin-numa')?.checked ?? false,
+        split_mode: tab.querySelector('.tab-pin-split-mode')?.checked ?? false,
     };
 
     const currentValues = {
@@ -305,6 +309,11 @@ export async function startSmartCalibration(path, tabId) {
                 cache_type_v: currentValues.cache_type_v,
                 threads: currentValues.threads,
                 threads_batch: currentValues.threads_batch,
+                thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
+                mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
+                mtp_draft_tokens: getMtpDraftTokens(tabId),
+                numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
+                split_mode: tab.querySelector('.tab-split-mode').value,
                 auto_balance: true,
                 smart_calibration: true,
                 pinned_fields: pinnedFields,
@@ -776,15 +785,27 @@ export async function renameModel(path) {
 }
 
 export async function deleteModel(path) {
-    if (!confirm("Excluir modelo permanentemente?")) return;
+    if (!confirm('Excluir modelo permanentemente?')) return;
+    const normalized = path.replace(/\\/g, '/');
     try {
-        const res = await fetch('/delete', {
+        const res = await apiFetch('/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({path}),
         });
-        if (res.ok) updateModels();
-    } catch (e) {}
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Erro: ' + (err.detail || 'Falha ao excluir'));
+            return;
+        }
+
+        const openTab = state.activeTabs.find(t => t.path === normalized);
+        if (openTab) closeTab(openTab.id);
+        delete window.modelConfigs[normalized];
+        await updateModels();
+    } catch (e) {
+        alert('Erro de rede ao excluir modelo.');
+    }
 }
 
 export async function startModel(path, tabId) {

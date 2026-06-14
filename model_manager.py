@@ -2,6 +2,7 @@
 
 import os
 import hashlib
+import re
 import shutil
 import time
 import uuid
@@ -14,7 +15,7 @@ from typing import Dict, List, Optional
 import requests
 from fastapi import HTTPException
 
-from config_manager import ConfigManager, lookup_model_config
+from config_manager import ConfigManager, lookup_model_config, normalize_model_path
 from paths import MODELS_DIR
 from process_manager import ProcessManager
 logger = logging.getLogger("automanager")
@@ -36,6 +37,82 @@ _PRIVATE_NETWORKS = [
 
 # Max download size: 100 GB
 MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024 * 1024
+
+_FAMILY_VARIANT_WORDS = frozenset({
+    "instruct", "chat", "base", "mtp", "ud", "preview", "thinking",
+    "it", "gguf", "ggml", "abliterated", "uncensored", "v0", "v1", "v2",
+})
+_SIZE_TOKEN_RE = re.compile(r"^\d+(\.\d+)?[bB]$")
+_QUANT_TOKEN_RE = re.compile(
+    r"^(Q\d|IQ\d|BF16|F16|F32|FP16|FP32|UD|quant|quantized)",
+    re.IGNORECASE,
+)
+
+
+class DownloadCancelled(Exception):
+    """Raised when a download is cancelled by the user."""
+
+
+def infer_model_family(name_or_filename: str, url: str = "") -> str:
+    """Infer model family from filename or HuggingFace URL (e.g. Qwen3.6, Llama-3.3)."""
+    stem = os.path.basename(name_or_filename or "").replace(".gguf", "").replace(
+        ".mmproj", ""
+    )
+    if not stem and url:
+        stem = _stem_from_hf_repo(url) or ""
+
+    family_parts = _family_parts_from_stem(stem)
+    if family_parts:
+        joined = "-".join(family_parts)
+        if family_parts[0].lower() == "meta" and len(family_parts) > 1:
+            joined = "-".join(family_parts[1:])
+        if joined.lower() not in {"file", "model", "download", "misc"}:
+            return joined
+
+    repo_family = _family_from_hf_repo(url)
+    if repo_family:
+        return repo_family
+    if family_parts:
+        return "-".join(family_parts)
+    return stem or "misc"
+
+
+def _family_parts_from_stem(stem: str) -> List[str]:
+    family: List[str] = []
+    for part in stem.split("-"):
+        if _SIZE_TOKEN_RE.match(part):
+            break
+        if _QUANT_TOKEN_RE.match(part):
+            break
+        if part.lower() in _FAMILY_VARIANT_WORDS and family:
+            break
+        family.append(part)
+    return family
+
+
+def _stem_from_hf_repo(url: str) -> str:
+    match = re.search(
+        r"huggingface\.co/[^/]+/([^/]+)/",
+        url or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    repo = match.group(1)
+    for suffix in ("-GGUF", "-gguf", "_GGUF", "_gguf"):
+        if repo.endswith(suffix):
+            repo = repo[: -len(suffix)]
+    return repo
+
+
+def _family_from_hf_repo(url: str) -> str:
+    stem = _stem_from_hf_repo(url)
+    if not stem:
+        return ""
+    parts = _family_parts_from_stem(stem)
+    if parts and parts[0].lower() == "meta" and len(parts) > 1:
+        return "-".join(parts[1:])
+    return "-".join(parts) if parts else ""
 
 
 def _validate_download_url(url: str) -> bool:
@@ -229,14 +306,44 @@ class ModelScanner:
             )
 
         pm = self.process_manager
+        normalized = normalize_model_path(real_file_path)
         status = pm.get_status()
-        if status["running"]:
-            normalized = real_file_path.replace("\\", "/")
-            normalized_run = status.get("model_path", "").replace("\\", "/")
-            if normalized == normalized_run:
-                pm.stop()
+        for inst in status.get("instances", []):
+            if inst.get("status") != "running":
+                continue
+            inst_path = normalize_model_path(inst.get("model_path") or "")
+            if inst_path == normalized:
+                pm.stop(inst.get("port"))
 
         os.remove(real_file_path)
+
+        data = self.config.load()
+        updated = False
+        if data.get("default_model") and normalize_model_path(
+            data["default_model"]
+        ) == normalized:
+            data["default_model"] = None
+            updated = True
+
+        defaults = data.get("default_models", [])
+        new_defaults = [
+            p for p in defaults if normalize_model_path(p) != normalized
+        ]
+        if new_defaults != defaults:
+            data["default_models"] = new_defaults
+            updated = True
+
+        model_configs = data.get("model_configs", {})
+        keys_to_remove = [
+            k for k in model_configs if normalize_model_path(k) == normalized
+        ]
+        for key in keys_to_remove:
+            del model_configs[key]
+            updated = True
+
+        if updated:
+            self.config.save(data)
+
         logger.info(f"Deleted: {real_file_path}")
 
 
@@ -280,33 +387,42 @@ class DownloadManager:
                         filename += ".mmproj"
             model_specific_dir = os.path.dirname(normalized_model)
             path = os.path.join(model_specific_dir, filename)
+            if os.path.exists(path):
+                base, ext = os.path.splitext(filename)
+                filename = f"{base}_{int(time.time())}{ext}"
+                path = os.path.join(model_specific_dir, filename)
         else:
             if not filename:
                 filename = url.split("/")[-1].split("?")[0]
                 if not filename.endswith(".gguf"):
                     filename += ".gguf"
 
-            model_name_folder = filename.replace(".gguf", "")
-            model_specific_dir = os.path.join(self.models_dir, model_name_folder)
-            os.makedirs(model_specific_dir, exist_ok=True)
-            path = os.path.join(model_specific_dir, filename)
+            family = infer_model_family(filename, url)
+            family_dir = os.path.join(self.models_dir, family)
+            os.makedirs(family_dir, exist_ok=True)
+            path = os.path.join(family_dir, filename)
 
-        if os.path.exists(path):
-            base, ext = os.path.splitext(filename)
-            filename = f"{base}_{int(time.time())}{ext}"
-            path = os.path.join(model_specific_dir, filename)
+            if os.path.exists(path):
+                base, ext = os.path.splitext(filename)
+                filename = f"{base}_{int(time.time())}{ext}"
+                path = os.path.join(family_dir, filename)
+            model_specific_dir = family_dir
 
         with self._lock:
             self._downloads[download_id] = {
                 "filename": filename,
                 "path": path,
                 "url": url,
+                "family": infer_model_family(filename, url) if not model_path else None,
                 "status": "downloading",
                 "progress": 0,
                 "downloaded_bytes": 0,
                 "total_bytes": 0,
                 "speed_bps": 0,
                 "start_time": time.time(),
+                "elapsed_seconds": 0,
+                "eta_seconds": None,
+                "cancel_requested": False,
             }
             self._downloads_queue.append(
                 (download_id, url, filename, path)
@@ -315,15 +431,60 @@ class DownloadManager:
 
     def get_progress(self) -> dict:
         with self._lock:
-            return dict(self._downloads)
+            snapshot = {}
+            now = time.time()
+            for did, entry in self._downloads.items():
+                item = dict(entry)
+                if item.get("status") == "downloading":
+                    started = item.get("start_time") or now
+                    item["elapsed_seconds"] = max(0.0, now - started)
+                snapshot[did] = item
+            return snapshot
+
+    def cancel_download(self, download_id: str) -> bool:
+        with self._lock:
+            entry = self._downloads.get(download_id)
+            if not entry:
+                return False
+            if entry.get("status") != "downloading":
+                return False
+            if entry.get("cancel_requested"):
+                return True
+            was_queued = any(item[0] == download_id for item in self._downloads_queue)
+            entry["cancel_requested"] = True
+            entry["status"] = "cancelling"
+            self._downloads_queue = [
+                item for item in self._downloads_queue if item[0] != download_id
+            ]
+            path = entry.get("path")
+            started = entry.get("start_time") or time.time()
+
+        if was_queued:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not remove cancelled download %s: %s", path, exc
+                    )
+            with self._lock:
+                entry = self._downloads.get(download_id)
+                if entry:
+                    entry["status"] = "cancelled"
+                    entry["speed_bps"] = 0
+                    entry["progress"] = 0
+                    entry["eta_seconds"] = None
+                    entry["elapsed_seconds"] = time.time() - started
+            return True
+        return True
 
     def clear_completed(self) -> int:
-        """Remove completed downloads from memory. Returns count cleared."""
+        """Remove finished downloads from memory. Returns count cleared."""
         with self._lock:
             to_remove = [
                 did
                 for did, d in self._downloads.items()
-                if d.get("status") == "completed"
+                if d.get("status") in ("completed", "cancelled", "failed")
             ]
             for did in to_remove:
                 del self._downloads[did]
@@ -333,45 +494,91 @@ class DownloadManager:
         self, download_id: str, url: str, filename: str, path: str
     ) -> None:
         try:
+            with self._lock:
+                if self._downloads.get(download_id, {}).get("cancel_requested"):
+                    raise DownloadCancelled()
+
             response = requests.get(url, stream=True, timeout=300)
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
-            # Block downloads exceeding max size
             if total_size > MAX_DOWNLOAD_SIZE:
-                raise Exception(f"Download muito grande ({total_size / _GB:.1f} GB). Maximo: {MAX_DOWNLOAD_SIZE / _GB:.0f} GB")
+                raise Exception(
+                    f"Download muito grande ({total_size / _GB:.1f} GB). "
+                    f"Maximo: {MAX_DOWNLOAD_SIZE / _GB:.0f} GB"
+                )
             downloaded = 0
             start_time = time.time()
             with open(path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192 * 4):
+                    with self._lock:
+                        if self._downloads.get(download_id, {}).get("cancel_requested"):
+                            raise DownloadCancelled()
                     if chunk:
                         downloaded += len(chunk)
-                        # Check max size during download
                         if downloaded > MAX_DOWNLOAD_SIZE:
-                            raise Exception("Download excede tamanho maximo permitido (100GB)")
+                            raise Exception(
+                                "Download excede tamanho maximo permitido (100GB)"
+                            )
                         f.write(chunk)
                         now = time.time()
                         elapsed = now - start_time
                         speed_bps = downloaded / elapsed if elapsed > 0 else 0
+                        remaining = max(0, total_size - downloaded) if total_size else 0
+                        eta_seconds = (
+                            remaining / speed_bps
+                            if speed_bps > 0 and total_size > 0
+                            else None
+                        )
                         with self._lock:
                             if download_id in self._downloads:
-                                self._downloads[download_id]["downloaded_bytes"] = downloaded
-                                self._downloads[download_id]["total_bytes"] = total_size
-                                self._downloads[download_id]["speed_bps"] = speed_bps
+                                entry = self._downloads[download_id]
+                                entry["downloaded_bytes"] = downloaded
+                                entry["total_bytes"] = total_size
+                                entry["speed_bps"] = speed_bps
+                                entry["elapsed_seconds"] = elapsed
+                                entry["eta_seconds"] = eta_seconds
                                 if total_size > 0:
-                                    self._downloads[download_id][
-                                        "progress"
-                                    ] = round(
+                                    entry["progress"] = round(
                                         (downloaded / total_size) * 100, 2
                                     )
             with self._lock:
                 if download_id in self._downloads:
-                    self._downloads[download_id]["status"] = "completed"
-                    self._downloads[download_id]["progress"] = 100
-                    self._downloads[download_id]["speed_bps"] = 0
+                    entry = self._downloads[download_id]
+                    entry["status"] = "completed"
+                    entry["progress"] = 100
+                    entry["speed_bps"] = 0
+                    entry["eta_seconds"] = 0
+                    entry["elapsed_seconds"] = time.time() - start_time
             logger.info(f"Download completed: {filename}")
+        except DownloadCancelled:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            with self._lock:
+                if download_id in self._downloads:
+                    entry = self._downloads[download_id]
+                    entry["status"] = "cancelled"
+                    entry["speed_bps"] = 0
+                    entry["progress"] = 0
+                    entry["eta_seconds"] = None
+                    if entry.get("start_time"):
+                        entry["elapsed_seconds"] = time.time() - entry["start_time"]
+            logger.info(f"Download cancelled: {filename}")
         except Exception as e:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             logger.error(f"Download error {download_id}: {e}")
             with self._lock:
                 if download_id in self._downloads:
-                    self._downloads[download_id]["status"] = "failed"
-                    self._downloads[download_id]["error"] = str(e)
+                    entry = self._downloads[download_id]
+                    entry["status"] = "failed"
+                    entry["error"] = str(e)
+                    entry["speed_bps"] = 0
+                    entry["eta_seconds"] = None
+                    if entry.get("start_time"):
+                        entry["elapsed_seconds"] = time.time() - entry["start_time"]

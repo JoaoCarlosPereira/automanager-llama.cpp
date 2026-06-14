@@ -30,6 +30,7 @@ from schemas import (
     StartRequest,
     DeleteRequest,
     DownloadRequest,
+    DownloadCancelRequest,
     RenameRequest,
     SetDefaultRequest,
     SetMmprojRequest,
@@ -255,10 +256,9 @@ async def cancel_auto_balance(authenticated: bool = Depends(require_auth)):
 async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    if model_scanner.delete_model(req.path):
-        _invalidate_models_cache()
-        return {"message": "Excluido"}
-    raise HTTPException(status_code=400, detail="Erro ao excluir arquivo")
+    model_scanner.delete_model(req.path)
+    _invalidate_models_cache()
+    return {"message": "Excluido"}
 
 
 @app.post("/rename")
@@ -284,6 +284,17 @@ async def list_downloads(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     return {"downloads": download_mgr.get_progress()}
+
+
+@app.post("/downloads/cancel")
+async def cancel_download(
+    req: DownloadCancelRequest, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    if not download_mgr.cancel_download(req.download_id):
+        raise HTTPException(status_code=404, detail="Download nao encontrado")
+    return {"message": "Download cancelado"}
 
 
 @app.post("/downloads/clear")
@@ -1135,25 +1146,47 @@ def _build_html(
                                  </div>
                              </div>
                              <div class="flex flex-wrap gap-3 pt-4 border-t border-slate-800/30">
-                                <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-violet-500/30 transition-all">
-                                    <input type="checkbox" class="tab-thinking-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-violet-600">
-                                    <span class="text-[10px] font-bold uppercase text-slate-500">Thinking</span>
-                                </label>
+                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-violet-500/30 transition-all">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="tab-thinking-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-violet-600">
+                                        <span class="text-[10px] font-bold uppercase text-slate-500">Thinking</span>
+                                    </label>
+                                    <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
+                                        <input type="checkbox" class="tab-pin-thinking hidden">
+                                        <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
+                                    </label>
+                                </div>
                                 <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-mtp-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-amber-600">
                                         <span class="text-[10px] font-bold uppercase text-slate-500">MTP</span>
                                     </label>
                                     <input type="number" min="1" max="4" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-[10px] font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" title="Tokens de draft MTP (1-4)" value="{default_mtp_draft_tokens}">
+                                    <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
+                                        <input type="checkbox" class="tab-pin-mtp hidden">
+                                        <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
+                                    </label>
                                 </div>
-                                <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
-                                    <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
-                                    <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
-                                </label>
-                                <select class="tab-split-mode bg-slate-950 border border-slate-800 text-slate-400 rounded-xl px-4 py-2 text-[10px] font-bold outline-none focus:ring-1 focus:ring-blue-500/50">
-                                    <option value="layer">LAYER SPLIT</option>
-                                    <option value="row">ROW SPLIT</option>
-                                </select>
+                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
+                                        <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
+                                    </label>
+                                    <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
+                                        <input type="checkbox" class="tab-pin-numa hidden">
+                                        <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
+                                    </label>
+                                </div>
+                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-blue-500/30 transition-all">
+                                    <select class="tab-split-mode bg-slate-950 border border-slate-800 text-slate-400 rounded-xl px-4 py-2 text-[10px] font-bold outline-none focus:ring-1 focus:ring-blue-500/50">
+                                        <option value="layer">LAYER SPLIT</option>
+                                        <option value="row">ROW SPLIT</option>
+                                    </select>
+                                    <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
+                                        <input type="checkbox" class="tab-pin-split-mode hidden">
+                                        <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
+                                    </label>
+                                </div>
                              </div>
                         </div>
                     </div>
@@ -1441,6 +1474,9 @@ def _run_downloads(stop_event: threading.Event):
         for download_id, url, filename, path in to_process:
             if stop_event.is_set():
                 break
+            with download_mgr._lock:
+                if download_mgr._downloads.get(download_id, {}).get("cancel_requested"):
+                    continue
             download_mgr._do_download(download_id, url, filename, path)
         time.sleep(1)
 

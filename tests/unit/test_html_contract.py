@@ -184,9 +184,13 @@ def test_template_contains_engine_params(html):
 
 def test_template_contains_feature_toggles(html):
     assert "tab-thinking-toggle" in html
+    assert "tab-pin-thinking" in html
     assert "tab-mtp-toggle" in html
     assert "tab-mtp-draft-tokens" in html
+    assert "tab-pin-mtp" in html
     assert "tab-numa-toggle" in html
+    assert "tab-pin-numa" in html
+    assert "tab-pin-split-mode" in html
     assert "tab-auto-balance-toggle" not in html
 
 

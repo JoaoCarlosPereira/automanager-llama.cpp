@@ -1640,6 +1640,11 @@ class AutoBalanceProber:
             "cache_type_v": request.cache_type_v,
             "threads": request.threads,
             "threads_batch": request.threads_batch,
+            "thinking_enabled": request.thinking_enabled,
+            "mtp_enabled": request.mtp_enabled,
+            "mtp_draft_tokens": request.mtp_draft_tokens,
+            "numa_enabled": request.numa_enabled,
+            "split_mode": request.split_mode,
         }
 
         # Heurística de Cache

@@ -42,6 +42,17 @@ def test_renders_byte_progress(metrics_js):
     assert "d.total_bytes" in metrics_js
 
 
+def test_renders_download_timing(metrics_js):
+    assert "formatDuration" in metrics_js
+    assert "d.elapsed_seconds" in metrics_js
+    assert "d.eta_seconds" in metrics_js
+
+
+def test_renders_cancel_download_action(metrics_js):
+    assert "cancelDownload" in metrics_js
+    assert "/downloads/cancel" in metrics_js
+
+
 def test_progress_bar_width_uses_progress(metrics_js):
     """The progress bar width must still be bound to the progress value."""
     assert "width: ${progress}%" in metrics_js

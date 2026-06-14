@@ -8,7 +8,7 @@ import {
 } from './gpu.js';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
-    updateDownloads, clearCompletedDownloads,
+    updateDownloads, clearCompletedDownloads, cancelDownload,
 } from './metrics.js';
 import {
     initDashboard, selectModel, applyModelConfig, setDefaultModel,
@@ -59,6 +59,7 @@ win.onMmprojChange = onMmprojChange;
 win.updateMetrics = updateMetrics;
 win.updateDownloads = updateDownloads;
 win.clearCompletedDownloads = clearCompletedDownloads;
+win.cancelDownload = cancelDownload;
 win.checkForUpdates = checkForUpdates;
 win.dismissVersionModal = dismissVersionModal;
 

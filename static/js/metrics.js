@@ -142,6 +142,36 @@ function formatSpeed(bytesPerSec) {
     return `${formatBytes(n)}/s`;
 }
 
+function formatDuration(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (total < 60) return `${total}s`;
+    const minutes = Math.floor(total / 60);
+    const rem = total % 60;
+    if (minutes < 60) return `${minutes}m ${rem}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+}
+
+export async function cancelDownload(downloadId) {
+    if (!downloadId) return;
+    try {
+        const res = await apiFetch('/downloads/cancel', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({download_id: downloadId}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert('Erro: ' + (err.detail || 'Falha ao cancelar download'));
+            return;
+        }
+        await updateDownloads();
+        window.updateModels?.();
+    } catch (e) {
+        alert('Erro de rede ao cancelar download.');
+    }
+}
+
 export async function updateDownloads() {
     try {
         const res = await apiFetch('/downloads');
@@ -152,14 +182,25 @@ export async function updateDownloads() {
         if (entries.length === 0) { container.innerHTML = '<p class="text-[9px] text-slate-600 text-center uppercase tracking-widest py-4">Nenhum download ativo</p>'; return; }
 
         container.innerHTML = entries.map(([id, d]) => {
-            const statusClass = d.status === 'completed' ? 'text-emerald-500' : d.status === 'failed' ? 'text-red-500' : 'text-blue-500';
+            const statusClass = d.status === 'completed' ? 'text-emerald-500'
+                : d.status === 'failed' ? 'text-red-500'
+                : d.status === 'cancelled' ? 'text-amber-500'
+                : 'text-blue-500';
             const progress = Number(d.progress) || 0;
-            const isActive = d.status !== 'completed' && d.status !== 'failed';
+            const isActive = d.status === 'downloading' || d.status === 'cancelling';
+            const elapsed = formatDuration(d.elapsed_seconds);
+            const eta = d.eta_seconds != null && d.eta_seconds > 0
+                ? formatDuration(d.eta_seconds)
+                : '--';
+            const familyLabel = d.family ? `<span class="text-[7px] text-slate-600 uppercase tracking-widest">${d.family}</span>` : '';
             return `
                 <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
-                    <div class="flex justify-between items-center">
-                        <p class="text-[9px] font-bold truncate flex-1 text-slate-400 font-mono">${d.filename}</p>
-                        <span class="text-[8px] font-black uppercase ${statusClass}">${d.status}</span>
+                    <div class="flex justify-between items-center gap-2">
+                        <div class="min-w-0 flex-1">
+                            <p class="text-[9px] font-bold truncate text-slate-400 font-mono">${d.filename}</p>
+                            ${familyLabel}
+                        </div>
+                        <span class="text-[8px] font-black uppercase shrink-0 ${statusClass}">${d.status}</span>
                     </div>
                     <div class="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
                         <div class="h-full bg-blue-500 transition-all" style="width: ${progress}%"></div>
@@ -171,6 +212,15 @@ export async function updateDownloads() {
                             <span class="text-slate-300 font-black">${progress.toFixed(1)}%</span>
                         </span>
                     </div>
+                    <div class="flex justify-between items-center text-[8px] font-mono text-slate-500">
+                        <span>Tempo: ${elapsed}</span>
+                        ${isActive ? `<span>ETA: ${eta}</span>` : ''}
+                    </div>
+                    ${isActive ? `
+                        <button type="button" onclick="cancelDownload('${id}')"
+                            class="w-full py-1.5 rounded-lg border border-red-500/30 text-[8px] font-black uppercase tracking-widest text-red-400 hover:bg-red-500/10 transition-all">
+                            Cancelar
+                        </button>` : ''}
                 </div>`;
         }).join('');
     } catch (e) {}

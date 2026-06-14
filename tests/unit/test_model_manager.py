@@ -10,6 +10,7 @@ from model_manager import (
     DownloadManager,
     ModelScanner,
     _projector_paths_for_model,
+    infer_model_family,
 )
 
 
@@ -123,3 +124,91 @@ class TestModelScannerSameDirectory:
         llava = next(m for m in result["models"] if m["name"] == "llava-7b.gguf")
         assert llava["mmproj_candidates"] == [str(local_proj)]
         assert llava["auto_mmproj"] == str(local_proj)
+
+
+class TestModelScannerDelete:
+    def test_delete_model_removes_file_config_and_stops_instance(self, tmp_path):
+        models_dir = tmp_path / "models"
+        model_dir = models_dir / "llama"
+        model_dir.mkdir(parents=True)
+        model_path = model_dir / "llama-7b.gguf"
+        model_path.write_text("gguf", encoding="utf-8")
+
+        config_manager = MagicMock()
+        config_manager.load.return_value = {
+            "default_model": str(model_path),
+            "default_models": [str(model_path)],
+            "model_configs": {
+                str(model_path): {"context_size": 4096},
+            },
+        }
+
+        process_manager = MagicMock()
+        process_manager.get_status.return_value = {
+            "instances": [
+                {
+                    "port": 8085,
+                    "status": "running",
+                    "model_path": str(model_path),
+                }
+            ],
+            "recovery": {},
+        }
+
+        scanner = ModelScanner(
+            config_manager,
+            process_manager,
+            models_dir=str(models_dir),
+        )
+        scanner.delete_model(str(model_path))
+
+        assert not model_path.exists()
+        process_manager.stop.assert_called_once_with(8085)
+        saved = config_manager.save.call_args[0][0]
+        assert saved["default_model"] is None
+        assert saved["default_models"] == []
+        assert str(model_path) not in saved["model_configs"]
+
+
+class TestInferModelFamily:
+    def test_qwen_family(self):
+        assert infer_model_family("Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf") == "Qwen3.6"
+
+    def test_llama_family(self):
+        assert infer_model_family("Llama-3.3-70B-Instruct-Q4_K_M.gguf") == "Llama-3.3"
+
+    def test_meta_llama_prefix_stripped(self):
+        assert infer_model_family("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf") == "Llama-3.1"
+
+    def test_family_from_hf_repo(self):
+        url = "https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/file.gguf"
+        assert infer_model_family("file.gguf", url) == "Llama-3.3"
+
+
+class TestDownloadManagerFamilyAndCancel:
+    def test_start_download_uses_family_directory(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        mgr = DownloadManager(models_dir=str(models_dir))
+        download_id = mgr.start_download(
+            "https://example.com/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf"
+        )
+        with mgr._lock:
+            entry = mgr._downloads[download_id]
+        assert entry["family"] == "Qwen3.6"
+        assert entry["path"].startswith(str(models_dir / "Qwen3.6"))
+        assert entry["path"].endswith("Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf")
+
+    def test_cancel_queued_download_removes_partial_file(self, tmp_path):
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        mgr = DownloadManager(models_dir=str(models_dir))
+        download_id = mgr.start_download("https://example.com/Llama-3.3-70B.gguf")
+        with mgr._lock:
+            path = mgr._downloads[download_id]["path"]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"partial")
+        assert mgr.cancel_download(download_id) is True
+        assert not os.path.exists(path)
+        assert mgr.get_progress()[download_id]["status"] == "cancelled"
