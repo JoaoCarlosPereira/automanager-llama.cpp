@@ -15,5 +15,8 @@ export const state = {
     statusPollTimer: null,
     activeTabs: [], // [{id, path, name}]
     currentTabId: null,
+    initialTabsSynced: false,
+    lastModelsList: [],
+    lastConfig: {},
     modelLogs: {}, // {modelPath: 'log text...'}
 };

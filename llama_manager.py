@@ -805,7 +805,12 @@ def _build_html(
         .tab-btn {{ transition: all 0.3s ease; border-bottom: 3px solid transparent; }}
         .tab-btn.active {{ border-bottom-color: #3b82f6; color: #fff; background: rgba(59, 130, 246, 0.1); }}
         .tab-content {{ display: none; }}
-        .tab-content.active {{ display: flex; }}
+        .tab-content.active {{ display: flex; position: absolute; inset: 0; width: 100%; }}
+        
+        .custom-scroll {{
+            scrollbar-width: thin;
+            scrollbar-color: #334155 transparent;
+        }}
         
         @media (max-width: 1024px) {{
             #sidebar {{ transform: translateX(-100%); z-index: 50; width: 300px; }}
@@ -829,7 +834,7 @@ def _build_html(
     {version_update_modal}
 
     <!-- SIDEBAR (MENU RETRATIL) -->
-    <aside id="sidebar" class="fixed top-0 left-0 h-full w-80 glass border-r border-slate-800 z-40 overflow-y-auto custom-scroll flex flex-col shadow-2xl" style="display: {shell_style};">
+    <aside id="sidebar" class="fixed top-0 left-0 h-full w-80 glass border-r border-slate-800 z-40 overflow-y-auto custom-scroll flex flex-col shadow-2xl collapsed" style="display: {shell_style};">
         <div class="p-6 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-950/20">
             <h2 class="font-bold text-lg text-white flex items-center gap-3">
                 <i class="fas fa-layer-group text-blue-500"></i> Biblioteca
@@ -900,7 +905,7 @@ def _build_html(
     </aside>
 
     <!-- CONTEUDO PRINCIPAL -->
-    <main id="main-content" class="main-content flex-1 h-screen flex flex-col relative overflow-hidden" style="display: {shell_style};">
+    <main id="main-content" class="main-content full flex-1 h-screen flex flex-col relative overflow-hidden" style="display: {shell_style};">
         <!-- HEADER -->
         <header class="glass border-b border-slate-800 px-6 py-4 flex items-center justify-between h-16 shrink-0 z-30 shadow-md">
             <div class="flex items-center gap-4">
@@ -968,14 +973,27 @@ def _build_html(
                 <!-- CONTAINER DE CONTEUDO -->
                 <div id="tabs-container" class="flex-1 relative overflow-hidden">
                     <!-- Tela Vazia -->
-                    <div id="no-tab-content" class="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-slate-950/30">
-                         <div class="w-20 h-20 rounded-[2rem] bg-slate-900 flex items-center justify-center mb-6 border border-slate-800 shadow-inner">
-                             <i class="fas fa-cubes text-3xl text-slate-700"></i>
+                    <div id="no-tab-content" class="absolute inset-0 flex flex-col items-center justify-center p-6 md:p-10 text-center bg-slate-950/30 overflow-y-auto custom-scroll">
+                         <div class="w-16 h-16 rounded-[1.5rem] bg-slate-900 flex items-center justify-center mb-4 border border-slate-800 shadow-inner">
+                             <i class="fas fa-cubes text-2xl text-slate-700"></i>
                          </div>
-                         <h3 class="text-xl font-bold text-slate-300 tracking-tight">Arquitetura Multi-Modelo</h3>
-                         <p class="text-xs text-slate-500 mt-3 max-w-sm leading-relaxed uppercase tracking-[0.2em]">
-                             Selecione modelos na biblioteca lateral para gerenciar configurações e instâncias independentes.
+                         <h3 class="text-lg font-bold text-slate-300 tracking-tight">Arquitetura Multi-Modelo</h3>
+                         <p class="text-[10px] text-slate-500 mt-2 max-w-md leading-relaxed uppercase tracking-[0.2em]">
+                             Abra um atalho abaixo ou selecione modelos na biblioteca lateral.
                          </p>
+
+                         <div id="no-tab-shortcuts" class="w-full max-w-5xl mt-8 space-y-4 hidden">
+                             <div class="flex items-center justify-between px-1">
+                                 <p class="text-[9px] font-black text-slate-500 uppercase tracking-[0.25em]">Modelos Frequentes</p>
+                                 <span id="no-tab-shortcuts-count" class="text-[8px] font-mono text-slate-600"></span>
+                             </div>
+                             <div id="no-tab-shortcuts-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-left"></div>
+                         </div>
+
+                         <p id="no-tab-shortcuts-empty" class="text-[10px] text-slate-600 mt-6 max-w-sm hidden">
+                             Nenhum modelo configurado ainda. Abra a biblioteca para escolher um modelo e salvar suas preferências.
+                         </p>
+
                          <button onclick="toggleSidebar(true)" class="mt-8 px-10 py-3.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-2xl uppercase tracking-[0.25em] transition-all shadow-2xl shadow-blue-600/20 active:scale-95">
                              ABRIR BIBLIOTECA
                          </button>
@@ -988,11 +1006,11 @@ def _build_html(
 
     <!-- TEMPLATE PARA ABA DE MODELO -->
     <template id="model-tab-template">
-        <div class="tab-content h-full flex-col overflow-hidden">
-            <div class="flex-1 flex flex-col xl:flex-row min-h-0 overflow-y-auto xl:overflow-hidden custom-scroll">
+        <div class="tab-content h-full w-full flex-col overflow-hidden">
+            <div class="flex-1 flex flex-col xl:flex-row min-h-0 overflow-y-auto xl:overflow-hidden">
                 
                 <!-- PAINEL DE CONFIG (ESQUERDA) -->
-                <div class="flex-1 p-6 md:p-8 space-y-6 xl:overflow-y-auto custom-scroll bg-slate-900/10">
+                <div class="flex-1 min-h-0 p-6 md:p-8 space-y-6 xl:overflow-y-auto custom-scroll bg-slate-900/10">
                     <!-- Header da Tab -->
                     <div class="flex items-center justify-between gap-6 flex-wrap pb-6 border-b border-slate-800/60">
                         <div class="flex items-center gap-5">
@@ -1121,17 +1139,16 @@ def _build_html(
                                     <input type="checkbox" class="tab-thinking-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-violet-600">
                                     <span class="text-[10px] font-bold uppercase text-slate-500">Thinking</span>
                                 </label>
-                                <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
-                                    <input type="checkbox" class="tab-mtp-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-amber-600">
-                                    <span class="text-[10px] font-bold uppercase text-slate-500">MTP</span>
-                                </label>
+                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="tab-mtp-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-amber-600">
+                                        <span class="text-[10px] font-bold uppercase text-slate-500">MTP</span>
+                                    </label>
+                                    <input type="number" min="1" max="4" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-[10px] font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" title="Tokens de draft MTP (1-4)" value="{default_mtp_draft_tokens}">
+                                </div>
                                 <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
                                     <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
                                     <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
-                                </label>
-                                <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-emerald-500/30 transition-all">
-                                    <input type="checkbox" class="tab-auto-balance-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600">
-                                    <span class="text-[10px] font-bold uppercase text-slate-500">Auto Balance</span>
                                 </label>
                                 <select class="tab-split-mode bg-slate-950 border border-slate-800 text-slate-400 rounded-xl px-4 py-2 text-[10px] font-bold outline-none focus:ring-1 focus:ring-blue-500/50">
                                     <option value="layer">LAYER SPLIT</option>
@@ -1215,7 +1232,7 @@ def _build_html(
                 </div>
 
                 <!-- PAINEL DE LOGS (DIREITA) -->
-                <div class="xl:w-1/3 xl:border-l border-slate-800/60 bg-slate-950/40 flex flex-col h-[500px] xl:h-auto shadow-2xl relative">
+                <div class="xl:w-1/3 xl:max-w-[40%] xl:border-l border-slate-800/60 bg-slate-950/40 flex flex-col min-h-0 h-[500px] xl:h-full shadow-2xl relative shrink-0">
                     <div class="p-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between shrink-0">
                         <div class="flex items-center gap-3">
                             <div class="flex gap-1">
@@ -1229,7 +1246,7 @@ def _build_html(
                             <i class="fas fa-trash-alt text-[10px]"></i>
                         </button>
                     </div>
-                    <div class="tab-log-box flex-1 p-8 font-mono text-[11px] text-slate-500 leading-relaxed overflow-y-auto custom-scroll whitespace-pre-wrap selection:bg-blue-500/20 bg-slate-950/20">
+                    <div class="tab-log-box flex-1 min-h-0 p-8 font-mono text-[11px] text-slate-500 leading-relaxed overflow-y-auto overflow-x-hidden custom-scroll whitespace-pre-wrap break-words selection:bg-blue-500/20 bg-slate-950/20">
                         <!-- Logs in realtime -->
                     </div>
                     <div class="p-4 bg-slate-900/60 border-t border-slate-800/80 flex items-center justify-between shrink-0">

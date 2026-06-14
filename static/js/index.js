@@ -14,7 +14,7 @@ import {
     initDashboard, selectModel, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
-    onMmprojChange,
+    onMmprojChange, closeTab,
 } from './models.js';
 import { checkForUpdates, dismissVersionModal } from './version.js';
 
@@ -39,6 +39,7 @@ win.renameModel = renameModel;
 win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
 win.selectModel = selectModel;
+win.closeTab = closeTab;
 win.applyModelConfig = applyModelConfig;
 win.renewToken = renewToken;
 win.updateTotal = updateTotal;
@@ -71,8 +72,7 @@ win.toggleSidebar = (force) => {
         const willOpen = force === undefined ? !sidebar.classList.contains('open') : !!force;
         sidebar.classList.toggle('open', willOpen);
     } else {
-        // Desktop: sidebar is open by default; '.collapsed' hides it and
-        // '.full' removes the main content's left margin.
+        // Desktop: '.collapsed' hides the sidebar; '.full' removes the left margin.
         const isOpen = !sidebar.classList.contains('collapsed');
         const willOpen = force === undefined ? !isOpen : !!force;
         sidebar.classList.toggle('collapsed', !willOpen);
@@ -89,7 +89,8 @@ win.openNativeChat = (port) => {
 const apiLinkEl = document.getElementById('api-link');
 if (apiLinkEl) apiLinkEl.innerText = `http://${window.fixedIp}:[PORTA]/v1`;
 
-if (document.getElementById('dashboard').style.display !== 'none') {
+const dashboardEl = document.getElementById('dashboard');
+if (dashboardEl && dashboardEl.style.display !== 'none') {
     initDashboard();
     startDashboardPolling();
 }

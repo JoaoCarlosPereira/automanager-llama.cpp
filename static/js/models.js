@@ -3,16 +3,135 @@ import { apiFetch, sessionExpiredHandled } from './auth.js';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
-    updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
+    updateAutoBalanceProfileBadge,
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
-    updateThinkingBadge, updateMtpBadge, validateDeviceWeights,
+    updateThinkingBadge, updateMtpBadge, getMtpDraftTokens, syncMtpDraftTokensState,
+    validateDeviceWeights,
     collectDeviceWeightsFromUI,
 } from './gpu.js';
 import { startLogs } from './metrics.js';
 import { checkForUpdates } from './version.js';
 
 // --- TAB MANAGEMENT ---
+
+function fallbackModelId(path) {
+    let hash = 0;
+    for (let i = 0; i < path.length; i++) {
+        hash = ((hash << 5) - hash + path.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0').slice(0, 12);
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function formatContextLabel(contextSize) {
+    const size = Number(contextSize);
+    if (!Number.isFinite(size) || size <= 0) return null;
+    if (size >= 1024 && size % 1024 === 0) return `${size / 1024}K`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)}K`;
+    return `${size}`;
+}
+
+export function pickFrequentModels(models, cfg, limit = 6) {
+    const modelConfigs = cfg?.model_configs || {};
+    const defaultSet = new Set(
+        [...(cfg?.default_models || []), cfg?.default_model]
+            .filter(Boolean)
+            .map(p => p.replace(/\\/g, '/'))
+    );
+    const runningPaths = new Set(
+        (state.activeInstances || [])
+            .filter(i => i.status === 'running')
+            .map(i => (i.model_path || '').replace(/\\/g, '/'))
+    );
+
+    const ranked = (models || []).map(model => {
+        const path = model.path.replace(/\\/g, '/');
+        const saved = modelConfigs[path] || model.last_config || window.modelConfigs[path] || {};
+        const isDefault = defaultSet.has(path);
+        const isRunning = runningPaths.has(path);
+        const hasSavedConfig = Object.keys(saved).length > 0;
+        let score = 0;
+
+        if (isDefault) score += 1_000_000;
+        if (isRunning) score += 500_000;
+        if (hasSavedConfig) score += 10_000;
+        if (saved.last_started) {
+            const ts = Date.parse(saved.last_started);
+            if (!Number.isNaN(ts)) score += ts / 1000;
+        }
+
+        return { model, path, saved, isDefault, isRunning, hasSavedConfig, score };
+    })
+        .filter(item => item.isDefault || item.isRunning || item.hasSavedConfig)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+
+    return ranked;
+}
+
+export function renderNoTabShortcuts(models = null, cfg = null) {
+    if (state.activeTabs.length > 0) return;
+
+    const modelList = models ?? state.lastModelsList ?? [];
+    const config = cfg ?? state.lastConfig ?? {};
+
+    const panel = document.getElementById('no-tab-shortcuts');
+    const grid = document.getElementById('no-tab-shortcuts-grid');
+    const countEl = document.getElementById('no-tab-shortcuts-count');
+    const emptyEl = document.getElementById('no-tab-shortcuts-empty');
+    if (!panel || !grid) return;
+
+    const shortcuts = pickFrequentModels(modelList, config);
+    if (!shortcuts.length) {
+        panel.classList.add('hidden');
+        grid.innerHTML = '';
+        if (countEl) countEl.textContent = '';
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        return;
+    }
+
+    if (emptyEl) emptyEl.classList.add('hidden');
+    panel.classList.remove('hidden');
+    if (countEl) countEl.textContent = `${shortcuts.length} atalho${shortcuts.length === 1 ? '' : 's'}`;
+
+    grid.innerHTML = shortcuts.map(({ model, path, saved, isDefault, isRunning }) => {
+        const displayName = model.name.replace(/\.gguf$/i, '');
+        const contextLabel = formatContextLabel(saved.context_size);
+        const badges = [
+            isRunning ? '<span class="text-[7px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">Online</span>' : '',
+            isDefault ? '<span class="text-[7px] font-black uppercase tracking-wider text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">Auto-Start</span>' : '',
+        ].filter(Boolean).join('');
+
+        const meta = [
+            contextLabel ? `Ctx ${contextLabel}` : null,
+            saved.parallel_slots ? `${saved.parallel_slots} slot${saved.parallel_slots === 1 ? '' : 's'}` : null,
+            saved.mtp_enabled ? `MTP ${saved.mtp_draft_tokens || 3}` : null,
+        ].filter(Boolean).join(' · ');
+
+        return `
+            <button type="button" onclick="selectModel('${path.replace(/'/g, "\\'")}', '${model.id}')"
+                class="group glass rounded-2xl border border-slate-800/80 hover:border-blue-500/40 bg-slate-900/40 hover:bg-slate-900/70 p-4 text-left transition-all active:scale-[0.99]">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <p class="text-[12px] font-bold text-slate-100 truncate group-hover:text-white">${escapeHtml(displayName)}</p>
+                        <p class="text-[8px] text-slate-500 font-mono uppercase truncate mt-1">${escapeHtml(model.dir || '/')}</p>
+                    </div>
+                    <i class="fas fa-arrow-right text-[9px] text-slate-600 group-hover:text-blue-400 transition-colors mt-1"></i>
+                </div>
+                ${badges ? `<div class="flex flex-wrap gap-1.5 mt-3">${badges}</div>` : ''}
+                ${meta ? `<p class="text-[8px] text-slate-500 font-mono mt-3 uppercase tracking-wider">${escapeHtml(meta)}</p>` : ''}
+            </button>
+        `;
+    }).join('');
+}
 
 export function toggleSidebar(forceOpen = null) {
     const sidebar = document.getElementById('sidebar');
@@ -32,14 +151,14 @@ export function toggleSidebar(forceOpen = null) {
     }
 }
 
-export function createModelTab(path, name, id) {
+export function createModelTab(path, name, id, activate = true) {
     const m_js = path.replace(/\\/g, '/');
     const tabId = `tab-${id}`;
     
     // If tab exists, just switch to it
     if (document.getElementById(tabId)) {
-        switchTab(tabId);
-        return;
+        if (activate) switchTab(tabId);
+        return tabId;
     }
 
     // 1. Create Tab Button
@@ -77,7 +196,7 @@ export function createModelTab(path, name, id) {
     state.activeTabs.push({id: tabId, path: m_js, name});
     
     // 4. Initial Switch
-    switchTab(tabId);
+    if (activate) switchTab(tabId);
     
     // 5. Load Configs
     if (window.modelConfigs[m_js]) {
@@ -86,6 +205,7 @@ export function createModelTab(path, name, id) {
     
     // 6. Bind Listeners for this tab
     bindTabListeners(tabId);
+    return tabId;
 }
 
 function bindTabListeners(tabId) {
@@ -95,9 +215,9 @@ function bindTabListeners(tabId) {
     const path = tab.dataset.path;
     
     tab.querySelector('.tab-thinking-toggle')?.addEventListener('change', (e) => persistThinkingEnabled(path, e.target.checked));
+    tab.querySelector('.tab-mtp-toggle')?.addEventListener('change', () => syncMtpDraftTokensState(tabId));
     tab.querySelector('.tab-context-size')?.addEventListener('change', () => syncContextSizeCustomVisibility(tabId));
     tab.querySelector('.tab-context-size-custom')?.addEventListener('input', () => updateTotal(tabId));
-    tab.querySelector('.tab-auto-balance-toggle')?.addEventListener('change', () => syncAutoBalanceCancelButton(false, tabId));
     
     // Weights and Pins
     tab.querySelectorAll('.gpu-weight, .cpu-weight').forEach(el => {
@@ -140,6 +260,7 @@ function bindTabListeners(tabId) {
     });
 
     updateTotal(tabId);
+    syncMtpDraftTokensState(tabId);
 }
 
 export async function startSmartCalibration(path, tabId) {
@@ -300,6 +421,7 @@ export function closeTab(tabId) {
             state.currentTabId = null;
             state.currentSelectedModel = null;
             document.getElementById('no-tab-content').classList.remove('hidden');
+            renderNoTabShortcuts();
         }
     }
 }
@@ -413,15 +535,65 @@ async function persistThinkingEnabled(modelPath, enabled) {
     }
 }
 
-export function initDashboard() {
-    window.updateStatus();
+export async function syncRunningModelTabsOnLoad() {
+    if (state.initialTabsSynced) return;
+
+    try {
+        const [statusRes, modelsRes] = await Promise.all([
+            apiFetch('/status'),
+            apiFetch('/models'),
+        ]);
+        if (sessionExpiredHandled || !statusRes.ok || !modelsRes.ok) return;
+
+        const statusData = await statusRes.json();
+        const modelsData = await modelsRes.json();
+
+        state.activeInstances = statusData.instances || [];
+        const running = state.activeInstances.filter(i => i.status === 'running');
+        if (!running.length) {
+            state.initialTabsSynced = true;
+            return;
+        }
+
+        let firstTabId = null;
+        for (const inst of running) {
+            const path = (inst.model_path || '').replace(/\\/g, '/');
+            if (!path) continue;
+
+            const model = modelsData.models.find(
+                m => m.path.replace(/\\/g, '/') === path
+            );
+            const id = model?.id || fallbackModelId(path);
+            const name = model?.name || inst.model || path.split('/').pop();
+            if (inst.config) window.modelConfigs[path] = inst.config;
+            const tabId = `tab-${id}`;
+
+            if (!document.getElementById(tabId)) {
+                createModelTab(path, name, id, false);
+            }
+            if (!firstTabId) firstTabId = tabId;
+        }
+
+        if (firstTabId) switchTab(firstTabId);
+        state.initialTabsSynced = true;
+    } catch (e) {
+        console.error('syncRunningModelTabsOnLoad error:', e);
+    }
+}
+
+export async function initDashboard() {
+    await syncRunningModelTabsOnLoad();
+    await window.updateStatus();
     window.updateMetrics();
     window.updateDownloads();
-    window.updateModels();
+    await window.updateModels();
     checkForUpdates();
     
-    // Close sidebar on small screens initially
-    if (window.innerWidth < 1024) toggleSidebar(false);
+    if (typeof window.toggleSidebar === 'function') {
+        window.toggleSidebar(false);
+    } else {
+        toggleSidebar(false);
+    }
 }
 
 export function getTabActionsHtml(path, tabId, isRunning, port = 8085) {
@@ -468,14 +640,17 @@ export function applyModelConfig(path, tabId) {
     if (cfg.threads_batch !== undefined) tab.querySelector('.tab-threads-batch').value = String(cfg.threads_batch);
     if (cfg.split_mode) tab.querySelector('.tab-split-mode').value = cfg.split_mode;
     
-    const abToggle = tab.querySelector('.tab-auto-balance-toggle');
-    if (abToggle) abToggle.checked = !!cfg.auto_balance;
-    
     const thinkingToggle = tab.querySelector('.tab-thinking-toggle');
     if (thinkingToggle) thinkingToggle.checked = cfg.thinking_enabled !== false;
     
     const mtpToggle = tab.querySelector('.tab-mtp-toggle');
     if (mtpToggle) mtpToggle.checked = !!cfg.mtp_enabled;
+    const mtpDraft = tab.querySelector('.tab-mtp-draft-tokens');
+    if (mtpDraft) {
+        const tokens = cfg.mtp_draft_tokens ?? window.__constants?.DEFAULT_MTP_DRAFT_TOKENS ?? 3;
+        mtpDraft.value = String(Math.max(1, Math.min(4, tokens)));
+    }
+    syncMtpDraftTokensState(tabId);
     
     if (cfg.gpu_weights) {
         applyGpuWeightsToUI(cfg.gpu_weights, false, tabId);
@@ -538,6 +713,8 @@ export async function updateModels() {
         if (sessionExpiredHandled || !res.ok || !cfgRes.ok) return;
         const data = await res.json();
         const cfg = await cfgRes.json();
+        state.lastModelsList = data.models;
+        state.lastConfig = cfg;
         
         document.getElementById('model-count').innerText = data.models.length;
         document.getElementById('repo-storage').innerText = formatRepoStorageLabel(data.storage);
@@ -579,6 +756,8 @@ export async function updateModels() {
                 </div>
             </div>`;
         }).join('');
+
+        renderNoTabShortcuts(data.models, cfg);
     } catch (e) {}
 }
 
@@ -627,9 +806,9 @@ export async function startModel(path, tabId) {
     const threadsBatch = parseInt(tab.querySelector('.tab-threads-batch').value, 10) || 0;
     const parallelSlots = parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1;
     const batchSize = parseInt(tab.querySelector('.tab-batch-size').value, 10) || 2048;
-    const autoBalance = tab.querySelector('.tab-auto-balance-toggle').checked;
     const thinkingEnabled = tab.querySelector('.tab-thinking-toggle').checked;
     const mtpEnabled = tab.querySelector('.tab-mtp-toggle').checked;
+    const mtpDraftTokens = getMtpDraftTokens(tabId);
     
     const contextSize = getContextSize(tabId);
     if (contextSize === null) return alert('Contexto inválido');
@@ -656,9 +835,10 @@ export async function startModel(path, tabId) {
                 threads: threads,
                 threads_batch: threadsBatch,
                 split_mode: splitMode,
-                auto_balance: autoBalance,
+                auto_balance: false,
                 thinking_enabled: thinkingEnabled,
                 mtp_enabled: mtpEnabled,
+                mtp_draft_tokens: mtpDraftTokens,
             }),
         });
         

@@ -156,6 +156,8 @@ def test_html_contains_tab_system(html):
     assert 'id="tab-bar"' in html
     assert 'id="tabs-container"' in html
     assert 'id="no-tab-content"' in html
+    assert 'id="no-tab-shortcuts"' in html
+    assert 'id="no-tab-shortcuts-grid"' in html
     assert "Arquitetura Multi-Modelo" in html
 
 
@@ -183,8 +185,9 @@ def test_template_contains_engine_params(html):
 def test_template_contains_feature_toggles(html):
     assert "tab-thinking-toggle" in html
     assert "tab-mtp-toggle" in html
+    assert "tab-mtp-draft-tokens" in html
     assert "tab-numa-toggle" in html
-    assert "tab-auto-balance-toggle" in html
+    assert "tab-auto-balance-toggle" not in html
 
 
 def test_template_contains_gpu_weights_body(html):

@@ -156,10 +156,6 @@ export function bindGpuManualListeners(tabId = null) {
     scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(el => {
         el.addEventListener('change', () => onGpuPinToggle(el, tabId));
     });
-    const abToggle = scope.querySelector('.tab-auto-balance-toggle');
-    if (abToggle) {
-        abToggle.addEventListener('change', () => onAutoBalanceToggle(abToggle, tabId));
-    }
 }
 
 export function applyGpuWeightsToUI(weights, duringAutoBalance, tabId = null) {
@@ -261,21 +257,8 @@ export function onGpuPinToggle(pinCheckbox, tabId = null) {
     redistributeUnpinnedWeights(weightInput, tabId);
 }
 
-export function clearGpuPins(tabId = null) {
-    const scope = getTabScope(tabId);
-    scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
-        pin.checked = false;
-        const row = pin.closest('.gpu-row, .cpu-row');
-        const weightInput = row ? getRowWeightInput(row) : null;
-        if (weightInput) weightInput.classList.remove('ring-1', 'ring-amber-500/50');
-    });
-}
-
-export function onAutoBalanceToggle(toggle, tabId = null) {
-    const active = !!(toggle && toggle.checked);
-    if (active) clearGpuPins(tabId);
-    const scope = getTabScope(tabId);
-    scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => pin.disabled = active);
+export function markManualGpuChange(tabId = null) {
+    state.manualGpuOverride = true;
 }
 
 export function getContextSize(tabId = null) {
@@ -314,10 +297,6 @@ export function syncContextSizeCustomVisibility(tabId = null) {
     wrap.classList.toggle('hidden', sel.value !== 'custom');
 }
 
-export function markManualGpuChange(tabId = null) {
-    state.manualGpuOverride = true;
-}
-
 export function isModelHardwareIncapable(path) {
     const cfg = window.modelConfigs[path];
     return !!(cfg && cfg.hardware_incapable);
@@ -352,9 +331,13 @@ export function resetToDefaults(tabId = null) {
     scope.querySelector('.tab-cache-type-v').value = window.__constants.DEFAULT_CACHE_TYPE;
     scope.querySelector('.tab-ubatch-size').value = '512';
     
-    scope.querySelector('.tab-auto-balance-toggle').checked = false;
     scope.querySelector('.tab-thinking-toggle').checked = true;
     scope.querySelector('.tab-mtp-toggle').checked = false;
+    const mtpDraft = scope.querySelector('.tab-mtp-draft-tokens');
+    if (mtpDraft) {
+        mtpDraft.value = String(window.__constants.DEFAULT_MTP_DRAFT_TOKENS ?? 3);
+    }
+    syncMtpDraftTokensState(tabId);
     scope.querySelector('.tab-numa-toggle').checked = false;
     
     scope.querySelectorAll('.gpu-row').forEach((row, idx) => {
@@ -385,6 +368,22 @@ export function modelIncapableBadgeHtml(incapable) {
 
 export function updateThinkingBadge(enabled, tabId = null) {}
 export function updateMtpBadge(enabled, tabId = null) {}
+
+export function getMtpDraftTokens(tabId = null) {
+    const scope = getTabScope(tabId);
+    const input = scope.querySelector('.tab-mtp-draft-tokens');
+    const fallback = window.__constants?.DEFAULT_MTP_DRAFT_TOKENS ?? 3;
+    const raw = parseInt(input?.value, 10);
+    const n = Number.isFinite(raw) ? raw : fallback;
+    return Math.max(1, Math.min(4, n));
+}
+
+export function syncMtpDraftTokensState(tabId = null) {
+    const scope = getTabScope(tabId);
+    const enabled = !!scope.querySelector('.tab-mtp-toggle')?.checked;
+    const input = scope.querySelector('.tab-mtp-draft-tokens');
+    if (input) input.disabled = !enabled;
+}
 export function showMtpWarning(reason, tabId = null) {
     const scope = getTabScope(tabId);
     const el = scope.querySelector('.tab-mtp-warning');
