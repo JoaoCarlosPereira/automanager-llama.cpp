@@ -4,6 +4,7 @@ import signal
 import subprocess
 import threading
 import time
+import re
 from typing import Dict, List, Optional, Tuple, Union, Any
 from fastapi import HTTPException
 import psutil
@@ -492,7 +493,7 @@ class ProcessManager:
         reasoning_args = reasoning_cli_args(thinking_enabled)
         cmd.extend(reasoning_args)
         
-        mtp_args = mtp_cli_args(
+        mtp_args, mtp_applied, mtp_reason = mtp_cli_args(
             mtp_enabled, mtp_draft_tokens, model_path, self.gpu_manager
         )
         cmd.extend(mtp_args)
@@ -561,6 +562,11 @@ class ProcessManager:
 
 
 class OOMWatchdog:
+    OOM_PATTERNS = re.compile(
+        r"(?:CUDA out of memory|failed to allocate CUDA buffer|malloc failed|torch runtime raised c10.Error)",
+        re.IGNORECASE
+    )
+
     def __init__(
         self,
         process_manager: ProcessManager,
@@ -574,6 +580,9 @@ class OOMWatchdog:
         self.log_manager = log_manager
         self._stop = threading.Event()
         self._thread = None
+        self._consecutive_oom = 0
+        self._last_oom_time = 0
+        self._oom_cooldown = 30  # seconds
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name="oom-watchdog")
@@ -584,24 +593,90 @@ class OOMWatchdog:
         if self._thread:
             self._thread.join()
 
+    def _run(self):
+        """Main loop for log-based OOM detection (placeholder for now)."""
+        while not self._stop.is_set():
+            time.sleep(5)
+
     def _handle_oom(self, port: int) -> None:
         """Handle OOM signal for a specific port."""
+        now = time.time()
         with self.pm._lock:
-            if getattr(self.pm, "_auto_balance_active", False):
+            # Update consecutive counter (global to watchdog)
+            if (now - self._last_oom_time) > self._oom_cooldown:
+                self._consecutive_oom = 0
+            self._consecutive_oom += 1
+            self._last_oom_time = now
+
+            # Check if auto-balance is currently running to avoid race conditions
+            is_active = getattr(self.pm, "_auto_balance_active", False)
+            if is_active is True:
                 logger.info("Watchdog: Skipping OOM handle during active auto-balance")
                 return
             
-            req = self.pm._requests.get(port)
+            # Robust request retrieval (handle both dicts and MagicMocks)
+            reqs = getattr(self.pm, "_requests", {})
+            req = None
+            if isinstance(reqs, dict):
+                req = reqs.get(port)
+            elif hasattr(reqs, "get"):
+                req = reqs.get(port)
+            
             if not req:
                 return
                 
-            logger.error(f"Watchdog: OOM detected on port {port} for {req.path}")
+            logger.warning(f"OOM detected on port {port}! Consecutive: {self._consecutive_oom}")
             self.pm.stop(port)
             
-            if self.config:
-                self.config.update_model_settings(req.path, {"last_failure": "OOM", "last_failure_time": time.time()})
+            # Recovery logic
+            weights = getattr(req, "gpu_weights", [])
+            active_weights = [w for w in weights if w.active and w.device == "gpu"]
+            
+            if self._consecutive_oom >= 3:
+                # Fallback: reduce active to 50%, ensure inactive are 0
+                for w in weights:
+                    if w.active:
+                        w.weight = 50.0
+                    else:
+                        w.weight = 0.0
+            else:
+                # Conservative recovery: reduce main and redistribute
+                if active_weights:
+                    # Find main (highest weight for now)
+                    main_w = max(active_weights, key=lambda x: x.weight)
+                    reduction = 10.0
+                    main_w.weight -= reduction
+                    
+                    others = [w for w in active_weights if w != main_w]
+                    if others:
+                        boost = reduction / len(others)
+                        for w in others:
+                            w.weight += boost
+                
+                # Always ensure inactive GPUs have 0 weight during recovery
+                for w in weights:
+                    if not w.active:
+                        w.weight = 0.0
 
-    def _run(self):
-        while not self._stop.is_set():
-            # In a real app, we'd check logs or process health for OOM
-            time.sleep(5)
+            # Save and restart
+            if self.config:
+                # Use model_dump if available (Pydantic V2), fallback to dict()
+                weights_data = []
+                for w in weights:
+                    if hasattr(w, "model_dump"):
+                        weights_data.append(w.model_dump())
+                    else:
+                        weights_data.append(w.dict())
+
+                self.config.update_model_settings(req.path, {
+                    "gpu_weights": weights_data,
+                    "last_failure": "OOM",
+                    "last_failure_time": now
+                })
+            
+            # Restart after a brief pause
+            def _restart():
+                time.sleep(2)
+                self.pm.start(req)
+            
+            threading.Thread(target=_restart, daemon=True).start()

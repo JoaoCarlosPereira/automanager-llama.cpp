@@ -22,6 +22,12 @@ class FakeAuthManager:
     def verify_session(self, session_token):
         return session_token == self.valid_session
 
+    def check_auth_cookie(self, request):
+        return False
+
+    def check_auth(self, request):
+        return True
+
 
 @pytest.fixture
 def mock_index_deps(monkeypatch):
@@ -65,7 +71,7 @@ def mock_index_deps(monkeypatch):
     monkeypatch.setattr(llama_manager, "gpu_manager", gpu_manager)
 
     config_manager = MagicMock()
-    config_manager.load.return_value = {"default_model": None, "model_configs": {}}
+    config_manager.get_config.return_value = {"default_model": None, "model_configs": {}}
     monkeypatch.setattr(llama_manager, "config_manager", config_manager)
 
     process_manager = MagicMock()

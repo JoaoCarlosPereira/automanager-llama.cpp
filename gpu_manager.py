@@ -779,15 +779,23 @@ def reasoning_cli_args(enabled: bool) -> List[str]:
     # Current best-practice for llama.cpp/DeepSeek
     return ["--reasoning-format", "deepseek"]
 
-def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: any) -> List[str]:
-    """Flags for Multi-Token Prediction (MTP)."""
+def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: any) -> Tuple[List[str], bool, str]:
+    """Flags for Multi-Token Prediction (MTP). Returns (flags_list, applied_bool, reason_str)."""
     if not enabled:
-        return []
+        return [], False, ""
+    
+    if draft_tokens is None:
+        draft_tokens = 1 # Safe default for MTP heads
+        
     # Check if model supports MTP
     if not detector.detect_model_mtp(model_path):
-        return []
-    return ["--spec-draft-n-max", str(draft_tokens)]
+        return [], False, "Modelo não suporta cabeças MTP"
+        
+    # Clamps tokens to safe range
+    tokens = max(1, min(4, int(draft_tokens)))
+    
+    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(tokens)], True, ""
 
 def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
-    """Helper for context size calculation."""
-    return context_size * parallel_slots
+    """Helper for context size calculation. Clamps to at least 1."""
+    return max(1, context_size * parallel_slots)

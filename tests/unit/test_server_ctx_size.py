@@ -2,7 +2,7 @@
 
 import pytest
 
-from process_manager import compute_server_ctx_size, reasoning_cli_args
+from gpu_manager import compute_server_ctx_size, reasoning_cli_args
 
 
 @pytest.mark.parametrize(
@@ -26,13 +26,8 @@ def test_compute_server_ctx_size_clamps_invalid_inputs():
 
 
 def test_reasoning_cli_args_enabled():
-    assert reasoning_cli_args(True) == ["--reasoning", "on"]
+    assert reasoning_cli_args(True) == ["--reasoning-format", "deepseek"]
 
 
 def test_reasoning_cli_args_disabled_forces_zero_budget():
-    assert reasoning_cli_args(False) == [
-        "--reasoning",
-        "off",
-        "--reasoning-budget",
-        "0",
-    ]
+    assert reasoning_cli_args(False) == []

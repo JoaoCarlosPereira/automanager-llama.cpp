@@ -8,6 +8,7 @@ import re
 import glob
 import logging
 import uvicorn
+import httpx
 from typing import List, Optional, Tuple, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -47,6 +48,9 @@ GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
 app = FastAPI(title="Automanager Llama.cpp")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Shared HTTP client for proxying
+client = httpx.AsyncClient()
+
 config_manager = ConfigManager()
 log_manager = LogManager()
 gpu_manager = GPUManager()
@@ -75,7 +79,7 @@ def _invalidate_models_cache():
     model_scanner._last_scan_time = 0
 
 
-@app.post("/login")
+@app.post("/api/auth/login")
 async def login(req: Dict[str, str]):
     username = req.get("username")
     password = req.get("password")
@@ -85,7 +89,7 @@ async def login(req: Dict[str, str]):
     raise HTTPException(status_code=401, detail="Credenciais invalidas")
 
 
-@app.post("/change_password")
+@app.post("/api/auth/change-password")
 async def change_password(req: Dict[str, str], authenticated: bool = Depends(auth_manager.check_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
@@ -309,11 +313,26 @@ async def system_update(authenticated: bool = Depends(auth_manager.check_auth)):
     return {"message": msg}
 
 
-@app.get("/version")
-async def get_version():
-    from version_manager import VersionManager
-    vm = VersionManager()
-    return vm.get_version_info()
+@app.get("/api/key")
+async def get_api_key(authenticated: bool = Depends(auth_manager.check_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {"api_key": token_manager.get_or_create()}
+
+
+@app.post("/api/key/renew")
+async def renew_api_key(authenticated: bool = Depends(auth_manager.check_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {"api_key": token_manager.renew()}
+
+
+@app.get("/api/system/version-check")
+async def system_version_check(authenticated: bool = Depends(auth_manager.check_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    from version_manager import check_for_updates
+    return check_for_updates(INSTALL_ROOT)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -382,7 +401,8 @@ async def index(request: Request):
         </tr>"""
 
     status = process_manager.get_status()
-    models = model_scanner.scan()
+    scan_result = model_scanner.scan()
+    models = scan_result.get("models", [])
     default_model = config_manager.get_config().get("default_model")
     default_models = config_manager.get_config().get("default_models", [])
     model_configs = config_manager.get_config().get("model_configs", {})
@@ -394,7 +414,7 @@ async def index(request: Request):
         m_dir = m["dir"]
         m_js = m_path.replace("\\", "/")
         m_cfg = model_configs.get(m_js, {})
-        stable_id = m["id"]
+        stable_id = m_js
         
         is_default = "checked" if (m_path in default_models or m_path == default_model) else ""
         has_config = "text-blue-400" if m_cfg and not m_cfg.get("hardware_incapable") else "text-slate-100"

@@ -77,6 +77,9 @@ class ConfigManager:
                     return {}
             return {}
 
+    def get_config(self) -> dict:
+        return self.load()
+
     def save(self, data: dict) -> None:
         with self._lock:
             tmp_path = self.config_path + ".tmp"

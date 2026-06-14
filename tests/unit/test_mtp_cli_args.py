@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gpu_manager import GPUManager
-from process_manager import mtp_cli_args
+from gpu_manager import GPUManager, mtp_cli_args
 
 
 @pytest.fixture
@@ -22,13 +21,13 @@ def test_mtp_cli_args_disabled():
 
 
 def test_mtp_cli_args_forced_enabled(gpu_mgr):
-    """MTP is forced on when requested (no model compatibility check)."""
+    """MTP returns empty when model is incompatible, even if requested (safety check)."""
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = False
     flags, applied, reason = mtp_cli_args(True, 3, "/models/a.gguf", mgr)
-    assert flags == ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
-    assert applied is True
-    assert reason == ""
+    assert flags == []
+    assert applied is False
+    assert reason == "Modelo não suporta cabeças MTP"
 
 
 def test_mtp_cli_args_enabled_compatible():
@@ -44,7 +43,7 @@ def test_mtp_cli_args_clamps_draft_tokens_high():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = True
     flags, applied, reason = mtp_cli_args(True, 99, "/models/mtp.gguf", mgr)
-    assert flags[-1] == "64"
+    assert flags[-1] == "4"
     assert applied is True
 
 

@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 
-from llama_manager import app, auth_manager, get_current_auth, gpu_manager
+from llama_manager import app, auth_manager, gpu_manager
 
 MOCK_PORT = 8001
 
