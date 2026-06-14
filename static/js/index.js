@@ -1,22 +1,22 @@
-import { state } from './state.js?v=4.0.6';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.0.6';
-import { cancelAutoBalance } from './gpu.js?v=4.0.6';
+import { state } from './state.js?v=4.0.7';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.0.7';
+import { cancelAutoBalance } from './gpu.js?v=4.0.7';
 import {
     syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
-} from './gpu.js?v=4.0.6';
+} from './gpu.js?v=4.0.7';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload,
-} from './metrics.js?v=4.0.6';
+} from './metrics.js?v=4.0.7';
 import {
     initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-} from './models.js?v=4.0.6';
-import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.6';
+} from './models.js?v=4.0.7';
+import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.7';
 
 window.modelConfigs = window.modelConfigs || {};
 

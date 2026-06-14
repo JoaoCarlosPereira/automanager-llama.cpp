@@ -11,8 +11,14 @@ import psutil
 
 from config_manager import ConfigManager, TokenManager
 from log_manager import LogManager, logger
-from llama_server_bin import get_llama_server_bin, supports_cli_flag, verbose_cli_args
-from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS
+from llama_server_bin import (
+    get_llama_server_bin,
+    is_turboquant_bin,
+    supports_cli_flag,
+    validate_turboquant_cache_types,
+    verbose_cli_args,
+)
+from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_CACHE_TYPE, TURBOQUANT_DEFAULT_CACHE_K, TURBOQUANT_DEFAULT_CACHE_V
 from paths import INSTALL_ROOT
 
 SERVER_PORT = 8085
@@ -42,6 +48,29 @@ def resolve_llama_server_bin() -> str:
     Popen failed with ``[Errno 2] No such file or directory: 'llama-server'``.
     """
     return get_llama_server_bin()
+
+
+def resolve_numa_mode(gpu_weights: List[GPUWeight]) -> str:
+    """Pick llama-server --numa TYPE for the active GPU layout."""
+    active_gpus = 0
+    for w in gpu_weights:
+        if hasattr(w, "model_dump"):
+            data = w.model_dump()
+        elif isinstance(w, dict):
+            data = w
+        else:
+            data = {"active": w.active, "device": w.device, "weight": w.weight}
+        if (
+            data.get("active")
+            and data.get("device") == "gpu"
+            and float(data.get("weight", 0) or 0) > 0
+        ):
+            active_gpus += 1
+    # Multi-GPU tensor-split often spans PCIe roots / NUMA nodes.
+    if active_gpus > 1:
+        return "distribute"
+    # Single GPU: stay on the NUMA node where execution starts (near --main-gpu).
+    return "isolate"
 
 
 class ProcessManager:
@@ -245,6 +274,8 @@ class ProcessManager:
                         "mtp_draft_tokens": request.mtp_draft_tokens,
                         "gpu_weights": saved_weights,
                         "pinned_fields": request.pinned_fields or {},
+                        "llama_server_bin": request.llama_server_bin,
+                        "turboquant_preset": request.turboquant_preset,
                         "auto_balance": False,
                         "auto_balance_profile": True,
                         "hardware_incapable": False,
@@ -277,6 +308,7 @@ class ProcessManager:
                         total_layers=request.total_layers,
                         cpu_enabled=final_cpu_enabled,
                         port=self._auto_balance_port,
+                        llama_server_bin=request.llama_server_bin,
                     )
                     model_loaded = True
                     logger.info(
@@ -322,6 +354,10 @@ class ProcessManager:
                     "mtp_draft_tokens": request.mtp_draft_tokens,
                     "gpu_weights": existing.get("gpu_weights")
                     or [w.model_dump() for w in request.gpu_weights],
+                    "llama_server_bin": request.llama_server_bin
+                    or existing.get("llama_server_bin"),
+                    "turboquant_preset": request.turboquant_preset
+                    or existing.get("turboquant_preset"),
                     "auto_balance": False,
                     "auto_balance_profile": False,
                 }
@@ -390,6 +426,7 @@ class ProcessManager:
         total_layers: int = 0,
         cpu_enabled: Optional[bool] = None,
         port: Optional[int] = None,
+        llama_server_bin: Optional[str] = None,
     ) -> dict:
         """Start a llama-server instance."""
         if port is None:
@@ -418,7 +455,21 @@ class ProcessManager:
         n_gpu_layers = plan.n_gpu_layers
         main_gpu = self.gpu_manager.resolve_main_gpu_index(gpu_weights)
 
-        llama_bin = resolve_llama_server_bin()
+        llama_bin = llama_server_bin or resolve_llama_server_bin()
+        if llama_server_bin and not os.path.isfile(llama_server_bin):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Binário llama-server não encontrado: {llama_server_bin}",
+            )
+        turbo_err = validate_turboquant_cache_types(cache_type_k, cache_type_v, llama_bin)
+        if turbo_err:
+            raise HTTPException(status_code=400, detail=turbo_err)
+        cache_type_k = (cache_type_k or "").strip() or (
+            TURBOQUANT_DEFAULT_CACHE_K if is_turboquant_bin(llama_bin) else DEFAULT_CACHE_TYPE
+        )
+        cache_type_v = (cache_type_v or "").strip() or (
+            TURBOQUANT_DEFAULT_CACHE_V if is_turboquant_bin(llama_bin) else DEFAULT_CACHE_TYPE
+        )
         api_token = self.token_mgr.get_or_create()
         server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
         cmd = [
@@ -459,7 +510,7 @@ class ProcessManager:
         ]
 
         if numa_enabled:
-            cmd.append("--numa")
+            cmd.extend(["--numa", resolve_numa_mode(gpu_weights)])
 
         # Performance: Use physical cores if not specified
         cpu_info = self.gpu_manager.detect_cpu_info()
@@ -472,10 +523,10 @@ class ProcessManager:
         if threads_batch > 0:
             cmd.extend(["--threads-batch", str(threads_batch)])
 
-        if supports_cli_flag("--pinned-memory"):
+        if supports_cli_flag("--pinned-memory", llama_bin):
             cmd.append("--pinned-memory")
 
-        cmd.extend(verbose_cli_args())
+        cmd.extend(verbose_cli_args(llama_bin))
 
         if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])

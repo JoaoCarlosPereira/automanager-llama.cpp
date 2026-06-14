@@ -1,5 +1,5 @@
-﻿import { state } from './state.js?v=4.0.6';
-import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.6';
+﻿import { state } from './state.js?v=4.0.7';
+import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.7';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -10,9 +10,72 @@ import {
     updateThinkingBadge, updateMtpBadge, getMtpDraftTokens, syncMtpDraftTokensState,
     validateDeviceWeights,
     collectDeviceWeightsFromUI,
-} from './gpu.js?v=4.0.6';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.0.6';
-import { checkForUpdates } from './version.js?v=4.0.6';
+    fetchLlamaBins,
+    populateLlamaBinSelect,
+    getSelectedLlamaBin,
+    syncTurboquantPanelVisibility,
+    applyTurboquantConfig,
+    applyTurboquantPreset,
+    syncTurboquantToCacheFields,
+    syncMainCacheToTurboFields,
+    getTurboquantPreset,
+    detectTurboquantPreset,
+    getEffectiveCacheTypes,
+    isTurboquantBin,
+} from './gpu.js?v=4.0.8';
+
+const tabLogHeightObservers = new Map();
+let tabLogHeightResizeTimer = null;
+
+function syncTabLogPanelHeight(tabId) {
+    const tab = document.getElementById(tabId);
+    if (!tab?.classList.contains('active')) return;
+
+    const configPanel = tab.querySelector('.tab-config-panel');
+    const layoutRow = tab.querySelector('.tab-layout-row');
+    if (!configPanel || !layoutRow) return;
+
+    const height = Math.round(configPanel.getBoundingClientRect().height);
+    if (height <= 0) return;
+
+    layoutRow.style.setProperty('--tab-config-height', `${height}px`);
+}
+
+function bindTabLogPanelHeightSync(tabId) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+
+    const configPanel = tab.querySelector('.tab-config-panel');
+    if (!configPanel) return;
+
+    tabLogHeightObservers.get(tabId)?.disconnect();
+
+    const observer = new ResizeObserver(() => {
+        syncTabLogPanelHeight(tabId);
+    });
+    observer.observe(configPanel);
+    tabLogHeightObservers.set(tabId, observer);
+
+    requestAnimationFrame(() => syncTabLogPanelHeight(tabId));
+}
+
+function unbindTabLogPanelHeightSync(tabId) {
+    const observer = tabLogHeightObservers.get(tabId);
+    if (!observer) return;
+    observer.disconnect();
+    tabLogHeightObservers.delete(tabId);
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('resize', () => {
+        clearTimeout(tabLogHeightResizeTimer);
+        tabLogHeightResizeTimer = setTimeout(() => {
+            if (state.currentTabId) syncTabLogPanelHeight(state.currentTabId);
+        }, 100);
+    });
+}
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.0.7';
+import { checkForUpdates } from './version.js?v=4.0.7';
 
 // --- TAB MANAGEMENT ---
 
@@ -220,6 +283,8 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     
     document.getElementById('tabs-container').appendChild(tabDiv);
 
+    populateLlamaBinSelect(tabId);
+
     // 3. Register state
     state.activeTabs.push({ id: tabId, path: m_js, name, modelId });
 
@@ -231,11 +296,15 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     // 5. Load Configs
     if (window.modelConfigs[m_js]) {
         applyModelConfig(m_js, tabId);
+    } else {
+        populateLlamaBinSelect(tabId);
+        persistLlamaBinSettings(m_js, tabId, { silent: true });
     }
     
     // 6. Bind Listeners for this tab
     bindTabListeners(tabId);
     bindGpuManualListeners(tabId);
+    bindTabLogPanelHeightSync(tabId);
     return tabId;
 }
 
@@ -249,6 +318,50 @@ function bindTabListeners(tabId) {
     tab.querySelector('.tab-mtp-toggle')?.addEventListener('change', () => syncMtpDraftTokensState(tabId));
     tab.querySelector('.tab-context-size')?.addEventListener('change', () => syncContextSizeCustomVisibility(tabId));
     tab.querySelector('.tab-context-size-custom')?.addEventListener('input', () => updateTotal(tabId));
+
+    tab.querySelector('.tab-llama-bin')?.addEventListener('change', () => {
+        syncTurboquantPanelVisibility(tabId);
+        persistLlamaBinSettings(path, tabId);
+    });
+    tab.querySelector('.tab-turboquant-preset')?.addEventListener('change', (e) => {
+        if (e.target.value !== 'custom') {
+            applyTurboquantPreset(tabId, e.target.value);
+        }
+        persistLlamaBinSettings(path, tabId);
+    });
+    tab.querySelector('.tab-turbo-cache-k')?.addEventListener('change', () => {
+        syncTurboquantToCacheFields(tabId);
+        const presetEl = tab.querySelector('.tab-turboquant-preset');
+        if (presetEl) {
+            const k = tab.querySelector('.tab-turbo-cache-k')?.value;
+            const v = tab.querySelector('.tab-turbo-cache-v')?.value;
+            presetEl.value = detectTurboquantPreset(k, v);
+        }
+        persistLlamaBinSettings(path, tabId);
+    });
+    tab.querySelector('.tab-turbo-cache-v')?.addEventListener('change', () => {
+        syncTurboquantToCacheFields(tabId);
+        const presetEl = tab.querySelector('.tab-turboquant-preset');
+        if (presetEl) {
+            const k = tab.querySelector('.tab-turbo-cache-k')?.value;
+            const v = tab.querySelector('.tab-turbo-cache-v')?.value;
+            presetEl.value = detectTurboquantPreset(k, v);
+        }
+        persistLlamaBinSettings(path, tabId);
+    });
+
+    tab.querySelector('.tab-cache-type-k')?.addEventListener('change', () => {
+        if (isTurboquantBin(getSelectedLlamaBin(tabId))) {
+            syncMainCacheToTurboFields(tabId);
+            persistLlamaBinSettings(path, tabId);
+        }
+    });
+    tab.querySelector('.tab-cache-type-v')?.addEventListener('change', () => {
+        if (isTurboquantBin(getSelectedLlamaBin(tabId))) {
+            syncMainCacheToTurboFields(tabId);
+            persistLlamaBinSettings(path, tabId);
+        }
+    });
     
     // Weights and Pins
     tab.querySelectorAll('.gpu-weight, .cpu-weight').forEach(el => {
@@ -396,6 +509,8 @@ export async function startSmartCalibration(path, tabId) {
                 mtp_draft_tokens: getMtpDraftTokens(tabId),
                 numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
                 split_mode: tab.querySelector('.tab-split-mode').value,
+                llama_server_bin: getSelectedLlamaBin(tabId),
+                turboquant_preset: getTurboquantPreset(tabId),
                 auto_balance: true,
                 smart_calibration: true,
                 pinned_fields: pinnedFields,
@@ -523,6 +638,8 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
     const contextSize = getContextSize(tabId);
     if (contextSize === null) return null;
 
+    const cacheTypes = getEffectiveCacheTypes(tabId);
+
     return {
         path: normalized,
         mmproj_path: getSelectedMmprojForModel(normalized) || null,
@@ -531,12 +648,14 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
         parallel_slots: parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1,
         batch_size: parseInt(tab.querySelector('.tab-batch-size').value, 10) || 2048,
         ubatch_size: parseInt(tab.querySelector('.tab-ubatch-size').value, 10) || 512,
-        cache_type_k: tab.querySelector('.tab-cache-type-k').value,
-        cache_type_v: tab.querySelector('.tab-cache-type-v').value,
+        cache_type_k: cacheTypes.cache_type_k,
+        cache_type_v: cacheTypes.cache_type_v,
         numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
         threads: parseInt(tab.querySelector('.tab-threads').value, 10) || 0,
         threads_batch: parseInt(tab.querySelector('.tab-threads-batch').value, 10) || 0,
         split_mode: tab.querySelector('.tab-split-mode').value,
+        llama_server_bin: getSelectedLlamaBin(tabId),
+        turboquant_preset: getTurboquantPreset(tabId),
         auto_balance: false,
         auto_balance_profile: autoBalanceProfile,
         pinned_fields: collectPinnedFieldsFromTab(tabId),
@@ -622,10 +741,13 @@ export function switchTab(tabId) {
         
         document.getElementById('no-tab-content').classList.add('hidden');
         attachTabLogs(tabId);
+        syncTabLogPanelHeight(tabId);
     }
 }
 
 export function closeTab(tabId) {
+    unbindTabLogPanelHeightSync(tabId);
+
     const btn = document.getElementById(`btn-${tabId}`);
     const content = document.getElementById(tabId);
     const closedPath = content?.dataset.path?.replace(/\\/g, '/');
@@ -794,6 +916,44 @@ async function persistThinkingEnabled(modelPath, enabled) {
     }
 }
 
+export async function persistLlamaBinSettings(modelPath, tabId, { silent = false } = {}) {
+    const normalized = (modelPath || '').replace(/\\/g, '/');
+    if (!normalized) return;
+
+    const bin = getSelectedLlamaBin(tabId);
+    if (!bin) return;
+
+    const tab = document.getElementById(tabId);
+    const payload = {
+        model_path: normalized,
+        llama_server_bin: bin,
+    };
+
+    if (isTurboquantBin(bin)) {
+        const cacheTypes = getEffectiveCacheTypes(tabId);
+        payload.cache_type_k = cacheTypes.cache_type_k;
+        payload.cache_type_v = cacheTypes.cache_type_v;
+        const preset = getTurboquantPreset(tabId);
+        if (preset) payload.turboquant_preset = preset;
+    }
+
+    if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
+    Object.assign(window.modelConfigs[normalized], payload);
+
+    try {
+        const res = await apiFetch('/models/llama-bin', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok && !silent) {
+            alert('Erro ao salvar versão do llama.cpp.');
+        }
+    } catch (e) {
+        if (!silent) alert('Erro ao salvar versão do llama.cpp.');
+    }
+}
+
 export async function syncRunningModelTabsOnLoad() {
     if (state.initialTabsSynced) return;
 
@@ -838,6 +998,7 @@ export async function syncRunningModelTabsOnLoad() {
 }
 
 export async function initDashboard() {
+    await fetchLlamaBins();
     await syncRunningModelTabsOnLoad();
     await window.updateStatus();
     window.updateMetrics();
@@ -896,13 +1057,18 @@ export function applyModelConfig(path, tabId) {
     if (cfg.context_size) setContextSize(cfg.context_size, tabId);
     if (cfg.parallel_slots) tab.querySelector('.tab-parallel-slots').value = cfg.parallel_slots;
     if (cfg.batch_size) tab.querySelector('.tab-batch-size').value = cfg.batch_size;
-    if (cfg.cache_type_k) tab.querySelector('.tab-cache-type-k').value = cfg.cache_type_k;
-    if (cfg.cache_type_v) tab.querySelector('.tab-cache-type-v').value = cfg.cache_type_v;
     if (cfg.ubatch_size) tab.querySelector('.tab-ubatch-size').value = cfg.ubatch_size;
     if (cfg.numa_enabled !== undefined) tab.querySelector('.tab-numa-toggle').checked = !!cfg.numa_enabled;
     if (cfg.threads !== undefined) tab.querySelector('.tab-threads').value = String(cfg.threads);
     if (cfg.threads_batch !== undefined) tab.querySelector('.tab-threads-batch').value = String(cfg.threads_batch);
     if (cfg.split_mode) tab.querySelector('.tab-split-mode').value = cfg.split_mode;
+    populateLlamaBinSelect(tabId, cfg.llama_server_bin || null);
+    syncTurboquantPanelVisibility(tabId);
+    applyTurboquantConfig(tabId, cfg);
+    getEffectiveCacheTypes(tabId);
+    if (!cfg.llama_server_bin && getSelectedLlamaBin(tabId)) {
+        persistLlamaBinSettings(path, tabId, { silent: true });
+    }
     
     const thinkingToggle = tab.querySelector('.tab-thinking-toggle');
     if (thinkingToggle) thinkingToggle.checked = cfg.thinking_enabled !== false;
@@ -991,7 +1157,12 @@ export async function updateModels() {
         const cfg = await cfgRes.json();
         state.lastModelsList = data.models;
         state.lastConfig = cfg;
-        
+
+        renderNoTabShortcuts(data.models, cfg);
+
+        const container = document.getElementById('model-list-container');
+        if (!container) return;
+
         document.getElementById('model-count').innerText = data.models.length;
         document.getElementById('repo-storage').innerText = formatRepoStorageLabel(data.storage);
         
@@ -999,8 +1170,7 @@ export async function updateModels() {
         if (dirInput && data.storage?.path && document.activeElement !== dirInput) {
             dirInput.value = data.storage.path;
         }
-        
-        const container = document.getElementById('model-list-container');
+
         container.innerHTML = data.models.map(m => {
             const m_js = m.path.replace(/\\/g, '/');
             if (m.last_config && !tabHasPendingProposal(m_js)) {
@@ -1040,7 +1210,6 @@ export async function updateModels() {
             </div>`;
         }).join('');
 
-        renderNoTabShortcuts(data.models, cfg);
         await ensureMmprojSelectionsForModels(data.models);
     } catch (e) {}
 }

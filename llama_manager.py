@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from config_manager import ConfigManager, TokenManager, AuthManager, SESSION_IDLE_SECONDS
 from log_manager import LogManager, logger
-from llama_server_bin import get_llama_server_bin
+from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager, _is_projector_filename
 from version_manager import check_for_updates
@@ -37,15 +37,21 @@ from schemas import (
     SetDefaultRequest,
     SetMmprojRequest,
     SetThinkingRequest,
+    SetLlamaBinRequest,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
+    TURBOQUANT_PRESETS,
+    TURBOQUANT_DEFAULT_CACHE_K,
+    TURBOQUANT_DEFAULT_CACHE_V,
+    TURBOQUANT_CACHE_K_PRESETS,
+    TURBOQUANT_CACHE_V_PRESETS,
 )
 from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_server_ctx_size
 from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.0.6"  # Major UI Refactor
+_DASHBOARD_JS_V = "4.0.10"  # Major UI Refactor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -149,6 +155,13 @@ async def get_status(authenticated: bool = Depends(require_auth)):
     return process_manager.get_status()
 
 
+@app.get("/llama-bins")
+async def get_llama_bins(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return list_llama_server_bins()
+
+
 @app.get("/metrics")
 async def get_metrics(authenticated: bool = Depends(require_auth)):
     if not authenticated:
@@ -213,6 +226,10 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "total_layers": total_layers if total_layers else 0,
         "pinned_fields": req.pinned_fields or {},
     }
+    if req.llama_server_bin:
+        base_settings["llama_server_bin"] = req.llama_server_bin
+    if req.turboquant_preset:
+        base_settings["turboquant_preset"] = req.turboquant_preset
 
     if req.auto_balance:
         # Smart calibration respeita pins do usuário (GPU e campos); auto-balance clássico não.
@@ -253,6 +270,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         total_layers=total_layers,
         cpu_enabled=req.cpu_enabled,
         port=req.port,
+        llama_server_bin=req.llama_server_bin,
     )
     _invalidate_models_cache()
     return result
@@ -410,6 +428,25 @@ async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(re
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled})
     return {"message": "Configuracao salva"}
+
+
+@app.post("/models/llama-bin")
+async def set_llama_bin(req: SetLlamaBinRequest, authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    settings: Dict[str, Any] = {}
+    if req.llama_server_bin:
+        settings["llama_server_bin"] = req.llama_server_bin
+    if req.cache_type_k:
+        settings["cache_type_k"] = req.cache_type_k
+    if req.cache_type_v:
+        settings["cache_type_v"] = req.cache_type_v
+    if req.turboquant_preset:
+        settings["turboquant_preset"] = req.turboquant_preset
+    if not settings:
+        raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
+    config_manager.update_model_settings(req.model_path, settings)
+    return {"message": "Configuracao salva", **settings}
 
 
 @app.post("/system/shutdown")
@@ -879,8 +916,51 @@ def _build_html(
         .tab-btn {{ transition: all 0.3s ease; border-bottom: 3px solid transparent; }}
         .tab-btn.active {{ border-bottom-color: #3b82f6; color: #fff; background: rgba(59, 130, 246, 0.1); }}
         .tab-content {{ display: none; }}
-        .tab-content.active {{ display: flex; position: absolute; inset: 0; width: 100%; }}
-        
+        .tab-content.active {{ display: flex; flex-direction: column; width: 100%; }}
+
+        #tabs-container {{
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+        }}
+
+        .tab-layout-row {{
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            align-items: stretch;
+        }}
+
+        @media (min-width: 1280px) {{
+            .tab-layout-row {{
+                flex-direction: row;
+            }}
+        }}
+
+        .tab-config-panel {{
+            position: relative;
+            z-index: 1;
+            overflow: visible;
+        }}
+
+        .tab-log-panel {{
+            position: relative;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            min-height: 22rem;
+            max-height: var(--tab-config-height, none);
+            overflow: hidden;
+        }}
+
+        .tab-log-box {{
+            flex: 1 1 0;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }}
+
         .custom-scroll {{
             scrollbar-width: thin;
             scrollbar-color: #334155 transparent;
@@ -926,28 +1006,16 @@ def _build_html(
         .glass:has(.cfg-field:focus-within) {{
             position: relative;
             z-index: 9998;
-            overflow: visible;
-        }}
-        .tab-config-panel {{
-            position: relative;
-            z-index: 1;
         }}
         .tab-config-panel:has(.cfg-field:hover),
         .tab-config-panel:has(.cfg-field:focus-within) {{
             z-index: 200;
-            overflow: visible;
         }}
-        .tab-log-panel {{
-            position: relative;
-            z-index: 5;
-        }}
-        #tabs-container:has(.cfg-field:hover),
-        #tabs-container:has(.cfg-field:focus-within) {{
-            overflow: visible;
-        }}
-        .tab-content:has(.cfg-field:hover),
-        .tab-content:has(.cfg-field:focus-within) {{
-            overflow: visible;
+        .tab-turboquant-panel .cfg-tip {{
+            top: auto;
+            bottom: 100%;
+            margin-top: 0;
+            margin-bottom: 0.375rem;
         }}
         thead .cfg-tip {{
             top: auto;
@@ -957,7 +1025,7 @@ def _build_html(
         }}
     </style>
 </head>
-<body class="min-h-screen text-slate-200 selection:bg-blue-500/30 overflow-hidden flex">
+<body class="min-h-screen text-slate-200 selection:bg-blue-500/30 flex overflow-x-hidden">
     <script>window.modelConfigs = {{}}; window.activeTabs = [];</script>
     {login_overlay}
     {vision_import_modal}
@@ -1035,9 +1103,9 @@ def _build_html(
     </aside>
 
     <!-- CONTEUDO PRINCIPAL -->
-    <main id="main-content" class="main-content full flex-1 h-screen flex flex-col relative overflow-hidden" style="display: {shell_style};">
+    <main id="main-content" class="main-content full flex-1 min-h-screen flex flex-col relative" style="display: {shell_style};">
         <!-- HEADER -->
-        <header class="glass border-b border-slate-800 px-6 py-4 flex items-center justify-between h-16 shrink-0 z-30 shadow-md">
+        <header class="glass border-b border-slate-800 px-6 py-4 flex items-center justify-between h-16 shrink-0 sticky top-0 z-30 shadow-md">
             <div class="flex items-center gap-4">
                 <button id="sidebar-toggle" onclick="toggleSidebar()" class="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all active:scale-90">
                     <i class="fas fa-bars"></i>
@@ -1061,7 +1129,7 @@ def _build_html(
             </div>
         </header>
 
-        <div id="dashboard" class="flex-1 flex flex-col min-h-0" style="display: {'flex' if is_authenticated else 'none'};">
+        <div id="dashboard" class="flex-1 flex flex-col" style="display: {'flex' if is_authenticated else 'none'};">
             <!-- METRICAS (FIXAS) -->
             <div id="metrics-panel" class="grid grid-cols-2 md:grid-cols-4 gap-4 p-6 md:p-8 bg-slate-950/20 shrink-0 border-b border-slate-800/30">
                 <div class="glass p-4 rounded-2xl border-l-2 border-blue-600">
@@ -1094,7 +1162,7 @@ def _build_html(
             </div>
 
             <!-- TABS AREA -->
-            <div class="flex-1 flex flex-col min-h-0 bg-slate-900/10">
+            <div class="flex-1 flex flex-col bg-slate-900/10">
                 <!-- BARRA DE ABAS -->
                 <nav id="tab-bar" class="bg-slate-950/40 border-b border-slate-800 px-4 flex items-center gap-1 overflow-x-auto hide-scrollbar h-12 shrink-0">
                     <button type="button" onclick="toggleSidebar(true)" title="Abrir biblioteca para adicionar aba" class="tab-new-btn shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-800 text-slate-500 hover:text-blue-400 hover:border-blue-500/40 hover:bg-blue-500/10 transition-all">
@@ -1104,9 +1172,9 @@ def _build_html(
                 </nav>
 
                 <!-- CONTAINER DE CONTEUDO -->
-                <div id="tabs-container" class="flex-1 relative overflow-hidden">
+                <div id="tabs-container" class="flex-1 flex flex-col">
                     <!-- Tela Vazia -->
-                    <div id="no-tab-content" class="absolute inset-0 flex flex-col items-center justify-center p-6 md:p-10 text-center bg-slate-950/30 overflow-y-auto custom-scroll">
+                    <div id="no-tab-content" class="flex flex-col items-center justify-center p-6 md:p-10 text-center bg-slate-950/30 min-h-[60vh]">
                          <div class="w-16 h-16 rounded-[1.5rem] bg-slate-900 flex items-center justify-center mb-4 border border-slate-800 shadow-inner">
                              <i class="fas fa-cubes text-2xl text-slate-700"></i>
                          </div>
@@ -1139,11 +1207,11 @@ def _build_html(
 
     <!-- TEMPLATE PARA ABA DE MODELO -->
     <template id="model-tab-template">
-        <div class="tab-content h-full w-full flex-col overflow-hidden">
-            <div class="flex-1 flex flex-col xl:flex-row min-h-0 overflow-y-auto xl:overflow-hidden">
+        <div class="tab-content w-full flex-col">
+            <div class="tab-layout-row">
                 
                 <!-- PAINEL DE CONFIG (ESQUERDA) -->
-                <div class="tab-config-panel flex-1 min-h-0 p-6 md:p-8 space-y-6 xl:overflow-y-auto custom-scroll bg-slate-900/10">
+                <div class="tab-config-panel flex-1 p-6 md:p-8 space-y-6 bg-slate-900/10">
                     <!-- Header da Tab -->
                     <div class="flex items-center justify-between gap-6 flex-wrap pb-6 border-b border-slate-800/60">
                         <div class="flex items-center gap-5">
@@ -1245,6 +1313,42 @@ def _build_html(
                                     </select>
                                  </div>
                              </div>
+                             <div class="pt-4 border-t border-slate-800/30">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Binário llama.cpp usado para carregar este modelo. Quando há mais de uma instalação detectada no sistema, escolha qual versão usar.")}
+                                    <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center gap-2">
+                                        <span><i class="fas fa-code-branch text-[8px] mr-1"></i> Versão llama.cpp</span>
+                                    </label>
+                                    <select class="tab-llama-bin bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-4 py-2.5 text-sm font-bold w-full focus:ring-1 focus:ring-blue-500/50 outline-none transition-all">
+                                        <option value="" class="bg-slate-900">Detectando...</option>
+                                    </select>
+                                 </div>
+                             </div>
+                             <div class="tab-turboquant-panel hidden pt-4 border-t border-amber-500/20 space-y-4">
+                                 <div class="flex items-center gap-2">
+                                     <i class="fas fa-bolt text-amber-500 text-[10px]"></i>
+                                     <p class="text-[9px] font-black text-amber-500 uppercase tracking-[0.25em]">TurboQuant+ KV Cache</p>
+                                 </div>
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Presets assimétricos recomendados pelo TurboQuant+: K em alta precisão, V comprimido com turbo2/3/4. Boundary V e sparse dequant ativam automaticamente no binário.")}
+                                    <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1">Preset TurboQuant</label>
+                                    <select class="tab-turboquant-preset bg-slate-950 border border-amber-500/30 text-amber-200 rounded-xl px-4 py-2.5 text-sm font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none transition-all">
+                                    </select>
+                                 </div>
+                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                     <div class="{_CFG_FIELD}">
+                                        {_cfg_tip("Precisão do cache K (keys). Mantenha f16 ou q8_0 — comprimir K com turbo degrada qualidade.")}
+                                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1">Cache K (Keys)</label>
+                                        <select class="tab-turbo-cache-k bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-4 py-2.5 text-sm font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none"></select>
+                                     </div>
+                                     <div class="{_CFG_FIELD}">
+                                        {_cfg_tip("Precisão do cache V (values). turbo4 = mais leve; turbo2 = mais agressivo (~4.6× compressão em turbo3).")}
+                                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1">Cache V (Values)</label>
+                                        <select class="tab-turbo-cache-v bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-4 py-2.5 text-sm font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none"></select>
+                                     </div>
+                                 </div>
+                                 <p class="text-[8px] text-slate-500 leading-relaxed">Valores injetados como <span class="font-mono text-amber-400/80">--cache-type-k</span> e <span class="font-mono text-amber-400/80">--cache-type-v</span> ao iniciar com TurboQuant+.</p>
+                             </div>
                         </div>
 
                         <!-- Otimização & Threads -->
@@ -1268,8 +1372,8 @@ def _build_html(
                                         <input type="number" class="tab-threads-batch w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2.5 text-sm font-bold focus:ring-1 focus:ring-violet-500/50 outline-none text-center" placeholder="Auto">
                                     </div>
                                  </div>
-                                 <div class="{_CFG_FIELD}">
-                                    {_cfg_tip("Precisão do cache KV (K = keys, V = values). f16 usa mais VRAM com melhor fidelidade; q8_0/q4_0 economizam memória com pequena perda de qualidade em contextos longos.")}
+                                 <div class="{_CFG_FIELD} tab-standard-cache-wrap">
+                                    {_cfg_tip("Precisão do cache KV (K = keys, V = values). Com TurboQuant+, V aceita turbo2/3/4 além de f16/q8_0/q4_0.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span>Quantização de Cache</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1312,7 +1416,7 @@ def _build_html(
                                     </label>
                                 </div>
                                 <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
-                                    {_cfg_tip("Otimiza alocação de memória em servidores multi-socket (NUMA). Útil com offload grande para RAM; irrelevante na maioria dos desktops.")}
+                                    {_cfg_tip("NUMA: com 2+ GPUs usa distribute (threads em todos os nós); com 1 GPU usa isolate (nó da GPU principal). Útil em servidores multi-socket com offload grande para RAM.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
                                         <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
@@ -1411,7 +1515,7 @@ def _build_html(
                 </div>
 
                 <!-- PAINEL DE LOGS (DIREITA) -->
-                <div class="tab-log-panel xl:w-1/3 xl:max-w-[40%] xl:border-l border-slate-800/60 bg-slate-950/40 flex flex-col min-h-0 h-[500px] xl:h-full shadow-2xl relative shrink-0">
+                <div class="tab-log-panel xl:w-1/3 xl:max-w-[40%] xl:border-l border-t xl:border-t-0 border-slate-800/60 bg-slate-950/40 shadow-2xl relative">
                     <div class="p-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between shrink-0">
                         <div class="flex items-center gap-3">
                             <div class="flex gap-1">
@@ -1425,7 +1529,7 @@ def _build_html(
                             <i class="fas fa-trash-alt text-[10px]"></i>
                         </button>
                     </div>
-                    <div class="tab-log-box flex-1 min-h-0 p-8 font-mono text-[11px] text-slate-500 leading-relaxed overflow-y-auto overflow-x-hidden custom-scroll whitespace-pre-wrap break-words selection:bg-blue-500/20 bg-slate-950/20">
+                    <div class="tab-log-box p-8 font-mono text-[11px] text-slate-500 leading-relaxed custom-scroll whitespace-pre-wrap break-words selection:bg-blue-500/20 bg-slate-950/20">
                         <!-- Logs in realtime -->
                     </div>
                     <div class="p-4 bg-slate-900/60 border-t border-slate-800/80 flex items-center justify-between shrink-0">
@@ -1451,6 +1555,11 @@ def _build_html(
             DEFAULT_CACHE_TYPE: {json.dumps(default_cache_type)},
             DEFAULT_MTP_DRAFT_TOKENS: {default_mtp_draft_tokens},
             DEFAULT_MODEL: {json.dumps(default_model)},
+            TURBOQUANT_PRESETS: {json.dumps(TURBOQUANT_PRESETS)},
+            TURBOQUANT_DEFAULT_CACHE_K: {json.dumps(TURBOQUANT_DEFAULT_CACHE_K)},
+            TURBOQUANT_DEFAULT_CACHE_V: {json.dumps(TURBOQUANT_DEFAULT_CACHE_V)},
+            TURBOQUANT_CACHE_K_PRESETS: {json.dumps(TURBOQUANT_CACHE_K_PRESETS)},
+            TURBOQUANT_CACHE_V_PRESETS: {json.dumps(TURBOQUANT_CACHE_V_PRESETS)},
         }};
     </script>
     <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>
@@ -1574,7 +1683,8 @@ def _auto_start_default_model() -> None:
                 mtp_enabled=mtp_enabled,
                 mtp_draft_tokens=mtp_draft_tokens,
                 total_layers=saved_cfg.get("total_layers", 0),
-                port=port
+                port=port,
+                llama_server_bin=saved_cfg.get("llama_server_bin"),
             )
             logger.info(f"Auto-start: {model_path} started on port {port} (result: {start_result})")
             # Small delay between starts to avoid resource contention peaks

@@ -10,6 +10,37 @@ DEFAULT_MTP_DRAFT_TOKENS = 3
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 CACHE_TYPE_PRESETS = ["f16", "q8_0", "q4_0"]
 
+TURBOQUANT_CACHE_K_PRESETS = ["f16", "q8_0"]
+TURBOQUANT_CACHE_V_PRESETS = ["turbo4", "turbo3", "turbo2"]
+TURBOQUANT_DEFAULT_CACHE_K = "q8_0"
+TURBOQUANT_DEFAULT_CACHE_V = "turbo3"
+TURBOQUANT_PRESETS = [
+    {
+        "id": "safest",
+        "label": "Mais seguro (f16 / turbo4)",
+        "cache_type_k": "f16",
+        "cache_type_v": "turbo4",
+    },
+    {
+        "id": "conservative",
+        "label": "Conservador (q8_0 / turbo4)",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "turbo4",
+    },
+    {
+        "id": "recommended",
+        "label": "Recomendado (q8_0 / turbo3)",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "turbo3",
+    },
+    {
+        "id": "aggressive",
+        "label": "Agressivo (q8_0 / turbo2)",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "turbo2",
+    },
+]
+
 
 class GPUWeight(BaseModel):
     index: int
@@ -46,6 +77,8 @@ class StartRequest(BaseModel):
     cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
     port: Optional[int] = None  # Porta específica para o modelo
     auto_balance_profile: Optional[bool] = None  # None = False no /start; True após aplicar proposta
+    llama_server_bin: Optional[str] = None  # Binário llama-server para este modelo
+    turboquant_preset: Optional[str] = None  # Preset TurboQuant+ (UI / persistência por modelo)
 
 
 class DeleteRequest(BaseModel):
@@ -76,6 +109,16 @@ class SetThinkingRequest(BaseModel):
 
     model_path: str
     thinking_enabled: bool
+
+
+class SetLlamaBinRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str
+    llama_server_bin: Optional[str] = None
+    cache_type_k: Optional[str] = None
+    cache_type_v: Optional[str] = None
+    turboquant_preset: Optional[str] = None
 
 
 class SetDefaultRequest(BaseModel):

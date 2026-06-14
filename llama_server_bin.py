@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
 import platform
+import re
 import shutil
-from typing import List, Optional
+import subprocess
+from typing import Any, Dict, List, Optional
 
 from paths import INSTALL_ROOT, PATHS_FILE, _resolve_path
 
@@ -15,6 +18,7 @@ logger = logging.getLogger("automanager")
 
 _CACHED: Optional[str] = None
 _HELP_CACHE: Optional[str] = None
+_BINS_LIST_CACHE: Optional[List[Dict[str, Any]]] = None
 _IS_WINDOWS = platform.system() == "Windows"
 _EXECUTABLE_NAMES = (
     ("llama-server.exe", "llama-server")
@@ -109,6 +113,179 @@ def _iter_candidates(install_root: str) -> List[str]:
     return ordered
 
 
+def _glob_build_bins(search_roots: List[str]) -> List[str]:
+    """Find llama-server under */build/bin in search roots (one level deep)."""
+    found: List[str] = []
+    seen: set[str] = set()
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        patterns: List[str] = []
+        for name in _EXECUTABLE_NAMES:
+            patterns.extend(
+                [
+                    os.path.join(root, "*", "build", "bin", name),
+                    os.path.join(root, "*", "build", "bin", "Release", name),
+                    os.path.join(root, "*", "build", "bin", "Debug", name),
+                ]
+            )
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                norm = os.path.normpath(path)
+                if norm not in seen and _is_executable(norm):
+                    seen.add(norm)
+                    found.append(norm)
+    return found
+
+
+def _collect_all_candidate_paths(
+    install_root: Optional[str] = None,
+    paths_file: Optional[str] = None,
+) -> List[str]:
+    """Return unique executable llama-server paths in priority order."""
+    root = install_root or INSTALL_ROOT
+    pf = paths_file or PATHS_FILE
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    def add(path: Optional[str]) -> None:
+        if not path:
+            return
+        norm = os.path.normpath(path)
+        if norm in seen:
+            return
+        if _is_executable(norm):
+            seen.add(norm)
+            ordered.append(norm)
+
+    env_value = os.environ.get("LLAMA_SERVER_BIN", "").strip()
+    if env_value:
+        add(env_value)
+
+    configured = _read_paths_json_llama_bin(root, pf)
+    add(configured)
+
+    for name in _EXECUTABLE_NAMES:
+        add(shutil.which(name))
+
+    for candidate in _iter_candidates(root):
+        add(candidate)
+
+    for candidate in _glob_build_bins(_search_roots(root)):
+        add(candidate)
+
+    return ordered
+
+
+def get_bin_version_info(bin_path: str) -> Dict[str, Optional[str]]:
+    """Parse ``llama-server --version`` output."""
+    try:
+        proc = subprocess.run(
+            [bin_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+    except Exception:
+        return {"build": None, "commit": None, "label": os.path.basename(bin_path)}
+
+    build = None
+    commit = None
+    match = re.search(r"version:\s*(\d+)\s*\(([a-f0-9]+)\)", output, re.IGNORECASE)
+    if match:
+        build = match.group(1)
+        commit = match.group(2)
+
+    parent = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(bin_path))))
+    if parent in ("bin", "Release", "Debug"):
+        parent = os.path.basename(os.path.dirname(bin_path))
+    if not parent or parent == "bin":
+        parent = "llama-server"
+
+    if build and commit:
+        label = f"{parent} · build {build} ({commit[:7]})"
+    elif build:
+        label = f"{parent} · build {build}"
+    else:
+        label = parent
+
+    return {"build": build, "commit": commit, "label": label}
+
+
+def is_turboquant_bin(bin_path: str) -> bool:
+    """True when *bin_path* supports TurboQuant+ KV types (turbo2/3/4)."""
+    if not bin_path or not _is_executable(bin_path):
+        return False
+    help_text = get_llama_server_help(bin_path)
+    return "turbo2" in help_text and "turbo3" in help_text and "turbo4" in help_text
+
+
+def turboquant_cache_types() -> List[str]:
+    """Return turbo KV cache type tokens supported by TurboQuant+ builds."""
+    return ["turbo2", "turbo3", "turbo4"]
+
+
+def validate_turboquant_cache_types(
+    cache_type_k: str,
+    cache_type_v: str,
+    bin_path: str,
+) -> Optional[str]:
+    """Return an error message when turbo KV types mismatch the selected binary."""
+    turbo_types = set(turboquant_cache_types())
+    uses_turbo = cache_type_k in turbo_types or cache_type_v in turbo_types
+    if uses_turbo and not is_turboquant_bin(bin_path):
+        return (
+            "Tipos de cache turbo2/turbo3/turbo4 exigem o binário llama-cpp-turboquant. "
+            "Selecione a versão TurboQuant+ ou ajuste os tipos de cache."
+        )
+    return None
+
+
+def list_llama_server_bins(
+    install_root: Optional[str] = None,
+    paths_file: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Discover all llama-server binaries and return metadata for the UI."""
+    global _BINS_LIST_CACHE
+    if _BINS_LIST_CACHE is not None and install_root is None and paths_file is None:
+        default_path = get_llama_server_bin()
+        return {
+            "bins": _BINS_LIST_CACHE,
+            "default": default_path if _is_executable(default_path) else (
+                _BINS_LIST_CACHE[0]["path"] if _BINS_LIST_CACHE else None
+            ),
+        }
+
+    paths = _collect_all_candidate_paths(install_root, paths_file)
+    default = resolve_llama_server_bin(install_root, paths_file)
+    if default and default not in paths:
+        paths.insert(0, default)
+
+    bins: List[Dict[str, Any]] = []
+    for path in paths:
+        info = get_bin_version_info(path)
+        bins.append(
+            {
+                "path": path,
+                "label": info["label"],
+                "build": info["build"],
+                "commit": info["commit"],
+                "is_default": path == default,
+                "is_turboquant": is_turboquant_bin(path),
+            }
+        )
+
+    if install_root is None and paths_file is None:
+        _BINS_LIST_CACHE = bins
+
+    return {
+        "bins": bins,
+        "default": default or (bins[0]["path"] if bins else None),
+    }
+
+
 def resolve_llama_server_bin(
     install_root: Optional[str] = None,
     paths_file: Optional[str] = None,
@@ -161,42 +338,44 @@ def get_llama_server_bin() -> str:
 
 def reset_llama_server_bin_cache() -> None:
     """Clear cached resolution (tests)."""
-    global _CACHED, _HELP_CACHE
+    global _CACHED, _HELP_CACHE, _BINS_LIST_CACHE
     _CACHED = None
     _HELP_CACHE = None
+    _BINS_LIST_CACHE = None
 
 
-def get_llama_server_help() -> str:
-    """Return cached ``llama-server --help`` output (empty on failure)."""
+def get_llama_server_help(bin_path: Optional[str] = None) -> str:
+    """Return ``llama-server --help`` output (empty on failure)."""
     global _HELP_CACHE
-    if _HELP_CACHE is not None:
+    target = bin_path or get_llama_server_bin()
+    if bin_path is None and _HELP_CACHE is not None:
         return _HELP_CACHE
     try:
-        import subprocess
-
         proc = subprocess.run(
-            [get_llama_server_bin(), "--help"],
+            [target, "--help"],
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
-        _HELP_CACHE = (proc.stdout or "") + (proc.stderr or "")
+        help_text = (proc.stdout or "") + (proc.stderr or "")
     except Exception:
-        _HELP_CACHE = ""
-    return _HELP_CACHE
+        help_text = ""
+    if bin_path is None:
+        _HELP_CACHE = help_text
+    return help_text
 
 
-def supports_cli_flag(flag: str) -> bool:
+def supports_cli_flag(flag: str, bin_path: Optional[str] = None) -> bool:
     """True when ``flag`` appears in ``llama-server --help``."""
-    return flag in get_llama_server_help()
+    return flag in get_llama_server_help(bin_path)
 
 
-def verbose_cli_args() -> list[str]:
+def verbose_cli_args(bin_path: Optional[str] = None) -> list[str]:
     """Return llama-server flags for detailed stdout logging when supported."""
-    if supports_cli_flag("--verbose"):
+    if supports_cli_flag("--verbose", bin_path):
         return ["--verbose"]
-    if supports_cli_flag("--log-verbosity"):
+    if supports_cli_flag("--log-verbosity", bin_path):
         return ["--log-verbosity", "2"]
     return []
 

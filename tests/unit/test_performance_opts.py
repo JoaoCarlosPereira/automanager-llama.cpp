@@ -1,6 +1,6 @@
 
 import pytest
-from schemas import StartRequest, DEFAULT_CACHE_TYPE, CACHE_TYPE_PRESETS
+from schemas import StartRequest, GPUWeight, DEFAULT_CACHE_TYPE, CACHE_TYPE_PRESETS
 from auto_balance import AutoBalancePlanner
 from process_manager import ProcessManager
 from unittest.mock import MagicMock, patch
@@ -108,6 +108,7 @@ def test_process_manager_includes_performance_flags(mock_exists, mock_bin):
         assert "256" in args
         
         assert "--numa" in args
+        assert args[args.index("--numa") + 1] == "isolate"
         
         assert "--threads" in args
         assert "4" in args
@@ -117,6 +118,44 @@ def test_process_manager_includes_performance_flags(mock_exists, mock_bin):
         
         assert "--tools" in args
         assert "all" in args
+
+@patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
+@patch("process_manager.os.path.exists", return_value=True)
+def test_process_manager_numa_distribute_for_multi_gpu(mock_exists, mock_bin):
+    config_mgr = MagicMock()
+    token_mgr = MagicMock()
+    token_mgr.get_or_create.return_value = "test-token"
+    gpu_mgr = MagicMock()
+    gpu_mgr.normalize_gpu_weights.side_effect = lambda weights: weights
+    gpu_mgr.validate_gpu_weights.return_value = (True, "")
+    gpu_mgr.get_visible_devices.return_value = "0,1"
+    gpu_mgr.detect_model_layers.return_value = 32
+    cpu_info = MagicMock()
+    cpu_info.physical_cores = 8
+    gpu_mgr.detect_cpu_info.return_value = cpu_info
+    plan = MagicMock()
+    plan.tensor_split = ["0.6000", "0.4000"]
+    plan.n_gpu_layers = 32
+    plan.gpu_pct = 100.0
+    gpu_mgr.compute_offload_plan.return_value = plan
+    gpu_mgr.resolve_main_gpu_index.return_value = "1"
+    log_mgr = MagicMock()
+    pm = ProcessManager(config_mgr, token_mgr, gpu_mgr, log_mgr)
+
+    gpu_weights = [
+        GPUWeight(index=0, weight=60, name="GPU0", active=True, is_main=False, device="gpu"),
+        GPUWeight(index=1, weight=40, name="GPU1", active=True, is_main=True, device="gpu"),
+    ]
+
+    with patch("process_manager.subprocess.Popen") as mock_popen:
+        pm.start(
+            model_path="/models/test.gguf",
+            gpu_weights=gpu_weights,
+            context_size=65536,
+            numa_enabled=True,
+        )
+        args = mock_popen.call_args[0][0]
+        assert args[args.index("--numa") + 1] == "distribute"
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)

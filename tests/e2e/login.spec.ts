@@ -44,6 +44,35 @@ test('login com credenciais validas mostra dashboard', async ({ page }) => {
   await expect(page.locator('#status-badge')).toBeVisible();
   await expect(page.locator('#cpu-val')).toBeVisible();
   await expect(page.locator('#model-list-container')).toBeVisible();
+  await expect(page.locator('#dashboard')).toHaveCSS('display', 'flex');
+});
+
+test('login mostra modelos frequentes sem recarregar pagina', async ({ page }) => {
+  await openDashboard(page);
+
+  await page.locator('#login-username').fill('admin');
+  await page.locator('#login-password').fill('qualquer-senha');
+  await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        res.url().includes('/api/auth/login') &&
+        res.request().method() === 'POST' &&
+        res.ok(),
+    ),
+    page.locator('#login-form').evaluate((form) =>
+      (form as HTMLFormElement).requestSubmit(),
+    ),
+  ]);
+
+  await page.waitForResponse(
+    (res) =>
+      res.url().includes('/models') &&
+      res.request().method() === 'GET' &&
+      res.ok(),
+  );
+
+  await expect(page.locator('#no-tab-shortcuts')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('#no-tab-shortcuts-grid button')).toHaveCount(1);
 });
 
 test('login com credenciais invalidas mostra mensagem de erro', async ({ page }) => {

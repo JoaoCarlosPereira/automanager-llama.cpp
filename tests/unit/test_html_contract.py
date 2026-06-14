@@ -180,6 +180,10 @@ def test_template_contains_engine_params(html):
     assert "tab-cache-type-v" in html
     assert "tab-threads" in html
     assert "tab-split-mode" in html
+    assert "tab-llama-bin" in html
+    assert "tab-turboquant-panel" in html
+    assert "tab-turbo-cache-k" in html
+    assert "tab-turbo-cache-v" in html
 
 
 def test_template_contains_feature_toggles(html):

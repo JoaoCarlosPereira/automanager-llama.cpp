@@ -184,6 +184,10 @@ class ConfigManager:
                     legacy_key = key
                     break
         merged = {**prev, **settings}
+        llama_server_bin = merged.get("llama_server_bin") or prev.get("llama_server_bin")
+        turboquant_preset = merged.get("turboquant_preset")
+        if turboquant_preset is None:
+            turboquant_preset = prev.get("turboquant_preset")
         entry = {
             "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
             "parallel_slots": merged.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
@@ -208,6 +212,8 @@ class ConfigManager:
                 "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
             ),
             "pinned_fields": merged.get("pinned_fields") or {},
+            "llama_server_bin": llama_server_bin,
+            "turboquant_preset": turboquant_preset,
             "last_started": datetime.now(timezone.utc).isoformat(),
         }
         if "hardware_incapable_message" in merged:

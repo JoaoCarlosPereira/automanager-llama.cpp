@@ -1,7 +1,289 @@
-import { state } from './state.js?v=4.0.6';
-import { apiFetch } from './auth.js?v=4.0.6';
+import { state } from './state.js?v=4.0.7';
+import { apiFetch } from './auth.js?v=4.0.7';
 
 const CPU_INDEX = -1;
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+export async function fetchLlamaBins() {
+    try {
+        const res = await apiFetch('/llama-bins');
+        if (!res.ok) return [];
+        const data = await res.json();
+        window.llamaBins = Array.isArray(data.bins) ? data.bins : [];
+        window.defaultLlamaBin = data.default || window.llamaBins[0]?.path || null;
+        return window.llamaBins;
+    } catch (e) {
+        window.llamaBins = window.llamaBins || [];
+        return window.llamaBins;
+    }
+}
+
+export function populateLlamaBinSelect(tabId, selectedPath = null) {
+    const tab = document.getElementById(tabId);
+    const select = tab?.querySelector('.tab-llama-bin');
+    if (!select) return;
+
+    const bins = window.llamaBins || [];
+    const defaultPath = window.defaultLlamaBin || bins[0]?.path || '';
+    const preferred = selectedPath || select.value || defaultPath;
+
+    if (!bins.length) {
+        select.innerHTML = '<option value="" class="bg-slate-900">Nenhum binário detectado</option>';
+        select.disabled = true;
+        select.classList.add('opacity-60', 'cursor-not-allowed');
+        return;
+    }
+
+    select.innerHTML = bins.map((bin) => {
+        const value = escapeHtml(bin.path);
+        const label = escapeHtml(bin.label || bin.path);
+        return `<option value="${value}" class="bg-slate-900">${label}</option>`;
+    }).join('');
+
+    select.value = bins.some((bin) => bin.path === preferred) ? preferred : defaultPath;
+
+    const disabled = bins.length <= 1;
+    select.disabled = disabled;
+    select.classList.toggle('opacity-60', disabled);
+    select.classList.toggle('cursor-not-allowed', disabled);
+    syncTurboquantPanelVisibility(tabId);
+}
+
+export function getSelectedLlamaBin(tabId = null) {
+    const tab = tabId ? document.getElementById(tabId) : null;
+    const select = tab?.querySelector('.tab-llama-bin');
+    const value = select?.value?.trim();
+    if (value) return value;
+    return window.defaultLlamaBin || window.llamaBins?.[0]?.path || null;
+}
+
+export function isTurboquantBin(binPath) {
+    if (!binPath) return false;
+    const bins = window.llamaBins || [];
+    const match = bins.find((bin) => bin.path === binPath);
+    if (match && match.is_turboquant != null) return !!match.is_turboquant;
+    const normalized = String(binPath).toLowerCase();
+    return normalized.includes('turboquant');
+}
+
+function getTurboquantPresets() {
+    return window.__constants?.TURBOQUANT_PRESETS || [];
+}
+
+function getTurboquantPresetById(presetId) {
+    return getTurboquantPresets().find((preset) => preset.id === presetId) || null;
+}
+
+export function detectTurboquantPreset(cacheK, cacheV) {
+    const presets = getTurboquantPresets();
+    return presets.find(
+        (preset) => preset.cache_type_k === cacheK && preset.cache_type_v === cacheV,
+    )?.id || 'custom';
+}
+
+function addSelectOptionIfMissing(select, value) {
+    if (!select || !value) return;
+    if ([...select.options].some((opt) => opt.value === value)) return;
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    opt.className = 'bg-slate-900';
+    select.appendChild(opt);
+}
+
+function removeSelectOption(select, value) {
+    if (!select) return;
+    const option = [...select.options].find((opt) => opt.value === value);
+    if (option) option.remove();
+}
+
+export function ensureMainCacheOptions(tabId = null, isTurbo = null) {
+    const scope = getTabScope(tabId);
+    const mainK = scope.querySelector('.tab-cache-type-k');
+    const mainV = scope.querySelector('.tab-cache-type-v');
+    if (!mainK || !mainV) return;
+
+    const turboActive = isTurbo ?? isTurboquantBin(getSelectedLlamaBin(tabId));
+    const turboKTypes = window.__constants?.TURBOQUANT_CACHE_K_PRESETS || ['f16', 'q8_0'];
+    const turboVTypes = window.__constants?.TURBOQUANT_CACHE_V_PRESETS || ['turbo4', 'turbo3', 'turbo2'];
+
+    for (const value of turboKTypes) addSelectOptionIfMissing(mainK, value);
+
+    if (turboActive) {
+        for (const value of turboVTypes) addSelectOptionIfMissing(mainV, value);
+        return;
+    }
+
+    for (const value of turboVTypes) removeSelectOption(mainV, value);
+    if (turboVTypes.includes(mainV.value)) {
+        mainV.value = window.__constants?.DEFAULT_CACHE_TYPE || 'f16';
+    }
+}
+
+export function getEffectiveCacheTypes(tabId = null) {
+    const scope = getTabScope(tabId);
+    const isTurbo = isTurboquantBin(getSelectedLlamaBin(tabId));
+    ensureMainCacheOptions(tabId, isTurbo);
+
+    if (isTurbo) {
+        syncTurboquantToCacheFields(tabId);
+    }
+
+    const defaultK = window.__constants?.DEFAULT_CACHE_TYPE || 'f16';
+    const defaultV = window.__constants?.DEFAULT_CACHE_TYPE || 'f16';
+    const turboDefaultK = window.__constants?.TURBOQUANT_DEFAULT_CACHE_K || 'q8_0';
+    const turboDefaultV = window.__constants?.TURBOQUANT_DEFAULT_CACHE_V || 'turbo3';
+
+    const mainK = scope.querySelector('.tab-cache-type-k');
+    const mainV = scope.querySelector('.tab-cache-type-v');
+    let cacheK = mainK?.value?.trim() || '';
+    let cacheV = mainV?.value?.trim() || '';
+
+    if (isTurbo) {
+        const turboK = scope.querySelector('.tab-turbo-cache-k')?.value?.trim();
+        const turboV = scope.querySelector('.tab-turbo-cache-v')?.value?.trim();
+        if (turboK) cacheK = turboK;
+        if (turboV) cacheV = turboV;
+        if (!cacheK) cacheK = turboDefaultK;
+        if (!cacheV) cacheV = turboDefaultV;
+    } else {
+        if (!cacheK) cacheK = defaultK;
+        if (!cacheV) cacheV = defaultV;
+    }
+
+    if (mainK && cacheK) mainK.value = cacheK;
+    if (mainV && cacheV) mainV.value = cacheV;
+
+    return { cache_type_k: cacheK, cache_type_v: cacheV };
+}
+
+export function syncTurboquantToCacheFields(tabId = null) {
+    const scope = getTabScope(tabId);
+    const cacheK = scope.querySelector('.tab-turbo-cache-k');
+    const cacheV = scope.querySelector('.tab-turbo-cache-v');
+    const mainK = scope.querySelector('.tab-cache-type-k');
+    const mainV = scope.querySelector('.tab-cache-type-v');
+    if (!cacheK || !cacheV || !mainK || !mainV) return;
+
+    ensureMainCacheOptions(tabId, true);
+    if (cacheK.value) mainK.value = cacheK.value;
+    if (cacheV.value) mainV.value = cacheV.value;
+}
+
+export function syncMainCacheToTurboFields(tabId = null) {
+    const scope = getTabScope(tabId);
+    if (!isTurboquantBin(getSelectedLlamaBin(tabId))) return;
+
+    const mainK = scope.querySelector('.tab-cache-type-k')?.value;
+    const mainV = scope.querySelector('.tab-cache-type-v')?.value;
+    const turboK = scope.querySelector('.tab-turbo-cache-k');
+    const turboV = scope.querySelector('.tab-turbo-cache-v');
+    const presetEl = scope.querySelector('.tab-turboquant-preset');
+
+    if (turboK && mainK) turboK.value = mainK;
+    if (turboV && mainV) turboV.value = mainV;
+    if (presetEl && mainK && mainV) {
+        presetEl.value = detectTurboquantPreset(mainK, mainV);
+    }
+}
+
+export function applyTurboquantPreset(tabId, presetId) {
+    const scope = getTabScope(tabId);
+    const preset = getTurboquantPresetById(presetId);
+    if (!preset) return;
+    const cacheK = scope.querySelector('.tab-turbo-cache-k');
+    const cacheV = scope.querySelector('.tab-turbo-cache-v');
+    const presetSel = scope.querySelector('.tab-turboquant-preset');
+    if (cacheK) cacheK.value = preset.cache_type_k;
+    if (cacheV) cacheV.value = preset.cache_type_v;
+    if (presetSel) presetSel.value = presetId;
+    syncTurboquantToCacheFields(tabId);
+}
+
+export function populateTurboquantSelects(tabId) {
+    const scope = getTabScope(tabId);
+    const kPresets = window.__constants?.TURBOQUANT_CACHE_K_PRESETS || ['f16', 'q8_0'];
+    const vPresets = window.__constants?.TURBOQUANT_CACHE_V_PRESETS || ['turbo4', 'turbo3', 'turbo2'];
+    const presetSel = scope.querySelector('.tab-turboquant-preset');
+    const cacheK = scope.querySelector('.tab-turbo-cache-k');
+    const cacheV = scope.querySelector('.tab-turbo-cache-v');
+
+    if (cacheK) {
+        cacheK.innerHTML = kPresets.map(
+            (value) => `<option value="${escapeHtml(value)}" class="bg-slate-900">${escapeHtml(value)}</option>`,
+        ).join('');
+    }
+    if (cacheV) {
+        cacheV.innerHTML = vPresets.map(
+            (value) => `<option value="${escapeHtml(value)}" class="bg-slate-900">${escapeHtml(value)}</option>`,
+        ).join('');
+    }
+    if (presetSel) {
+        const presets = getTurboquantPresets();
+        presetSel.innerHTML = [
+            ...presets.map(
+                (preset) => `<option value="${escapeHtml(preset.id)}" class="bg-slate-900">${escapeHtml(preset.label)}</option>`,
+            ),
+            '<option value="custom" class="bg-slate-900">Personalizado</option>',
+        ].join('');
+    }
+}
+
+export function applyTurboquantConfig(tabId, cfg = {}) {
+    populateTurboquantSelects(tabId);
+    const scope = getTabScope(tabId);
+    const defaultK = window.__constants?.TURBOQUANT_DEFAULT_CACHE_K || 'q8_0';
+    const defaultV = window.__constants?.TURBOQUANT_DEFAULT_CACHE_V || 'turbo3';
+    const cacheK = cfg.cache_type_k || defaultK;
+    const cacheV = cfg.cache_type_v || defaultV;
+    const presetId = cfg.turboquant_preset || detectTurboquantPreset(cacheK, cacheV);
+
+    const kEl = scope.querySelector('.tab-turbo-cache-k');
+    const vEl = scope.querySelector('.tab-turbo-cache-v');
+    const presetEl = scope.querySelector('.tab-turboquant-preset');
+    if (kEl) kEl.value = cacheK;
+    if (vEl) vEl.value = cacheV;
+    if (presetEl) presetEl.value = presetId;
+    syncTurboquantToCacheFields(tabId);
+}
+
+export function getTurboquantPreset(tabId = null) {
+    const scope = getTabScope(tabId);
+    const presetEl = scope.querySelector('.tab-turboquant-preset');
+    const value = presetEl?.value?.trim();
+    return value && value !== 'custom' ? value : null;
+}
+
+export function syncTurboquantPanelVisibility(tabId = null) {
+    const scope = getTabScope(tabId);
+    const binPath = getSelectedLlamaBin(tabId);
+    const isTurbo = isTurboquantBin(binPath);
+    const panel = scope.querySelector('.tab-turboquant-panel');
+
+    if (panel) panel.classList.toggle('hidden', !isTurbo);
+    ensureMainCacheOptions(tabId, isTurbo);
+
+    if (isTurbo) {
+        populateTurboquantSelects(tabId);
+        const mainK = scope.querySelector('.tab-cache-type-k')?.value;
+        const mainV = scope.querySelector('.tab-cache-type-v')?.value;
+        const vPresets = window.__constants?.TURBOQUANT_CACHE_V_PRESETS || [];
+        if (mainV && vPresets.includes(mainV)) {
+            applyTurboquantConfig(tabId, { cache_type_k: mainK, cache_type_v: mainV });
+        } else {
+            applyTurboquantPreset(tabId, 'recommended');
+        }
+    } else {
+        syncMainCacheToTurboFields(tabId);
+    }
+}
 
 function getTabScope(tabId = null) {
     if (!tabId) tabId = state.currentTabId;
@@ -378,6 +660,8 @@ export function resetToDefaults(tabId = null) {
     }
     syncMtpDraftTokensState(tabId);
     scope.querySelector('.tab-numa-toggle').checked = false;
+    populateLlamaBinSelect(tabId, window.defaultLlamaBin || null);
+    syncTurboquantPanelVisibility(tabId);
     
     scope.querySelectorAll('.gpu-row').forEach((row, idx) => {
         row.querySelector('.gpu-checkbox').checked = true;

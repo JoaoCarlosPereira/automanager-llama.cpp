@@ -145,6 +145,37 @@ def test_config_partial_update_preserves_thinking_fields(config_manager):
     assert saved["context_size"] == 32768
 
 
+def test_config_partial_update_preserves_llama_server_bin(config_manager):
+    model_path = "/models/qwen.gguf"
+    bin_path = "/opt/llama-cpp-turboquant/build/bin/llama-server"
+    config_manager.update_model_settings(
+        model_path,
+        {"llama_server_bin": bin_path, "context_size": 65536},
+    )
+    config_manager.update_model_settings(model_path, {"context_size": 32768})
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["llama_server_bin"] == bin_path
+    assert saved["context_size"] == 32768
+
+
+def test_config_update_model_settings_llama_bin_fields(config_manager):
+    model_path = "/models/turbo.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {
+            "llama_server_bin": "/opt/turbo/bin/llama-server",
+            "turboquant_preset": "recommended",
+            "cache_type_k": "q8_0",
+            "cache_type_v": "turbo3",
+        },
+    )
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["llama_server_bin"] == "/opt/turbo/bin/llama-server"
+    assert saved["turboquant_preset"] == "recommended"
+    assert saved["cache_type_k"] == "q8_0"
+    assert saved["cache_type_v"] == "turbo3"
+
+
 def test_config_normalizes_model_path_keys(config_manager):
     model_path = "/models/qwen.gguf"
     config_manager.update_model_settings(

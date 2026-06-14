@@ -1,4 +1,4 @@
-import { state } from './state.js?v=4.0.6';
+import { state } from './state.js?v=4.0.7';
 
 export let sessionExpiredHandled = false;
 
@@ -62,10 +62,12 @@ export async function handleLogin(event) {
         const res = await fetch('/api/auth/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
+            credentials: 'include',
             body: JSON.stringify({username, password}),
         });
         if (res.ok) {
             sessionExpiredHandled = false;
+            state.initialTabsSynced = false;
             const errEl = document.getElementById('login-error');
             if (errEl) {
                 errEl.textContent = '';
@@ -74,9 +76,9 @@ export async function handleLogin(event) {
                 errEl.classList.add('text-red-500');
             }
             document.getElementById('login-overlay').style.display = 'none';
-            document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('dashboard').style.display = 'flex';
             setAuthenticatedShellVisible(true);
-            window.initDashboard();
+            await window.initDashboard();
             window.startDashboardPolling();
         } else {
             const err = await res.json();
