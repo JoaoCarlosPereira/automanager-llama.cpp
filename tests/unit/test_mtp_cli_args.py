@@ -21,13 +21,13 @@ def test_mtp_cli_args_disabled():
 
 
 def test_mtp_cli_args_forced_enabled(gpu_mgr):
-    """MTP returns empty when model is incompatible, even if requested (safety check)."""
+    """MTP ativado na UI aplica flags mesmo se model-info não detectar cabeças."""
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = False
     flags, applied, reason = mtp_cli_args(True, 3, "/models/a.gguf", mgr)
-    assert flags == []
-    assert applied is False
-    assert reason == "Modelo não suporta cabeças MTP"
+    assert flags == ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+    assert applied is True
+    assert reason != ""
 
 
 def test_mtp_cli_args_enabled_compatible():

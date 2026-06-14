@@ -30,7 +30,31 @@ def test_start_streaming_writes_subprocess_output(tmp_path):
     manager.start_streaming(8085, proc)
     proc.wait(timeout=5)
     time.sleep(0.2)
-    assert "hello from server" in log_path.read_text(encoding="utf-8")
+    content = log_path.read_text(encoding="utf-8")
+    assert "hello from server" in content
+
+
+def test_start_streaming_writes_command_header(tmp_path):
+    log_path = tmp_path / "server.log"
+    manager = LogManager(
+        project_root=str(tmp_path),
+        server_log_path=str(log_path),
+        manager_log_path=str(tmp_path / "manager.log"),
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "print('ready')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    cmd = ["/usr/bin/llama-server", "-m", "model.gguf", "--verbose"]
+    manager.start_streaming(8085, proc, cmd=cmd)
+    proc.wait(timeout=5)
+    time.sleep(0.2)
+    content = log_path.read_text(encoding="utf-8")
+    assert "llama-server :8085" in content
+    assert "--verbose" in content
+    assert "ready" in content
 
 
 @pytest.mark.asyncio

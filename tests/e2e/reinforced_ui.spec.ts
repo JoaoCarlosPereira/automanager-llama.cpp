@@ -32,6 +32,37 @@ test('selecionar modelo abre aba', async ({ page }) => {
   await expect(page.locator('.model-tab-name')).toHaveText(modelName);
 });
 
+test('selecionar dois modelos abre duas abas', async ({ page }) => {
+  await loginAsAdmin(page);
+  await waitForModelsLoaded(page);
+
+  const models = page.locator('.model-item-container');
+  const firstName = await models.nth(0).locator('.model-name').innerText();
+  const secondName = await models.nth(1).locator('.model-name').innerText();
+
+  await models.nth(0).click();
+  await models.nth(1).click();
+
+  await expect(page.locator('.tab-btn')).toHaveCount(2);
+  await expect(page.locator('.tab-btn', { hasText: firstName })).toBeVisible();
+  await expect(page.locator('.tab-btn', { hasText: secondName })).toBeVisible();
+});
+
+test('ctrl+clique abre nova aba do mesmo modelo', async ({ page }) => {
+  await loginAsAdmin(page);
+  await waitForModelsLoaded(page);
+
+  const firstModel = page.locator('.model-item-container').first();
+  const modelName = await firstModel.locator('.model-name').innerText();
+
+  await firstModel.click();
+  await firstModel.click({ modifiers: ['Control'] });
+
+  await expect(page.locator('.tab-btn')).toHaveCount(2);
+  await expect(page.locator('.tab-btn', { hasText: `${modelName} (1)` })).toBeVisible();
+  await expect(page.locator('.tab-btn', { hasText: `${modelName} (2)` })).toBeVisible();
+});
+
 test('start modelo na aba mostra status ONLINE', async ({ page }) => {
   await loginAsAdmin(page);
   await waitForModelsLoaded(page);

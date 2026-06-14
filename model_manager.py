@@ -255,11 +255,12 @@ class ModelScanner:
             )
 
         pm = self.process_manager
+        normalized_old = normalize_model_path(real_old_path)
         status = pm.get_status()
-        if status["running"]:
-            normalized_old = real_old_path.replace("\\", "/")
-            normalized_run = status.get("model_path", "").replace("\\", "/")
-            if normalized_old == normalized_run:
+        for inst in status.get("instances", []):
+            if inst.get("status") != "running":
+                continue
+            if normalize_model_path(inst.get("model_path") or "") == normalized_old:
                 raise HTTPException(
                     status_code=400,
                     detail="Impossivel renomear modelo em execucao",
@@ -269,6 +270,7 @@ class ModelScanner:
         if not new_name.endswith(".gguf"):
             new_name += ".gguf"
         new_path = os.path.join(dir_name, new_name)
+        new_path_norm = normalize_model_path(new_path)
 
         if os.path.exists(new_path):
             raise HTTPException(
@@ -279,21 +281,35 @@ class ModelScanner:
         data = self.config.load()
         updated = False
 
-        if data.get("default_model") == real_old_path:
-            data["default_model"] = new_path
+        if data.get("default_model") and normalize_model_path(
+            data["default_model"]
+        ) == normalized_old:
+            data["default_model"] = new_path_norm
             updated = True
 
-        if "model_configs" in data and real_old_path in data["model_configs"]:
-            data["model_configs"][new_path] = data["model_configs"].pop(
-                real_old_path
-            )
+        defaults = data.get("default_models", [])
+        if isinstance(defaults, list):
+            new_defaults = [
+                new_path_norm if normalize_model_path(p) == normalized_old else p
+                for p in defaults
+            ]
+            if new_defaults != defaults:
+                data["default_models"] = new_defaults
+                updated = True
+
+        model_configs = data.get("model_configs", {})
+        keys_to_move = [
+            k for k in model_configs if normalize_model_path(k) == normalized_old
+        ]
+        for key in keys_to_move:
+            model_configs[new_path_norm] = model_configs.pop(key)
             updated = True
 
         if updated:
             self.config.save(data)
 
-        logger.info(f"Renamed: {real_old_path} -> {new_path}")
-        return new_path
+        logger.info(f"Renamed: {real_old_path} -> {new_path_norm}")
+        return new_path_norm
 
     def delete_model(self, file_path: str) -> None:
         real_models_dir = os.path.realpath(self.models_dir)
@@ -413,6 +429,7 @@ class DownloadManager:
                 "filename": filename,
                 "path": path,
                 "url": url,
+                "model_path": normalized_model.replace("\\", "/") if model_path else None,
                 "family": infer_model_family(filename, url) if not model_path else None,
                 "status": "downloading",
                 "progress": 0,

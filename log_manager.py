@@ -123,10 +123,24 @@ class LogManager:
         self._setup_server_log_rotation(path)
         return open(path, "a", encoding="utf-8")
 
-    def start_streaming(self, port: int, proc: subprocess.Popen) -> None:
+    def start_streaming(
+        self,
+        port: int,
+        proc: subprocess.Popen,
+        cmd: Optional[list] = None,
+    ) -> None:
         """Read subprocess stdout in a background thread and write to server log."""
         self.clear_server_log(port)
         path = self._get_path(port)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"=== llama-server :{port} {stamp} ===\n")
+                if cmd:
+                    f.write(f"CMD: {' '.join(cmd)}\n")
+                f.write("\n")
+        except OSError:
+            pass
 
         def _pump() -> None:
             log_file = None
@@ -173,6 +187,9 @@ class LogManager:
             return True
         return False
 
+    def _format_sse_line(self, line: str) -> str:
+        return f"data: {line.rstrip(chr(10))}\n\n"
+
     def stream_logs(
         self,
         stop_event: Optional[threading.Event] = None,
@@ -183,21 +200,50 @@ class LogManager:
 
         async def generate():
             if not os.path.exists(path):
-                yield "data: Arquivo de log nao encontrado.\n\n"
+                yield self._format_sse_line("Arquivo de log nao encontrado.")
                 return
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+
+            f = open(path, "r", encoding="utf-8", errors="replace")
+            try:
                 existing = f.readlines()
                 for line in existing[-500:]:
                     if await self._stream_should_stop(stop_event, request):
                         return
-                    yield f"data: {line}"
+                    yield self._format_sse_line(line)
+
+                try:
+                    last_size = os.path.getsize(path)
+                except OSError:
+                    last_size = 0
+
                 while True:
                     if await self._stream_should_stop(stop_event, request):
                         return
+                    try:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        size = last_size
+                    if size < last_size:
+                        f.close()
+                        f = open(path, "r", encoding="utf-8", errors="replace")
+                        try:
+                            last_size = os.path.getsize(path)
+                        except OSError:
+                            last_size = 0
+                        while True:
+                            line = f.readline()
+                            if not line:
+                                break
+                            yield self._format_sse_line(line)
+                        continue
+                    last_size = size
                     line = f.readline()
                     if not line:
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.15)
                         continue
-                    yield f"data: {line}"
+                    yield self._format_sse_line(line)
+            finally:
+                if f and not f.closed:
+                    f.close()
 
         return StreamingResponse(generate(), media_type="text/event-stream")

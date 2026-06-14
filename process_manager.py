@@ -11,7 +11,7 @@ import psutil
 
 from config_manager import ConfigManager, TokenManager
 from log_manager import LogManager, logger
-from llama_server_bin import get_llama_server_bin, supports_cli_flag
+from llama_server_bin import get_llama_server_bin, supports_cli_flag, verbose_cli_args
 from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS
 from paths import INSTALL_ROOT
 
@@ -475,6 +475,8 @@ class ProcessManager:
         if supports_cli_flag("--pinned-memory"):
             cmd.append("--pinned-memory")
 
+        cmd.extend(verbose_cli_args())
+
         if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
         else:
@@ -504,6 +506,7 @@ class ProcessManager:
                 text=True,
                 bufsize=1,
             )
+            proc._start_time = time.time()
             with self._lock:
                 self.processes[port] = proc
                 self._requests[port] = StartRequest(
@@ -527,8 +530,12 @@ class ProcessManager:
                 )
             
             # Watch stderr/stdout
-            self.log_manager.start_streaming(port, proc)
-            return {"message": "Servidor iniciado", "port": port}
+            self.log_manager.start_streaming(port, proc, cmd=cmd)
+            return {
+                "message": "Servidor iniciado",
+                "port": port,
+                "start_time": proc._start_time,
+            }
         except Exception as e:
             logger.exception("Failed to start llama-server")
             raise HTTPException(status_code=500, detail=str(e))

@@ -1,5 +1,5 @@
-﻿import { state } from './state.js?v=4.0.2';
-import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.2';
+﻿import { state } from './state.js?v=4.0.6';
+import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.6';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -10,11 +10,35 @@ import {
     updateThinkingBadge, updateMtpBadge, getMtpDraftTokens, syncMtpDraftTokensState,
     validateDeviceWeights,
     collectDeviceWeightsFromUI,
-} from './gpu.js?v=4.0.2';
-import { startLogs } from './metrics.js?v=4.0.2';
-import { checkForUpdates } from './version.js?v=4.0.2';
+} from './gpu.js?v=4.0.6';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.0.6';
+import { checkForUpdates } from './version.js?v=4.0.6';
 
 // --- TAB MANAGEMENT ---
+
+let tabInstanceCounter = 0;
+
+function nextTabInstanceId(modelId) {
+    tabInstanceCounter += 1;
+    return `tab-${modelId}-${tabInstanceCounter}`;
+}
+
+function refreshTabLabelsForPath(path) {
+    const normalized = path.replace(/\\/g, '/');
+    const tabs = state.activeTabs.filter(t => t.path === normalized);
+    tabs.forEach((tab, index) => {
+        const label = tabs.length > 1 ? `${tab.name} (${index + 1})` : tab.name;
+        const btn = document.getElementById(`btn-${tab.id}`);
+        const labelEl = btn?.querySelector('.tab-label');
+        if (labelEl) labelEl.textContent = label;
+    });
+}
+
+function findTabForModel(path, { forceNew = false } = {}) {
+    const normalized = path.replace(/\\/g, '/');
+    if (forceNew) return null;
+    return state.activeTabs.find(t => t.path === normalized && document.getElementById(t.id)) || null;
+}
 
 function fallbackModelId(path) {
     let hash = 0;
@@ -118,7 +142,7 @@ export function renderNoTabShortcuts(models = null, cfg = null) {
         ].filter(Boolean).join(' · ');
 
         return `
-            <button type="button" onclick="selectModel('${path.replace(/'/g, "\\'")}', '${model.id}')"
+            <button type="button" onclick="selectModelFromEvent(event, '${path.replace(/'/g, "\\'")}', '${model.id}')"
                 class="group glass rounded-2xl border border-slate-800/80 hover:border-blue-500/40 bg-slate-900/40 hover:bg-slate-900/70 p-4 text-left transition-all active:scale-[0.99]">
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0 flex-1">
@@ -152,15 +176,18 @@ export function toggleSidebar(forceOpen = null) {
     }
 }
 
-export function createModelTab(path, name, id, activate = true) {
+export function createModelTab(path, name, id, activate = true, forceNew = false) {
     const m_js = path.replace(/\\/g, '/');
-    const tabId = `tab-${id}`;
-    
-    // If tab exists, just switch to it
-    if (document.getElementById(tabId)) {
-        if (activate) switchTab(tabId);
-        return tabId;
+    const modelId = id || fallbackModelId(m_js);
+
+    const existing = findTabForModel(m_js, { forceNew });
+    if (existing) {
+        if (activate) switchTab(existing.id);
+        return existing.id;
     }
+
+    const tabId = nextTabInstanceId(modelId);
+    const tabLabel = escapeHtml(name);
 
     // 1. Create Tab Button
     const tabBar = document.getElementById('tab-bar');
@@ -170,7 +197,7 @@ export function createModelTab(path, name, id, activate = true) {
     btn.onclick = () => switchTab(tabId);
     btn.innerHTML = `
         <div class="tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500"></div>
-        <span class="truncate flex-1 text-left">${name}</span>
+        <span class="tab-label truncate flex-1 text-left">${tabLabel}</span>
         <span onclick="event.stopPropagation(); closeTab('${tabId}')" class="tab-close-btn w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 hover:text-red-500 text-slate-600 transition-all">
             <i class="fas fa-times text-[8px]"></i>
         </span>
@@ -194,7 +221,9 @@ export function createModelTab(path, name, id, activate = true) {
     document.getElementById('tabs-container').appendChild(tabDiv);
 
     // 3. Register state
-    state.activeTabs.push({id: tabId, path: m_js, name});
+    state.activeTabs.push({ id: tabId, path: m_js, name, modelId });
+
+    refreshTabLabelsForPath(m_js);
     
     // 4. Initial Switch
     if (activate) switchTab(tabId);
@@ -206,6 +235,7 @@ export function createModelTab(path, name, id, activate = true) {
     
     // 6. Bind Listeners for this tab
     bindTabListeners(tabId);
+    bindGpuManualListeners(tabId);
     return tabId;
 }
 
@@ -236,7 +266,9 @@ function bindTabListeners(tabId) {
     tab.querySelector('.tab-reset-defaults-btn').onclick = () => resetToDefaults(tabId);
     tab.querySelector('.tab-clear-logs-btn').onclick = () => {
         tab.querySelector('.tab-log-box').innerHTML = '';
-        state.modelLogs[path] = '';
+        tab.querySelector('.tab-log-box').dataset.connecting = '0';
+        const sizeEl = tab.querySelector('.tab-log-size');
+        if (sizeEl) sizeEl.innerText = '0 KB';
     };
 
     // New Smart Calibrate Button
@@ -320,6 +352,8 @@ export async function startSmartCalibration(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
 
+    saveScreenSnapshot(path, tabId);
+
     const pinnedFields = collectPinnedFieldsFromTab(tabId);
 
     const currentValues = {
@@ -399,6 +433,39 @@ export async function startSmartCalibration(path, tabId) {
     }
 }
 
+export function saveScreenSnapshot(path, tabId) {
+    const tab = document.getElementById(tabId);
+    const payload = collectStartPayloadFromTab(path, tabId);
+    if (tab && payload) {
+        tab.dataset.screenSnapshot = JSON.stringify(payload);
+    }
+}
+
+export function restoreScreenSnapshot(tabId) {
+    const tab = document.getElementById(tabId);
+    if (!tab?.dataset.screenSnapshot) return;
+    applyScreenConfigToTab(tabId, JSON.parse(tab.dataset.screenSnapshot));
+}
+
+function applyScreenConfigToTab(tabId, cfg) {
+    const tab = document.getElementById(tabId);
+    if (!tab || !cfg) return;
+    const path = (cfg.path || tab.dataset.path || '').replace(/\\/g, '/');
+    if (!path) return;
+    window.modelConfigs[path] = { ...(window.modelConfigs[path] || {}), ...cfg };
+    applyModelConfig(path, tabId);
+    applyPinnedFieldsToTab(tabId, cfg.pinned_fields);
+}
+
+function getScreenBaselineConfig(tabId) {
+    const tab = document.getElementById(tabId);
+    if (tab?.dataset.screenSnapshot) {
+        return JSON.parse(tab.dataset.screenSnapshot);
+    }
+    const path = (tab?.dataset.path || '').replace(/\\/g, '/');
+    return collectStartPayloadFromTab(path, tabId) || window.modelConfigs[path] || {};
+}
+
 export function showProposedConfig(tabId, proposal, gpuWeights = null) {
     const tab = document.getElementById(tabId);
     if (!tab || !proposal) return;
@@ -424,25 +491,16 @@ export function showProposedConfig(tabId, proposal, gpuWeights = null) {
         `;
     };
 
-    const oldCfg = window.modelConfigs[tab.dataset.path] || {};
+    const baseline = getScreenBaselineConfig(tabId);
     
     details.innerHTML = `
-        ${formatDiff('Contexto', (oldCfg.context_size || 0)/1024 + 'K', (proposal.context_size || 0)/1024 + 'K')}
-        ${formatDiff('Slots', oldCfg.parallel_slots || 1, proposal.parallel_slots || 1)}
-        ${formatDiff('Batch', oldCfg.batch_size || 2048, proposal.batch_size || 2048)}
-        ${formatDiff('Cache', oldCfg.cache_type_k || 'f16', proposal.cache_type_k || 'f16')}
+        ${formatDiff('Contexto', (baseline.context_size || 0)/1024 + 'K', (proposal.context_size || 0)/1024 + 'K')}
+        ${formatDiff('Slots', baseline.parallel_slots || 1, proposal.parallel_slots || 1)}
+        ${formatDiff('Batch', baseline.batch_size || 2048, proposal.batch_size || 2048)}
+        ${formatDiff('Cache', baseline.cache_type_k || 'f16', proposal.cache_type_k || 'f16')}
     `;
 
     area.classList.remove('hidden');
-
-    const modelPath = (tab.dataset.path || '').replace(/\\/g, '/');
-    if (modelPath) {
-        window.modelConfigs[modelPath] = {
-            ...(window.modelConfigs[modelPath] || {}),
-            ...payload,
-        };
-        applyModelConfig(modelPath, tabId);
-    }
 }
 
 export function hideProposedConfig(tabId) {
@@ -450,6 +508,11 @@ export function hideProposedConfig(tabId) {
     if (!tab) return;
     tab.querySelector('.tab-proposed-config')?.classList.add('hidden');
     delete tab.dataset.proposal;
+}
+
+function clearScreenSnapshot(tabId) {
+    const tab = document.getElementById(tabId);
+    if (tab) delete tab.dataset.screenSnapshot;
 }
 
 function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } = {}) {
@@ -490,11 +553,7 @@ export async function applyProposedConfig(path, tabId) {
     const normalized = path.replace(/\\/g, '/');
     const proposal = JSON.parse(tab.dataset.proposal);
 
-    window.modelConfigs[normalized] = {
-        ...(window.modelConfigs[normalized] || {}),
-        ...proposal,
-    };
-    applyModelConfig(normalized, tabId);
+    applyScreenConfigToTab(tabId, proposal);
 
     const payload = collectStartPayloadFromTab(normalized, tabId, {
         autoBalanceProfile: true,
@@ -510,8 +569,8 @@ export async function applyProposedConfig(path, tabId) {
     };
 
     hideProposedConfig(tabId);
+    clearScreenSnapshot(tabId);
 
-    tab.querySelector('.tab-log-box').innerHTML = '';
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> SALVANDO...';
     statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-[9px] font-black tracking-widest uppercase glass border-amber-500/40 text-amber-400';
@@ -531,10 +590,15 @@ export async function applyProposedConfig(path, tabId) {
         }
 
         const startData = await res.json();
-        if (startData.port) state.currentActivePort = startData.port;
+        if (startData.port) {
+            state.currentActivePort = startData.port;
+            attachTabLogs(tabId, startData.port, {
+                force: true,
+                sessionKey: `${startData.port}:${startData.start_time ?? Date.now()}`,
+            });
+        }
 
         await window.updateModels?.();
-        await new Promise(r => setTimeout(r, 2000));
         await window.updateStatus();
     } catch (e) {
         alert('Erro de rede ao salvar configuração.');
@@ -557,17 +621,21 @@ export function switchTab(tabId) {
         state.currentSelectedModel = content.dataset.path;
         
         document.getElementById('no-tab-content').classList.add('hidden');
+        attachTabLogs(tabId);
     }
 }
 
 export function closeTab(tabId) {
     const btn = document.getElementById(`btn-${tabId}`);
     const content = document.getElementById(tabId);
-    
+    const closedPath = content?.dataset.path?.replace(/\\/g, '/');
+
     if (btn) btn.remove();
     if (content) content.remove();
     
     state.activeTabs = state.activeTabs.filter(t => t.id !== tabId);
+
+    if (closedPath) refreshTabLabelsForPath(closedPath);
     
     if (state.currentTabId === tabId) {
         if (state.activeTabs.length > 0) {
@@ -594,16 +662,30 @@ export function resolveMmprojPath(model) {
 }
 
 export function buildModelVisionControlsHtml(model, modelJs) {
-    // Simplified for library sidebar
     const candidates = model.mmproj_candidates || [];
-    if (candidates.length > 0) {
-        return `<i class="fas fa-eye text-violet-500 text-[10px]" title="Suporta Visão"></i>`;
-    }
-    return '';
+    const safePath = modelJs.replace(/'/g, "\\'");
+    const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${safePath}')" class="vision-import-btn w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 transition-all" title="Importar projetor de visão" aria-label="Importar projetor de visão"><i class="fas fa-eye text-[9px]"></i></button>`;
+    if (!candidates.length) return importBtn;
+
+    const selected = resolveMmprojPath(model);
+    const options = candidates.map((candidate) => {
+        const name = escapeHtml(candidate.split('/').pop());
+        const value = escapeHtml(candidate);
+        const selectedAttr = candidate === selected ? ' selected' : '';
+        return `<option value="${value}" class="bg-slate-900"${selectedAttr}>${name}</option>`;
+    }).join('');
+
+    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-[8px] font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[120px]" onchange="onMmprojChange('${safePath}', this)" onclick="event.stopPropagation()" title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
 }
 
 export function getSelectedMmprojForModel(modelPath) {
     const normalized = modelPath.replace(/\\/g, '/');
+    const selects = document.querySelectorAll('select[data-mmproj-for]');
+    for (const select of selects) {
+        if (select.getAttribute('data-mmproj-for') === normalized && select.value) {
+            return select.value;
+        }
+    }
     const cfg = window.modelConfigs[normalized];
     return cfg?.mmproj_path || null;
 }
@@ -651,18 +733,40 @@ export async function submitVisionImport(event) {
     }
 }
 
-export async function onMmprojChange(modelPath, selectEl) {
-    const mmprojPath = selectEl?.value || null;
-    if (!window.modelConfigs[modelPath]) window.modelConfigs[modelPath] = {};
-    window.modelConfigs[modelPath].mmproj_path = mmprojPath;
+export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false } = {}) {
+    const normalized = (modelPath || '').replace(/\\/g, '/');
+    if (!normalized) return;
+    const mmproj = mmprojPath ? mmprojPath.replace(/\\/g, '/') : null;
+    if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
+    window.modelConfigs[normalized].mmproj_path = mmproj;
     try {
         await apiFetch('/models/mmproj', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model_path: modelPath, mmproj_path: mmprojPath}),
+            body: JSON.stringify({ model_path: normalized, mmproj_path: mmproj }),
         });
     } catch (e) {
-        alert('Erro ao salvar projetor de visao.');
+        if (!silent) alert('Erro ao salvar projetor de visão.');
+    }
+}
+
+export async function onMmprojChange(modelPath, selectEl) {
+    await persistMmprojSelection(modelPath, selectEl?.value || null);
+}
+
+async function ensureMmprojSelectionsForModels(models) {
+    for (const model of models || []) {
+        const path = model.path.replace(/\\/g, '/');
+        const candidates = model.mmproj_candidates || [];
+        if (!candidates.length) continue;
+
+        const resolved = resolveMmprojPath(model);
+        if (!resolved) continue;
+
+        const saved = (model.last_config || window.modelConfigs[path] || {}).mmproj_path;
+        if (saved && candidates.includes(saved)) continue;
+
+        await persistMmprojSelection(path, resolved, { silent: true });
     }
 }
 
@@ -721,11 +825,8 @@ export async function syncRunningModelTabsOnLoad() {
             const id = model?.id || fallbackModelId(path);
             const name = model?.name || inst.model || path.split('/').pop();
             if (inst.config) window.modelConfigs[path] = inst.config;
-            const tabId = `tab-${id}`;
-
-            if (!document.getElementById(tabId)) {
-                createModelTab(path, name, id, false);
-            }
+            const existing = state.activeTabs.find(t => t.path === path);
+            const tabId = existing?.id || createModelTab(path, name, id, false);
             if (!firstTabId) firstTabId = tabId;
         }
 
@@ -769,14 +870,22 @@ export function getTabActionsHtml(path, tabId, isRunning, port = 8085) {
     `;
 }
 
-export function selectModel(path, elementId) {
+export function selectModel(path, elementId, forceNew = false) {
     const container = document.getElementById(`lib-${elementId}`);
-    const name = container?.querySelector('.model-name')?.innerText || 'Modelo';
-    createModelTab(path, name, elementId);
+    const name = container?.querySelector('.model-name')?.innerText
+        || path.split('/').pop()?.replace(/\.gguf$/i, '')
+        || 'Modelo';
+    createModelTab(path, name, elementId, true, forceNew);
     
     // Visual feedback in sidebar
     document.querySelectorAll('.model-item-container').forEach(el => el.classList.remove('active-selection'));
     if (container) container.classList.add('active-selection');
+}
+
+export function selectModelFromEvent(event, path, elementId) {
+    const forceNew = !!(event?.ctrlKey || event?.metaKey || event?.button === 1);
+    if (forceNew) event?.preventDefault?.();
+    selectModel(path, elementId, forceNew);
 }
 
 export function applyModelConfig(path, tabId) {
@@ -895,7 +1004,7 @@ export async function updateModels() {
         container.innerHTML = data.models.map(m => {
             const m_js = m.path.replace(/\\/g, '/');
             if (m.last_config && !tabHasPendingProposal(m_js)) {
-                window.modelConfigs[m_js] = m.last_config;
+                window.modelConfigs[m_js] = { ...(window.modelConfigs[m_js] || {}), ...m.last_config };
             }
             
             const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
@@ -903,45 +1012,81 @@ export async function updateModels() {
             const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
             const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
 
+            const safePath = m_js.replace(/'/g, "\\'");
+            const visionControls = buildModelVisionControlsHtml(m, m_js);
             return `
             <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
-                 onclick="selectModel('${m_js}', '${m.id}')">
+                 title="Clique para abrir · Ctrl+clique para nova aba"
+                 onclick="selectModelFromEvent(event, '${safePath}', '${m.id}')"
+                 onauxclick="selectModelFromEvent(event, '${safePath}', '${m.id}')">
                 <div class="flex items-start justify-between gap-2 overflow-hidden">
                     <div class="flex-1 min-w-0">
-                        <p class="model-name text-[11px] font-bold text-slate-100 truncate">${m.name}</p>
-                        <p class="text-[8px] text-slate-500 font-mono uppercase truncate mt-0.5">${m.dir}</p>
+                        <p class="model-name text-[11px] font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
+                        <p class="text-[8px] text-slate-500 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
                     </div>
                     ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
                 </div>
                 <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
-                    <div class="flex items-center gap-1">
-                        <button onclick="event.stopPropagation(); renameModel('${m_js}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-[9px]"></i></button>
-                        <button onclick="event.stopPropagation(); deleteModel('${m_js}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-[9px]"></i></button>
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-[9px]"></i></button>
+                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-[9px]"></i></button>
+                        ${visionControls}
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
                         <span class="text-[8px] font-black text-slate-600 uppercase">Auto-Start</span>
-                        <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${m_js}')">
+                        <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
                     </label>
                 </div>
             </div>`;
         }).join('');
 
         renderNoTabShortcuts(data.models, cfg);
+        await ensureMmprojSelectionsForModels(data.models);
     } catch (e) {}
 }
 
 export async function renameModel(path) {
-    const currentName = path.split('/').pop().replace('.gguf', '');
-    const newName = prompt("Novo nome:", currentName);
+    const normalized = path.replace(/\\/g, '/');
+    const currentName = normalized.split('/').pop().replace(/\.gguf$/i, '');
+    const newName = prompt('Novo nome:', currentName);
     if (!newName || newName === currentName) return;
     try {
-        const res = await fetch('/rename', {
+        const res = await apiFetch('/rename', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path, new_name: newName}),
+            body: JSON.stringify({ path: normalized, new_name: newName }),
         });
-        if (res.ok) updateModels();
-    } catch (e) {}
+        if (sessionExpiredHandled || !res.ok) {
+            if (!sessionExpiredHandled) {
+                const err = await res.json().catch(() => ({}));
+                alert('Erro ao renomear: ' + (err.detail || 'Falha desconhecida'));
+            }
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const newPath = (data.new_path || normalized).replace(/\\/g, '/');
+
+        state.activeTabs.forEach(tab => {
+            if (tab.path.replace(/\\/g, '/') === normalized) {
+                tab.path = newPath;
+                const el = document.getElementById(tab.id);
+                if (el) el.dataset.path = newPath;
+            }
+        });
+        refreshTabLabelsForPath(newPath);
+
+        if (window.modelConfigs[normalized]) {
+            window.modelConfigs[newPath] = window.modelConfigs[normalized];
+            delete window.modelConfigs[normalized];
+        }
+        if (state.currentSelectedModel === normalized) {
+            state.currentSelectedModel = newPath;
+        }
+
+        await updateModels();
+    } catch (e) {
+        alert('Erro de rede ao renomear modelo.');
+    }
 }
 
 export async function deleteModel(path) {
@@ -959,8 +1104,7 @@ export async function deleteModel(path) {
             return;
         }
 
-        const openTab = state.activeTabs.find(t => t.path === normalized);
-        if (openTab) closeTab(openTab.id);
+        [...state.activeTabs.filter(t => t.path === normalized)].forEach(t => closeTab(t.id));
         delete window.modelConfigs[normalized];
         await updateModels();
     } catch (e) {
@@ -972,12 +1116,14 @@ export async function startModel(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
 
-    tab.querySelector('.tab-log-box').innerHTML = '';
     const payload = collectStartPayloadFromTab(path, tabId, { autoBalanceProfile: false });
     if (!payload) return alert('Contexto inválido');
 
     const weightValidation = validateDeviceWeights(payload.gpu_weights);
     if (!weightValidation.ok) return alert(weightValidation.message);
+
+    hideProposedConfig(tabId);
+    clearScreenSnapshot(tabId);
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> INICIANDO...';
@@ -999,11 +1145,13 @@ export async function startModel(path, tabId) {
         
         const startData = await res.json();
         if (startData.port) {
-             state.currentActivePort = startData.port;
-             // Link this tab to this port for logs if needed
+            state.currentActivePort = startData.port;
+            attachTabLogs(tabId, startData.port, {
+                force: true,
+                sessionKey: `${startData.port}:${startData.start_time ?? Date.now()}`,
+            });
         }
-        
-        await new Promise(r => setTimeout(r, 2000));
+
         await window.updateStatus();
         const inst = (state.activeInstances || []).find(
             i => (i.model_path || '').replace(/\\/g, '/') === path.replace(/\\/g, '/')
@@ -1020,6 +1168,7 @@ export async function startModel(path, tabId) {
 export async function stopModel(port = null) {
     if (!confirm("Encerrar esta instância?")) return;
     try {
+        detachTabLogs();
         const url = port ? `/stop?port=${port}` : '/stop';
         await apiFetch(url, {method: 'POST'});
         setTimeout(window.updateStatus, 1000);

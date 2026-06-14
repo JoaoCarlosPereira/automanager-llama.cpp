@@ -1,3 +1,4 @@
+import hashlib
 import json
 import socket
 import os
@@ -20,7 +21,7 @@ from config_manager import ConfigManager, TokenManager, AuthManager, SESSION_IDL
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
-from model_manager import ModelScanner, DownloadManager
+from model_manager import ModelScanner, DownloadManager, _is_projector_filename
 from version_manager import check_for_updates
 from schemas import (
     BATCH_SIZE_PRESETS,
@@ -44,7 +45,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.0.4"  # Major UI Refactor
+_DASHBOARD_JS_V = "4.0.6"  # Major UI Refactor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -286,10 +287,9 @@ async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require
 async def rename_model(req: RenameRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    if model_scanner.rename_model(req.path, req.new_name):
-        _invalidate_models_cache()
-        return {"message": "Renomeado"}
-    raise HTTPException(status_code=400, detail="Erro ao renomear arquivo")
+    new_path = model_scanner.rename_model(req.path, req.new_name)
+    _invalidate_models_cache()
+    return {"message": "Renomeado", "new_path": new_path}
 
 
 @app.post("/downloads")
@@ -401,7 +401,7 @@ async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(requir
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"mmproj_path": req.mmproj_path})
-    return {"message": "Configuracao salva"}
+    return {"status": "ok", "mmproj_path": req.mmproj_path}
 
 
 @app.post("/models/thinking")
@@ -537,6 +537,53 @@ async def openai_proxy(request: Request, path: str):
         )
 
 
+def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
+    candidates = model.get("mmproj_candidates") or []
+    if not candidates:
+        return None
+    saved = model_cfg.get("mmproj_path")
+    if saved and saved in candidates:
+        return saved
+    return candidates[0]
+
+
+def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) -> str:
+    candidates = model.get("mmproj_candidates") or []
+    import_btn = (
+        f'<button type="button" onclick="event.stopPropagation(); '
+        f"openVisionImportModal('{model_js}')\" "
+        'class="vision-import-btn w-6 h-6 flex items-center justify-center rounded '
+        'bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 '
+        'transition-all" title="Importar projetor de visão" '
+        'aria-label="Importar projetor de visão">'
+        '<i class="fas fa-eye text-[9px]"></i></button>'
+    )
+    if not candidates:
+        return import_btn
+    selected = _resolved_mmproj_path(model, model_cfg)
+    options = ""
+    for candidate in candidates:
+        name = html.escape(os.path.basename(candidate))
+        value = html.escape(candidate, quote=True)
+        selected_attr = " selected" if candidate == selected else ""
+        options += (
+            f'<option value="{value}" class="bg-slate-900"{selected_attr}>{name}</option>'
+        )
+    safe_js = html.escape(model_js, quote=True)
+    return (
+        f"{import_btn}"
+        f'<select data-mmproj-for="{safe_js}" '
+        'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
+        'rounded-lg px-2 py-1 text-[8px] font-bold focus:ring-2 focus:ring-violet-500/50 '
+        'outline-none transition-all cursor-pointer max-w-[120px]" '
+        f"onchange=\"onMmprojChange('{model_js}', this)\" "
+        'onclick="event.stopPropagation()" '
+        'title="Projetor de visão para este modelo" '
+        'aria-label="Projetor de visão para este modelo">'
+        f"{options}</select>"
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     is_authenticated = auth_manager.check_auth_cookie(request)
@@ -629,7 +676,8 @@ async def index(request: Request):
         m_dir = m["dir"]
         m_js = m_path.replace("\\", "/")
         m_cfg = model_configs.get(m_js, {})
-        stable_id = m_js
+        stable_id = hashlib.md5(m_js.encode("utf-8")).hexdigest()[:12]
+        m_js_js = m_js.replace("'", "\\'")
         
         is_default = "checked" if (m_path in default_models or m_path == default_model) else ""
         has_config = "text-blue-400" if m_cfg and not m_cfg.get("hardware_incapable") else "text-slate-100"
@@ -639,20 +687,11 @@ async def index(request: Request):
         incapable_row_class = 'border-red-500/40 bg-red-950/20' if hardware_incapable else ''
         incapable_attr = 'true' if hardware_incapable else 'false'
 
-        # Build vision controls
-        vision_controls = ""
-        candidates = m.get("mmproj_candidates", [])
-        if candidates:
-            vision_name = os.path.basename(candidates[0])
-            vision_controls = f"""
-                <div class="flex items-center gap-2 ml-2">
-                    <i class="fas fa-eye text-violet-500 text-[10px]" title="Visao suportada"></i>
-                    <span class="text-[8px] text-slate-500 font-mono truncate max-w-[80px]">{vision_name}</span>
-                </div>"""
+        vision_controls = _build_model_vision_controls(m, m_js_js, m_cfg)
 
         model_items += f"""
-        <div id="lib-{stable_id}" class="model-item-container group flex flex-col gap-3 p-3 mb-2 bg-slate-800/40 rounded-xl hover:bg-slate-700/60 transition-all border border-slate-700/50 hover:border-blue-500/50 shadow-sm {incapable_row_class}" data-path="{m_js}" data-hardware-incapable="{incapable_attr}">
-            <div class="w-full cursor-pointer" onclick="selectModel('{m_js}', '{stable_id}')">
+        <div id="lib-{stable_id}" class="model-item-container group flex flex-col gap-3 p-3 mb-2 bg-slate-800/40 rounded-xl hover:bg-slate-700/60 transition-all border border-slate-700/50 hover:border-blue-500/50 shadow-sm {incapable_row_class}" data-path="{html.escape(m_js, quote=True)}" data-hardware-incapable="{incapable_attr}">
+            <div class="w-full cursor-pointer" title="Clique para abrir · Ctrl+clique para nova aba" onclick="selectModelFromEvent(event, '{m_js_js}', '{stable_id}')" onauxclick="selectModelFromEvent(event, '{m_js_js}', '{stable_id}')">
                 <div class="flex items-start justify-between">
                     <div class="flex items-center gap-2 overflow-hidden">
                         <i class="fas fa-cube text-blue-400 text-[10px] shrink-0"></i>
@@ -663,13 +702,14 @@ async def index(request: Request):
                 <p class="text-[8px] text-slate-500 truncate font-mono mt-1 uppercase opacity-60">{m_dir}</p>
             </div>
             <div class="flex items-center justify-between gap-2 mt-1">
-                <div class="flex items-center gap-1">
-                    <button onclick="renameModel('{m_js}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-blue-400 transition-all"><i class="fas fa-edit text-[9px]"></i></button>
-                    <button onclick="deleteModel('{m_js}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-all"><i class="fas fa-trash-alt text-[9px]"></i></button>
+                <div class="flex items-center gap-1 flex-wrap">
+                    <button onclick="event.stopPropagation(); renameModel('{m_js_js}')" class="rename-btn w-6 h-6 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-blue-400 transition-all"><i class="fas fa-edit text-[9px]"></i></button>
+                    <button onclick="event.stopPropagation(); deleteModel('{m_js_js}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-all"><i class="fas fa-trash-alt text-[9px]"></i></button>
+                    {vision_controls}
                 </div>
                 <div class="flex items-center gap-2">
                     <span class="text-[8px] font-black text-slate-600 uppercase">Padrão</span>
-                    <input type="checkbox" class="w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" {is_default} onclick="setDefaultModel(this, '{m_js}')">
+                    <input type="checkbox" class="w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" {is_default} onclick="event.stopPropagation(); setDefaultModel(this, '{m_js_js}')">
                 </div>
             </div>
         </div>"""
@@ -1057,6 +1097,9 @@ def _build_html(
             <div class="flex-1 flex flex-col min-h-0 bg-slate-900/10">
                 <!-- BARRA DE ABAS -->
                 <nav id="tab-bar" class="bg-slate-950/40 border-b border-slate-800 px-4 flex items-center gap-1 overflow-x-auto hide-scrollbar h-12 shrink-0">
+                    <button type="button" onclick="toggleSidebar(true)" title="Abrir biblioteca para adicionar aba" class="tab-new-btn shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-slate-800 text-slate-500 hover:text-blue-400 hover:border-blue-500/40 hover:bg-blue-500/10 transition-all">
+                        <i class="fas fa-plus text-[10px]"></i>
+                    </button>
                     <!-- Tabs injetadas via JS -->
                 </nav>
 
@@ -1069,7 +1112,7 @@ def _build_html(
                          </div>
                          <h3 class="text-lg font-bold text-slate-300 tracking-tight">Arquitetura Multi-Modelo</h3>
                          <p class="text-[10px] text-slate-500 mt-2 max-w-md leading-relaxed uppercase tracking-[0.2em]">
-                             Abra um atalho abaixo ou selecione modelos na biblioteca lateral.
+                             Selecione modelos na biblioteca lateral. Mantenha várias abas abertas para comparar configurações.
                          </p>
 
                          <div id="no-tab-shortcuts" class="w-full max-w-5xl mt-8 space-y-4 hidden">
@@ -1388,7 +1431,7 @@ def _build_html(
                     <div class="p-4 bg-slate-900/60 border-t border-slate-800/80 flex items-center justify-between shrink-0">
                          <div class="flex items-center gap-3">
                              <div class="w-2 h-2 rounded-full bg-emerald-500/50 animate-pulse"></div>
-                             <span class="text-[9px] font-black text-slate-600 uppercase tracking-widest">Fluxo de Dados Ativo</span>
+                             <span class="tab-log-status text-[9px] font-black text-slate-600 uppercase tracking-widest">Aguardando instância</span>
                          </div>
                          <span class="tab-log-size text-[8px] font-mono text-slate-700">0 KB</span>
                     </div>
@@ -1568,6 +1611,22 @@ async def shutdown_event_handler():
 # ─────────────────────────────────────────────────────────
 
 
+def _persist_vision_download_mmproj(download_id: str, dest_path: str) -> None:
+    """Save mmproj_path to the parent model after a vision download completes."""
+    with download_mgr._lock:
+        entry = download_mgr._downloads.get(download_id) or {}
+    if entry.get("status") != "completed":
+        return
+    model_path = entry.get("model_path")
+    if not model_path:
+        return
+    if not _is_projector_filename(os.path.basename(dest_path).lower()):
+        return
+    mmproj_path = os.path.normpath(dest_path).replace("\\", "/")
+    config_manager.update_model_settings(model_path, {"mmproj_path": mmproj_path})
+    _invalidate_models_cache()
+
+
 def _run_downloads(stop_event: threading.Event):
     """Periodically process background downloads."""
     while not stop_event.is_set():
@@ -1581,6 +1640,7 @@ def _run_downloads(stop_event: threading.Event):
                 if download_mgr._downloads.get(download_id, {}).get("cancel_requested"):
                     continue
             download_mgr._do_download(download_id, url, filename, path)
+            _persist_vision_download_mmproj(download_id, path)
         time.sleep(1)
 
 

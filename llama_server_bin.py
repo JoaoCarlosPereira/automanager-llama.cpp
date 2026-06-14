@@ -192,6 +192,15 @@ def supports_cli_flag(flag: str) -> bool:
     return flag in get_llama_server_help()
 
 
+def verbose_cli_args() -> list[str]:
+    """Return llama-server flags for detailed stdout logging when supported."""
+    if supports_cli_flag("--verbose"):
+        return ["--verbose"]
+    if supports_cli_flag("--log-verbosity"):
+        return ["--log-verbosity", "2"]
+    return []
+
+
 def llama_server_available() -> bool:
     """True when a runnable llama-server binary was resolved."""
     return _is_executable(get_llama_server_bin())

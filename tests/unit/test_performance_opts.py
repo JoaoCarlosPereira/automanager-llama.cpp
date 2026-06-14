@@ -120,6 +120,41 @@ def test_process_manager_includes_performance_flags(mock_exists, mock_bin):
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)
+@patch("process_manager.verbose_cli_args", return_value=["--verbose"])
+def test_process_manager_includes_verbose_logging(mock_verbose, mock_exists, mock_bin):
+    config_mgr = MagicMock()
+    token_mgr = MagicMock()
+    token_mgr.get_or_create.return_value = "test-token"
+    gpu_mgr = MagicMock()
+    gpu_mgr.normalize_gpu_weights.return_value = [{"index": 0, "weight": 100, "active": True, "name": "GPU0"}]
+    gpu_mgr.validate_gpu_weights.return_value = (True, "")
+    gpu_mgr.get_visible_devices.return_value = "0"
+    gpu_mgr.detect_model_layers.return_value = 32
+    cpu_info = MagicMock()
+    cpu_info.physical_cores = 8
+    gpu_mgr.detect_cpu_info.return_value = cpu_info
+    plan = MagicMock()
+    plan.tensor_split = ["1.0"]
+    plan.n_gpu_layers = 32
+    plan.gpu_pct = 100.0
+    gpu_mgr.compute_offload_plan.return_value = plan
+    gpu_mgr.resolve_main_gpu_index.return_value = "0"
+    log_mgr = MagicMock()
+    pm = ProcessManager(config_mgr, token_mgr, gpu_mgr, log_mgr)
+
+    with patch("process_manager.subprocess.Popen") as mock_popen:
+        pm.start(
+            model_path="/models/test.gguf",
+            gpu_weights=[{"index": 0, "weight": 100, "name": "GPU0", "active": True, "is_main": True}],
+            context_size=65536,
+        )
+        args = mock_popen.call_args[0][0]
+        assert "--verbose" in args
+        log_mgr.start_streaming.assert_called_once()
+        assert log_mgr.start_streaming.call_args.kwargs.get("cmd") == args
+
+@patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
+@patch("process_manager.os.path.exists", return_value=True)
 def test_process_manager_auto_threads(mock_exists, mock_bin):
     config_mgr = MagicMock()
     token_mgr = MagicMock()

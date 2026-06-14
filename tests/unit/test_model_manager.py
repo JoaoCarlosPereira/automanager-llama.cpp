@@ -54,6 +54,7 @@ class TestDownloadManagerVision:
 
         assert entry["filename"] == "llava-mmproj.gguf"
         assert entry["path"] == str(model_dir / "llava-mmproj.gguf")
+        assert entry["model_path"] == str(model_path).replace("\\", "/")
 
     def test_start_download_mmproj_rejects_path_outside_models_dir(self, tmp_path):
         models_dir = tmp_path / "models"
@@ -168,6 +169,77 @@ class TestModelScannerDelete:
         assert saved["default_model"] is None
         assert saved["default_models"] == []
         assert str(model_path) not in saved["model_configs"]
+
+
+class TestModelScannerRename:
+    def test_rename_model_updates_file_and_config(self, tmp_path):
+        models_dir = tmp_path / "models"
+        model_dir = models_dir / "llama"
+        model_dir.mkdir(parents=True)
+        model_path = model_dir / "llama-7b.gguf"
+        model_path.write_text("gguf", encoding="utf-8")
+
+        config_manager = MagicMock()
+        config_manager.load.return_value = {
+            "default_model": str(model_path),
+            "default_models": [str(model_path)],
+            "model_configs": {
+                str(model_path): {"context_size": 4096},
+            },
+        }
+
+        process_manager = MagicMock()
+        process_manager.get_status.return_value = {
+            "instances": [],
+            "recovery": {},
+        }
+
+        scanner = ModelScanner(
+            config_manager,
+            process_manager,
+            models_dir=str(models_dir),
+        )
+        new_path = scanner.rename_model(str(model_path), "llama-13b")
+
+        expected = str(model_dir / "llama-13b.gguf")
+        assert new_path == expected.replace("\\", "/")
+        assert not model_path.exists()
+        assert os.path.exists(expected)
+        saved = config_manager.save.call_args[0][0]
+        assert saved["default_model"] == expected.replace("\\", "/")
+        assert saved["default_models"] == [expected.replace("\\", "/")]
+        assert expected.replace("\\", "/") in saved["model_configs"]
+
+    def test_rename_model_blocks_when_instance_running(self, tmp_path):
+        models_dir = tmp_path / "models"
+        model_dir = models_dir / "llama"
+        model_dir.mkdir(parents=True)
+        model_path = model_dir / "llama-7b.gguf"
+        model_path.write_text("gguf", encoding="utf-8")
+
+        process_manager = MagicMock()
+        process_manager.get_status.return_value = {
+            "instances": [
+                {
+                    "port": 8085,
+                    "status": "running",
+                    "model_path": str(model_path),
+                }
+            ],
+            "recovery": {},
+        }
+
+        scanner = ModelScanner(
+            MagicMock(),
+            process_manager,
+            models_dir=str(models_dir),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            scanner.rename_model(str(model_path), "llama-13b")
+
+        assert exc.value.status_code == 400
+        assert model_path.exists()
 
 
 class TestInferModelFamily:

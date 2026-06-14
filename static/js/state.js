@@ -1,6 +1,9 @@
 /** Estado compartilhado da dashboard (objeto mutável para ESM + testes). */
 export const state = {
     logStream: null,
+    logStreamPort: null,
+    logStreamTabId: null,
+    logStreamSessionKey: null,
     startTime: null,
     currentSelectedModel: null,
     currentRunningModelPath: null,

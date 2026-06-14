@@ -783,18 +783,21 @@ def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: an
     """Flags for Multi-Token Prediction (MTP). Returns (flags_list, applied_bool, reason_str)."""
     if not enabled:
         return [], False, ""
-    
+
     if draft_tokens is None:
-        draft_tokens = 1 # Safe default for MTP heads
-        
-    # Check if model supports MTP
-    if not detector.detect_model_mtp(model_path):
-        return [], False, "Modelo não suporta cabeças MTP"
-        
-    # Clamps tokens to safe range
+        draft_tokens = 1
+
     tokens = max(1, min(4, int(draft_tokens)))
-    
-    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(tokens)], True, ""
+    reason = ""
+    if not detector.detect_model_mtp(model_path):
+        logger.warning(
+            "MTP ativado na UI para %s, mas model-info não detectou cabeças MTP; "
+            "aplicando flags conforme configuração do usuário.",
+            model_path,
+        )
+        reason = "MTP ativado na UI (model-info inconclusivo)"
+
+    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(tokens)], True, reason
 
 def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
     """Helper for context size calculation. Clamps to at least 1."""

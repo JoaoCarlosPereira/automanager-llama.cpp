@@ -1,4 +1,4 @@
-import { state } from './state.js?v=4.0.2';
+import { state } from './state.js?v=4.0.6';
 
 export let sessionExpiredHandled = false;
 
@@ -151,7 +151,7 @@ export function showConfirm(msg) { return confirm(msg); }
 export async function handleShutdown() {
     if (!confirm('DESLIGAR O SISTEMA?\nO servidor sera desligado imediatamente.')) return;
     try {
-        const res = await apiFetch('/api/system/shutdown', {method: 'POST'});
+        const res = await apiFetch('/system/shutdown', {method: 'POST'});
         if (res.ok) {
             alert('Comando de desligamento enviado. O sistema sera desligado em breve.');
         } else {
@@ -166,7 +166,7 @@ export async function handleShutdown() {
 export async function handleUpdate() {
     if (!confirm('ATUALIZAR E REINICIAR?\nO servidor atualizara o codigo e sera reiniciado.')) return;
     try {
-        const res = await apiFetch('/api/system/update', {method: 'POST'});
+        const res = await apiFetch('/system/update', {method: 'POST'});
         if (res.ok) {
             alert('Comando de atualizacao enviado. O servidor sera reiniciado em breve.');
         } else {

@@ -1,22 +1,22 @@
-import { state } from './state.js?v=4.0.2';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.0.2';
-import { cancelAutoBalance } from './gpu.js?v=4.0.2';
+import { state } from './state.js?v=4.0.6';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.0.6';
+import { cancelAutoBalance } from './gpu.js?v=4.0.6';
 import {
     syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
-} from './gpu.js?v=4.0.2';
+} from './gpu.js?v=4.0.6';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload,
-} from './metrics.js?v=4.0.2';
+} from './metrics.js?v=4.0.6';
 import {
-    initDashboard, selectModel, applyModelConfig, setDefaultModel,
+    initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-} from './models.js?v=4.0.2';
-import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.2';
+} from './models.js?v=4.0.6';
+import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.6';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -39,6 +39,7 @@ win.renameModel = renameModel;
 win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
 win.selectModel = selectModel;
+win.selectModelFromEvent = selectModelFromEvent;
 win.closeTab = closeTab;
 win.applyModelConfig = applyModelConfig;
 win.renewToken = renewToken;

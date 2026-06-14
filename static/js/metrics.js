@@ -1,12 +1,12 @@
-import { state } from './state.js?v=4.0.2';
-import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.2';
+import { state } from './state.js?v=4.0.6';
+import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.6';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
-} from './gpu.js?v=4.0.2';
-import { getTabActionsHtml } from './models.js?v=4.0.2';
+} from './gpu.js?v=4.0.6';
+import { getTabActionsHtml } from './models.js?v=4.0.6';
 
 export async function updateStatus() {
     try {
@@ -66,13 +66,9 @@ export async function updateStatus() {
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
 
                 if (document.activeElement?.closest(`#${tab.id}`) === null) {
-                    if (inst.config) {
+                    if (inst.config && !tabEl?.dataset.proposal) {
                         window.modelConfigs[path] = inst.config;
                     }
-                }
-
-                if (!state.logStream || state.logStreamPort !== inst.port) {
-                    if (state.currentTabId === tab.id) startLogs(inst.port, tab.id);
                 }
             } else if (inst && inst.status === 'stopped') {
                 statusBadge.innerText = 'ERRO';
@@ -86,6 +82,14 @@ export async function updateStatus() {
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
 
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500';
+            }
+
+            if (inst && (inst.status === 'running' || inst.status === 'stopped')) {
+                if (state.currentTabId === tab.id) {
+                    attachTabLogs(tab.id, inst.port);
+                }
+            } else if (state.currentTabId === tab.id && state.logStreamTabId === tab.id) {
+                detachTabLogs();
             }
         });
 
@@ -105,7 +109,8 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.0.2').then(m => {
+                        import('./models.js?v=4.0.6').then(m => {
+                            m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,
                                 recovery.smart_proposal,
@@ -114,20 +119,6 @@ export async function updateStatus() {
                         });
                     } else if (recovery.gpu_weights) {
                         applyGpuWeightsToUI(recovery.gpu_weights, false, tabId);
-                    }
-
-                    const modelPath = normalizePath(recovery.model);
-                    if (modelPath) {
-                        window.modelConfigs[modelPath] = {
-                            ...(window.modelConfigs[modelPath] || {}),
-                            ...(recovery.smart_proposal || {}),
-                            ...(recovery.gpu_weights
-                                ? { gpu_weights: recovery.gpu_weights }
-                                : {}),
-                            ...(recovery.pinned_fields
-                                ? { pinned_fields: recovery.pinned_fields }
-                                : {}),
-                        };
                     }
 
                     if (recovery.smart_proposal) {
@@ -176,6 +167,12 @@ export async function updateStatus() {
                 showAutoBalanceProgress(progressRecovery, recoveryTab.id);
                 if (recovery?.gpu_weights) {
                     applyGpuWeightsToUI(recovery.gpu_weights, true, recoveryTab.id);
+                }
+                if (recoveryTab && state.currentTabId === recoveryTab.id) {
+                    const inst = state.activeInstances.find(
+                        i => normalizePath(i.model_path) === recoveryTab.path
+                    );
+                    attachTabLogs(recoveryTab.id, inst?.port ?? state.currentActivePort);
                 }
             }
 
@@ -351,48 +348,153 @@ export function stopDashboardPolling() {
     dashboardPollIntervals = [];
 }
 
-export async function startLogs(port, tabId) {
+export function detachTabLogs() {
     if (state.logStream) state.logStream.abort();
+    state.logStream = null;
+    state.logStreamPort = null;
+    state.logStreamTabId = null;
+    state.logStreamSessionKey = null;
+}
+
+function buildLogSessionKey(port, startTime) {
+    return `${port}:${startTime ?? 0}`;
+}
+
+export function attachTabLogs(tabId, portOverride = null, { force = false, sessionKey = null } = {}) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+
+    const path = normalizePath(tab.dataset.path);
+    const inst = state.activeInstances.find(
+        i => normalizePath(i.model_path) === path
+    );
+    let port = portOverride ?? inst?.port ?? state.currentActivePort;
+    port = Number(port);
+    if (!Number.isFinite(port) || port <= 0) return;
+
+    const key = sessionKey ?? buildLogSessionKey(port, inst?.start_time);
+    if (
+        !force
+        && state.logStreamSessionKey === key
+        && state.logStreamTabId === tabId
+        && state.logStream
+    ) {
+        return;
+    }
+    startLogs(port, tabId, key);
+}
+
+function consumeLogSseBuffer(buffer, box, tab) {
+    const parts = buffer.split('\n');
+    const remainder = parts.pop() || '';
+    for (const rawLine of parts) {
+        if (!rawLine.startsWith('data:')) continue;
+        const lineText = rawLine.slice(5).replace(/^\s/, '');
+        if (!lineText) continue;
+        appendLogLine(box, lineText);
+    }
+    const sizeEl = tab?.querySelector('.tab-log-size');
+    if (sizeEl) sizeEl.innerText = `${(box.innerText.length / 1024).toFixed(1)} KB`;
+    return remainder;
+}
+
+function escapeLogHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function formatLogLine(text) {
+    return escapeLogHtml(text)
+        .replace(/\berror\b/gi, '<span class="text-red-500 font-black">ERRO</span>')
+        .replace(/\bwarn(?:ing)?\b/gi, '<span class="text-amber-500 font-black">AVISO</span>')
+        .replace(/\binfo\b/gi, '<span class="text-blue-400 font-bold">info</span>');
+}
+
+function appendLogLine(box, text, { tone = 'default', replaceConnecting = true } = {}) {
+    if (replaceConnecting && box.dataset.connecting === '1') {
+        box.innerHTML = '';
+        delete box.dataset.connecting;
+    }
+    const line = document.createElement('div');
+    const toneClass = tone === 'muted'
+        ? 'text-slate-600'
+        : tone === 'error'
+            ? 'text-red-400'
+            : tone === 'warn'
+                ? 'text-amber-400'
+                : 'text-slate-400';
+    line.className = `mb-1 border-l border-slate-800 pl-3 ${toneClass}`;
+    line.innerHTML = formatLogLine(text);
+    box.appendChild(line);
+    while (box.childNodes.length > 800) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+}
+
+function setLogStreamStatus(tab, status) {
+    const statusEl = tab?.querySelector('.tab-log-status');
+    if (!statusEl) return;
+    if (status === 'live') {
+        statusEl.textContent = 'Fluxo de Dados Ativo';
+        statusEl.className = 'tab-log-status text-[9px] font-black text-emerald-500 uppercase tracking-widest';
+    } else if (status === 'connecting') {
+        statusEl.textContent = 'Conectando...';
+        statusEl.className = 'tab-log-status text-[9px] font-black text-slate-500 uppercase tracking-widest';
+    } else {
+        statusEl.textContent = 'Fluxo interrompido';
+        statusEl.className = 'tab-log-status text-[9px] font-black text-amber-500 uppercase tracking-widest';
+    }
+}
+
+export async function startLogs(port, tabId, sessionKey = null) {
+    port = Number(port);
+    if (!Number.isFinite(port) || port <= 0) return;
+
+    if (state.logStream) state.logStream.abort();
+
     state.logStream = new AbortController();
     state.logStreamPort = port;
-    
+    state.logStreamTabId = tabId;
+    state.logStreamSessionKey = sessionKey ?? buildLogSessionKey(port, Date.now());
+
     const tab = document.getElementById(tabId);
     const box = tab?.querySelector('.tab-log-box');
     if (!box) return;
-    
+
+    box.innerHTML = '';
+    box.dataset.connecting = '1';
+    appendLogLine(box, 'Conectando ao console da instancia...', { tone: 'muted', replaceConnecting: false });
+    setLogStreamStatus(tab, 'connecting');
+
     try {
-        const url = `/logs?port=${port}`;
-        const response = await fetch(url, { signal: state.logStream.signal, credentials: 'include' });
+        const response = await fetch(`/logs?port=${port}`, {
+            signal: state.logStream.signal,
+            credentials: 'include',
+        });
+        if (!response.ok) {
+            appendLogLine(box, `Erro ao conectar logs (HTTP ${response.status}).`, { tone: 'error' });
+            setLogStreamStatus(tab, 'stopped');
+            return;
+        }
+
+        setLogStreamStatus(tab, 'live');
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        
+        let buffer = '';
+
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
-            
-            const text = decoder.decode(value);
-            const lines = text.split('\n').filter(Boolean);
-            for (const rawLine of lines) {
-                const lineText = rawLine.startsWith('data: ') ? rawLine.slice(6) : rawLine;
-                const formatted = lineText
-                    .replace(/error/gi, '<span class="text-red-500 font-black">ERRO</span>')
-                    .replace(/warn/gi, '<span class="text-amber-500 font-black">AVISO</span>')
-                    .replace(/info/gi, '<span class="text-blue-400 font-bold">info</span>');
-
-                const line = document.createElement('div');
-                line.className = 'mb-1 border-l border-slate-800 pl-3';
-                line.innerHTML = formatted;
-                box.appendChild(line);
-            }
-            
-            if (box.childNodes.length > 500) box.removeChild(box.firstChild);
-            box.scrollTop = box.scrollHeight;
-            
-            // Stats
-            const sizeEl = tab.querySelector('.tab-log-size');
-            if (sizeEl) sizeEl.innerText = `${(box.innerText.length / 1024).toFixed(1)} KB`;
+            buffer += decoder.decode(value, { stream: true });
+            buffer = consumeLogSseBuffer(buffer, box, tab);
         }
-    } catch (e) {}
+    } catch (e) {
+        if (e?.name === 'AbortError') return;
+        appendLogLine(box, 'Conexao de logs interrompida.', { tone: 'warn' });
+        setLogStreamStatus(tab, 'stopped');
+    }
 }
 
 export async function renewToken() {
