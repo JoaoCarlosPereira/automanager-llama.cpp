@@ -9,7 +9,7 @@ import {
     updateThinkingBadge, updateMtpBadge, validateDeviceWeights,
     collectDeviceWeightsFromUI,
 } from './gpu.js';
-import { startLogs, updateUptime } from './metrics.js';
+import { startLogs } from './metrics.js';
 import { checkForUpdates } from './version.js';
 
 // --- TAB MANAGEMENT ---

@@ -116,6 +116,20 @@ function normalizePath(p) {
     return (p || '').replace(/\\/g, '/');
 }
 
+function formatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+    return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function formatSpeed(bytesPerSec) {
+    const n = Number(bytesPerSec) || 0;
+    if (n <= 0) return '--';
+    return `${formatBytes(n)}/s`;
+}
+
 export async function updateDownloads() {
     try {
         const res = await apiFetch('/downloads');
@@ -127,6 +141,8 @@ export async function updateDownloads() {
 
         container.innerHTML = entries.map(([id, d]) => {
             const statusClass = d.status === 'completed' ? 'text-emerald-500' : d.status === 'failed' ? 'text-red-500' : 'text-blue-500';
+            const progress = Number(d.progress) || 0;
+            const isActive = d.status !== 'completed' && d.status !== 'failed';
             return `
                 <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
                     <div class="flex justify-between items-center">
@@ -134,7 +150,14 @@ export async function updateDownloads() {
                         <span class="text-[8px] font-black uppercase ${statusClass}">${d.status}</span>
                     </div>
                     <div class="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
-                        <div class="h-full bg-blue-500 transition-all" style="width: ${d.progress}%"></div>
+                        <div class="h-full bg-blue-500 transition-all" style="width: ${progress}%"></div>
+                    </div>
+                    <div class="flex justify-between items-center text-[8px] font-mono text-slate-500">
+                        <span>${formatBytes(d.downloaded_bytes)} / ${formatBytes(d.total_bytes)}</span>
+                        <span class="flex items-center gap-2">
+                            ${isActive ? `<span class="text-blue-400">${formatSpeed(d.speed_bps)}</span>` : ''}
+                            <span class="text-slate-300 font-black">${progress.toFixed(1)}%</span>
+                        </span>
                     </div>
                 </div>`;
         }).join('');
@@ -148,11 +171,19 @@ export async function clearCompletedDownloads() {
     } catch (e) {}
 }
 
+let dashboardPollIntervals = [];
+
 export function startDashboardPolling() {
+    stopDashboardPolling();
     updateMetrics();
-    setInterval(updateMetrics, 2000);
-    setInterval(updateStatus, 3000);
-    setInterval(updateDownloads, 3000);
+    dashboardPollIntervals.push(setInterval(updateMetrics, 2000));
+    dashboardPollIntervals.push(setInterval(updateStatus, 3000));
+    dashboardPollIntervals.push(setInterval(updateDownloads, 3000));
+}
+
+export function stopDashboardPolling() {
+    dashboardPollIntervals.forEach(clearInterval);
+    dashboardPollIntervals = [];
 }
 
 export async function startLogs(port, tabId) {

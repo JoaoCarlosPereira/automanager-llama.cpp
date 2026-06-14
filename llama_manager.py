@@ -335,6 +335,84 @@ async def system_version_check(authenticated: bool = Depends(auth_manager.check_
     return check_for_updates(INSTALL_ROOT)
 
 
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def openai_proxy(request: Request, path: str):
+    """Proxy OpenAI-compatible requests to the correct llama-server instance,
+    routing by the 'model' field in the request body (single-port multi-model)."""
+    body = await request.body()
+    data: Dict[str, Any] = {}
+    requested_model = None
+
+    if body:
+        try:
+            data = json.loads(body)
+            requested_model = data.get("model")
+        except json.JSONDecodeError:
+            data = {}
+
+    instances = process_manager.get_status().get("instances", [])
+    if not instances:
+        raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
+
+    if requested_model:
+        target_instance = next(
+            (
+                inst
+                for inst in instances
+                if inst.get("model") == requested_model
+                or inst.get("model_path") == requested_model
+            ),
+            None,
+        )
+        if not target_instance:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Modelo '{requested_model}' nao esta carregado.",
+            )
+    else:
+        # Sem modelo especificado: usar a instancia da porta default (8085).
+        target_instance = next(
+            (i for i in instances if i.get("port") == SERVER_PORT), instances[0]
+        )
+
+    target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
+    headers = dict(request.headers)
+    headers.pop("host", None)
+
+    try:
+        if request.method == "POST":
+            if data.get("stream"):
+                async def stream_generator():
+                    async with client.stream(
+                        "POST", target_url, content=body, headers=headers, timeout=None
+                    ) as response:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
+
+                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+            resp = await client.post(target_url, content=body, headers=headers, timeout=None)
+        elif request.method == "GET":
+            resp = await client.get(
+                target_url, params=request.query_params, headers=headers
+            )
+        else:
+            resp = await client.request(
+                request.method, target_url, content=body, headers=headers
+            )
+
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
+    except httpx.RequestError as exc:
+        logger.error(f"Proxy error to port {target_instance['port']}: {exc}")
+        raise HTTPException(
+            status_code=502, detail="Erro ao conectar na instancia do modelo"
+        )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     is_authenticated = auth_manager.check_auth_cookie(request)
@@ -946,6 +1024,10 @@ def _build_html(
                                 <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
                                     <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
                                     <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-emerald-500/30 transition-all">
+                                    <input type="checkbox" class="tab-auto-balance-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600">
+                                    <span class="text-[10px] font-bold uppercase text-slate-500">Auto Balance</span>
                                 </label>
                                 <select class="tab-split-mode bg-slate-950 border border-slate-800 text-slate-400 rounded-xl px-4 py-2 text-[10px] font-bold outline-none focus:ring-1 focus:ring-blue-500/50">
                                     <option value="layer">LAYER SPLIT</option>

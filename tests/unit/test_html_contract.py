@@ -1,4 +1,10 @@
-"""HTML contract tests for the dashboard SPA served at GET /."""
+"""HTML contract tests for the dashboard SPA served at GET /.
+
+Asserts the contract of the multi-model tabbed UI (4.0.0 refactor): a sidebar
+"Biblioteca", a fixed host-metrics panel, a tab bar/container, and a
+``<template id="model-tab-template">`` carrying the per-model controls (the
+``tab-*`` classes cloned into each open tab).
+"""
 
 import os
 import sys
@@ -23,10 +29,19 @@ class FakeAuthManager:
         return session_token == self.valid_session
 
     def check_auth_cookie(self, request):
-        return False
+        return request.cookies.get("session_token") == self.valid_session
 
     def check_auth(self, request):
         return True
+
+
+def _inline_display(html, element_id):
+    """Return the inline ``display:`` value of the element with the given id."""
+    start = html.index(f'id="{element_id}"')
+    segment = html[start:start + 500]
+    marker = "style=\"display: "
+    j = segment.index(marker) + len(marker)
+    return segment[j:segment.index(";", j)]
 
 
 @pytest.fixture
@@ -95,6 +110,9 @@ def html(client):
     return response.text
 
 
+# ── Login / shell ─────────────────────────────────────────────────────────
+
+
 def test_html_contains_login_overlay(html):
     assert 'id="login-overlay"' in html
     assert 'id="login-form"' in html
@@ -108,6 +126,16 @@ def test_html_contains_status_badge(html):
     assert "OFFLINE" in html
 
 
+def test_html_contains_sidebar_shell(html):
+    """The collapsible 'Biblioteca' sidebar and its toggle."""
+    assert 'id="sidebar"' in html
+    assert 'id="sidebar-toggle"' in html
+    assert "Biblioteca" in html
+
+
+# ── Host metrics panel ────────────────────────────────────────────────────
+
+
 def test_html_contains_metrics_panel(html):
     assert 'id="metrics-panel"' in html
     assert 'id="cpu-val"' in html
@@ -116,177 +144,129 @@ def test_html_contains_metrics_panel(html):
     assert 'id="ram-bar"' in html
 
 
-def test_html_contains_gpu_table(html):
-    assert 'id="gpu-table-body"' in html
-    assert "gpu-row" in html
-    assert "gpu-weight" in html
-    assert "gpu-checkbox" in html
-    assert "gpu-pin" in html
+def test_html_contains_mini_gpu_metrics(html):
+    """GPU cards are rendered dynamically into the mini-gpu-metrics strip."""
+    assert 'id="mini-gpu-metrics"' in html
 
 
-def test_html_contains_cpu_row(html):
-    """Verify the CPU row is injected in the GPU table body."""
-    assert 'id="cpu-row"' in html
-    assert "cpu-row" in html
-    assert 'data-index="cpu"' in html
+# ── Multi-model tab system ────────────────────────────────────────────────
 
 
-def test_cpu_row_appears_before_gpu_rows(html):
-    """CPU must be the first device row in the table (visual order)."""
-    tbody_start = html.index('id="gpu-table-body"')
-    tbody = html[tbody_start:]
-    cpu_pos = tbody.index("cpu-row")
-    gpu_pos = tbody.index("gpu-row")
-    assert cpu_pos < gpu_pos
+def test_html_contains_tab_system(html):
+    assert 'id="tab-bar"' in html
+    assert 'id="tabs-container"' in html
+    assert 'id="no-tab-content"' in html
+    assert "Arquitetura Multi-Modelo" in html
 
 
-def test_html_contains_cpu_row_elements(html):
-    """Verify CPU row has all required elements: checkbox, util bars, RAM display, pin, weight."""
-    assert "cpu-checkbox" in html
-    assert "cpu-util-val" in html
-    assert "cpu-util-bar" in html
-    assert "cpu-temp-val" in html
-    assert "cpu-power-val" in html
-    assert "cpu-ram-text" in html
-    assert "cpu-ram-bar" in html
-    assert "cpu-pin" in html
-    assert "cpu-weight" in html
+def test_html_contains_model_tab_template(html):
+    assert 'id="model-tab-template"' in html
+    assert "model-tab-name" in html
+    assert "model-tab-path" in html
+    assert "tab-status-badge" in html
+    assert "tab-actions" in html
 
 
-def test_html_contains_cpu_name_in_row(html):
-    """Verify CPU name from mock is displayed in the CPU row."""
-    assert "Test CPU" in html
+def test_template_contains_engine_params(html):
+    """Per-model engine parameters live as tab-* controls in the template."""
+    assert "tab-context-size" in html
+    assert "tab-context-size-custom" in html
+    assert "tab-parallel-slots" in html
+    assert "tab-batch-size" in html
+    assert "tab-ubatch-size" in html
+    assert "tab-cache-type-k" in html
+    assert "tab-cache-type-v" in html
+    assert "tab-threads" in html
+    assert "tab-split-mode" in html
 
 
-def test_cpu_row_has_no_main_radio(html):
-    """Verify CPU row does not have a 'main GPU' radio button."""
-    html_split = html.split('data-index="cpu"')
-    assert len(html_split) == 2
-    cpu_section = html_split[1]
-    # The CPU row <tr> should end before any next <tr> or </tbody>
-    row_end = cpu_section.find("</tr>")
-    if row_end != -1:
-        cpu_row = cpu_section[:row_end]
-    else:
-        cpu_row = cpu_section[:cpu_section.find("</tbody>")]
-    assert "main-gpu-radio" not in cpu_row
+def test_template_contains_feature_toggles(html):
+    assert "tab-thinking-toggle" in html
+    assert "tab-mtp-toggle" in html
+    assert "tab-numa-toggle" in html
+    assert "tab-auto-balance-toggle" in html
+
+
+def test_template_contains_gpu_weights_body(html):
+    """GPU/CPU weight rows are injected into the per-tab table body by JS."""
+    assert "tab-gpu-table-body" in html
+
+
+def test_template_contains_calibration_controls(html):
+    assert "tab-smart-calibrate-btn" in html
+    assert "tab-reset-defaults-btn" in html
+    assert "tab-proposed-config" in html
+    assert "tab-apply-config-btn" in html
+    assert "tab-discard-config-btn" in html
+
+
+def test_template_contains_log_box(html):
+    assert "tab-log-box" in html
+    assert "tab-clear-logs-btn" in html
+
+
+# ── Model library (sidebar) ───────────────────────────────────────────────
 
 
 def test_html_contains_model_list(html):
     assert 'id="model-list-container"' in html
     assert "model-item-container" in html
+    assert 'id="model-count"' in html
 
 
-def test_html_contains_log_terminal(html):
-    assert 'id="log-box"' in html
-    assert "Limpar" in html
+def test_html_contains_default_model_toggle(html):
+    """Each library item carries an auto-start (default) checkbox."""
+    assert "setDefaultModel(this," in html
 
 
-def test_html_does_not_contain_pacman_canvas(html):
-    assert 'id="pacman-background"' not in html
+# ── Downloads ─────────────────────────────────────────────────────────────
 
 
-def test_html_contains_active_model_card(html):
-    assert 'id="active-cards-container"' in html
+def test_html_contains_download_section(html):
+    assert 'id="download-url"' in html
+    assert 'id="download-list"' in html
 
 
-def test_html_serves_dashboard_js(html):
-    assert 'type="module" src="/static/js/index.js?v=' in html
-    assert 'src="/static/js/pacman_bg.js?v=' not in html
+# ── Vision import ─────────────────────────────────────────────────────────
 
 
-def test_html_contains_version_update_modal(html):
-    assert 'id="version-update-modal"' in html
-    assert 'id="version-commits-list"' in html
-    assert 'id="version-dismiss-btn"' in html
-    assert 'id="version-current-ref"' in html
-    assert 'id="version-remote-ref"' in html
-    assert 'role="dialog"' in html
-    assert 'aria-modal="true"' in html
-    assert 'aria-labelledby="version-update-title"' in html
-    assert "Ha uma nova atualizacao disponivel. Convem atualizar o servidor" in html
-    assert "Recomendamos atualizar em breve" in html
-
-
-def test_html_contains_api_token(html):
-    assert 'id="api-token"' in html
-    assert FAKE_API_TOKEN in html
-    assert 'id="api-link"' in html
-
-
-def test_html_injects_ip(html):
-    assert f'id="display-ip"' in html
-    assert FAKE_IP in html
-    assert f'window.fixedIp = "{FAKE_IP}"' in html
-    assert 'id="active-cards-container"' in html
-
-
-def test_html_contains_default_model_checkbox(html):
-    assert "model-default-checkbox" in html
-
-
-def test_html_contains_context_size_select(html):
-    assert 'id="context-size"' in html
-    assert 'id="context-size-custom"' in html
-
-
-def test_html_contains_parallel_slots_input(html):
-    assert 'id="parallel-slots"' in html
-
-
-def test_html_contains_batch_size_select(html):
-    assert 'id="batch-size"' in html
+def test_html_contains_vision_import_modal(html):
+    assert 'id="vision-import-modal"' in html
+    assert 'id="vision-import-url"' in html
+    assert "submitVisionImport" in html
 
 
 def test_html_does_not_contain_global_mmproj_select(html):
     assert 'id="mmproj-path"' not in html
 
 
-def test_html_contains_vision_import_modal(html):
-    assert 'id="vision-import-modal"' in html
-    assert 'id="vision-import-url"' in html
-    assert 'submitVisionImport' in html
+# ── Version update modal ──────────────────────────────────────────────────
 
 
-def test_html_contains_per_model_vision_import_button(html):
-    assert 'vision-import-btn' in html
-    assert 'openVisionImportModal' in html
+def test_html_contains_version_update_modal(html):
+    assert 'id="version-update-modal"' in html
+    assert 'id="version-commits-list"' in html
+    assert 'role="dialog"' in html
+    assert 'aria-modal="true"' in html
+    assert "dismissVersionModal()" in html
 
 
-def test_html_contains_split_mode_select(html):
-    assert 'id="split-mode"' in html
+# ── API token / IP / config ───────────────────────────────────────────────
 
 
-def test_html_contains_auto_balance_toggle(html):
-    assert 'id="auto-balance-toggle"' in html
-    assert 'id="auto-balance-badge"' in html
+def test_html_contains_api_token(html):
+    assert 'id="api-token"' in html
+    assert FAKE_API_TOKEN in html
 
 
-def test_html_contains_mtp_toggle(html):
-    assert 'id="mtp-toggle"' in html
-    assert 'id="mtp-badge"' in html
+def test_html_injects_ip(html):
+    assert FAKE_IP in html
+    assert f'window.fixedIp = "{FAKE_IP}"' in html
 
 
-def test_html_contains_mtp_draft_tokens_input(html):
-    assert 'id="mtp-draft-tokens"' in html
-    assert 'min="1"' in html
-    assert 'max="6"' not in html  # removed clamp — any value allowed
-
-
-def test_html_contains_auto_balance_cancel_btn(html):
-    assert 'id="auto-balance-cancel-btn"' in html
-
-
-def test_html_contains_auto_balance_capacity_alert(html):
-    assert 'id="auto-balance-capacity-alert"' in html
-
-
-def test_html_contains_download_url_input(html):
-    assert 'id="download-url"' in html
-
-
-def test_html_contains_download_status(html):
-    assert 'id="download-status"' in html
+def test_html_contains_models_dir_config(html):
+    assert 'id="models-dir-input"' in html
+    assert 'id="repo-storage"' in html
 
 
 def test_html_contains_password_change_section(html):
@@ -295,17 +275,29 @@ def test_html_contains_password_change_section(html):
     assert 'id="password-change-status"' in html
 
 
+# ── Assets / regressions ──────────────────────────────────────────────────
+
+
+def test_html_serves_dashboard_js(html):
+    assert 'type="module" src="/static/js/index.js?v=' in html
+    assert 'src="/static/js/pacman_bg.js?v=' not in html
+
+
+def test_html_does_not_contain_pacman_canvas(html):
+    assert 'id="pacman-background"' not in html
+
+
+# ── Auth-gated visibility ─────────────────────────────────────────────────
+
+
 def test_login_overlay_visible_when_unauthenticated(client):
     html = client.get("/").text
-    assert 'id="login-overlay"' in html
-    assert 'style="display: flex;"' in html
-    assert 'id="dashboard"' in html
-    assert 'style="display: none;"' in html
+    assert _inline_display(html, "login-overlay") == "flex"
+    assert _inline_display(html, "dashboard") == "none"
 
 
 def test_login_overlay_hidden_when_authenticated(client):
     client.cookies.set("session_token", FakeAuthManager.valid_session)
     html = client.get("/").text
-    assert 'id="login-overlay"' in html
-    assert 'style="display: none;"' in html
-    assert 'style="display: block;"' in html
+    assert _inline_display(html, "login-overlay") == "none"
+    assert _inline_display(html, "dashboard") == "flex"

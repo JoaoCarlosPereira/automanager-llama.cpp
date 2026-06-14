@@ -1593,11 +1593,12 @@ class AutoBalanceProber:
         self.port = getattr(request, "port", None) or SERVER_PORT
         try:
             success, weights, message, failure = self._discover_empirical(request)
-            
-            result_data = failure or {}
+
+            result_data = failure
             if success and getattr(request, "smart_calibration", False):
+                result_data = failure or {}
                 result_data["proposal"] = self._generate_smart_proposal(request, weights)
-                
+
             return success, weights, message, result_data
         except AutoBalanceCancelled:
             return False, request.gpu_weights, "Auto-balance cancelado pelo usuário.", None

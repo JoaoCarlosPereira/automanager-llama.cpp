@@ -154,6 +154,13 @@ class ProcessManager:
                     "auto_balance": False,
                 }
 
+        # Wait outside the lock for each port to be released so the next
+        # start() can bind it. When nothing matched, still wait on the
+        # resolved target (default SERVER_PORT) to honor the contract.
+        wait_ports = ports if ports else [port if port is not None else SERVER_PORT]
+        for p in wait_ports:
+            self._wait_port_released(p)
+
         logger.info(f"llama-server on port {port} stopped")
         return {"message": f"Instancia na porta {port} encerrada"}
 

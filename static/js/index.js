@@ -2,16 +2,16 @@ import { state } from './state.js';
 import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js';
 import { cancelAutoBalance } from './gpu.js';
 import {
-    syncContextSizeCustomVisibility, onContextSizePresetChange, onContextSizeCustomInput,
+    syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
 } from './gpu.js';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
-    updateDownloads, clearCompletedDownloads, selectInstance,
+    updateDownloads, clearCompletedDownloads,
 } from './metrics.js';
 import {
-    initDashboard, getModelButtonsHtml, selectModel, applyModelConfig, setDefaultModel,
+    initDashboard, selectModel, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange,
@@ -31,8 +31,6 @@ win.handleShutdown = handleShutdown;
 win.handleUpdate = handleUpdate;
 win.apiFetch = apiFetch;
 win.cancelAutoBalance = cancelAutoBalance;
-win.onContextSizePresetChange = onContextSizePresetChange;
-win.onContextSizeCustomInput = onContextSizeCustomInput;
 win.getContextSize = getContextSize;
 win.setContextSize = setContextSize;
 win.stopModel = stopModel;
@@ -49,11 +47,9 @@ win.resetToDefaults = resetToDefaults;
 win.hideAutoBalanceCapacityAlert = hideAutoBalanceCapacityAlert;
 win.showMtpWarning = showMtpWarning;
 win.hideMtpWarning = hideMtpWarning;
-win.getModelButtonsHtml = getModelButtonsHtml;
 win.updateModels = updateModels;
 win.saveModelsDir = saveModelsDir;
 win.updateStatus = updateStatus;
-win.selectInstance = selectInstance;
 win.downloadModel = downloadModel;
 win.openVisionImportModal = openVisionImportModal;
 win.closeVisionImportModal = closeVisionImportModal;
@@ -71,7 +67,8 @@ win.openNativeChat = (port) => {
     window.open(win.getInstanceChatUrl(port), '_blank', 'noopener,noreferrer');
 };
 
-document.getElementById('api-link').innerText = `http://${window.fixedIp}:[PORTA]/v1`;
+const apiLinkEl = document.getElementById('api-link');
+if (apiLinkEl) apiLinkEl.innerText = `http://${window.fixedIp}:[PORTA]/v1`;
 
 if (document.getElementById('dashboard').style.display !== 'none') {
     initDashboard();
