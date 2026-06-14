@@ -2,11 +2,12 @@
 
 import asyncio
 import os
+import subprocess
 import time
 import logging
 import threading
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -41,6 +42,8 @@ class LogManager:
             self._logs_dir, "manager.log"
         )
         os.makedirs(self._logs_dir, exist_ok=True)
+        self._stream_threads: Dict[int, threading.Thread] = {}
+        self._stream_lock = threading.Lock()
         self._setup_manager_logging()
         self._setup_server_log_rotation(self._default_server_log_path)
 
@@ -119,6 +122,45 @@ class LogManager:
         # Check if rotation is needed before opening
         self._setup_server_log_rotation(path)
         return open(path, "a", encoding="utf-8")
+
+    def start_streaming(self, port: int, proc: subprocess.Popen) -> None:
+        """Read subprocess stdout in a background thread and write to server log."""
+        self.clear_server_log(port)
+        path = self._get_path(port)
+
+        def _pump() -> None:
+            log_file = None
+            try:
+                log_file = self.open_server_log_append(port)
+                stdout = proc.stdout
+                if stdout is None:
+                    return
+                for line in stdout:
+                    log_file.write(line)
+                    log_file.flush()
+                    try:
+                        if os.path.getsize(path) > MAX_LOG_SIZE:
+                            log_file.close()
+                            self._rotate_server_log(path)
+                            log_file = self.open_server_log_append(port)
+                    except OSError:
+                        pass
+            except Exception as exc:
+                logger.debug("Log streaming ended for port %s: %s", port, exc)
+            finally:
+                if log_file is not None and not log_file.closed:
+                    log_file.close()
+                with self._stream_lock:
+                    self._stream_threads.pop(port, None)
+
+        thread = threading.Thread(
+            target=_pump,
+            name=f"log-stream-{port}",
+            daemon=True,
+        )
+        with self._stream_lock:
+            self._stream_threads[port] = thread
+        thread.start()
 
     async def _stream_should_stop(
         self,

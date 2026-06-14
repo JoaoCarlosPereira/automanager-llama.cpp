@@ -14,18 +14,23 @@ export async function updateStatus() {
         const data = await res.json();
         
         state.activeInstances = data.instances || [];
+        const runningInstances = state.activeInstances.filter(i => i.status === 'running');
 
         // Global Status Badge
         const badge = document.getElementById('status-badge');
-        const hasInstances = state.activeInstances.length > 0;
-        if (hasInstances) {
-            badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
-            badge.querySelector('.status-dot').className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse';
-            badge.querySelector('.status-text').innerText = 'ONLINE';
-        } else {
-            badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-slate-700/50 text-slate-500 uppercase';
-            badge.querySelector('.status-dot').className = 'w-1.5 h-1.5 rounded-full bg-slate-600';
-            badge.querySelector('.status-text').innerText = 'OFFLINE';
+        const hasInstances = runningInstances.length > 0;
+        if (badge) {
+            const dot = badge.querySelector('.status-dot');
+            const txt = badge.querySelector('.status-text');
+            if (hasInstances) {
+                badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
+                if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse';
+                if (txt) txt.innerText = 'ONLINE';
+            } else {
+                badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-slate-700/50 text-slate-500 uppercase';
+                if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-slate-600';
+                if (txt) txt.innerText = 'OFFLINE';
+            }
         }
 
         // --- Sincronizar Abas ---
@@ -40,7 +45,8 @@ export async function updateStatus() {
             const tabBtn = document.getElementById(`btn-${tab.id}`);
             const dot = tabBtn?.querySelector('.tab-status-dot');
             
-            if (inst) {
+            const isRunning = inst && inst.status === 'running';
+            if (isRunning) {
                 statusBadge.innerText = 'ONLINE';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, true, inst.port);
@@ -61,6 +67,12 @@ export async function updateStatus() {
                      // For now, let's just ensure the CURRENT tab is streaming
                      if (state.currentTabId === tab.id) startLogs(inst.port, tab.id);
                 }
+            } else if (inst && inst.status === 'stopped') {
+                statusBadge.innerText = 'ERRO';
+                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-rose-500/40 text-rose-400 bg-rose-500/5';
+                actions.innerHTML = getTabActionsHtml(path, tab.id, false);
+
+                if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 transition-all duration-500';
             } else {
                 statusBadge.innerText = 'OFFLINE';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
@@ -197,7 +209,7 @@ export async function startLogs(port, tabId) {
     
     try {
         const url = `/logs?port=${port}`;
-        const response = await fetch(url, { signal: state.logStream.signal });
+        const response = await fetch(url, { signal: state.logStream.signal, credentials: 'include' });
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         
@@ -206,15 +218,19 @@ export async function startLogs(port, tabId) {
             if (done) break;
             
             const text = decoder.decode(value);
-            const formatted = text
-                .replace(/error/gi, '<span class="text-red-500 font-black">ERRO</span>')
-                .replace(/warn/gi, '<span class="text-amber-500 font-black">AVISO</span>')
-                .replace(/info/gi, '<span class="text-blue-400 font-bold">info</span>');
-            
-            const line = document.createElement('div');
-            line.className = 'mb-1 border-l border-slate-800 pl-3';
-            line.innerHTML = formatted;
-            box.appendChild(line);
+            const lines = text.split('\n').filter(Boolean);
+            for (const rawLine of lines) {
+                const lineText = rawLine.startsWith('data: ') ? rawLine.slice(6) : rawLine;
+                const formatted = lineText
+                    .replace(/error/gi, '<span class="text-red-500 font-black">ERRO</span>')
+                    .replace(/warn/gi, '<span class="text-amber-500 font-black">AVISO</span>')
+                    .replace(/info/gi, '<span class="text-blue-400 font-bold">info</span>');
+
+                const line = document.createElement('div');
+                line.className = 'mb-1 border-l border-slate-800 pl-3';
+                line.innerHTML = formatted;
+                box.appendChild(line);
+            }
             
             if (box.childNodes.length > 500) box.removeChild(box.firstChild);
             box.scrollTop = box.scrollHeight;
@@ -248,6 +264,16 @@ export async function updateMetrics() {
         if (cpuBar) cpuBar.style.width = `${data.cpu ?? 0}%`;
         if (ramVal) ramVal.innerText = `${data.ram ?? 0}%`;
         if (ramBar) ramBar.style.width = `${data.ram ?? 0}%`;
+
+        // Per-GPU VRAM usage bars inside each model tab's allocation table
+        (data.gpus || []).forEach(g => {
+            document.querySelectorAll(`.gpu-row[data-index="${g.index}"]`).forEach(row => {
+                const vramText = row.querySelector('.gpu-vram-text');
+                const vramBar = row.querySelector('.gpu-vram-bar');
+                if (vramText) vramText.innerText = `${g.mem_used} / ${g.mem_total} MB`;
+                if (vramBar) vramBar.style.width = `${g.vram_pct ?? 0}%`;
+            });
+        });
         
         // Mini GPU Cards
         const miniGpu = document.getElementById('mini-gpu-metrics');

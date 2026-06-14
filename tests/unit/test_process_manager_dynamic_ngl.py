@@ -42,6 +42,7 @@ def mock_token():
 def mock_log_mgr():
     lm = MagicMock()
     lm.open_server_log_append.return_value = MagicMock()
+    lm.start_streaming = MagicMock()
     return lm
 
 

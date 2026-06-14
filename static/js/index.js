@@ -61,6 +61,25 @@ win.clearCompletedDownloads = clearCompletedDownloads;
 win.checkForUpdates = checkForUpdates;
 win.dismissVersionModal = dismissVersionModal;
 
+win.toggleSidebar = (force) => {
+    const sidebar = document.getElementById('sidebar');
+    const main = document.getElementById('main-content');
+    if (!sidebar) return;
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (isMobile) {
+        // Mobile: sidebar is hidden by default; '.open' slides it in.
+        const willOpen = force === undefined ? !sidebar.classList.contains('open') : !!force;
+        sidebar.classList.toggle('open', willOpen);
+    } else {
+        // Desktop: sidebar is open by default; '.collapsed' hides it and
+        // '.full' removes the main content's left margin.
+        const isOpen = !sidebar.classList.contains('collapsed');
+        const willOpen = force === undefined ? !isOpen : !!force;
+        sidebar.classList.toggle('collapsed', !willOpen);
+        if (main) main.classList.toggle('full', !willOpen);
+    }
+};
+
 win.getInstanceChatUrl = (port) => `${window.location.origin}/ui/${port}/`;
 
 win.openNativeChat = (port) => {

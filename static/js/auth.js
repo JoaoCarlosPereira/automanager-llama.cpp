@@ -8,11 +8,20 @@ export function resetAuthSessionFlags() {
     state.autoBalancePending = false;
 }
 
+export function setAuthenticatedShellVisible(visible) {
+    const display = visible ? 'flex' : 'none';
+    const sidebar = document.getElementById('sidebar');
+    const main = document.getElementById('main-content');
+    if (sidebar) sidebar.style.display = display;
+    if (main) main.style.display = display;
+}
+
 export function handleSessionExpired(message) {
     if (sessionExpiredHandled) return;
     sessionExpiredHandled = true;
     state.autoBalancePending = false;
     window.stopDashboardPolling();
+    setAuthenticatedShellVisible(false);
     const dashboard = document.getElementById('dashboard');
     const overlay = document.getElementById('login-overlay');
     if (dashboard) dashboard.style.display = 'none';
@@ -60,6 +69,7 @@ export async function handleLogin(event) {
             }
             document.getElementById('login-overlay').style.display = 'none';
             document.getElementById('dashboard').style.display = 'block';
+            setAuthenticatedShellVisible(true);
             window.initDashboard();
             window.startDashboardPolling();
         } else {
@@ -76,7 +86,16 @@ export async function handleLogin(event) {
 }
 
 export async function handleLogout() {
-    try { await fetch('/api/auth/logout', {method: 'POST'}); } catch (e) {}
+    try {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch (e) {}
+    sessionExpiredHandled = false;
+    window.stopDashboardPolling?.();
+    setAuthenticatedShellVisible(false);
+    const dashboard = document.getElementById('dashboard');
+    const overlay = document.getElementById('login-overlay');
+    if (dashboard) dashboard.style.display = 'none';
+    if (overlay) overlay.style.display = 'flex';
     location.reload();
 }
 

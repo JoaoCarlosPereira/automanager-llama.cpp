@@ -675,7 +675,14 @@ export async function startModel(path, tabId) {
              // Link this tab to this port for logs if needed
         }
         
-        setTimeout(window.updateStatus, 2000);
+        await new Promise(r => setTimeout(r, 2000));
+        await window.updateStatus();
+        const inst = (state.activeInstances || []).find(
+            i => (i.model_path || '').replace(/\\/g, '/') === path.replace(/\\/g, '/')
+        );
+        if (!inst || inst.status !== 'running') {
+            alert('O servidor encerrou logo após iniciar. Verifique os logs abaixo.');
+        }
     } catch (e) {
         alert("Erro de rede.");
         window.updateStatus();

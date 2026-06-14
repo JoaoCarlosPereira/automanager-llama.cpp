@@ -9,6 +9,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
+from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 import bcrypt
 
@@ -44,7 +45,71 @@ def normalize_model_path(model_path: str) -> str:
     """Canonical model path key for model_configs (absolute path + forward slashes)."""
     if not model_path:
         return ""
-    return os.path.abspath(model_path).replace("\\", "/")
+    path = model_path.replace("\\", "/")
+    # Map Windows drive paths when running on POSIX (e.g. Z:/media/... -> /media/...)
+    if os.name != "nt" and len(path) >= 3 and path[1] == ":" and path[0].isalpha():
+        path = "/" + path[3:].lstrip("/")
+    return os.path.abspath(path).replace("\\", "/")
+
+
+def _migrate_config(config: dict) -> tuple[dict, bool]:
+    """Normalize legacy keys and drop invalid auto-start entries."""
+    if not config:
+        return config, False
+    changed = False
+
+    model_configs = config.get("model_configs", {})
+    if isinstance(model_configs, dict):
+        migrated_configs: Dict[str, dict] = {}
+        for key, value in model_configs.items():
+            norm = normalize_model_path(key)
+            if norm in migrated_configs:
+                migrated_configs[norm] = {**migrated_configs[norm], **value}
+            else:
+                migrated_configs[norm] = value
+            if norm != key:
+                changed = True
+        config["model_configs"] = migrated_configs
+
+    defaults = config.get("default_models")
+    if not isinstance(defaults, list):
+        legacy = config.get("default_model")
+        defaults = [legacy] if legacy else []
+        changed = True
+
+    normalized_defaults: list[str] = []
+    for path in defaults:
+        if not path:
+            continue
+        norm = normalize_model_path(path)
+        if norm not in normalized_defaults:
+            normalized_defaults.append(norm)
+
+    valid_defaults: list[str] = []
+    for path in defaults:
+        if not path:
+            continue
+        norm = normalize_model_path(path)
+        raw = path.replace("\\", "/")
+        windows_legacy = (
+            os.name != "nt"
+            and len(raw) >= 3
+            and raw[1] == ":"
+            and raw[0].isalpha()
+        )
+        if windows_legacy and not os.path.exists(norm):
+            changed = True
+            continue
+        if norm not in valid_defaults:
+            valid_defaults.append(norm)
+    if config.get("default_models") != valid_defaults:
+        changed = True
+    config["default_models"] = valid_defaults
+    if "default_model" in config:
+        config.pop("default_model", None)
+        changed = True
+
+    return config, changed
 
 
 def lookup_model_config(model_configs: dict, model_path: str) -> dict:
@@ -72,10 +137,15 @@ class ConfigManager:
             if os.path.exists(self.config_path):
                 try:
                     with open(self.config_path, "r") as f:
-                        return json.load(f)
+                        config = json.load(f)
                 except (json.JSONDecodeError, OSError):
                     return {}
-            return {}
+            else:
+                return {}
+        config, changed = _migrate_config(config)
+        if changed:
+            self.save(config)
+        return config
 
     def get_config(self) -> dict:
         return self.load()
@@ -167,9 +237,9 @@ class ConfigManager:
         config = self.config.load() if hasattr(self, "config") else self.load()
         defaults = config.get("default_models")
         if isinstance(defaults, list):
-            return defaults
+            return [normalize_model_path(p) for p in defaults if p]
         legacy = config.get("default_model")
-        return [legacy] if legacy else []
+        return [normalize_model_path(legacy)] if legacy else []
 
 
 class TokenManager:
@@ -284,3 +354,22 @@ class AuthManager:
         config["force_password_change"] = False
         self.config.save(config)
         return True
+
+    def check_auth(self, request: Request = None) -> bool:
+        """FastAPI dependency: session cookie or Bearer API token."""
+        if request is None:
+            return False
+        session_token = request.cookies.get("session_token")
+        if session_token and self.verify_session(session_token):
+            return True
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+            stored = self.config.load().get("api_token", "")
+            if token and token == stored and self.token_mgr.validate(token):
+                return True
+        return False
+
+    def check_auth_cookie(self, request: Request) -> bool:
+        session_token = request.cookies.get("session_token")
+        return bool(session_token and self.verify_session(session_token))

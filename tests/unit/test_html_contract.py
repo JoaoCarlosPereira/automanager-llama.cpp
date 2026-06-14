@@ -294,6 +294,8 @@ def test_login_overlay_visible_when_unauthenticated(client):
     html = client.get("/").text
     assert _inline_display(html, "login-overlay") == "flex"
     assert _inline_display(html, "dashboard") == "none"
+    assert _inline_display(html, "sidebar") == "none"
+    assert _inline_display(html, "main-content") == "none"
 
 
 def test_login_overlay_hidden_when_authenticated(client):
@@ -301,3 +303,5 @@ def test_login_overlay_hidden_when_authenticated(client):
     html = client.get("/").text
     assert _inline_display(html, "login-overlay") == "none"
     assert _inline_display(html, "dashboard") == "flex"
+    assert _inline_display(html, "sidebar") == "flex"
+    assert _inline_display(html, "main-content") == "flex"

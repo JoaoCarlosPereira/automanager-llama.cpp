@@ -115,7 +115,8 @@ def test_process_manager_includes_performance_flags(mock_exists, mock_bin):
         assert "--threads-batch" in args
         assert "8" in args
         
-        assert "--pinned-memory" in args
+        assert "--tools" in args
+        assert "all" in args
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)

@@ -15,11 +15,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, TokenManager, AuthManager, SESSION_IDLE_SECONDS
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager
+from version_manager import check_for_updates
 from schemas import (
     BATCH_SIZE_PRESETS,
     CACHE_TYPE_PRESETS,
@@ -38,6 +39,7 @@ from schemas import (
     DEFAULT_BATCH_SIZE,
 )
 from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_server_ctx_size
+from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
 _DASHBOARD_JS_V = "4.0.0"  # Major UI Refactor
@@ -57,8 +59,6 @@ gpu_manager = GPUManager()
 process_manager = ProcessManager(
     config_manager, None, gpu_manager, log_manager
 )
-# Fix circular dependency in initialization
-from process_manager import TokenManager, AuthManager
 token_manager = TokenManager(config_manager)
 process_manager.token_mgr = token_manager
 auth_manager = AuthManager(config_manager, token_manager)
@@ -68,6 +68,11 @@ download_mgr = DownloadManager()
 oom_watchdog = OOMWatchdog(process_manager)
 
 shutdown_event = threading.Event()
+
+
+def require_auth(request: Request) -> bool:
+    """FastAPI dependency wrapper so Request injection works reliably."""
+    return auth_manager.check_auth(request)
 
 # Context and Batch presets for the UI
 CONTEXT_PRESET_VALUES = [4096, 8192, 16384, 32768, 65536, 131072, "custom"]
@@ -83,53 +88,86 @@ def _invalidate_models_cache():
 async def login(req: Dict[str, str]):
     username = req.get("username")
     password = req.get("password")
-    if auth_manager.verify_admin(username, password):
-        token = token_manager.get_or_create()
-        return {"token": token}
-    raise HTTPException(status_code=401, detail="Credenciais invalidas")
+    result = auth_manager.authenticate(username, password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Credenciais invalidas")
+    session_token = result["token"]
+    force_change = result.get("force_password_change", False)
+    response = JSONResponse({"status": "ok", "force_password_change": force_change})
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_IDLE_SECONDS,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        auth_manager.logout(session_token)
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(key="session_token", path="/")
+    return response
 
 
 @app.post("/api/auth/change-password")
-async def change_password(req: Dict[str, str], authenticated: bool = Depends(auth_manager.check_auth)):
+async def change_password(req: Dict[str, str], authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    current = req.get("current")
-    new_pw = req.get("new")
-    if auth_manager.change_admin_password(current, new_pw):
-        return {"message": "Senha alterada"}
+    current = req.get("current") or req.get("username")
+    new_pw = req.get("new") or req.get("password")
+    if auth_manager.change_password(current, new_pw):
+        return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Senha atual incorreta")
 
 
 @app.get("/status")
-async def get_status():
+async def get_status(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
     return process_manager.get_status()
 
 
 @app.get("/metrics")
-async def get_metrics():
+async def get_metrics(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
     return gpu_manager.get_metrics()
 
 
 @app.get("/models")
-async def list_models():
-    models = model_scanner.scan()
-    storage = model_scanner.get_storage_info()
-    return {"models": models, "storage": storage}
+async def list_models(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    # scan() already returns {"models": [...], "projectors": [...], "storage": {...}}
+    return model_scanner.scan()
 
 
 @app.post("/models/dir")
-async def set_models_dir(req: Dict[str, str], authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_models_dir(req: Dict[str, str], authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     new_dir = req.get("models_dir")
-    if config_manager.set_models_dir(new_dir):
-        _invalidate_models_cache()
-        return {"message": "Diretorio atualizado"}
-    raise HTTPException(status_code=400, detail="Diretorio invalido ou inacessivel")
+    if not new_dir:
+        raise HTTPException(status_code=400, detail="Diretorio invalido ou inacessivel")
+    try:
+        paths = update_models_dir(new_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Diretorio invalido ou inacessivel")
+    reload_module_paths()
+    model_scanner.models_dir = paths.models_dir
+    download_mgr.models_dir = paths.models_dir
+    _invalidate_models_cache()
+    return model_scanner.scan()
 
 
 @app.post("/start")
-async def start_model(req: StartRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def start_model(req: StartRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
 
@@ -160,6 +198,8 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(auth_mana
     }
 
     if req.auto_balance:
+        for weight in req.gpu_weights:
+            weight.pinned = False
         return process_manager.start_auto_balance(req)
 
     config_manager.update_model_settings(
@@ -196,7 +236,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(auth_mana
 
 
 @app.post("/stop")
-async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(auth_manager.check_auth)):
+async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     process_manager.stop(port)
@@ -204,7 +244,7 @@ async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(a
 
 
 @app.post("/auto-balance/cancel")
-async def cancel_auto_balance(authenticated: bool = Depends(auth_manager.check_auth)):
+async def cancel_auto_balance(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     process_manager.cancel_auto_balance()
@@ -212,7 +252,7 @@ async def cancel_auto_balance(authenticated: bool = Depends(auth_manager.check_a
 
 
 @app.post("/delete")
-async def delete_model(req: DeleteRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     if model_scanner.delete_model(req.path):
@@ -222,7 +262,7 @@ async def delete_model(req: DeleteRequest, authenticated: bool = Depends(auth_ma
 
 
 @app.post("/rename")
-async def rename_model(req: RenameRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def rename_model(req: RenameRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     if model_scanner.rename_model(req.path, req.new_name):
@@ -232,20 +272,22 @@ async def rename_model(req: RenameRequest, authenticated: bool = Depends(auth_ma
 
 
 @app.post("/downloads")
-async def start_download(req: DownloadRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def start_download(req: DownloadRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    download_id = download_mgr.queue_download(req.url, req.model_path)
+    download_id = download_mgr.start_download(req.url, model_path=req.model_path)
     return {"download_id": download_id}
 
 
 @app.get("/downloads")
-async def list_downloads():
-    return {"downloads": download_mgr.get_status()}
+async def list_downloads(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {"downloads": download_mgr.get_progress()}
 
 
 @app.post("/downloads/clear")
-async def clear_downloads(authenticated: bool = Depends(auth_manager.check_auth)):
+async def clear_downloads(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     download_mgr.clear_completed()
@@ -253,12 +295,60 @@ async def clear_downloads(authenticated: bool = Depends(auth_manager.check_auth)
 
 
 @app.get("/logs")
-async def get_logs(port: Optional[int] = None):
-    return {"logs": log_manager.get_server_log(port)}
+async def stream_logs(request: Request, port: Optional[int] = None):
+    """SSE stream of llama-server logs (no auth — embedded dashboard console)."""
+    return log_manager.stream_logs(stop_event=shutdown_event, request=request, port=port)
 
+
+@app.api_route("/ui/{port}/{path:path}", methods=["GET", "POST", "OPTIONS"])
+async def ui_proxy(request: Request, port: int, path: str = ""):
+    """Proxy llama-server web UI through the manager (fixes relative asset paths)."""
+    is_index = not path or path == "index.html"
+    if is_index:
+        path = ""
+
+    target_url = f"http://127.0.0.1:{port}/{path}"
+    query = str(request.query_params)
+    if query:
+        target_url += f"?{query}"
+
+    headers = dict(request.headers)
+    headers.pop("host", None)
+
+    try:
+        if is_index:
+            resp = await client.get(target_url, headers=headers, timeout=10.0)
+            if resp.status_code == 200:
+                html = resp.text
+                base_tag = f'<base href="/ui/{port}/">'
+                if "<head>" in html:
+                    html = html.replace("<head>", f"<head>{base_tag}")
+                else:
+                    html = f"<head>{base_tag}</head>{html}"
+                html = html.replace(
+                    "base: new URL('.', location).pathname.slice(0, -1)",
+                    f'base: "/ui/{port}"',
+                )
+                return HTMLResponse(content=html, status_code=200)
+
+        resp = await client.request(
+            request.method,
+            target_url,
+            content=await request.body(),
+            headers=headers,
+            timeout=30.0,
+        )
+        return StreamingResponse(
+            resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
+    except httpx.RequestError as exc:
+        logger.error("UI proxy error to port %s: %s", port, exc)
+        raise HTTPException(status_code=502, detail="Interface do modelo inacessivel")
 
 @app.post("/set_default")
-async def set_default_model(req: SetDefaultRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_default_model(req: SetDefaultRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.set_default_model(req.path, req.add)
@@ -266,12 +356,16 @@ async def set_default_model(req: SetDefaultRequest, authenticated: bool = Depend
 
 
 @app.get("/config")
-async def get_config():
-    return config_manager.get_config()
+async def get_config(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    config = config_manager.get_config()
+    config.pop("admin_password_hash", None)
+    return config
 
 
 @app.post("/models/mmproj")
-async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"mmproj_path": req.mmproj_path})
@@ -279,7 +373,7 @@ async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(auth_m
 
 
 @app.post("/models/thinking")
-async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(auth_manager.check_auth)):
+async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled})
@@ -287,7 +381,7 @@ async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(au
 
 
 @app.post("/system/shutdown")
-async def system_shutdown(authenticated: bool = Depends(auth_manager.check_auth)):
+async def system_shutdown(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
     logger.info("Shutdown solicitado via API")
@@ -301,37 +395,35 @@ async def system_shutdown(authenticated: bool = Depends(auth_manager.check_auth)
 
 
 @app.post("/system/update")
-async def system_update(authenticated: bool = Depends(auth_manager.check_auth)):
+async def system_update(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    from version_manager import VersionManager
-    vm = VersionManager()
+    from version_manager import update_and_restart
     logger.info("Update solicitado via API")
-    success, msg = vm.update_and_restart()
+    success, msg = update_and_restart(INSTALL_ROOT)
     if not success:
         raise HTTPException(status_code=500, detail=msg)
     return {"message": msg}
 
 
 @app.get("/api/key")
-async def get_api_key(authenticated: bool = Depends(auth_manager.check_auth)):
+async def get_api_key(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return {"api_key": token_manager.get_or_create()}
+    return {"key": token_manager.get_or_create()}
 
 
 @app.post("/api/key/renew")
-async def renew_api_key(authenticated: bool = Depends(auth_manager.check_auth)):
+async def renew_api_key(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return {"api_key": token_manager.renew()}
+    return {"key": token_manager.renew()}
 
 
 @app.get("/api/system/version-check")
-async def system_version_check(authenticated: bool = Depends(auth_manager.check_auth)):
+async def system_version_check(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    from version_manager import check_for_updates
     return check_for_updates(INSTALL_ROOT)
 
 
@@ -439,14 +531,25 @@ async def index(request: Request):
                     </div>
                 </td>
                 <td class="px-4 py-4">
-                    <div class="relative flex items-center group/input">
-                        <input type="number" class="gpu-weight w-20 bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all pr-6" 
-                               value="{100 if idx == 0 else 0}" min="0" max="100">
-                        <span class="absolute right-2 text-[9px] font-black text-slate-600">%</span>
-                        <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor">
-                            <input type="checkbox" class="gpu-pin hidden">
-                            <i class="fas fa-thumbtack text-[10px] text-slate-700 hover:text-blue-500 transition-colors pin-icon"></i>
-                        </label>
+                    <div class="flex items-center gap-5">
+                        <div class="relative flex items-center group/input shrink-0">
+                            <input type="number" class="gpu-weight w-20 bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all pr-6"
+                                   value="{100 if idx == 0 else 0}" min="0" max="100">
+                            <span class="absolute right-2 text-[9px] font-black text-slate-600">%</span>
+                            <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor">
+                                <input type="checkbox" class="gpu-pin hidden">
+                                <i class="fas fa-thumbtack text-[10px] text-slate-700 hover:text-blue-500 transition-colors pin-icon"></i>
+                            </label>
+                        </div>
+                        <div class="flex-1 min-w-[100px]">
+                            <div class="flex justify-between items-end mb-1">
+                                <span class="text-[8px] font-black text-slate-500 uppercase tracking-widest">VRAM</span>
+                                <span class="gpu-vram-text text-[9px] font-mono text-blue-400">0 / {vram} MB</span>
+                            </div>
+                            <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                <div class="gpu-vram-bar h-full bg-cyan-500 transition-all duration-1000" style="width: 0%"></div>
+                            </div>
+                        </div>
                     </div>
                 </td>
             </tr>"""
@@ -612,8 +715,9 @@ def _build_html(
     """Build the full HTML template."""
 
     login_overlay_style = "none" if is_authenticated else "flex"
+    shell_style = "flex" if is_authenticated else "none"
     login_overlay = f"""
-        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto" style="display: {login_overlay_style};">
+        <div id="login-overlay" class="fixed inset-0 z-50 flex items-center justify-center pointer-events-auto bg-slate-950/95 backdrop-blur-sm" style="display: {login_overlay_style};">
             <div class="glass p-8 md:p-10 rounded-3xl border border-slate-700/50 w-full max-w-md mx-4 shadow-2xl">
                 <div class="flex flex-col items-center mb-8">
                     <div class="bg-blue-600 p-4 rounded-2xl shadow-xl shadow-blue-500/20 mb-4">
@@ -725,7 +829,7 @@ def _build_html(
     {version_update_modal}
 
     <!-- SIDEBAR (MENU RETRATIL) -->
-    <aside id="sidebar" class="fixed top-0 left-0 h-full w-80 glass border-r border-slate-800 z-40 overflow-y-auto custom-scroll flex flex-col shadow-2xl">
+    <aside id="sidebar" class="fixed top-0 left-0 h-full w-80 glass border-r border-slate-800 z-40 overflow-y-auto custom-scroll flex flex-col shadow-2xl" style="display: {shell_style};">
         <div class="p-6 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-950/20">
             <h2 class="font-bold text-lg text-white flex items-center gap-3">
                 <i class="fas fa-layer-group text-blue-500"></i> Biblioteca
@@ -796,7 +900,7 @@ def _build_html(
     </aside>
 
     <!-- CONTEUDO PRINCIPAL -->
-    <main id="main-content" class="main-content flex-1 h-screen flex flex-col relative overflow-hidden">
+    <main id="main-content" class="main-content flex-1 h-screen flex flex-col relative overflow-hidden" style="display: {shell_style};">
         <!-- HEADER -->
         <header class="glass border-b border-slate-800 px-6 py-4 flex items-center justify-between h-16 shrink-0 z-30 shadow-md">
             <div class="flex items-center gap-4">

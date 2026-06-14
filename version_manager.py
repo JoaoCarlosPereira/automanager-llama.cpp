@@ -181,3 +181,15 @@ def check_for_updates(
         branch=branch,
         commits=commits,
     )
+
+
+def update_and_restart(install_root: str) -> tuple[bool, str]:
+    """Pull latest code from git (fast-forward only)."""
+    try:
+        result = _run_git(install_root, ["pull", "--ff-only"], timeout=120)
+    except subprocess.TimeoutExpired:
+        return False, "git pull timeout"
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "git pull falhou").strip()
+        return False, message
+    return True, "Codigo atualizado. Reinicie o servico para aplicar."

@@ -14,6 +14,7 @@ from paths import INSTALL_ROOT, PATHS_FILE, _resolve_path
 logger = logging.getLogger("automanager")
 
 _CACHED: Optional[str] = None
+_HELP_CACHE: Optional[str] = None
 _IS_WINDOWS = platform.system() == "Windows"
 _EXECUTABLE_NAMES = (
     ("llama-server.exe", "llama-server")
@@ -160,8 +161,35 @@ def get_llama_server_bin() -> str:
 
 def reset_llama_server_bin_cache() -> None:
     """Clear cached resolution (tests)."""
-    global _CACHED
+    global _CACHED, _HELP_CACHE
     _CACHED = None
+    _HELP_CACHE = None
+
+
+def get_llama_server_help() -> str:
+    """Return cached ``llama-server --help`` output (empty on failure)."""
+    global _HELP_CACHE
+    if _HELP_CACHE is not None:
+        return _HELP_CACHE
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            [get_llama_server_bin(), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        _HELP_CACHE = (proc.stdout or "") + (proc.stderr or "")
+    except Exception:
+        _HELP_CACHE = ""
+    return _HELP_CACHE
+
+
+def supports_cli_flag(flag: str) -> bool:
+    """True when ``flag`` appears in ``llama-server --help``."""
+    return flag in get_llama_server_help()
 
 
 def llama_server_available() -> bool:

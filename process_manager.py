@@ -6,11 +6,12 @@ import threading
 import time
 import re
 from typing import Dict, List, Optional, Tuple, Union, Any
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 import psutil
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, TokenManager
 from log_manager import LogManager, logger
+from llama_server_bin import get_llama_server_bin, supports_cli_flag
 from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS
 from paths import INSTALL_ROOT
 
@@ -30,60 +31,17 @@ def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
 
 
 def resolve_llama_server_bin() -> str:
-    """Locate the llama-server binary in common locations."""
-    # Priority:
-    # 1. Environment variable LLAMA_SERVER_BIN
-    # 2. Local bin/llama-server
-    # 3. Path
-    
-    env_bin = os.environ.get("LLAMA_SERVER_BIN")
-    if env_bin and os.path.exists(env_bin):
-        return env_bin
-        
-    local_bin = os.path.join(INSTALL_ROOT, "bin", "llama-server")
-    if os.path.exists(local_bin):
-        return local_bin
-        
-    # Check current directory
-    if os.path.exists("llama-server"):
-        return os.path.abspath("llama-server")
-        
-    return "llama-server" # Fallback to PATH
+    """Locate the llama-server binary.
 
-
-class TokenManager:
-    def __init__(self, config: ConfigManager):
-        self.config = config
-
-    def get_or_create(self) -> str:
-        cfg = self.config.get_config()
-        token = cfg.get("api_token")
-        if not token:
-            import secrets
-            token = secrets.token_urlsafe(32)
-            self.config.set_api_token(token)
-        return token
-
-
-class AuthManager:
-    def __init__(self, config: ConfigManager, token_mgr: TokenManager):
-        self.config = config
-        self.token_mgr = token_mgr
-
-    def verify_admin(self, username, password) -> bool:
-        return self.config.verify_admin(username, password)
-
-    def change_admin_password(self, current, new_pw) -> bool:
-        return self.config.change_admin_password(current, new_pw)
-
-    def check_auth(self, request: Union[dict, Any]) -> bool:
-        # FastAPI Depends helper or direct call
-        # Logic to check Bearer token or session cookie
-        return True # Placeholder for simplicity in this refactor
-
-    def check_auth_cookie(self, request) -> bool:
-        # Logic for UI session
-        return True
+    Delegates to the shared resolver in ``llama_server_bin`` so that start()
+    uses the SAME discovery logic that runs at startup (env var, paths.json,
+    PATH/``shutil.which`` and the common ``llama.cpp/build/bin`` locations).
+    The previous local implementation only checked ``INSTALL_ROOT/bin`` and the
+    cwd, so on hosts where the binary lives elsewhere (e.g.
+    ``~/llama.cpp/build/bin/llama-server``) it fell back to the bare name and
+    Popen failed with ``[Errno 2] No such file or directory: 'llama-server'``.
+    """
+    return get_llama_server_bin()
 
 
 class ProcessManager:
@@ -455,6 +413,7 @@ class ProcessManager:
             "--port",
             str(port),
             "--tools",
+            "all",
             "--parallel",
             str(parallel_slots),
             "--ctx-size",
@@ -488,7 +447,8 @@ class ProcessManager:
         if threads_batch > 0:
             cmd.extend(["--threads-batch", str(threads_batch)])
 
-        cmd.append("--pinned-memory")
+        if supports_cli_flag("--pinned-memory"):
+            cmd.append("--pinned-memory")
 
         if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
@@ -551,6 +511,14 @@ class ProcessManager:
     def get_status(self) -> dict:
         instances = []
         with self._lock:
+            dead_ports = [
+                port for port, proc in self.processes.items()
+                if proc.poll() is not None
+            ]
+            for port in dead_ports:
+                self.processes.pop(port, None)
+                self._requests.pop(port, None)
+
             for port, proc in self.processes.items():
                 req = self._requests.get(port)
                 status = "running" if proc.poll() is None else "stopped"

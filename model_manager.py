@@ -1,6 +1,7 @@
 """Model discovery, rename, delete, and downloads."""
 
 import os
+import hashlib
 import shutil
 import time
 import uuid
@@ -130,6 +131,13 @@ class ModelScanner:
                     full_path = os.path.join(root, f)
                     name_lower = f.lower()
                     item = {
+                        # Stable, unique, DOM-safe id derived from the path so the
+                        # UI can key tabs/elements per model. Without it every item
+                        # rendered as id "undefined" and clicking any model just
+                        # reopened the first model's tab.
+                        "id": hashlib.md5(
+                            full_path.replace("\\", "/").encode("utf-8")
+                        ).hexdigest()[:12],
                         "path": full_path,
                         "name": f,
                         "dir": os.path.relpath(root, self.models_dir) or "/",

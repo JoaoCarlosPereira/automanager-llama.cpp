@@ -2,13 +2,35 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import threading
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 from starlette.requests import Request
 
 from log_manager import LogManager
+
+
+def test_start_streaming_writes_subprocess_output(tmp_path):
+    log_path = tmp_path / "server.log"
+    manager = LogManager(
+        project_root=str(tmp_path),
+        server_log_path=str(log_path),
+        manager_log_path=str(tmp_path / "manager.log"),
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "print('hello from server')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    manager.start_streaming(8085, proc)
+    proc.wait(timeout=5)
+    time.sleep(0.2)
+    assert "hello from server" in log_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

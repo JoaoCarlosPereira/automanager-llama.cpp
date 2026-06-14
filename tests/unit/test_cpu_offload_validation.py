@@ -22,6 +22,7 @@ def pm():
     token.get_or_create.return_value = "sk-test"
     log_mgr = MagicMock()
     log_mgr.open_server_log_append.return_value = MagicMock()
+    log_mgr.start_streaming = MagicMock()
     return ProcessManager(config, token, GPUManager(), log_mgr)
 
 

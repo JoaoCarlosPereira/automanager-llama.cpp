@@ -172,9 +172,11 @@ class TestGPUDetectorDetectCpuInfo:
         mock_winreg.OpenKey.return_value = mock_key
 
         with patch("gpu_manager.psutil.virtual_memory", return_value=virtual_memory), patch(
+            "gpu_manager.psutil.cpu_count", return_value=0
+        ), patch("gpu_manager.os.name", "nt"), patch(
             "gpu_manager.platform.processor", return_value=""
         ), patch("gpu_manager.platform.machine", return_value=""), patch(
-            "builtins.open", side_effect=FileNotFoundError
+            "gpu_manager.open", side_effect=FileNotFoundError
         ), patch.dict(
             "sys.modules", {"winreg": mock_winreg}
         ):

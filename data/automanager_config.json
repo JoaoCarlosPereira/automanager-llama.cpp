@@ -520,6 +520,83 @@
       "mtp_enabled": true,
       "mtp_draft_tokens": 2,
       "last_started": "2026-06-10T13:21:00.352288"
+    },
+    "/media/docker/models/model.gguf": {
+      "context_size": 4096,
+      "parallel_slots": 1,
+      "batch_size": 2048,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 100.0,
+          "name": "GPU-0",
+          "active": true,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "thinking_enabled": true,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 3,
+      "last_started": "2026-06-14T05:07:31.801416+00:00"
+    },
+    "/media/docker/models/Qwen3.6-35B-A3B-UD-Q3_K_M/Qwen3.6-35B.gguf": {
+      "context_size": 4096,
+      "parallel_slots": 1,
+      "batch_size": 2048,
+      "mmproj_path": null,
+      "gpu_weights": [
+        {
+          "index": 0,
+          "weight": 0.0,
+          "name": "TESLA P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 1,
+          "weight": 0.0,
+          "name": "TESLA P100-PCIE-16GB",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": 2,
+          "weight": 100.0,
+          "name": "NVIDIA GEFORCE RTX 3090",
+          "active": true,
+          "is_main": true,
+          "pinned": false,
+          "device": "gpu"
+        },
+        {
+          "index": -1,
+          "weight": 0.0,
+          "name": "CPU",
+          "active": false,
+          "is_main": false,
+          "pinned": false,
+          "device": "cpu"
+        }
+      ],
+      "split_mode": "layer",
+      "auto_balance": false,
+      "auto_balance_profile": false,
+      "hardware_incapable": false,
+      "thinking_enabled": true,
+      "mtp_enabled": false,
+      "mtp_draft_tokens": 3,
+      "last_started": "2026-06-14T05:18:08.155772+00:00"
     }
   },
   "force_password_change": false,

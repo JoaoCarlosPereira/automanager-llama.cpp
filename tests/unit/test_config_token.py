@@ -1,4 +1,6 @@
 import json
+import os
+from unittest.mock import patch
 
 import pytest
 
@@ -28,7 +30,10 @@ def test_config_load_valid_json(config_manager, config_path):
     expected = {"default_model": "/models/llama.gguf", "enabled": True}
     with open(config_path, "w") as config_file:
         json.dump(expected, config_file)
-    assert config_manager.load() == expected
+    loaded = config_manager.load()
+    assert loaded["enabled"] is True
+    assert loaded["default_models"] == [normalize_model_path("/models/llama.gguf")]
+    assert "default_model" not in loaded
 
 
 def test_config_load_corrupted_json_returns_empty_dict(config_manager, config_path):
@@ -40,7 +45,9 @@ def test_config_load_corrupted_json_returns_empty_dict(config_manager, config_pa
 def test_config_save_and_load_round_trip(config_manager):
     expected = {"api_token": "sk-" + "a" * 32, "default_model": "/models/a.gguf"}
     config_manager.save(expected)
-    assert config_manager.load() == expected
+    loaded = config_manager.load()
+    assert loaded["api_token"] == expected["api_token"]
+    assert loaded["default_models"] == [normalize_model_path("/models/a.gguf")]
 
 
 def test_config_get_model_settings_empty(config_manager):
@@ -167,6 +174,45 @@ def test_config_partial_update_preserves_hardware_incapable(config_manager):
     assert saved["hardware_incapable"] is True
     assert saved["hardware_incapable_message"] == "Nao cabe"
     assert saved["context_size"] == 32768
+
+
+def test_normalize_model_path_maps_windows_drive_on_linux():
+    with patch("config_manager.os.name", "posix"):
+        assert (
+            normalize_model_path("Z:/media/docker/models/model.gguf")
+            == "/media/docker/models/model.gguf"
+        )
+
+
+def test_config_migrates_windows_paths_and_invalid_defaults(tmp_path):
+    cfg_path = tmp_path / "automanager_config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "default_models": ["Z:/media/docker/models/model.gguf"],
+                "model_configs": {
+                    "Z:/media/docker/models/model.gguf": {"context_size": 4096}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(str(cfg_path))
+    cfg_file = str(cfg_path)
+
+    def exists_side_effect(path):
+        if os.path.normpath(str(path)) == os.path.normpath(cfg_file):
+            return True
+        return False
+
+    with patch("config_manager.os.name", "posix"), patch(
+        "config_manager.os.path.exists", side_effect=exists_side_effect
+    ):
+        loaded = manager.load()
+
+    assert loaded["default_models"] == []
+    assert "/media/docker/models/model.gguf" in loaded["model_configs"]
+    assert "Z:/media/docker/models/model.gguf" not in loaded["model_configs"]
 
 
 def test_config_set_and_get_default_model(config_manager):

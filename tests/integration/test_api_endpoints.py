@@ -51,6 +51,8 @@ class FakeAuthManager:
         return None
 
     def verify_session(self, session_token):
+        if session_token in self.logged_out:
+            return False
         return self.allow_session and session_token == self.valid_session
 
     def verify_api_key(self, credentials):
@@ -60,10 +62,24 @@ class FakeAuthManager:
         self.logged_out.append(session_token)
 
     def change_password(self, old_password, new_password):
-        return True  # Fake success
-
-    def change_password(self, old_password, new_password):
         return old_password == "admin" and bool(new_password)
+
+    def check_auth(self, request=None) -> bool:
+        if request is None:
+            return False
+        session_token = request.cookies.get("session_token")
+        if session_token and self.verify_session(session_token):
+            return True
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            from fastapi.security import HTTPAuthorizationCredentials
+
+            creds = HTTPAuthorizationCredentials(
+                scheme="Bearer",
+                credentials=auth_header[7:].strip(),
+            )
+            return self.verify_api_key(creds)
+        return False
 
 
 @pytest.fixture
@@ -105,6 +121,16 @@ def test_login_failure_returns_401_without_session_cookie(client):
     assert response.json()["detail"] == "Credenciais invalidas"
     assert client.cookies.get("session_token") is None
     assert "set-cookie" not in response.headers
+
+
+def test_logout_clears_session_cookie(client, authenticated_client):
+    response = authenticated_client.post("/api/auth/logout")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    status = authenticated_client.get("/status")
+    assert status.status_code == 401
 
 
 @pytest.mark.parametrize(
