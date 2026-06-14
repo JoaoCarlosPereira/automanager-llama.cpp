@@ -62,12 +62,21 @@ class ProcessManager:
         self._auto_balance_active = False
         self._auto_balance_cancel = False
         self._auto_balance_port = SERVER_PORT
+        self._auto_balance_run_id = 0
         self.recovery_state = {
             "active": False,
             "failed": False,
             "message": "",
             "auto_balance": False,
         }
+
+    @property
+    def auto_balance_cancel_requested(self) -> bool:
+        return self._auto_balance_cancel
+
+    @auto_balance_cancel_requested.setter
+    def auto_balance_cancel_requested(self, value: bool) -> None:
+        self._auto_balance_cancel = value
 
     def _is_port_free(self, port: int) -> bool:
         import socket
@@ -104,7 +113,7 @@ class ProcessManager:
                 if p in self._requests:
                     del self._requests[p]
 
-            if not self.processes:
+            if not self.processes and not self._auto_balance_active:
                 self.recovery_state = {
                     "active": False,
                     "failed": False,
@@ -144,6 +153,8 @@ class ProcessManager:
                     detail="Auto-balance ja esta em andamento.",
                 )
             self._auto_balance_cancel = False
+            self._auto_balance_run_id += 1
+            run_id = self._auto_balance_run_id
             port = request.port or SERVER_PORT
             if request.port is None:
                 while not self._is_port_free(port):
@@ -166,14 +177,21 @@ class ProcessManager:
             "smart_proposal": None,
             "attempt": 0,
             "model": request.path,
+            "run_id": run_id,
         }
-        return {"message": "Auto-balance em andamento", "probing": True}
+        return {
+            "message": "Auto-balance em andamento",
+            "probing": True,
+            "run_id": run_id,
+        }
 
     def _run_auto_balance(self, request: StartRequest) -> None:
         from auto_balance import AutoBalanceCancelled, AutoBalanceProber
 
         with self._lock:
             self._auto_balance_active = True
+
+        run_id = self.recovery_state.get("run_id")
 
         try:
             prober = AutoBalanceProber(
@@ -201,7 +219,9 @@ class ProcessManager:
                         "smart_calibration": True,
                         "smart_proposal": proposal,
                         "gpu_weights": saved_weights,
+                        "pinned_fields": request.pinned_fields or {},
                         "model": request.path,
+                        "run_id": run_id,
                     }
                     return
 
@@ -224,6 +244,7 @@ class ProcessManager:
                         "mtp_enabled": request.mtp_enabled,
                         "mtp_draft_tokens": request.mtp_draft_tokens,
                         "gpu_weights": saved_weights,
+                        "pinned_fields": request.pinned_fields or {},
                         "auto_balance": False,
                         "auto_balance_profile": True,
                         "hardware_incapable": False,
@@ -275,6 +296,7 @@ class ProcessManager:
                     "model_loaded": model_loaded,
                     "gpu_weights": saved_weights,
                     "model": request.path,
+                    "run_id": run_id,
                 }
             else:
                 hardware_exceeded = bool(
@@ -317,6 +339,7 @@ class ProcessManager:
                     "hardware_capacity_exceeded": hardware_exceeded,
                     "failure_details": failure,
                     "model": request.path,
+                    "run_id": run_id,
                 }
         except AutoBalanceCancelled:
             self.stop(self._auto_balance_port)
@@ -327,6 +350,7 @@ class ProcessManager:
                 "message": "Auto-balance cancelado.",
                 "auto_balance": False,
                 "model": request.path,
+                "run_id": run_id,
             }
         except Exception as exc:
             logger.exception(f"Auto-balance error: {exc}")
@@ -338,6 +362,7 @@ class ProcessManager:
                 "auto_balance": False,
                 "hardware_capacity_exceeded": False,
                 "model": request.path,
+                "run_id": run_id,
             }
         finally:
             with self._lock:

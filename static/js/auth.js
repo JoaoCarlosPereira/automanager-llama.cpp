@@ -1,4 +1,4 @@
-import { state } from './state.js';
+import { state } from './state.js?v=4.0.2';
 
 export let sessionExpiredHandled = false;
 
@@ -6,6 +6,9 @@ export let sessionExpiredHandled = false;
 export function resetAuthSessionFlags() {
     sessionExpiredHandled = false;
     state.autoBalancePending = false;
+    state.autoBalanceTabId = null;
+    state.autoBalanceSeenActive = false;
+    state.autoBalanceRunId = null;
 }
 
 export function setAuthenticatedShellVisible(visible) {
@@ -20,6 +23,9 @@ export function handleSessionExpired(message) {
     if (sessionExpiredHandled) return;
     sessionExpiredHandled = true;
     state.autoBalancePending = false;
+    state.autoBalanceTabId = null;
+    state.autoBalanceSeenActive = false;
+    state.autoBalanceRunId = null;
     window.stopDashboardPolling();
     setAuthenticatedShellVisible(false);
     const dashboard = document.getElementById('dashboard');
@@ -35,8 +41,8 @@ export function handleSessionExpired(message) {
     }
 }
 
-export async function apiFetch(url, options) {
-    const res = await fetch(url, options);
+export async function apiFetch(url, options = {}) {
+    const res = await fetch(url, { credentials: 'include', ...options });
     if (res.status === 401) {
         let detail = 'Sessao expirada. Faca login novamente.';
         try {

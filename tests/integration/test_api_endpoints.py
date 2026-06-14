@@ -369,7 +369,7 @@ def test_start_auto_balance_takes_priority_over_manual_override(
 
 
 def test_start_auto_balance_clears_pinned_flags(monkeypatch, authenticated_client):
-    """POST /start com auto_balance=true zera pinned antes de delegar (ADR-001)."""
+    """POST /start com auto_balance clássico zera pinned GPU antes de delegar."""
     process_manager = MagicMock()
     process_manager.start_auto_balance.return_value = {"probing": True}
     monkeypatch.setattr(llama_manager, "process_manager", process_manager)
@@ -393,6 +393,72 @@ def test_start_auto_balance_clears_pinned_flags(monkeypatch, authenticated_clien
     assert response.status_code == 200
     sent_request = process_manager.start_auto_balance.call_args.args[0]
     assert all(w.pinned is False for w in sent_request.gpu_weights)
+
+
+def test_start_smart_calibration_preserves_pinned_flags(monkeypatch, authenticated_client):
+    """POST /start com smart_calibration mantém pinned GPU do usuário."""
+    process_manager = MagicMock()
+    process_manager.start_auto_balance.return_value = {"probing": True}
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", MagicMock())
+
+    response = authenticated_client.post(
+        "/start",
+        json={
+            "path": "/media/docker/models/model.gguf",
+            "gpu_weights": [
+                {"index": 0, "weight": 70.0, "name": "GPU-0",
+                 "active": True, "is_main": True, "pinned": True},
+                {"index": 1, "weight": 30.0, "name": "GPU-1",
+                 "active": True, "pinned": False},
+            ],
+            "context_size": 4096,
+            "auto_balance": True,
+            "smart_calibration": True,
+            "pinned_fields": {"cache_type": True, "threads": False},
+        },
+    )
+
+    assert response.status_code == 200
+    sent_request = process_manager.start_auto_balance.call_args.args[0]
+    assert sent_request.gpu_weights[0].pinned is True
+    assert sent_request.gpu_weights[1].pinned is False
+    assert sent_request.pinned_fields == {"cache_type": True, "threads": False}
+
+
+def test_start_persists_gpu_pinned_and_pinned_fields(monkeypatch, authenticated_client):
+    """POST /start normal salva pinned em gpu_weights e pinned_fields."""
+    process_manager = MagicMock()
+    process_manager.start.return_value = {"status": "started", "port": 8085}
+    config_manager = MagicMock()
+    monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager, "config_manager", config_manager)
+
+    gpu_weights = [
+        {"index": 0, "weight": 60.0, "name": "GPU-0",
+         "active": True, "is_main": True, "pinned": True},
+        {"index": 1, "weight": 40.0, "name": "GPU-1",
+         "active": True, "pinned": False},
+    ]
+    pinned_fields = {"cache_type": True, "batch_size": True}
+
+    response = authenticated_client.post(
+        "/start",
+        json={
+            "path": "/media/docker/models/model.gguf",
+            "gpu_weights": gpu_weights,
+            "context_size": 4096,
+            "pinned_fields": pinned_fields,
+            "auto_balance_profile": True,
+        },
+    )
+
+    assert response.status_code == 200
+    saved = config_manager.update_model_settings.call_args.args[1]
+    assert saved["gpu_weights"][0]["pinned"] is True
+    assert saved["gpu_weights"][1]["pinned"] is False
+    assert saved["pinned_fields"] == pinned_fields
+    assert saved["auto_balance_profile"] is True
 
 
 # ── CPU offload integration ───────────────────────────────────────────────

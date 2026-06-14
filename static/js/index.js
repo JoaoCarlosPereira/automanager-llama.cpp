@@ -1,22 +1,22 @@
-import { state } from './state.js';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js';
-import { cancelAutoBalance } from './gpu.js';
+import { state } from './state.js?v=4.0.2';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.0.2';
+import { cancelAutoBalance } from './gpu.js?v=4.0.2';
 import {
     syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
-} from './gpu.js';
+} from './gpu.js?v=4.0.2';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload,
-} from './metrics.js';
+} from './metrics.js?v=4.0.2';
 import {
     initDashboard, selectModel, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
-    onMmprojChange, closeTab,
-} from './models.js';
-import { checkForUpdates, dismissVersionModal } from './version.js';
+    onMmprojChange, closeTab, startSmartCalibration,
+} from './models.js?v=4.0.2';
+import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.2';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -62,6 +62,12 @@ win.clearCompletedDownloads = clearCompletedDownloads;
 win.cancelDownload = cancelDownload;
 win.checkForUpdates = checkForUpdates;
 win.dismissVersionModal = dismissVersionModal;
+win.startSmartCalibration = startSmartCalibration;
+win.runSmartCalibration = (btn) => {
+    const tab = btn?.closest('.tab-content');
+    if (!tab?.dataset?.path || !tab.id) return;
+    startSmartCalibration(tab.dataset.path, tab.id);
+};
 
 win.toggleSidebar = (force) => {
     const sidebar = document.getElementById('sidebar');

@@ -32,6 +32,7 @@ from schemas import (
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
+    DEFAULT_CACHE_TYPE,
 )
 
 DEFAULT_THINKING_ENABLED = True
@@ -187,6 +188,12 @@ class ConfigManager:
             "context_size": merged.get("context_size", DEFAULT_CONTEXT_SIZE),
             "parallel_slots": merged.get("parallel_slots", DEFAULT_PARALLEL_SLOTS),
             "batch_size": merged.get("batch_size", DEFAULT_BATCH_SIZE),
+            "ubatch_size": merged.get("ubatch_size", 512),
+            "cache_type_k": merged.get("cache_type_k", DEFAULT_CACHE_TYPE),
+            "cache_type_v": merged.get("cache_type_v", DEFAULT_CACHE_TYPE),
+            "numa_enabled": merged.get("numa_enabled", False),
+            "threads": merged.get("threads", 0),
+            "threads_batch": merged.get("threads_batch", 0),
             "mmproj_path": merged.get("mmproj_path"),
             "gpu_weights": merged.get("gpu_weights"),
             "split_mode": merged.get("split_mode", "layer"),
@@ -200,6 +207,7 @@ class ConfigManager:
             "mtp_draft_tokens": merged.get(
                 "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
             ),
+            "pinned_fields": merged.get("pinned_fields") or {},
             "last_started": datetime.now(timezone.utc).isoformat(),
         }
         if "hardware_incapable_message" in merged:

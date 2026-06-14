@@ -7,6 +7,7 @@ import time
 import re
 import glob
 import logging
+import html
 import uvicorn
 import httpx
 from typing import List, Optional, Tuple, Dict, Any, Literal
@@ -43,10 +44,23 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.0.0"  # Major UI Refactor
+_DASHBOARD_JS_V = "4.0.4"  # Major UI Refactor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
+
+
+def _cfg_tip(text: str) -> str:
+    """Balão explicativo exibido ao passar o mouse sobre um campo de configuração."""
+    return (
+        f'<div class="cfg-tip pointer-events-none absolute left-0 top-full mt-1.5 w-64 '
+        f'max-w-[min(16rem,calc(100vw-2rem))] p-3 rounded-xl text-[11px] leading-relaxed '
+        f'text-slate-200 bg-slate-900 border border-slate-600/80 shadow-2xl">'
+        f'{html.escape(text)}</div>'
+    )
+
+
+_CFG_FIELD = 'cfg-field group/tip relative space-y-2'
 
 app = FastAPI(title="Automanager Llama.cpp")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -196,11 +210,14 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "mtp_enabled": req.mtp_enabled,
         "mtp_draft_tokens": req.mtp_draft_tokens,
         "total_layers": total_layers if total_layers else 0,
+        "pinned_fields": req.pinned_fields or {},
     }
 
     if req.auto_balance:
-        for weight in req.gpu_weights:
-            weight.pinned = False
+        # Smart calibration respeita pins do usuário (GPU e campos); auto-balance clássico não.
+        if not req.smart_calibration:
+            for weight in req.gpu_weights:
+                weight.pinned = False
         return process_manager.start_auto_balance(req)
 
     config_manager.update_model_settings(
@@ -208,7 +225,11 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         {
             **base_settings,
             "gpu_weights": [w.model_dump() for w in req.gpu_weights],
-            "auto_balance_profile": False,
+            "auto_balance_profile": (
+                req.auto_balance_profile
+                if req.auto_balance_profile is not None
+                else False
+            ),
         },
     )
     result = process_manager.start(
@@ -543,11 +564,12 @@ async def index(request: Request):
                 </td>
                 <td class="px-4 py-4">
                     <div class="flex items-center gap-5">
-                        <div class="relative flex items-center group/input shrink-0">
+                        <div class="relative flex items-center group/input shrink-0 cfg-field group/tip">
+                            {_cfg_tip("Peso percentual desta GPU no tensor-split. Pin (📌) trava o valor durante o auto-balance manual.")}
                             <input type="number" class="gpu-weight w-20 bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold focus:ring-2 focus:ring-blue-500/50 outline-none transition-all pr-6"
                                    value="{100 if idx == 0 else 0}" min="0" max="100">
                             <span class="absolute right-2 text-[9px] font-black text-slate-600">%</span>
-                            <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor">
+                            <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor no auto-balance">
                                 <input type="checkbox" class="gpu-pin hidden">
                                 <i class="fas fa-thumbtack text-[10px] text-slate-700 hover:text-blue-500 transition-colors pin-icon"></i>
                             </label>
@@ -580,11 +602,12 @@ async def index(request: Request):
                 </div>
             </td>
             <td class="px-4 py-4">
-                <div class="relative flex items-center group/input">
+                <div class="relative flex items-center group/input cfg-field group/tip">
+                    {_cfg_tip("Offload para RAM/CPU quando a VRAM não comporta o modelo. Mais lento que GPU; o auto-balance usa como último recurso se habilitado.")}
                     <input type="number" class="cpu-weight w-20 bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold focus:ring-2 focus:ring-emerald-500/50 outline-none transition-all pr-6" 
                            value="0" min="0" max="100">
                     <span class="absolute right-2 text-[9px] font-black text-slate-600">%</span>
-                    <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor">
+                    <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor no auto-balance">
                         <input type="checkbox" class="cpu-pin hidden">
                         <i class="fas fa-thumbtack text-[10px] text-slate-700 hover:text-emerald-500 transition-colors pin-icon"></i>
                     </label>
@@ -836,6 +859,62 @@ def _build_html(
         .tab-btn:hover .tab-close-btn {{ opacity: 1; }}
         
         .model-item-container.active-selection {{ border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }}
+
+        .cfg-field {{
+            position: relative;
+            overflow: visible;
+        }}
+        .cfg-field .cfg-tip {{
+            font-weight: 400;
+            letter-spacing: normal;
+            text-transform: none;
+            z-index: 99999;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.15s ease, visibility 0.15s ease;
+        }}
+        .cfg-field:hover .cfg-tip,
+        .cfg-field:focus-within .cfg-tip {{
+            opacity: 1;
+            visibility: visible;
+        }}
+        .cfg-field:hover,
+        .cfg-field:focus-within {{
+            z-index: 9999;
+        }}
+        .glass:has(.cfg-field:hover),
+        .glass:has(.cfg-field:focus-within) {{
+            position: relative;
+            z-index: 9998;
+            overflow: visible;
+        }}
+        .tab-config-panel {{
+            position: relative;
+            z-index: 1;
+        }}
+        .tab-config-panel:has(.cfg-field:hover),
+        .tab-config-panel:has(.cfg-field:focus-within) {{
+            z-index: 200;
+            overflow: visible;
+        }}
+        .tab-log-panel {{
+            position: relative;
+            z-index: 5;
+        }}
+        #tabs-container:has(.cfg-field:hover),
+        #tabs-container:has(.cfg-field:focus-within) {{
+            overflow: visible;
+        }}
+        .tab-content:has(.cfg-field:hover),
+        .tab-content:has(.cfg-field:focus-within) {{
+            overflow: visible;
+        }}
+        thead .cfg-tip {{
+            top: auto;
+            bottom: 100%;
+            margin-top: 0;
+            margin-bottom: 0.375rem;
+        }}
     </style>
 </head>
 <body class="min-h-screen text-slate-200 selection:bg-blue-500/30 overflow-hidden flex">
@@ -1021,7 +1100,7 @@ def _build_html(
             <div class="flex-1 flex flex-col xl:flex-row min-h-0 overflow-y-auto xl:overflow-hidden">
                 
                 <!-- PAINEL DE CONFIG (ESQUERDA) -->
-                <div class="flex-1 min-h-0 p-6 md:p-8 space-y-6 xl:overflow-y-auto custom-scroll bg-slate-900/10">
+                <div class="tab-config-panel flex-1 min-h-0 p-6 md:p-8 space-y-6 xl:overflow-y-auto custom-scroll bg-slate-900/10">
                     <!-- Header da Tab -->
                     <div class="flex items-center justify-between gap-6 flex-wrap pb-6 border-b border-slate-800/60">
                         <div class="flex items-center gap-5">
@@ -1041,16 +1120,31 @@ def _build_html(
                         </div>
                     </div>
 
+                    <div class="tab-auto-balance-progress hidden p-6 rounded-2xl border-2 border-amber-500/40 bg-amber-500/10 shadow-lg shadow-amber-500/10">
+                        <div class="flex gap-4 items-start text-amber-300">
+                            <i class="fas fa-sync animate-spin mt-1 shrink-0 text-lg"></i>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-[11px] font-black uppercase tracking-widest mb-1">Auto-Balance em andamento</p>
+                                <p class="tab-auto-balance-progress-msg text-sm leading-relaxed break-words text-amber-100/90"></p>
+                                <p class="tab-auto-balance-progress-attempt text-[10px] text-amber-200/60 mt-2 font-mono"></p>
+                            </div>
+                            <button type="button" class="tab-auto-balance-cancel-btn px-4 py-2 rounded-xl border border-red-500/40 text-[9px] font-black uppercase tracking-widest text-red-300 hover:bg-red-500/10 transition-all shrink-0">
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- Configurações em Grid -->
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 relative overflow-visible">
                         <!-- Configuração do Motor -->
-                        <div class="glass rounded-[2rem] p-6 space-y-6 shadow-sm">
+                        <div class="glass rounded-[2rem] p-6 space-y-6 shadow-sm overflow-visible relative">
                              <div class="flex items-center justify-between">
                                 <p class="text-[10px] font-black text-blue-500 uppercase tracking-[0.25em]">Parâmetros do Motor</p>
                                 <i class="fas fa-sliders-h text-slate-800 text-xs"></i>
                              </div>
                              <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Tokens de contexto por slot (histórico + resposta). Valores maiores consomem mais VRAM/RAM no cache KV. O servidor usa contexto × slots como tamanho total do buffer.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span><i class="fas fa-expand-arrows-alt text-[8px] mr-1"></i> Contexto / Slot</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1068,7 +1162,8 @@ def _build_html(
                                         </div>
                                     </div>
                                  </div>
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Conversas independentes atendidas em paralelo. Cada slot duplica o cache KV — mais slots = mais VRAM/RAM e maior o ctx-size total enviado ao llama-server.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span><i class="fas fa-clone text-[8px] mr-1"></i> Slots (Simultâneo)</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1080,7 +1175,8 @@ def _build_html(
                                  </div>
                              </div>
                              <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-slate-800/30">
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Tamanho do lote no prefill (processamento do prompt). Batch maior acelera prompts longos, mas aumenta picos de VRAM temporária durante a entrada.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span>Batch Prefill</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1092,7 +1188,8 @@ def _build_html(
                                         {batch_opts}
                                     </select>
                                  </div>
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Micro-lote físico (ubatch) usado internamente pelo llama.cpp. Afeta throughput e memória de trabalho; normalmente deve ser menor ou igual ao batch de prefill.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span>U-Batch Físico</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1108,13 +1205,14 @@ def _build_html(
                         </div>
 
                         <!-- Otimização & Threads -->
-                        <div class="glass rounded-[2rem] p-6 space-y-6 shadow-sm">
+                        <div class="glass rounded-[2rem] p-6 space-y-6 shadow-sm overflow-visible relative">
                              <div class="flex items-center justify-between">
                                 <p class="text-[10px] font-black text-emerald-500 uppercase tracking-[0.25em]">Otimização Sistêmica</p>
                                 <i class="fas fa-microchip text-slate-800 text-xs"></i>
                              </div>
                              <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Threads de CPU para geração (token a token) e para prefill. 0 = automático. Mais threads ajudam quando há camadas na CPU; excesso pode reduzir desempenho.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span>Threads (Gen / Batch)</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1123,11 +1221,12 @@ def _build_html(
                                         </label>
                                     </label>
                                     <div class="flex gap-2">
-                                        <input type="number" class="tab-threads w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2.5 text-sm font-bold focus:ring-1 focus:ring-blue-500/50 outline-none text-center" placeholder="Auto" title="Threads para geracao">
-                                        <input type="number" class="tab-threads-batch w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2.5 text-sm font-bold focus:ring-1 focus:ring-violet-500/50 outline-none text-center" placeholder="Auto" title="Threads para prefill">
+                                        <input type="number" class="tab-threads w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2.5 text-sm font-bold focus:ring-1 focus:ring-blue-500/50 outline-none text-center" placeholder="Auto">
+                                        <input type="number" class="tab-threads-batch w-full bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2.5 text-sm font-bold focus:ring-1 focus:ring-violet-500/50 outline-none text-center" placeholder="Auto">
                                     </div>
                                  </div>
-                                 <div class="space-y-2">
+                                 <div class="{_CFG_FIELD}">
+                                    {_cfg_tip("Precisão do cache KV (K = keys, V = values). f16 usa mais VRAM com melhor fidelidade; q8_0/q4_0 economizam memória com pequena perda de qualidade em contextos longos.")}
                                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest pl-1 flex items-center justify-between">
                                         <span>Quantização de Cache</span>
                                         <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -1136,17 +1235,18 @@ def _build_html(
                                         </label>
                                     </label>
                                     <div class="flex gap-2">
-                                        <select class="tab-cache-type-k bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2.5 text-[11px] font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none" title="Cache Key">
+                                        <select class="tab-cache-type-k bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2.5 text-[11px] font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none">
                                             {cache_type_k_opts}
                                         </select>
-                                        <select class="tab-cache-type-v bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2.5 text-[11px] font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none" title="Cache Value">
+                                        <select class="tab-cache-type-v bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-2 py-2.5 text-[11px] font-bold w-full focus:ring-1 focus:ring-amber-500/50 outline-none">
                                             {cache_type_v_opts}
                                         </select>
                                     </div>
                                  </div>
                              </div>
                              <div class="flex flex-wrap gap-3 pt-4 border-t border-slate-800/30">
-                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-violet-500/30 transition-all">
+                                <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-violet-500/30 transition-all">
+                                    {_cfg_tip("Ativa blocos de raciocínio interno em modelos compatíveis (ex.: DeepSeek). Aumenta tokens gerados e latência, mas melhora respostas complexas.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-thinking-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-violet-600">
                                         <span class="text-[10px] font-bold uppercase text-slate-500">Thinking</span>
@@ -1156,18 +1256,20 @@ def _build_html(
                                         <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
                                     </label>
                                 </div>
-                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
+                                <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
+                                    {_cfg_tip("Multi-Token Prediction: modelo draft prevê vários tokens à frente para acelerar a geração. Requer suporte no modelo/binário; consome VRAM extra.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-mtp-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-amber-600">
                                         <span class="text-[10px] font-bold uppercase text-slate-500">MTP</span>
                                     </label>
-                                    <input type="number" min="1" max="4" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-[10px] font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" title="Tokens de draft MTP (1-4)" value="{default_mtp_draft_tokens}">
+                                    <input type="number" min="1" max="4" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-[10px] font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" value="{default_mtp_draft_tokens}">
                                     <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
                                         <input type="checkbox" class="tab-pin-mtp hidden">
                                         <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
                                     </label>
                                 </div>
-                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
+                                <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
+                                    {_cfg_tip("Otimiza alocação de memória em servidores multi-socket (NUMA). Útil com offload grande para RAM; irrelevante na maioria dos desktops.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-numa-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-cyan-600">
                                         <span class="text-[10px] font-bold uppercase text-slate-500">NUMA</span>
@@ -1177,7 +1279,8 @@ def _build_html(
                                         <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
                                     </label>
                                 </div>
-                                <div class="flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-blue-500/30 transition-all">
+                                <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-blue-500/30 transition-all">
+                                    {_cfg_tip("Como dividir o modelo entre GPUs: Layer split reparte camadas; Row split reparte linhas (exige suporte). Afeta balanceamento multi-GPU e uso de tensor-split.")}
                                     <select class="tab-split-mode bg-slate-950 border border-slate-800 text-slate-400 rounded-xl px-4 py-2 text-[10px] font-bold outline-none focus:ring-1 focus:ring-blue-500/50">
                                         <option value="layer">LAYER SPLIT</option>
                                         <option value="row">ROW SPLIT</option>
@@ -1212,14 +1315,14 @@ def _build_html(
                     </div>
 
                     <!-- Alocação de GPU -->
-                    <div class="glass rounded-[2rem] overflow-hidden border border-slate-800/50 shadow-lg">
+                    <div class="glass rounded-[2rem] overflow-visible border border-slate-800/50 shadow-lg">
                         <table class="w-full text-left">
                             <thead class="text-[9px] font-black text-slate-500 uppercase tracking-[0.25em] bg-slate-950/50">
                                 <tr>
-                                    <th class="px-8 py-5 text-center w-16">USO</th>
-                                    <th class="px-4 py-5 text-center w-24">PRINCIPAL</th>
+                                    <th class="px-8 py-5 text-center w-16"><span class="cfg-field group/tip relative inline-block">{_cfg_tip("Marca se a GPU/CPU participa do carregamento do modelo.")}<span>USO</span></span></th>
+                                    <th class="px-4 py-5 text-center w-24"><span class="cfg-field group/tip relative inline-block">{_cfg_tip("GPU principal (--main-gpu): recebe tensores centrais e costuma carregar mais peso no split.")}<span>PRINCIPAL</span></span></th>
                                     <th class="px-4 py-5">DISPOSITIVO</th>
-                                    <th class="px-8 py-5 text-right">DISTRIBUIÇÃO</th>
+                                    <th class="px-8 py-5 text-right"><span class="cfg-field group/tip relative inline-block ml-auto">{_cfg_tip("Percentual do modelo neste dispositivo (tensor-split). A soma das GPUs/CPU ativas deve totalizar 100%.")}<span>DISTRIBUIÇÃO</span></span></th>
                                 </tr>
                             </thead>
                             <tbody class="tab-gpu-table-body divide-y divide-slate-800/40 bg-slate-950/10">
@@ -1229,7 +1332,7 @@ def _build_html(
                         </table>
                         <div class="p-6 bg-slate-950/30 border-t border-slate-800/50 flex flex-wrap items-center justify-between gap-6">
                              <div class="flex items-center gap-6">
-                                <button class="tab-smart-calibrate-btn px-6 py-3 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 flex items-center gap-3">
+                                <button type="button" onclick="window.runSmartCalibration(this)" class="tab-smart-calibrate-btn px-6 py-3 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 flex items-center gap-3">
                                     <i class="fas fa-brain"></i> CALIBRAR SMART (AUTO-BALANCE)
                                 </button>
                                 <span class="tab-total-percent text-[11px] font-bold tracking-[0.1em] text-slate-500 uppercase">CARGA TOTAL: 100%</span>
@@ -1265,7 +1368,7 @@ def _build_html(
                 </div>
 
                 <!-- PAINEL DE LOGS (DIREITA) -->
-                <div class="xl:w-1/3 xl:max-w-[40%] xl:border-l border-slate-800/60 bg-slate-950/40 flex flex-col min-h-0 h-[500px] xl:h-full shadow-2xl relative shrink-0">
+                <div class="tab-log-panel xl:w-1/3 xl:max-w-[40%] xl:border-l border-slate-800/60 bg-slate-950/40 flex flex-col min-h-0 h-[500px] xl:h-full shadow-2xl relative shrink-0">
                     <div class="p-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between shrink-0">
                         <div class="flex items-center gap-3">
                             <div class="flex gap-1">

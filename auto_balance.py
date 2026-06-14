@@ -1591,6 +1591,8 @@ class AutoBalanceProber:
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
         """Auto-balance empírico com sondagem de OOM (ADR-002 atualizado)."""
         self.port = getattr(request, "port", None) or SERVER_PORT
+        self._model_path = request.path
+        self._smart_calibration = bool(getattr(request, "smart_calibration", False))
         try:
             success, weights, message, failure = self._discover_empirical(request)
 
@@ -3228,12 +3230,18 @@ class AutoBalanceProber:
         spill_order: Optional[List[int]] = None,
         selected_indices: Optional[List[int]] = None,
     ) -> None:
+        prev = self.process_manager.recovery_state or {}
         state = {
             "active": True,
             "failed": False,
             "message": message,
             "auto_balance": True,
             "attempt": attempt,
+            "model": getattr(self, "_model_path", None) or prev.get("model"),
+            "smart_calibration": getattr(
+                self, "_smart_calibration", prev.get("smart_calibration", False)
+            ),
+            "run_id": prev.get("run_id"),
         }
         if weight_map is not None and all_gpus is not None and main_index is not None:
             pinned_indices = set((pinned_map or {}).keys())
@@ -3347,7 +3355,7 @@ class AutoBalanceProber:
 
     def _process_alive(self) -> bool:
         with self.process_manager._lock:
-            proc = self.process_manager._processes.get(self.port)
+            proc = self.process_manager.processes.get(self.port)
         if proc is None:
             return False
         return proc.poll() is None

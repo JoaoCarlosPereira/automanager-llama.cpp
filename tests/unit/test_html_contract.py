@@ -205,6 +205,14 @@ def test_template_contains_calibration_controls(html):
     assert "tab-proposed-config" in html
     assert "tab-apply-config-btn" in html
     assert "tab-discard-config-btn" in html
+    assert "tab-auto-balance-progress" in html
+    assert "tab-auto-balance-cancel-btn" in html
+
+
+def test_template_contains_config_field_tooltips(html):
+    assert "cfg-field" in html
+    assert "cfg-tip" in html
+    assert "Tokens de contexto por slot" in html
 
 
 def test_template_contains_log_box(html):

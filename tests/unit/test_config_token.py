@@ -78,6 +78,40 @@ def test_config_update_model_settings(config_manager):
     assert "last_started" in saved
 
 
+def test_config_update_model_settings_engine_fields(config_manager):
+    model_path = "/models/engine.gguf"
+    settings = {
+        "ubatch_size": 256,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q4_0",
+        "numa_enabled": True,
+        "threads": 8,
+        "threads_batch": 4,
+        "auto_balance_profile": True,
+        "pinned_fields": {"cache_type": True, "threads": False},
+        "gpu_weights": [
+            {
+                "index": 0,
+                "weight": 100,
+                "name": "GPU",
+                "active": True,
+                "pinned": True,
+            }
+        ],
+    }
+    config_manager.update_model_settings(model_path, settings)
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["ubatch_size"] == 256
+    assert saved["cache_type_k"] == "q8_0"
+    assert saved["cache_type_v"] == "q4_0"
+    assert saved["numa_enabled"] is True
+    assert saved["threads"] == 8
+    assert saved["threads_batch"] == 4
+    assert saved["auto_balance_profile"] is True
+    assert saved["pinned_fields"] == {"cache_type": True, "threads": False}
+    assert saved["gpu_weights"][0]["pinned"] is True
+
+
 def test_config_update_model_settings_mtp_fields(config_manager):
     model_path = "/models/mtp.gguf"
     config_manager.update_model_settings(

@@ -1,5 +1,5 @@
-import { state } from './state.js';
-import { apiFetch } from './auth.js';
+import { state } from './state.js?v=4.0.2';
+import { apiFetch } from './auth.js?v=4.0.2';
 
 const CPU_INDEX = -1;
 
@@ -34,6 +34,7 @@ function findDeviceRow(weight, tabId = null) {
 }
 
 export function showAutoBalanceCapacityAlert(recovery, tabId = null) {
+    hideAutoBalanceProgress(tabId);
     const scope = getTabScope(tabId);
     const el = scope.querySelector('.tab-auto-balance-alert');
     const msgEl = scope.querySelector('.tab-auto-balance-msg');
@@ -308,6 +309,38 @@ export async function cancelAutoBalance() {
     } catch (e) {}
 }
 
+export function showAutoBalanceProgress(recovery, tabId = null) {
+    const scope = getTabScope(tabId);
+    const el = scope.querySelector('.tab-auto-balance-progress');
+    const msgEl = scope.querySelector('.tab-auto-balance-progress-msg');
+    const attemptEl = scope.querySelector('.tab-auto-balance-progress-attempt');
+    if (!el || !msgEl) return;
+
+    const label = recovery?.smart_calibration ? 'Calibração smart' : 'Auto-balance';
+    msgEl.textContent = recovery?.message || `Executando ${label}...`;
+    if (attemptEl) {
+        const attempt = recovery?.attempt;
+        attemptEl.textContent = (attempt != null && attempt > 0)
+            ? `Tentativa ${attempt} · aguarde, isso pode levar alguns minutos`
+            : 'Aguarde, isso pode levar alguns minutos';
+    }
+
+    el.classList.remove('hidden');
+    syncAutoBalanceCancelButton(true, tabId);
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+export function hideAutoBalanceProgress(tabId = null) {
+    if (tabId) {
+        const scope = getTabScope(tabId);
+        scope.querySelector('.tab-auto-balance-progress')?.classList.add('hidden');
+        syncAutoBalanceCancelButton(false, tabId);
+        return;
+    }
+    document.querySelectorAll('.tab-auto-balance-progress').forEach(el => el.classList.add('hidden'));
+    state.activeTabs.forEach(tab => syncAutoBalanceCancelButton(false, tab.id));
+}
+
 export function hideAutoBalanceCapacityAlert(tabId = null) {
     const scope = getTabScope(tabId);
     const el = scope.querySelector('.tab-auto-balance-alert');
@@ -319,7 +352,13 @@ export function modelIncapableRowClass(incapable) {
 }
 
 export function syncAutoBalanceCancelButton(autoBalancing, tabId = null) {
-    // Shared or localized as needed
+    const scope = getTabScope(tabId);
+    const calibrateBtn = scope.querySelector('.tab-smart-calibrate-btn');
+    if (calibrateBtn) {
+        calibrateBtn.disabled = autoBalancing;
+        calibrateBtn.classList.toggle('opacity-50', autoBalancing);
+        calibrateBtn.classList.toggle('pointer-events-none', autoBalancing);
+    }
 }
 
 export function resetToDefaults(tabId = null) {

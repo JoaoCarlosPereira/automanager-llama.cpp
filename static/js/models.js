@@ -1,17 +1,18 @@
-﻿import { state } from './state.js';
-import { apiFetch, sessionExpiredHandled } from './auth.js';
+﻿import { state } from './state.js?v=4.0.2';
+import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.2';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
-    updateAutoBalanceProfileBadge,
+    updateAutoBalanceProfileBadge, cancelAutoBalance, showAutoBalanceProgress,
+    hideAutoBalanceProgress,
     isModelHardwareIncapable, modelIncapableBadgeHtml, modelIncapableRowClass,
     bindGpuManualListeners, syncContextSizeCustomVisibility,
     updateThinkingBadge, updateMtpBadge, getMtpDraftTokens, syncMtpDraftTokensState,
     validateDeviceWeights,
     collectDeviceWeightsFromUI,
-} from './gpu.js';
-import { startLogs } from './metrics.js';
-import { checkForUpdates } from './version.js';
+} from './gpu.js?v=4.0.2';
+import { startLogs } from './metrics.js?v=4.0.2';
+import { checkForUpdates } from './version.js?v=4.0.2';
 
 // --- TAB MANAGEMENT ---
 
@@ -240,45 +241,86 @@ function bindTabListeners(tabId) {
 
     // New Smart Calibrate Button
     tab.querySelector('.tab-smart-calibrate-btn').onclick = () => startSmartCalibration(path, tabId);
+    tab.querySelector('.tab-auto-balance-cancel-btn')?.addEventListener('click', async () => {
+        await cancelAutoBalance();
+        window.updateStatus?.();
+    });
     
     // Apply/Discard Proposed Config
     tab.querySelector('.tab-apply-config-btn').onclick = () => applyProposedConfig(path, tabId);
     tab.querySelector('.tab-discard-config-btn').onclick = () => hideProposedConfig(tabId);
 
-    // Handle Pins visual state
-    tab.querySelectorAll('input[class*="tab-pin-"]').forEach(pin => {
-        pin.addEventListener('change', () => {
-            const icon = pin.nextElementSibling;
-            if (pin.checked) {
-                icon.classList.remove('text-slate-700');
-                icon.classList.add('text-blue-500');
-            } else {
-                icon.classList.remove('text-blue-500');
-                icon.classList.add('text-slate-700');
-            }
-        });
-    });
-
+    bindPinnedFieldListeners(tabId);
     updateTotal(tabId);
     syncMtpDraftTokensState(tabId);
+}
+
+function collectPinnedFieldsFromTab(tabId) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return {};
+    return {
+        context_size: tab.querySelector('.tab-pin-context')?.checked ?? false,
+        parallel_slots: tab.querySelector('.tab-pin-slots')?.checked ?? false,
+        batch_size: tab.querySelector('.tab-pin-batch')?.checked ?? false,
+        ubatch_size: tab.querySelector('.tab-pin-ubatch')?.checked ?? false,
+        cache_type: tab.querySelector('.tab-pin-cache')?.checked ?? false,
+        threads: tab.querySelector('.tab-pin-threads')?.checked ?? false,
+        thinking: tab.querySelector('.tab-pin-thinking')?.checked ?? false,
+        mtp: tab.querySelector('.tab-pin-mtp')?.checked ?? false,
+        numa: tab.querySelector('.tab-pin-numa')?.checked ?? false,
+        split_mode: tab.querySelector('.tab-pin-split-mode')?.checked ?? false,
+    };
+}
+
+function syncPinnedFieldIcon(pin) {
+    const icon = pin?.nextElementSibling;
+    if (!icon) return;
+    if (pin.checked) {
+        icon.classList.remove('text-slate-700');
+        icon.classList.add('text-blue-500');
+    } else {
+        icon.classList.remove('text-blue-500');
+        icon.classList.add('text-slate-700');
+    }
+}
+
+function bindPinnedFieldListeners(tabId) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+    tab.querySelectorAll('input[class*="tab-pin-"]').forEach(pin => {
+        pin.addEventListener('change', () => syncPinnedFieldIcon(pin));
+    });
+}
+
+function applyPinnedFieldsToTab(tabId, pinnedFields) {
+    if (!pinnedFields) return;
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+    const selectors = {
+        context_size: '.tab-pin-context',
+        parallel_slots: '.tab-pin-slots',
+        batch_size: '.tab-pin-batch',
+        ubatch_size: '.tab-pin-ubatch',
+        cache_type: '.tab-pin-cache',
+        threads: '.tab-pin-threads',
+        thinking: '.tab-pin-thinking',
+        mtp: '.tab-pin-mtp',
+        numa: '.tab-pin-numa',
+        split_mode: '.tab-pin-split-mode',
+    };
+    for (const [key, selector] of Object.entries(selectors)) {
+        const pin = tab.querySelector(selector);
+        if (!pin || pinnedFields[key] === undefined) continue;
+        pin.checked = !!pinnedFields[key];
+        syncPinnedFieldIcon(pin);
+    }
 }
 
 export async function startSmartCalibration(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
 
-    const pinnedFields = {
-        context_size: tab.querySelector('.tab-pin-context').checked,
-        parallel_slots: tab.querySelector('.tab-pin-slots').checked,
-        batch_size: tab.querySelector('.tab-pin-batch').checked,
-        ubatch_size: tab.querySelector('.tab-pin-ubatch').checked,
-        cache_type: tab.querySelector('.tab-pin-cache').checked,
-        threads: tab.querySelector('.tab-pin-threads').checked,
-        thinking: tab.querySelector('.tab-pin-thinking')?.checked ?? false,
-        mtp: tab.querySelector('.tab-pin-mtp')?.checked ?? false,
-        numa: tab.querySelector('.tab-pin-numa')?.checked ?? false,
-        split_mode: tab.querySelector('.tab-pin-split-mode')?.checked ?? false,
-    };
+    const pinnedFields = collectPinnedFieldsFromTab(tabId);
 
     const currentValues = {
         context_size: getContextSize(tabId),
@@ -293,6 +335,12 @@ export async function startSmartCalibration(path, tabId) {
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-magic animate-spin mr-2"></i> OTIMIZANDO...';
+    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
+
+    state.autoBalancePending = true;
+    state.autoBalanceTabId = tabId;
+    state.autoBalanceSeenActive = false;
+    showAutoBalanceProgress({ message: 'Iniciando calibração smart...', smart_calibration: true }, tabId);
     
     try {
         const res = await apiFetch('/start', {
@@ -323,30 +371,44 @@ export async function startSmartCalibration(path, tabId) {
         if (!res.ok) {
             const err = await res.json();
             alert("Erro na calibração: " + (err.detail || "Falha"));
+            state.autoBalancePending = false;
+            state.autoBalanceTabId = null;
+            state.autoBalanceSeenActive = false;
+            hideAutoBalanceProgress(tabId);
             window.updateStatus();
             return;
         }
 
         const data = await res.json();
+        if (data.run_id != null) {
+            state.autoBalanceRunId = data.run_id;
+        }
         if (data.probing) {
             state.autoBalancePending = true;
-            // The polling will detect the end of probing and we'll handle the proposal then
+            state.autoBalanceTabId = tabId;
+            showAutoBalanceProgress({ message: 'Calibração smart em andamento...', smart_calibration: true }, tabId);
         }
+        window.updateStatus?.();
     } catch (e) {
         alert("Erro de rede.");
+        state.autoBalancePending = false;
+        state.autoBalanceTabId = null;
+        state.autoBalanceSeenActive = false;
+        hideAutoBalanceProgress(tabId);
         window.updateStatus();
     }
 }
 
-export function showProposedConfig(tabId, proposal) {
+export function showProposedConfig(tabId, proposal, gpuWeights = null) {
     const tab = document.getElementById(tabId);
     if (!tab || !proposal) return;
 
     const area = tab.querySelector('.tab-proposed-config');
     const details = tab.querySelector('.tab-proposed-details');
-    
-    // Store proposal in tab element for Apply button
-    tab.dataset.proposal = JSON.stringify(proposal);
+
+    const payload = { ...proposal };
+    if (gpuWeights) payload.gpu_weights = gpuWeights;
+    tab.dataset.proposal = JSON.stringify(payload);
 
     const formatDiff = (label, oldVal, newVal) => {
         const changed = oldVal !== newVal;
@@ -372,28 +434,112 @@ export function showProposedConfig(tabId, proposal) {
     `;
 
     area.classList.remove('hidden');
+
+    const modelPath = (tab.dataset.path || '').replace(/\\/g, '/');
+    if (modelPath) {
+        window.modelConfigs[modelPath] = {
+            ...(window.modelConfigs[modelPath] || {}),
+            ...payload,
+        };
+        applyModelConfig(modelPath, tabId);
+    }
 }
 
 export function hideProposedConfig(tabId) {
     const tab = document.getElementById(tabId);
-    if (tab) tab.querySelector('.tab-proposed-config').classList.add('hidden');
+    if (!tab) return;
+    tab.querySelector('.tab-proposed-config')?.classList.add('hidden');
+    delete tab.dataset.proposal;
+}
+
+function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } = {}) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return null;
+
+    const normalized = path.replace(/\\/g, '/');
+    const contextSize = getContextSize(tabId);
+    if (contextSize === null) return null;
+
+    return {
+        path: normalized,
+        mmproj_path: getSelectedMmprojForModel(normalized) || null,
+        gpu_weights: collectDeviceWeightsFromUI(tabId),
+        context_size: contextSize,
+        parallel_slots: parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1,
+        batch_size: parseInt(tab.querySelector('.tab-batch-size').value, 10) || 2048,
+        ubatch_size: parseInt(tab.querySelector('.tab-ubatch-size').value, 10) || 512,
+        cache_type_k: tab.querySelector('.tab-cache-type-k').value,
+        cache_type_v: tab.querySelector('.tab-cache-type-v').value,
+        numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
+        threads: parseInt(tab.querySelector('.tab-threads').value, 10) || 0,
+        threads_batch: parseInt(tab.querySelector('.tab-threads-batch').value, 10) || 0,
+        split_mode: tab.querySelector('.tab-split-mode').value,
+        auto_balance: false,
+        auto_balance_profile: autoBalanceProfile,
+        pinned_fields: collectPinnedFieldsFromTab(tabId),
+        thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
+        mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
+        mtp_draft_tokens: getMtpDraftTokens(tabId),
+    };
 }
 
 export async function applyProposedConfig(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab?.dataset.proposal) return;
-    
+
+    const normalized = path.replace(/\\/g, '/');
     const proposal = JSON.parse(tab.dataset.proposal);
-    
-    // 1. Update the UI fields
-    window.modelConfigs[path] = { ...window.modelConfigs[path], ...proposal };
-    applyModelConfig(path, tabId);
-    
-    // 2. Hide proposal area
+
+    window.modelConfigs[normalized] = {
+        ...(window.modelConfigs[normalized] || {}),
+        ...proposal,
+    };
+    applyModelConfig(normalized, tabId);
+
+    const payload = collectStartPayloadFromTab(normalized, tabId, {
+        autoBalanceProfile: true,
+    });
+    if (!payload) return alert('Contexto inválido');
+
+    const weightValidation = validateDeviceWeights(payload.gpu_weights);
+    if (!weightValidation.ok) return alert(weightValidation.message);
+
+    window.modelConfigs[normalized] = {
+        ...(window.modelConfigs[normalized] || {}),
+        ...payload,
+    };
+
     hideProposedConfig(tabId);
-    
-    // 3. Start model with new settings
-    startModel(path, tabId);
+
+    tab.querySelector('.tab-log-box').innerHTML = '';
+    const statusBadge = tab.querySelector('.tab-status-badge');
+    statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> SALVANDO...';
+    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-[9px] font-black tracking-widest uppercase glass border-amber-500/40 text-amber-400';
+
+    try {
+        const res = await apiFetch('/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            alert('Erro ao salvar/iniciar: ' + (err.detail || 'Falha'));
+            window.updateStatus();
+            return;
+        }
+
+        const startData = await res.json();
+        if (startData.port) state.currentActivePort = startData.port;
+
+        await window.updateModels?.();
+        await new Promise(r => setTimeout(r, 2000));
+        await window.updateStatus();
+    } catch (e) {
+        alert('Erro de rede ao salvar configuração.');
+        window.updateStatus();
+    }
 }
 
 export function switchTab(tabId) {
@@ -664,6 +810,8 @@ export function applyModelConfig(path, tabId) {
     if (cfg.gpu_weights) {
         applyGpuWeightsToUI(cfg.gpu_weights, false, tabId);
     }
+
+    applyPinnedFieldsToTab(tabId, cfg.pinned_fields);
     
     updateTotal(tabId);
 }
@@ -713,6 +861,16 @@ export async function saveModelsDir() {
     } catch (e) {}
 }
 
+function tabHasPendingProposal(modelPath) {
+    const normalized = modelPath.replace(/\\/g, '/');
+    return state.activeTabs.some(t => {
+        if (t.path.replace(/\\/g, '/') !== normalized) return false;
+        const el = document.getElementById(t.id);
+        const panel = el?.querySelector('.tab-proposed-config');
+        return !!(el?.dataset.proposal && panel && !panel.classList.contains('hidden'));
+    });
+}
+
 export async function updateModels() {
     try {
         const [res, cfgRes] = await Promise.all([
@@ -736,7 +894,9 @@ export async function updateModels() {
         const container = document.getElementById('model-list-container');
         container.innerHTML = data.models.map(m => {
             const m_js = m.path.replace(/\\/g, '/');
-            if (m.last_config) window.modelConfigs[m_js] = m.last_config;
+            if (m.last_config && !tabHasPendingProposal(m_js)) {
+                window.modelConfigs[m_js] = m.last_config;
+            }
             
             const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
             const status = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
@@ -813,26 +973,11 @@ export async function startModel(path, tabId) {
     if (!tab) return;
 
     tab.querySelector('.tab-log-box').innerHTML = '';
-    const weights = collectDeviceWeightsFromUI(tabId);
-    const weightValidation = validateDeviceWeights(weights);
+    const payload = collectStartPayloadFromTab(path, tabId, { autoBalanceProfile: false });
+    if (!payload) return alert('Contexto inválido');
+
+    const weightValidation = validateDeviceWeights(payload.gpu_weights);
     if (!weightValidation.ok) return alert(weightValidation.message);
-    
-    const mmprojPath = getSelectedMmprojForModel(path);
-    const splitMode = tab.querySelector('.tab-split-mode').value;
-    const cacheTypeK = tab.querySelector('.tab-cache-type-k').value;
-    const cacheTypeV = tab.querySelector('.tab-cache-type-v').value;
-    const ubatchSize = parseInt(tab.querySelector('.tab-ubatch-size').value, 10) || 512;
-    const numaEnabled = tab.querySelector('.tab-numa-toggle').checked;
-    const threads = parseInt(tab.querySelector('.tab-threads').value, 10) || 0;
-    const threadsBatch = parseInt(tab.querySelector('.tab-threads-batch').value, 10) || 0;
-    const parallelSlots = parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1;
-    const batchSize = parseInt(tab.querySelector('.tab-batch-size').value, 10) || 2048;
-    const thinkingEnabled = tab.querySelector('.tab-thinking-toggle').checked;
-    const mtpEnabled = tab.querySelector('.tab-mtp-toggle').checked;
-    const mtpDraftTokens = getMtpDraftTokens(tabId);
-    
-    const contextSize = getContextSize(tabId);
-    if (contextSize === null) return alert('Contexto inválido');
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> INICIANDO...';
@@ -842,25 +987,7 @@ export async function startModel(path, tabId) {
         const res = await apiFetch('/start', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                path,
-                mmproj_path: mmprojPath || null,
-                gpu_weights: weights,
-                context_size: contextSize,
-                parallel_slots: parallelSlots,
-                batch_size: batchSize,
-                ubatch_size: ubatchSize,
-                cache_type_k: cacheTypeK,
-                cache_type_v: cacheTypeV,
-                numa_enabled: numaEnabled,
-                threads: threads,
-                threads_batch: threadsBatch,
-                split_mode: splitMode,
-                auto_balance: false,
-                thinking_enabled: thinkingEnabled,
-                mtp_enabled: mtpEnabled,
-                mtp_draft_tokens: mtpDraftTokens,
-            }),
+            body: JSON.stringify(payload),
         });
         
         if (!res.ok) {

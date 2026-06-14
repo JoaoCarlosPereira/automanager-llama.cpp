@@ -1,25 +1,33 @@
-import { state } from './state.js';
-import { apiFetch, sessionExpiredHandled } from './auth.js';
+import { state } from './state.js?v=4.0.2';
+import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.2';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
-} from './gpu.js';
-import { getTabActionsHtml } from './models.js';
+    showAutoBalanceProgress, hideAutoBalanceProgress,
+} from './gpu.js?v=4.0.2';
+import { getTabActionsHtml } from './models.js?v=4.0.2';
 
 export async function updateStatus() {
     try {
         const res = await apiFetch('/status');
         if (sessionExpiredHandled || !res.ok) return;
         const data = await res.json();
-        
+
         state.activeInstances = data.instances || [];
         const runningInstances = state.activeInstances.filter(i => i.status === 'running');
+        const recovery = data.recovery;
+        const autoBalancing = !!(recovery?.active && recovery?.auto_balance);
+        const showAutoBalanceUi = autoBalancing || state.autoBalancePending;
 
-        // Global Status Badge
+        if (autoBalancing) {
+            state.autoBalanceSeenActive = true;
+        }
+
+        // Global Status Badge (skip while auto-balance UI is active)
         const badge = document.getElementById('status-badge');
         const hasInstances = runningInstances.length > 0;
-        if (badge) {
+        if (badge && !showAutoBalanceUi) {
             const dot = badge.querySelector('.status-dot');
             const txt = badge.querySelector('.status-text');
             if (hasInstances) {
@@ -40,32 +48,31 @@ export async function updateStatus() {
             const tabEl = document.getElementById(tab.id);
             if (!tabEl) return;
 
+            if (isTabAutoBalancing(tab, recovery, showAutoBalanceUi)) {
+                return;
+            }
+
             const statusBadge = tabEl.querySelector('.tab-status-badge');
             const actions = tabEl.querySelector('.tab-actions');
             const tabBtn = document.getElementById(`btn-${tab.id}`);
             const dot = tabBtn?.querySelector('.tab-status-dot');
-            
+
             const isRunning = inst && inst.status === 'running';
             if (isRunning) {
                 statusBadge.innerText = 'ONLINE';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, true, inst.port);
-                
+
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
-                
-                // Real-time config sync if not interacting
+
                 if (document.activeElement?.closest(`#${tab.id}`) === null) {
                     if (inst.config) {
                         window.modelConfigs[path] = inst.config;
-                        // applyModelConfig(path, tab.id); // Maybe too aggressive?
                     }
                 }
-                
-                // Start logs for this tab if not already streaming
+
                 if (!state.logStream || state.logStreamPort !== inst.port) {
-                     // We need a way to track multiple streams or switch context
-                     // For now, let's just ensure the CURRENT tab is streaming
-                     if (state.currentTabId === tab.id) startLogs(inst.port, tab.id);
+                    if (state.currentTabId === tab.id) startLogs(inst.port, tab.id);
                 }
             } else if (inst && inst.status === 'stopped') {
                 statusBadge.innerText = 'ERRO';
@@ -77,47 +84,111 @@ export async function updateStatus() {
                 statusBadge.innerText = 'OFFLINE';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
-                
+
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500';
             }
         });
 
         // --- Lógica de Auto-Balance / Recovery ---
-        if (state.autoBalancePending && data.recovery && !data.recovery.active) {
+        if (isAutoBalanceRunComplete(recovery)) {
             state.autoBalancePending = false;
-            
-            const recoveryTab = state.activeTabs.find(t => t.path === normalizePath(data.recovery.model));
+            state.autoBalanceTabId = null;
+            state.autoBalanceSeenActive = false;
+            state.autoBalanceRunId = null;
+            hideAutoBalanceProgress();
+
+            const recoveryTab = findRecoveryTab(recovery);
             if (recoveryTab) {
                 const tabId = recoveryTab.id;
-                
-                if (data.recovery.failed) {
-                    showAutoBalanceCapacityAlert(data.recovery, tabId);
-                } else if (!data.recovery.cancelled) {
-                    // IF it was a smart calibration, show the proposal
-                    if (data.recovery.smart_proposal) {
-                        import('./models.js').then(m => m.showProposedConfig(tabId, data.recovery.smart_proposal));
+
+                if (recovery.failed) {
+                    showAutoBalanceCapacityAlert(recovery, tabId);
+                } else if (!recovery.cancelled) {
+                    if (recovery.smart_proposal) {
+                        import('./models.js?v=4.0.2').then(m => {
+                            m.showProposedConfig(
+                                tabId,
+                                recovery.smart_proposal,
+                                recovery.gpu_weights,
+                            );
+                        });
+                    } else if (recovery.gpu_weights) {
+                        applyGpuWeightsToUI(recovery.gpu_weights, false, tabId);
                     }
-                    
-                    // Always apply weights if balanced successfully
-                    if (data.recovery.gpu_weights) {
-                        applyGpuWeightsToUI(data.recovery.gpu_weights, false, tabId);
+
+                    const modelPath = normalizePath(recovery.model);
+                    if (modelPath) {
+                        window.modelConfigs[modelPath] = {
+                            ...(window.modelConfigs[modelPath] || {}),
+                            ...(recovery.smart_proposal || {}),
+                            ...(recovery.gpu_weights
+                                ? { gpu_weights: recovery.gpu_weights }
+                                : {}),
+                            ...(recovery.pinned_fields
+                                ? { pinned_fields: recovery.pinned_fields }
+                                : {}),
+                        };
+                    }
+
+                    if (recovery.smart_proposal) {
+                        const tabEl = document.getElementById(tabId);
+                        tabEl?.querySelector('.tab-proposed-config')?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'nearest',
+                        });
                     }
                 }
             }
             window.updateModels();
         }
 
-        if (data.recovery && data.recovery.active) {
-            const recoveryTab = state.activeTabs.find(t => t.path === normalizePath(data.recovery.model));
+        if (showAutoBalanceUi) {
+            if (autoBalancing) {
+                state.autoBalancePending = true;
+            }
+
+            const recoveryTab = findRecoveryTab(recovery);
+            const progressRecovery = autoBalancing
+                ? recovery
+                : {
+                    message: 'Iniciando auto-balance...',
+                    smart_calibration: true,
+                    attempt: 0,
+                };
+
             if (recoveryTab) {
+                state.autoBalanceTabId = recoveryTab.id;
                 const tabEl = document.getElementById(recoveryTab.id);
                 const statusBadge = tabEl?.querySelector('.tab-status-badge');
+                const tabBtn = document.getElementById(`btn-${recoveryTab.id}`);
+                const dot = tabBtn?.querySelector('.tab-status-dot');
+                const statusLabel = (recovery?.smart_calibration ?? true)
+                    ? 'CALIBRANDO...'
+                    : 'AUTO-BALANCE...';
+
                 if (statusBadge) {
-                    statusBadge.innerHTML = `<i class="fas fa-sync animate-spin mr-2"></i> ${data.recovery.auto_balance ? 'CALIBRANDO...' : 'RECARREGANDO...'}`;
+                    statusBadge.innerHTML = `<i class="fas fa-sync animate-spin mr-2"></i> ${statusLabel}`;
                     statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
                 }
-                if (data.recovery.gpu_weights) applyGpuWeightsToUI(data.recovery.gpu_weights, true, recoveryTab.id);
+                if (dot) {
+                    dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_5px_#f59e0b] animate-pulse shrink-0 transition-all duration-500';
+                }
+                showAutoBalanceProgress(progressRecovery, recoveryTab.id);
+                if (recovery?.gpu_weights) {
+                    applyGpuWeightsToUI(recovery.gpu_weights, true, recoveryTab.id);
+                }
             }
+
+            const globalBadge = document.getElementById('status-badge');
+            if (globalBadge) {
+                const globalLabel = (recovery?.smart_calibration ?? state.autoBalancePending)
+                    ? 'CALIBRANDO'
+                    : 'AUTO-BALANCE';
+                globalBadge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-[0.2em] flex items-center gap-2 glass border-amber-500/30 text-amber-400 uppercase';
+                globalBadge.innerHTML = `<span class="status-dot w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span class="status-text">${globalLabel}</span>`;
+            }
+        } else if (!recovery?.active) {
+            hideAutoBalanceProgress();
         }
 
         window.updateModels();
@@ -126,6 +197,38 @@ export async function updateStatus() {
 
 function normalizePath(p) {
     return (p || '').replace(/\\/g, '/');
+}
+
+function findRecoveryTab(recovery) {
+    const modelPath = normalizePath(recovery?.model);
+    if (modelPath) {
+        const byPath = state.activeTabs.find(t => t.path === modelPath);
+        if (byPath) return byPath;
+    }
+    if (state.autoBalanceTabId) {
+        const byId = state.activeTabs.find(t => t.id === state.autoBalanceTabId);
+        if (byId) return byId;
+    }
+    if (state.currentTabId) {
+        const current = state.activeTabs.find(t => t.id === state.currentTabId);
+        if (current) return current;
+    }
+    return null;
+}
+
+function isTabAutoBalancing(tab, recovery, showAutoBalanceUi) {
+    if (!showAutoBalanceUi) return false;
+    if (state.autoBalanceTabId && tab.id === state.autoBalanceTabId) return true;
+    const modelPath = normalizePath(recovery?.model);
+    return !!(modelPath && tab.path === modelPath);
+}
+
+function isAutoBalanceRunComplete(recovery) {
+    if (!state.autoBalancePending || !recovery || recovery.active) return false;
+    if (state.autoBalanceRunId != null && recovery.run_id != null) {
+        return recovery.run_id === state.autoBalanceRunId;
+    }
+    return state.autoBalanceSeenActive;
 }
 
 function formatBytes(bytes) {
@@ -239,7 +342,7 @@ export function startDashboardPolling() {
     stopDashboardPolling();
     updateMetrics();
     dashboardPollIntervals.push(setInterval(updateMetrics, 2000));
-    dashboardPollIntervals.push(setInterval(updateStatus, 3000));
+    dashboardPollIntervals.push(setInterval(updateStatus, 1000));
     dashboardPollIntervals.push(setInterval(updateDownloads, 3000));
 }
 

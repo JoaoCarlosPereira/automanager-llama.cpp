@@ -45,6 +45,7 @@ class StartRequest(BaseModel):
     total_layers: int = 0  # 0 = auto-detect from model file
     cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
     port: Optional[int] = None  # Porta específica para o modelo
+    auto_balance_profile: Optional[bool] = None  # None = False no /start; True após aplicar proposta
 
 
 class DeleteRequest(BaseModel):
