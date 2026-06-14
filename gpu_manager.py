@@ -165,6 +165,8 @@ class CPUInfo:
     name: str
     ram_total_mb: int
     ram_used_mb: int
+    physical_cores: int = 0
+    logical_cores: int = 0
 
 
 class GPUDetector:
@@ -178,7 +180,9 @@ class GPUDetector:
         self._gpus_cache: List[Dict[str, Any]] = []
         self._gpus_cache_time: float = 0.0
         self._gpus_cache_ttl: float = 60.0  # seconds — GPU list rarely changes
-        self._cpu_info_cache: CPUInfo = CPUInfo(name="", ram_total_mb=0, ram_used_mb=0)
+        self._cpu_info_cache: CPUInfo = CPUInfo(
+            name="", ram_total_mb=0, ram_used_mb=0, physical_cores=0, logical_cores=0
+        )
         self._cpu_info_cache_time: float = 0.0
         self._cpu_info_cache_ttl: float = 60.0  # seconds — CPU info rarely changes
         self._model_layers_cache: Dict[str, Tuple[float, int]] = {}
@@ -390,10 +394,16 @@ class GPUDetector:
         # --- RAM (psutil, cross-platform) ---
         ram_total_mb, ram_used_mb, _ = _system_ram_mb()
 
+        # --- Cores (psutil) ---
+        physical_cores = psutil.cpu_count(logical=False) or 0
+        logical_cores = psutil.cpu_count(logical=True) or 0
+
         self._cpu_info_cache = CPUInfo(
             name=cpu_name,
             ram_total_mb=ram_total_mb,
             ram_used_mb=ram_used_mb,
+            physical_cores=physical_cores,
+            logical_cores=logical_cores,
         )
         self._cpu_info_cache_time = now
         return self._cpu_info_cache
@@ -734,3 +744,23 @@ class GPUManager(GPUDetector):
 
         self._model_mtp_cache[norm] = (now, result)
         return result
+
+def reasoning_cli_args(enabled: bool) -> List[str]:
+    """Flags for 'thinking' models (e.g. DeepSeek-R1)."""
+    if not enabled:
+        return []
+    # Current best-practice for llama.cpp/DeepSeek
+    return ["--reasoning-format", "deepseek"]
+
+def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: any) -> List[str]:
+    """Flags for Multi-Token Prediction (MTP)."""
+    if not enabled:
+        return []
+    # Check if model supports MTP
+    if not detector.detect_model_mtp(model_path):
+        return []
+    return ["--spec-draft-n-max", str(draft_tokens)]
+
+def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
+    """Helper for context size calculation."""
+    return context_size * parallel_slots

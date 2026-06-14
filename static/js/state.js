@@ -13,4 +13,7 @@ export const state = {
     modelsTimer: null,
     statusPollIntervalMs: 3000,
     statusPollTimer: null,
+    activeTabs: [], // [{id, path, name}]
+    currentTabId: null,
+    modelLogs: {}, // {modelPath: 'log text...'}
 };

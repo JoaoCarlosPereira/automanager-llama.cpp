@@ -1,11 +1,16 @@
 import { state } from './state.js';
 import { apiFetch } from './auth.js';
 
-const CPU_DATA_INDEX = 'cpu';
 const CPU_INDEX = -1;
 
-function getDeviceRows() {
-    return Array.from(document.querySelectorAll('.gpu-row, .cpu-row'));
+function getTabScope(tabId = null) {
+    if (!tabId) tabId = state.currentTabId;
+    return tabId ? document.getElementById(tabId) : document;
+}
+
+function getDeviceRows(tabId = null) {
+    const scope = getTabScope(tabId);
+    return Array.from(scope.querySelectorAll('.gpu-row, .cpu-row'));
 }
 
 function getRowCheckbox(row) {
@@ -20,90 +25,57 @@ function getRowPinInput(row) {
     return row.querySelector('.gpu-pin') || row.querySelector('.cpu-pin');
 }
 
-function isCpuRow(row) {
-    return row.classList.contains('cpu-row');
-}
-
-function findDeviceRow(weight) {
+function findDeviceRow(weight, tabId = null) {
+    const scope = getTabScope(tabId);
     if (weight.device === 'cpu' || weight.index === CPU_INDEX) {
-        return document.querySelector('.cpu-row');
+        return scope.querySelector('.cpu-row');
     }
-    return document.querySelector(`.gpu-row[data-index="${weight.index}"]`);
+    return scope.querySelector(`.gpu-row[data-index="${weight.index}"]`);
 }
 
-export function showAutoBalanceCapacityAlert(recovery) {
-    const el = document.getElementById('auto-balance-capacity-alert');
-    const msgEl = document.getElementById('auto-balance-capacity-msg');
-    const detailsEl = document.getElementById('auto-balance-capacity-details');
-    const suggEl = document.getElementById('auto-balance-capacity-suggestions');
+export function showAutoBalanceCapacityAlert(recovery, tabId = null) {
+    const scope = getTabScope(tabId);
+    const el = scope.querySelector('.tab-auto-balance-alert');
+    const msgEl = scope.querySelector('.tab-auto-balance-msg');
+    const detailsEl = scope.querySelector('.tab-auto-balance-details');
     if (!el || !msgEl) return;
 
     const d = recovery.failure_details || {};
-    msgEl.textContent = recovery.message || (
-        'O modelo excede a capacidade de memória das GPUs disponíveis.'
-    );
+    msgEl.textContent = recovery.message || 'O modelo excede a capacidade de memória das GPUs.';
 
     if (detailsEl) {
         const rows = [];
-        if (d.model) rows.push(`<li><span class="text-slate-300">Modelo:</span> ${d.model}</li>`);
-        if (d.total_vram_gb != null) rows.push(
-            `<li><span class="text-slate-300">VRAM total (GPUs ativas):</span> ~${d.total_vram_gb} GB`
-        );
-        if (d.context_size) rows.push(
-            `<li><span class="text-slate-300">Contexto / slot:</span> ${d.context_size} tokens`
-        );
-        if (d.parallel_slots) rows.push(
-            `<li><span class="text-slate-300">Slots paralelos:</span> ${d.parallel_slots}</li>`
-        );
-        if (Array.isArray(d.gpus) && d.gpus.length) {
-            const gpuTxt = d.gpus.map(g =>
-                `GPU ${g.index} (${g.name}): ${g.vram_mb} MB`
-            ).join(' · ');
-            rows.push(`<li><span class="text-slate-300">GPUs testadas:</span> ${gpuTxt}</li>`);
-        }
+        if (d.total_vram_gb != null) rows.push(`<li>VRAM total: ~${d.total_vram_gb} GB</li>`);
+        if (d.context_size) rows.push(`<li>Contexto: ${d.context_size} tokens</li>`);
         detailsEl.innerHTML = rows.join('');
     }
 
-    if (suggEl) {
-        const tips = Array.isArray(d.suggestions) ? d.suggestions : [
-            'Reduza contexto ou use quantização menor',
-            'Escolha um modelo menor',
-        ];
-        suggEl.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
-    }
-
     el.classList.remove('hidden');
-    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-export function updateAutoBalanceProfileBadge(hasProfile) {
-    const badge = document.getElementById('auto-balance-badge');
+export function updateAutoBalanceProfileBadge(hasProfile, tabId = null) {
+    const scope = getTabScope(tabId);
+    const badge = scope.querySelector('.tab-auto-balance-badge');
     if (!badge) return;
-    let show = !!hasProfile;
-    if (hasProfile === undefined && state.currentSelectedModel) {
-        const cfg = window.modelConfigs[state.currentSelectedModel];
-        show = !!(cfg && cfg.auto_balance_profile);
-    }
-    badge.classList.toggle('hidden', !show);
+    badge.classList.toggle('hidden', !hasProfile);
 }
 
-export function balanceWeights(changedInput) {
-    redistributeUnpinnedWeights(changedInput);
+export function balanceWeights(changedInput, tabId = null) {
+    redistributeUnpinnedWeights(changedInput, tabId);
 }
 
-export function redistributeUnpinnedWeights(changedInput) {
-    const rows = getDeviceRows()
-        .filter(r => getRowCheckbox(r)?.checked);
+export function redistributeUnpinnedWeights(changedInput, tabId = null) {
+    const rows = getDeviceRows(tabId).filter(r => getRowCheckbox(r)?.checked);
     const pinnedRows = rows.filter(r => getRowPinInput(r)?.checked);
     const unpinnedRows = rows.filter(r => !getRowPinInput(r)?.checked);
 
     if (rows.length === 0) {
-        updateTotal();
+        updateTotal(tabId);
         return;
     }
     if (rows.length === 1) {
         getRowWeightInput(rows[0]).value = 100;
-        updateTotal();
+        updateTotal(tabId);
         return;
     }
 
@@ -112,13 +84,13 @@ export function redistributeUnpinnedWeights(changedInput) {
     );
 
     if (unpinnedRows.length === 0) {
-        updateTotal();
+        updateTotal(tabId);
         return;
     }
 
     if (unpinnedRows.length === 1) {
         getRowWeightInput(unpinnedRows[0]).value = Math.max(0, 100 - pinnedSum);
-        updateTotal();
+        updateTotal(tabId);
         return;
     }
 
@@ -140,7 +112,7 @@ export function redistributeUnpinnedWeights(changedInput) {
                 remaining -= share;
             }
         }
-        updateTotal();
+        updateTotal(tabId);
         return;
     }
 
@@ -149,9 +121,7 @@ export function redistributeUnpinnedWeights(changedInput) {
     if (val > maxForChanged) { val = maxForChanged; changedInput.value = val; }
     if (val < 0) { val = 0; changedInput.value = 0; }
 
-    const otherUnpinned = unpinnedRows.filter(
-        r => getRowWeightInput(r) !== changedInput
-    );
+    const otherUnpinned = unpinnedRows.filter(r => getRowWeightInput(r) !== changedInput);
     let remaining = maxForChanged - val;
     for (let i = 0; i < otherUnpinned.length; i++) {
         const input = getRowWeightInput(otherUnpinned[i]);
@@ -166,43 +136,37 @@ export function redistributeUnpinnedWeights(changedInput) {
             remaining -= share;
         }
     }
-    updateTotal();
+    updateTotal(tabId);
 }
 
-export function bindGpuManualListeners() {
-    document.querySelectorAll('.gpu-weight, .cpu-weight').forEach(el => {
-        el.addEventListener('input', markManualGpuChange);
+export function bindGpuManualListeners(tabId = null) {
+    const scope = getTabScope(tabId);
+    scope.querySelectorAll('.gpu-weight, .cpu-weight').forEach(el => {
+        el.addEventListener('input', () => markManualGpuChange(tabId));
     });
-    document.querySelectorAll('.gpu-checkbox, .cpu-checkbox').forEach(el => {
+    scope.querySelectorAll('.gpu-checkbox, .cpu-checkbox').forEach(el => {
         el.addEventListener('change', () => {
-            markManualGpuChange();
-            redistributeUnpinnedWeights(null);
+            markManualGpuChange(tabId);
+            redistributeUnpinnedWeights(null, tabId);
         });
     });
-    document.querySelectorAll('.gpu-main-radio').forEach(el => {
-        el.addEventListener('change', markManualGpuChange);
+    scope.querySelectorAll('.gpu-main-radio').forEach(el => {
+        el.addEventListener('change', () => markManualGpuChange(tabId));
     });
-    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(el => {
-        el.addEventListener('change', () => onGpuPinToggle(el));
+    scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(el => {
+        el.addEventListener('change', () => onGpuPinToggle(el, tabId));
     });
-    document.querySelectorAll('.gpu-pin:checked, .cpu-pin:checked').forEach(pin => {
-        getRowWeightInput(pin.closest('.gpu-row, .cpu-row'))
-            ?.classList.add('ring-2', 'ring-amber-500/40');
-    });
-    const abToggle = document.getElementById('auto-balance-toggle');
+    const abToggle = scope.querySelector('.tab-auto-balance-toggle');
     if (abToggle) {
-        abToggle.addEventListener('change', () => onAutoBalanceToggle(abToggle));
-        onAutoBalanceToggle(abToggle);  // aplica estado inicial
+        abToggle.addEventListener('change', () => onAutoBalanceToggle(abToggle, tabId));
     }
 }
 
-export function applyGpuWeightsToUI(weights, duringAutoBalance) {
+export function applyGpuWeightsToUI(weights, duringAutoBalance, tabId = null) {
     if (!weights || !Array.isArray(weights)) return;
-    const cpuPayload = weights.find(
-        w => w.device === 'cpu' || w.index === CPU_INDEX
-    );
+    const scope = getTabScope(tabId);
     weights.forEach(w => {
-        const row = findDeviceRow(w);
+        const row = findDeviceRow(w, tabId);
         if (!row) return;
         const input = getRowWeightInput(row);
         const cb = getRowCheckbox(row);
@@ -217,49 +181,28 @@ export function applyGpuWeightsToUI(weights, duringAutoBalance) {
         if (radio && w.is_main) radio.checked = true;
         if (pin && w.pinned !== undefined) {
             pin.checked = !!w.pinned;
-            if (w.pinned) input.classList.add('ring-2', 'ring-amber-500/40');
-            else input.classList.remove('ring-2', 'ring-amber-500/40');
+            if (w.pinned) input.classList.add('ring-1', 'ring-amber-500/50');
+            else input.classList.remove('ring-1', 'ring-amber-500/50');
         }
     });
-    const cpuRow = document.querySelector('.cpu-row');
-    if (cpuRow && !cpuPayload) {
-        const input = getRowWeightInput(cpuRow);
-        if (input && (duringAutoBalance || document.activeElement !== input)) {
-            input.value = '0';
-        }
-    }
-    updateTotal();
+    updateTotal(tabId);
 }
 
 export function getActiveWeightTotal(weights) {
-    if (weights) {
-        return weights
-            .filter(w => w.active)
-            .reduce((sum, w) => sum + (w.weight || 0), 0);
-    }
-    let sum = 0;
-    getDeviceRows().forEach(row => {
-        const input = getRowWeightInput(row);
-        const isChecked = getRowCheckbox(row)?.checked;
-        if (!input) return;
-        if (isChecked) sum += parseInt(input.value || 0, 10);
-    });
-    return sum;
+    return (weights || []).filter(w => w.active).reduce((sum, w) => sum + (w.weight || 0), 0);
 }
 
-/** Collect active device weights from the dashboard table (syncs totals first). */
-export function collectDeviceWeightsFromUI() {
-    updateTotal();
+export function collectDeviceWeightsFromUI(tabId = null) {
+    updateTotal(tabId);
+    const scope = getTabScope(tabId);
     const weights = [];
-    document.querySelectorAll('.gpu-row').forEach(r => {
+    scope.querySelectorAll('.gpu-row').forEach(r => {
         const isChecked = r.querySelector('.gpu-checkbox').checked;
         const isMain = r.querySelector('.gpu-main-radio').checked;
-        const gpuName = r.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'GPU';
+        const gpuName = r.querySelector('span.font-black')?.innerText?.trim() || 'GPU';
         weights.push({
             index: parseInt(r.dataset.index, 10),
-            weight: isChecked
-                ? parseInt(r.querySelector('.gpu-weight').value || 0, 10)
-                : 0,
+            weight: isChecked ? parseInt(r.querySelector('.gpu-weight').value || 0, 10) : 0,
             name: gpuName,
             active: isChecked,
             is_main: isMain,
@@ -267,16 +210,13 @@ export function collectDeviceWeightsFromUI() {
             device: 'gpu',
         });
     });
-    const cpuRow = document.querySelector('.cpu-row');
+    const cpuRow = scope.querySelector('.cpu-row');
     if (cpuRow) {
         const cpuChecked = cpuRow.querySelector('.cpu-checkbox')?.checked ?? false;
-        const cpuName = cpuRow.querySelector('.text-sm.font-bold')?.innerText?.trim() || 'CPU';
         weights.push({
             index: -1,
-            weight: cpuChecked
-                ? parseInt(cpuRow.querySelector('.cpu-weight')?.value || 0, 10)
-                : 0,
-            name: cpuName,
+            weight: cpuChecked ? parseInt(cpuRow.querySelector('.cpu-weight')?.value || 0, 10) : 0,
+            name: 'CPU',
             active: cpuChecked,
             is_main: false,
             pinned: cpuRow.querySelector('.cpu-pin')?.checked || false,
@@ -286,115 +226,74 @@ export function collectDeviceWeightsFromUI() {
     return weights;
 }
 
-/** @returns {{ ok: boolean, message: string }} */
 export function validateDeviceWeights(weights) {
     const active = weights.filter(w => w.active);
-
-    if (!active.some(w => w.device === 'gpu')) {
-        return { ok: false, message: 'SELECIONE PELO MENOS UMA GPU' };
-    }
-
+    if (!active.some(w => w.device === 'gpu')) return { ok: false, message: 'SELECIONE UMA GPU' };
     const total = getActiveWeightTotal(weights);
-    if (Math.abs(total - 100) > 1) {
-        return {
-            ok: false,
-            message: `A CARGA TOTAL DEVE SER 100% (atual: ${total}%). Ajuste os pesos antes de iniciar.`,
-        };
-    }
-
-    // CPU weight has no upper cap — LoadDistributor manages spill-over dynamically
-
+    if (Math.abs(total - 100) > 1) return { ok: false, message: `CARGA TOTAL: ${total}% (DEVE SER 100%)` };
     return { ok: true, message: '' };
 }
 
-export function updateTotal() {
+export function updateTotal(tabId = null) {
     let sum = 0;
-    getDeviceRows().forEach(row => {
+    const scope = getTabScope(tabId);
+    getDeviceRows(tabId).forEach(row => {
         const input = getRowWeightInput(row);
         const isChecked = getRowCheckbox(row)?.checked;
         if (!input) return;
         if (isChecked) sum += parseInt(input.value || 0, 10);
         else input.value = 0;
     });
-    const badge = document.getElementById('total-percent');
+    const badge = scope.querySelector('.tab-total-percent');
     if (!badge) return;
-    badge.innerText = `CARGA TOTAL: ${sum}%`;
-    badge.className = sum === 100
-        ? 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20'
-        : 'text-sm font-black tracking-widest px-4 md:px-6 py-2.5 md:py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20';
+    badge.innerText = `CARGA: ${sum}%`;
+    badge.className = `tab-total-percent text-[10px] font-black tracking-widest uppercase ${sum === 100 ? 'text-blue-500/80' : 'text-red-500/80'}`;
 }
 
-export function onGpuPinToggle(pinCheckbox) {
-    markManualGpuChange();
+export function onGpuPinToggle(pinCheckbox, tabId = null) {
+    markManualGpuChange(tabId);
     const row = pinCheckbox.closest('.gpu-row, .cpu-row');
     const weightInput = row ? getRowWeightInput(row) : null;
     if (weightInput) {
-        if (pinCheckbox.checked) {
-            weightInput.classList.add('ring-2', 'ring-amber-500/40');
-        } else {
-            weightInput.classList.remove('ring-2', 'ring-amber-500/40');
-        }
+        if (pinCheckbox.checked) weightInput.classList.add('ring-1', 'ring-amber-500/50');
+        else weightInput.classList.remove('ring-1', 'ring-amber-500/50');
     }
-    redistributeUnpinnedWeights(weightInput);
+    redistributeUnpinnedWeights(weightInput, tabId);
 }
 
-export function clearGpuPins() {
-    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
+export function clearGpuPins(tabId = null) {
+    const scope = getTabScope(tabId);
+    scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
         pin.checked = false;
         const row = pin.closest('.gpu-row, .cpu-row');
         const weightInput = row ? getRowWeightInput(row) : null;
-        if (weightInput) weightInput.classList.remove('ring-2', 'ring-amber-500/40');
+        if (weightInput) weightInput.classList.remove('ring-1', 'ring-amber-500/50');
     });
 }
 
-export function onAutoBalanceToggle(toggle) {
-    // Sob Auto-Balance, a cascata controla 100% da distribuição: limpa e
-    // desabilita os pins (ADR-001). Ao desligar, reabilita os controles.
+export function onAutoBalanceToggle(toggle, tabId = null) {
     const active = !!(toggle && toggle.checked);
-    if (active) clearGpuPins();
-    document.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => {
-        pin.disabled = active;
-    });
+    if (active) clearGpuPins(tabId);
+    const scope = getTabScope(tabId);
+    scope.querySelectorAll('.gpu-pin, .cpu-pin').forEach(pin => pin.disabled = active);
 }
 
-export function onContextSizeCustomInput() {
-    const sel = document.getElementById('context-size');
-    if (sel && sel.value !== 'custom') sel.value = 'custom';
-    syncContextSizeCustomVisibility();
-}
-
-export function getContextSize() {
-    const sel = document.getElementById('context-size');
+export function getContextSize(tabId = null) {
+    const scope = getTabScope(tabId);
+    const sel = scope.querySelector('.tab-context-size');
     if (!sel) return window.__constants.DEFAULT_CONTEXT_SIZE;
     if (sel.value === 'custom') {
-        const k = parseFloat(document.getElementById('context-size-custom')?.value);
+        const k = parseFloat(scope.querySelector('.tab-context-size-custom')?.value);
         if (!Number.isFinite(k) || k < 1) return null;
         return Math.round(k * window.__constants.CONTEXT_K_MULTIPLIER);
     }
-    const preset = parseInt(sel.value, 10);
-    return Number.isFinite(preset) ? preset : window.__constants.DEFAULT_CONTEXT_SIZE;
+    return parseInt(sel.value, 10) || window.__constants.DEFAULT_CONTEXT_SIZE;
 }
 
-export function markManualGpuChange() {
-    state.manualGpuOverride = true;
-    const badge = document.getElementById('auto-balance-badge');
-    if (badge) badge.classList.add('hidden');
-}
-
-export function onContextSizePresetChange() {
-    syncContextSizeCustomVisibility();
-}
-
-export function tokensToContextK(tokens) {
-    const k = tokens / window.__constants.CONTEXT_K_MULTIPLIER;
-    if (Number.isInteger(k)) return String(k);
-    const rounded = Math.round(k * 1000) / 1000;
-    return Number.isInteger(rounded) ? String(rounded) : String(rounded);
-}
-
-export function setContextSize(value) {
-    const sel = document.getElementById('context-size');
-    const custom = document.getElementById('context-size-custom');
+export function setContextSize(value, tabId = null) {
+    const scope = getTabScope(tabId);
+    const sel = scope.querySelector('.tab-context-size');
+    const custom = scope.querySelector('.tab-context-size-custom');
     if (!sel || !custom) return;
     const n = parseInt(value, 10);
     if (!Number.isFinite(n)) return;
@@ -402,19 +301,21 @@ export function setContextSize(value) {
         sel.value = String(n);
     } else {
         sel.value = 'custom';
-        custom.value = tokensToContextK(n);
+        custom.value = n / window.__constants.CONTEXT_K_MULTIPLIER;
     }
-    syncContextSizeCustomVisibility();
+    syncContextSizeCustomVisibility(tabId);
 }
 
-export function syncContextSizeCustomVisibility() {
-    const sel = document.getElementById('context-size');
-    const wrap = document.getElementById('context-size-custom-wrap');
-    const custom = document.getElementById('context-size-custom');
-    if (!sel || !wrap || !custom) return;
-    const show = sel.value === 'custom';
-    wrap.classList.toggle('hidden', !show);
-    if (show && !custom.value) custom.focus();
+export function syncContextSizeCustomVisibility(tabId = null) {
+    const scope = getTabScope(tabId);
+    const sel = scope.querySelector('.tab-context-size');
+    const wrap = scope.querySelector('.tab-custom-ctx-wrap');
+    if (!sel || !wrap) return;
+    wrap.classList.toggle('hidden', sel.value !== 'custom');
+}
+
+export function markManualGpuChange(tabId = null) {
+    state.manualGpuOverride = true;
 }
 
 export function isModelHardwareIncapable(path) {
@@ -423,29 +324,14 @@ export function isModelHardwareIncapable(path) {
 }
 
 export async function cancelAutoBalance() {
-    const btn = document.getElementById('auto-balance-cancel-btn');
-    if (btn) {
-        btn.disabled = true;
-        btn.classList.add('opacity-50');
-    }
     try {
-        const res = await fetch('/auto-balance/cancel', { method: 'POST' });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            alert(err.detail || 'Nao foi possivel cancelar o auto balance.');
-        }
-    } catch (e) {
-        alert('Erro de rede ao cancelar auto balance.');
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.classList.remove('opacity-50');
-        }
-    }
+        await apiFetch('/auto-balance/cancel', { method: 'POST' });
+    } catch (e) {}
 }
 
-export function hideAutoBalanceCapacityAlert() {
-    const el = document.getElementById('auto-balance-capacity-alert');
+export function hideAutoBalanceCapacityAlert(tabId = null) {
+    const scope = getTabScope(tabId);
+    const el = scope.querySelector('.tab-auto-balance-alert');
     if (el) el.classList.add('hidden');
 }
 
@@ -453,91 +339,62 @@ export function modelIncapableRowClass(incapable) {
     return incapable ? 'border-red-500/40 bg-red-950/20' : '';
 }
 
-export function syncAutoBalanceCancelButton(autoBalancing) {
-    const btn = document.getElementById('auto-balance-cancel-btn');
-    if (btn) btn.classList.toggle('hidden', !autoBalancing);
+export function syncAutoBalanceCancelButton(autoBalancing, tabId = null) {
+    // Shared or localized as needed
 }
 
-export function resetToDefaults() {
-    setContextSize(window.__constants.DEFAULT_CONTEXT_SIZE);
-    document.getElementById('parallel-slots').value = String(window.__constants.DEFAULT_PARALLEL_SLOTS);
-    document.getElementById('batch-size').value = String(window.__constants.DEFAULT_BATCH_SIZE);
-    document.getElementById('split-mode').value = "layer";
-    const toggle = document.getElementById('auto-balance-toggle');
-    if (toggle) toggle.checked = false;
-    const thinkingToggle = document.getElementById('thinking-toggle');
-    if (thinkingToggle) {
-        thinkingToggle.checked = true;
-        updateThinkingBadge(true);
-    }
-    const mtpToggle = document.getElementById('mtp-toggle');
-    if (mtpToggle) {
-        mtpToggle.checked = false;
-        updateMtpBadge(false);
-    }
-    const mtpDraftTokens = document.getElementById('mtp-draft-tokens');
-    if (mtpDraftTokens) {
-        mtpDraftTokens.value = '3';
-    }
-    document.querySelectorAll('.gpu-row').forEach((row, idx) => {
+export function resetToDefaults(tabId = null) {
+    const scope = getTabScope(tabId);
+    setContextSize(window.__constants.DEFAULT_CONTEXT_SIZE, tabId);
+    scope.querySelector('.tab-parallel-slots').value = String(window.__constants.DEFAULT_PARALLEL_SLOTS);
+    scope.querySelector('.tab-batch-size').value = String(window.__constants.DEFAULT_BATCH_SIZE);
+    scope.querySelector('.tab-cache-type-k').value = window.__constants.DEFAULT_CACHE_TYPE;
+    scope.querySelector('.tab-cache-type-v').value = window.__constants.DEFAULT_CACHE_TYPE;
+    scope.querySelector('.tab-ubatch-size').value = '512';
+    
+    scope.querySelector('.tab-auto-balance-toggle').checked = false;
+    scope.querySelector('.tab-thinking-toggle').checked = true;
+    scope.querySelector('.tab-mtp-toggle').checked = false;
+    scope.querySelector('.tab-numa-toggle').checked = false;
+    
+    scope.querySelectorAll('.gpu-row').forEach((row, idx) => {
         row.querySelector('.gpu-checkbox').checked = true;
         row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
         row.querySelector('.gpu-main-radio').checked = (idx === 0);
         const pin = row.querySelector('.gpu-pin');
         if (pin) pin.checked = false;
-        row.querySelector('.gpu-weight')?.classList.remove('ring-2', 'ring-amber-500/40');
+        row.querySelector('.gpu-weight')?.classList.remove('ring-1', 'ring-amber-500/50');
     });
-    const cpuRow = document.querySelector('.cpu-row');
+    
+    const cpuRow = scope.querySelector('.cpu-row');
     if (cpuRow) {
-        const cpuCb = getRowCheckbox(cpuRow);
-        const cpuWeight = getRowWeightInput(cpuRow);
-        const cpuPin = getRowPinInput(cpuRow);
-        if (cpuCb) cpuCb.checked = false;
-        if (cpuWeight) {
-            cpuWeight.value = '0';
-            cpuWeight.classList.remove('ring-2', 'ring-amber-500/40');
-        }
-        if (cpuPin) cpuPin.checked = false;
+        cpuRow.querySelector('.cpu-checkbox').checked = false;
+        const weight = cpuRow.querySelector('.cpu-weight');
+        weight.value = '0';
+        weight.classList.remove('ring-1', 'ring-amber-500/50');
+        cpuRow.querySelector('.cpu-pin').checked = false;
     }
-    markManualGpuChange();
-    updateTotal();
+    
+    updateTotal(tabId);
 }
 
 export function modelIncapableBadgeHtml(incapable) {
     if (!incapable) return '';
-    return '<span class="shrink-0 text-[8px] font-black uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30" title="Incompativel com o hardware atual (auto balance)">Incapaz</span>';
+    return '<span class="text-[8px] font-black text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20 uppercase tracking-tighter">Incapaz</span>';
 }
 
-export function updateThinkingBadge(enabled) {
-    const badge = document.getElementById('thinking-badge');
-    if (!badge) return;
-    const isOn = enabled !== false;
-    badge.innerText = isOn ? 'ON' : 'OFF';
-    badge.className = isOn
-        ? 'text-[9px] font-black uppercase tracking-wider text-violet-400'
-        : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
+export function updateThinkingBadge(enabled, tabId = null) {}
+export function updateMtpBadge(enabled, tabId = null) {}
+export function showMtpWarning(reason, tabId = null) {
+    const scope = getTabScope(tabId);
+    const el = scope.querySelector('.tab-mtp-warning');
+    if (el) {
+        el.querySelector('.tab-mtp-warning-msg').textContent = reason;
+        el.classList.remove('hidden');
+    }
 }
-
-export function updateMtpBadge(enabled) {
-    const badge = document.getElementById('mtp-badge');
-    if (!badge) return;
-    const isOn = !!enabled;
-    badge.innerText = isOn ? 'ON' : 'OFF';
-    badge.className = isOn
-        ? 'text-[9px] font-black uppercase tracking-wider text-amber-400'
-        : 'text-[9px] font-black uppercase tracking-wider text-slate-500';
-}
-
-export function showMtpWarning(reason) {
-    const el = document.getElementById('mtp-warning');
-    const msgEl = document.getElementById('mtp-warning-msg');
-    if (!el || !msgEl) return;
-    msgEl.textContent = reason;
-    el.classList.remove('hidden');
-    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-export function hideMtpWarning() {
-    const el = document.getElementById('mtp-warning');
+export function hideMtpWarning(tabId = null) {
+    const scope = getTabScope(tabId);
+    const el = scope.querySelector('.tab-mtp-warning');
     if (el) el.classList.add('hidden');
 }

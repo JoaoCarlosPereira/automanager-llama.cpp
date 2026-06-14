@@ -951,7 +951,11 @@ class AutoBalancePlanner:
 
     @staticmethod
     def estimate_model_vram_mb(
-        model_path: str, context_size: int, parallel_slots: int
+        model_path: str,
+        context_size: int,
+        parallel_slots: int,
+        cache_type_k: str = "f16",
+        cache_type_v: str = "f16",
     ) -> Dict[str, int]:
         """Estimate VRAM components separately: weights + KV-cache + runtime.
 
@@ -964,7 +968,22 @@ class AutoBalancePlanner:
         The cascade MUST distribute only ``weights_mb``, because the llama-server
         splits weights (not KV-cache) via --tensor-split/--ngl.
         """
-        ctx_overhead_mb = context_size * parallel_slots * 0.1
+        # Multipliers relative to f16 (0.1 MB/token for GQA models)
+        multipliers = {
+            "f32": 2.0,
+            "f16": 1.0,
+            "bf16": 1.0,
+            "q8_0": 0.5,
+            "q5_1": 0.35,
+            "q5_0": 0.32,
+            "q4_1": 0.28,
+            "q4_0": 0.25,
+        }
+        m_k = multipliers.get(cache_type_k, 1.0)
+        m_v = multipliers.get(cache_type_v, 1.0)
+        avg_mult = (m_k + m_v) / 2.0
+
+        ctx_overhead_mb = context_size * parallel_slots * 0.1 * avg_mult
 
         disk_mb = AutoBalancePlanner.model_weights_mb_from_disk(model_path)
         if disk_mb is not None and disk_mb > 0:
@@ -974,11 +993,12 @@ class AutoBalancePlanner:
             total = weights_mb + kv_cache_mb
             _auto_balance_log(
                 "estimate_model_vram_mb [DISK] model=%s disk_mb=%d "
-                "runtime_overhead_mb=%d weights_mb=%d "  # <-- weights = disk + runtime
+                "cache_k=%s cache_v=%s weights_mb=%d "
                 "kv_cache_mb=%d total_mb=%d",
                 model_path,
                 disk_mb,
-                runtime_overhead,
+                cache_type_k,
+                cache_type_v,
                 weights_mb,
                 kv_cache_mb,
                 total,
@@ -996,13 +1016,14 @@ class AutoBalancePlanner:
         total = weights_mb + kv_cache_mb + runtime_overhead
         _auto_balance_log(
             "estimate_model_vram_mb [FILENAME] model=%s "
-            "estimated_gb=%.2f weights_mb=%d ctx_overhead_mb=%d "
-            "runtime_overhead_mb=%d total_mb=%d",
+            "estimated_gb=%.2f cache_k=%s cache_v=%s weights_mb=%d "
+            "kv_cache_mb=%d total_mb=%d",
             model_path,
             model_size_gb,
+            cache_type_k,
+            cache_type_v,
             weights_mb,
             kv_cache_mb,
-            runtime_overhead,
             total,
         )
         return {
@@ -1255,7 +1276,11 @@ class AutoBalanceProber:
         cascata usa para distribuir pesos via --tensor-split.
         """
         est = self.planner.estimate_model_vram_mb(
-            request.path, request.context_size, request.parallel_slots
+            request.path,
+            request.context_size,
+            request.parallel_slots,
+            cache_type_k=request.cache_type_k,
+            cache_type_v=request.cache_type_v,
         )
         weights_mb = est["weights_mb"]
         total_mb = est["total_mb"]
@@ -1564,26 +1589,91 @@ class AutoBalanceProber:
     def discover(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
-        """Auto-balance empírico com sondagem de OOM (ADR-002 atualizado).
-
-        Testa configurações iterativamente via probes, começando com 1 GPU
-        (main) e escalando: se OOM → adiciona próxima GPU na ordem de spill;
-        se OOM com todas GPUs → CPU offload (10% em 10%). Fase 2 otimiza
-        VRAM por GPU via binary search. A mesma lógica de priorização
-        (main → secundárias → CPU) mantida do código original.
-        """
+        """Auto-balance empírico com sondagem de OOM (ADR-002 atualizado)."""
         self.port = getattr(request, "port", None) or SERVER_PORT
         try:
-            return self._discover_empirical(request)
+            success, weights, message, failure = self._discover_empirical(request)
+            
+            result_data = failure or {}
+            if success and getattr(request, "smart_calibration", False):
+                result_data["proposal"] = self._generate_smart_proposal(request, weights)
+                
+            return success, weights, message, result_data
         except AutoBalanceCancelled:
             return False, request.gpu_weights, "Auto-balance cancelado pelo usuário.", None
         except AutoBalanceServerCrashed as crash:
-            # Non-OOM crash: the model cannot be loaded by this binary at all.
-            # Stop any lingering process and report a clear crash (not a VRAM
-            # capacity verdict) so the user fixes the real cause.
             self.process_manager.stop(self.port)
             msg, failure = self.build_server_crash_failure(request, crash)
             return False, request.gpu_weights, msg, failure
+
+    def _generate_smart_proposal(self, request, final_weights: List[GPUWeight]) -> dict:
+        """Heurística para sugerir a melhor performance baseada na VRAM sobrando."""
+        all_gpus = self.gpu_manager.detect_gpus()
+        vram_map = {g["index"]: g["vram"] for g in all_gpus}
+        
+        # 1. Calcular VRAM total disponível nas GPUs ativas
+        active_indices = [w.index for w in final_weights if w.active and w.device == "gpu"]
+        total_vram_mb = sum(vram_map.get(idx, 0) for idx in active_indices)
+        
+        # 2. Estimar uso atual
+        est = self.planner.estimate_model_vram_mb(
+            request.path,
+            request.context_size,
+            request.parallel_slots,
+            cache_type_k=request.cache_type_k,
+            cache_type_v=request.cache_type_v
+        )
+        weights_mb = est["weights_mb"]
+        kv_mb = est["kv_cache_mb"]
+        total_used = weights_mb + kv_mb
+        
+        free_mb = total_vram_mb - total_used
+        pinned = request.pinned_fields or {}
+        
+        proposal = {
+            "context_size": request.context_size,
+            "parallel_slots": request.parallel_slots,
+            "batch_size": request.batch_size,
+            "ubatch_size": request.ubatch_size,
+            "cache_type_k": request.cache_type_k,
+            "cache_type_v": request.cache_type_v,
+            "threads": request.threads,
+            "threads_batch": request.threads_batch,
+        }
+
+        # Heurística de Cache
+        if not pinned.get("cache_type"):
+            if free_mb < 500 and request.cache_type_k == "f16":
+                proposal["cache_type_k"] = "q4_0"
+                proposal["cache_type_v"] = "q4_0"
+            elif free_mb > 4000 and request.cache_type_k != "f16":
+                proposal["cache_type_k"] = "f16"
+                proposal["cache_type_v"] = "f16"
+
+        # Heurística de Batch
+        if not pinned.get("batch_size"):
+            if free_mb > 2048:
+                proposal["batch_size"] = 4096
+            elif free_mb < 512:
+                proposal["batch_size"] = 1024
+
+        # Heurística de U-Batch
+        if not pinned.get("ubatch_size"):
+            # Usually 512 is safe and fast for modern GPUs
+            proposal["ubatch_size"] = 512
+
+        # Heurística de Threads (usar núcleos físicos detectados)
+        if not pinned.get("threads"):
+            cpu_info = self.gpu_manager.detect_cpu_info()
+            if cpu_info.physical_cores > 0:
+                proposal["threads"] = cpu_info.physical_cores
+                proposal["threads_batch"] = cpu_info.physical_cores
+
+        # Heurística de Contexto (Aumentar se sobrar MUITA VRAM)
+        if not pinned.get("context_size") and free_mb > 8000:
+            proposal["context_size"] = request.context_size * 2
+
+        return proposal
 
     def _discover_empirical(
         self, request
@@ -1619,7 +1709,11 @@ class AutoBalanceProber:
             request, spill_order, vram_by_index
         )
         est = self.planner.estimate_model_vram_mb(
-            request.path, request.context_size, request.parallel_slots
+            request.path,
+            request.context_size,
+            request.parallel_slots,
+            cache_type_k=request.cache_type_k,
+            cache_type_v=request.cache_type_v,
         )
         self._cache_model_vram_estimate(request, est)
         weights_mb = est["weights_mb"]
@@ -2302,7 +2396,11 @@ class AutoBalanceProber:
             return None, attempt, cpu_weight
 
         est = self.planner.estimate_model_vram_mb(
-                request.path, request.context_size, request.parallel_slots
+                request.path,
+                request.context_size,
+                request.parallel_slots,
+                cache_type_k=request.cache_type_k,
+                cache_type_v=request.cache_type_v,
             ) if estimated_model_mb <= 0 else {"total_mb": estimated_model_mb}
         total_mb = est.get("total_mb", 0)
         max_attempts = max(90 // CPU_OFFLOAD_STEP + 5, 20)

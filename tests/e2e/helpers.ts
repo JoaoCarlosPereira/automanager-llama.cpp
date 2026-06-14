@@ -13,9 +13,9 @@ export async function loginAsAdmin(page: Page): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await expect(page.locator('#login-overlay')).toBeVisible();
   await page.locator('#login-username').fill(ADMIN_USER);
-  await page.locator('#login-password').fill('qualquer-senha');
+  await page.locator('#login-password').fill(ADMIN_PASS);
   const loginResponse = page.waitForResponse(
-    (resp) => resp.url().includes('/api/auth/login') && resp.ok(),
+    (resp) => resp.url().includes('/login') && resp.ok(),
   );
   await page.locator('#login-form').evaluate((form: HTMLFormElement) => form.requestSubmit());
   await loginResponse;
@@ -40,8 +40,8 @@ export async function waitForModelsLoaded(page: Page): Promise<void> {
 
 export async function refreshDashboardStatus(page: Page): Promise<void> {
   await page.evaluate(() => {
-    window.updateStatus();
-    window.updateMetrics();
+    if (window.updateStatus) window.updateStatus();
+    if (window.updateMetrics) window.updateMetrics();
   });
   await page.waitForResponse(
     (resp) => resp.url().includes('/status') && resp.request().method() === 'GET' && resp.ok(),
@@ -58,7 +58,7 @@ export async function setMockRunning(
       data: {
         path,
         gpu_weights: [
-          { index: 0, weight: 100, active: true, is_main: true, pinned: false },
+          { index: 0, weight: 100, active: true, is_main: true, pinned: false, name: 'GPU0', device: 'gpu' },
         ],
         context_size: 65536,
         parallel_slots: 1,

@@ -144,41 +144,40 @@ def _reset_mock_data() -> None:
 
 
 def _status_payload() -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "running": _mock_state["running"],
-        "model": _mock_state["model"],
-        "config": _mock_state["config"] or {},
-        "recovery": copy.deepcopy(_recovery_state),
-    }
+    instances = []
     if _mock_state["running"]:
         path = _mock_state["model_path"] or _DEFAULT_START_PATH
         name = _mock_state["model"] or path.split("/")[-1]
-        payload.update(
-            {
-                "model": name,
-                "model_path": path,
-                "start_time": _mock_state["start_time"] or time.time(),
-                "config": _mock_state["config"]
-                or {
-                    "path": path,
-                    "context_size": 65536,
-                    "parallel_slots": 1,
-                    "batch_size": 512,
-                    "split_mode": "layer",
-                    "gpu_weights": [
-                        {
-                            "index": 0,
-                            "weight": 100,
-                            "active": True,
-                            "is_main": True,
-                            "pinned": False,
-                        }
-                    ],
-                    "mmproj_path": None,
-                },
+        instances.append({
+            "port": 8085,
+            "status": "running",
+            "model": name,
+            "model_path": path,
+            "start_time": _mock_state["start_time"] or time.time(),
+            "config": _mock_state["config"] or {
+                "path": path,
+                "context_size": 65536,
+                "parallel_slots": 1,
+                "batch_size": 512,
+                "split_mode": "layer",
+                "gpu_weights": [
+                    {
+                        "index": 0,
+                        "weight": 100,
+                        "active": True,
+                        "is_main": True,
+                        "pinned": False,
+                        "name": "Mock GPU 0",
+                        "device": "gpu"
+                    }
+                ],
             }
-        )
-    return payload
+        })
+    
+    return {
+        "instances": instances,
+        "recovery": copy.deepcopy(_recovery_state),
+    }
 
 
 def _apply_start(path: str, body: Optional[Dict[str, Any]] = None) -> None:
@@ -189,25 +188,7 @@ def _apply_start(path: str, body: Optional[Dict[str, Any]] = None) -> None:
             "model": name,
             "model_path": path,
             "start_time": time.time(),
-            "config": (body or {}).get("config")
-            or {
-                "path": path,
-                "context_size": (body or {}).get("context_size", 65536),
-                "parallel_slots": (body or {}).get("parallel_slots", 1),
-                "batch_size": (body or {}).get("batch_size", 512),
-                "split_mode": (body or {}).get("split_mode", "layer"),
-                "gpu_weights": (body or {}).get("gpu_weights")
-                or [
-                    {
-                        "index": 0,
-                        "weight": 100,
-                        "active": True,
-                        "is_main": True,
-                        "pinned": False,
-                    }
-                ],
-                "mmproj_path": (body or {}).get("mmproj_path"),
-            },
+            "config": (body or {}),
         }
     )
 
@@ -215,67 +196,42 @@ def _apply_start(path: str, body: Optional[Dict[str, Any]] = None) -> None:
 mock_api = FastAPI()
 
 
-@mock_api.post("/api/auth/login")
+@mock_api.post("/login")
 async def mock_login(request: Request):
     body = await request.json()
     username = body.get("username", "")
     password = body.get("password", "")
     if username == "invalid" or password == "wrong":
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
-    session_token = secrets.token_urlsafe(32)
-    with auth_manager._lock:
-        auth_manager._sessions[session_token] = datetime.utcnow()
-    response = JSONResponse({"status": "ok"})
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        samesite="lax",
-        max_age=3600,
-    )
-    return response
-
-
-@mock_api.post("/api/auth/logout")
-async def mock_logout(request: Request):
-    session_token = request.cookies.get("session_token")
-    if session_token:
-        auth_manager.logout(session_token)
-    response = JSONResponse({"status": "ok"})
-    response.delete_cookie(key="session_token")
-    return response
-
-
-@mock_api.post("/api/auth/change-password")
-async def mock_change_password():
-    return {"status": "ok"}
-
-
-@mock_api.get("/status")
-async def mock_status():
-    return _status_payload()
-
-
-@mock_api.post("/stop")
-async def mock_stop():
-    _mock_state.update(
-        {
-            "running": False,
-            "model": None,
-            "model_path": None,
-            "start_time": None,
-            "config": None,
-        }
-    )
-    return {"status": "ok"}
+    return {"token": "e2e-test-token"}
 
 
 @mock_api.post("/start")
 async def mock_start(request: Request):
     body = await request.json()
     path = body.get("path", _DEFAULT_START_PATH)
+    
+    if body.get("auto_balance") and body.get("smart_calibration"):
+        _recovery_state.update({
+            "active": True,
+            "model": path,
+            "message": "Otimizando...",
+            "auto_balance": True,
+            "smart_calibration": True
+        })
+        # Simulate background finish after 1s
+        def finish():
+            time.sleep(1)
+            _recovery_state.update({
+                "active": False,
+                "smart_proposal": {"threads": 8, "batch_size": 4096}
+            })
+        import threading
+        threading.Thread(target=finish).start()
+        return {"probing": True, "status": "ok"}
+
     _apply_start(path, body)
-    return {"probing": False, "status": "ok"}
+    return {"probing": False, "status": "ok", "port": 8085}
 
 
 @mock_api.get("/metrics")

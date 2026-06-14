@@ -4,9 +4,11 @@ from pydantic import BaseModel, ConfigDict, Field
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
+DEFAULT_CACHE_TYPE = "f16"
 DEFAULT_MTP_ENABLED = False
 DEFAULT_MTP_DRAFT_TOKENS = 3
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+CACHE_TYPE_PRESETS = ["f16", "q8_0", "q4_0"]
 
 
 class GPUWeight(BaseModel):
@@ -26,8 +28,16 @@ class StartRequest(BaseModel):
     context_size: int = DEFAULT_CONTEXT_SIZE
     parallel_slots: int = Field(default=DEFAULT_PARALLEL_SLOTS, ge=1, le=64)
     batch_size: int = Field(default=DEFAULT_BATCH_SIZE, ge=32, le=65536)
+    ubatch_size: int = Field(default=512, ge=32, le=65536)
+    cache_type_k: str = DEFAULT_CACHE_TYPE
+    cache_type_v: str = DEFAULT_CACHE_TYPE
+    numa_enabled: bool = False
+    threads: int = 0  # 0 = auto
+    threads_batch: int = 0  # 0 = auto
     split_mode: str = "layer"
     auto_balance: bool = False
+    smart_calibration: bool = False
+    pinned_fields: Optional[dict] = None
     manual_gpu_override: bool = False
     thinking_enabled: bool = True
     mtp_enabled: bool = DEFAULT_MTP_ENABLED
