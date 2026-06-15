@@ -779,7 +779,7 @@ def reasoning_cli_args(enabled: bool) -> List[str]:
     # Current best-practice for llama.cpp/DeepSeek
     return ["--reasoning-format", "deepseek"]
 
-def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: any) -> Tuple[List[str], bool, str]:
+def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: "GPUDetector") -> Tuple[List[str], bool, str]:
     """Flags for Multi-Token Prediction (MTP). Returns (flags_list, applied_bool, reason_str)."""
     if not enabled:
         return [], False, ""

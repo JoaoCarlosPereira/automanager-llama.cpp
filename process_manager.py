@@ -1,6 +1,7 @@
 import logging
 import os
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -17,8 +18,22 @@ from llama_server_bin import (
     supports_cli_flag,
     validate_turboquant_cache_types,
 )
+from gpu_manager import reasoning_cli_args, mtp_cli_args
 from schemas import StartRequest, GPUWeight, DEFAULT_PARALLEL_SLOTS, DEFAULT_BATCH_SIZE, DEFAULT_MTP_DRAFT_TOKENS, DEFAULT_CACHE_TYPE, TURBOQUANT_DEFAULT_CACHE_K, TURBOQUANT_DEFAULT_CACHE_V
 from paths import INSTALL_ROOT
+
+# Lazy import to avoid circular dependency with auto_balance
+_AutoBalanceProber = None
+_AutoBalanceCancelled = None
+
+
+def _get_auto_balance_types():
+    global _AutoBalanceProber, _AutoBalanceCancelled
+    if _AutoBalanceProber is None:
+        from auto_balance import AutoBalanceProber, AutoBalanceCancelled
+        _AutoBalanceProber = AutoBalanceProber
+        _AutoBalanceCancelled = AutoBalanceCancelled
+    return _AutoBalanceProber, _AutoBalanceCancelled
 
 SERVER_PORT = 8085
 
@@ -77,7 +92,7 @@ class ProcessManager:
         self,
         config: ConfigManager,
         token_mgr: TokenManager,
-        gpu_manager: any,
+        gpu_manager: "GPUManager",
         log_manager: LogManager,
     ):
         self.config = config
@@ -107,7 +122,7 @@ class ProcessManager:
         self._auto_balance_cancel = value
 
     def _is_port_free(self, port: int) -> bool:
-        import socket
+        """Check if a TCP port is free to bind."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(("127.0.0.1", port)) != 0
 
@@ -214,7 +229,9 @@ class ProcessManager:
         }
 
     def _run_auto_balance(self, request: StartRequest) -> None:
-        from auto_balance import AutoBalanceCancelled, AutoBalanceProber
+        Prober, Cancelled = _get_auto_balance_types()
+        AutoBalanceProber = Prober
+        AutoBalanceCancelled = Cancelled
 
         with self._lock:
             self._auto_balance_active = True
@@ -427,22 +444,16 @@ class ProcessManager:
         cpu_enabled: Optional[bool] = None,
         port: Optional[int] = None,
         llama_server_bin: Optional[str] = None,
-    ) -> dict:
+      ) -> dict:
         """Start a llama-server instance."""
-        if port is None:
-            port = SERVER_PORT
-            while not self._is_port_free(port):
-                port += 1
-
-        self.stop(port)
-
+        # Validate inputs before acquiring lock
         gpu_weights = self.gpu_manager.normalize_gpu_weights(gpu_weights)
         valid, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
         if not valid:
             raise HTTPException(status_code=400, detail=err)
 
         visible = self.gpu_manager.get_visible_devices(gpu_weights)
-        
+
         # Build offload plan
         if not total_layers or total_layers <= 0:
             total_layers = self.gpu_manager.detect_model_layers(model_path)
@@ -535,10 +546,9 @@ class ProcessManager:
             cmd.append("--mmproj-auto")
 
         # Logic for reasoning and mtp
-        from gpu_manager import reasoning_cli_args, mtp_cli_args
         reasoning_args = reasoning_cli_args(thinking_enabled)
         cmd.extend(reasoning_args)
-        
+
         mtp_args, mtp_applied, mtp_reason = mtp_cli_args(
             mtp_enabled, mtp_draft_tokens, model_path, self.gpu_manager
         )
@@ -548,8 +558,28 @@ class ProcessManager:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         env["CUDA_VISIBLE_DEVICES"] = visible
 
-        logger.info(f"Starting llama-server: {' '.join(cmd)}")
+        logger.info(f"Starting llama-server on port {port} for model {os.path.basename(model_path)}")
         try:
+            # Allocate port and acquire exclusive access under lock
+            with self._lock:
+                if port is None:
+                    port = SERVER_PORT
+                    while port in self.processes or not self._is_port_free(port):
+                        port += 1
+
+                # Stop any existing process on this port
+                if port in self.processes:
+                    existing_proc = self.processes.pop(port)
+                    try:
+                        existing_proc.send_signal(signal.SIGINT)
+                        try:
+                            existing_proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            existing_proc.kill()
+                    except Exception:
+                        pass
+                    self._requests.pop(port, None)
+
             proc = subprocess.Popen(
                 cmd,
                 env=env,
@@ -629,9 +659,9 @@ class OOMWatchdog:
     def __init__(
         self,
         process_manager: ProcessManager,
-        config_manager: ConfigManager = None,
-        gpu_manager: any = None,
-        log_manager: LogManager = None,
+        config_manager: Optional["ConfigManager"] = None,
+        gpu_manager: Optional["GPUManager"] = None,
+        log_manager: Optional[LogManager] = None,
     ):
         self.pm = process_manager
         self.config = config_manager
@@ -653,8 +683,31 @@ class OOMWatchdog:
             self._thread.join()
 
     def _run(self):
-        """Main loop for log-based OOM detection (placeholder for now)."""
+        """Main loop for log-based OOM detection.
+        
+        Periodically scans all active llama-server processes for OOM patterns
+        in their stderr output. When detected, triggers recovery logic.
+        """
         while not self._stop.is_set():
+            try:
+                now = time.time()
+                with self.pm._lock:
+                    active_ports = [p for p, proc in self.pm.processes.items()
+                                    if proc is not None and proc.poll() is None]
+
+                for port in active_ports:
+                    try:
+                        proc = self.pm.processes[port]
+                        if proc is None:
+                            continue
+                        stderr_output = proc.stderr.read() if proc.stderr else ""
+                        if stderr_output and self.OOM_PATTERNS.search(stderr_output):
+                            logger.warning(f"OOM detected on port {port} from stderr")
+                            self._handle_oom(port)
+                    except Exception:
+                        pass
+            except Exception:
+                logger.exception("Watchdog loop error")
             time.sleep(5)
 
     def _handle_oom(self, port: int) -> None:

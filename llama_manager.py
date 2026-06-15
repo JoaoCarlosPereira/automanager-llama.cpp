@@ -16,6 +16,9 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from config_manager import ConfigManager, TokenManager, AuthManager, SESSION_IDLE_SECONDS
 from log_manager import LogManager, logger
@@ -72,6 +75,10 @@ _CFG_FIELD = 'cfg-field group/tip relative space-y-2'
 app = FastAPI(title="Automanager Llama.cpp")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Rate limiter for login endpoint
+limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
+app.state.limiter = limiter
+
 # Shared HTTP client for proxying
 client = httpx.AsyncClient()
 
@@ -107,7 +114,8 @@ def _invalidate_models_cache():
 
 
 @app.post("/api/auth/login")
-async def login(req: Dict[str, str]):
+@limiter.limit("5/minute")
+async def login(request: Request, req: Dict[str, str]):
     username = req.get("username")
     password = req.get("password")
     result = auth_manager.authenticate(username, password)
@@ -1582,11 +1590,9 @@ def _build_html(
 </html>"""
 
 
-# ─────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────
 # Startup event — auto-start default model + OOM watchdog
 # ─────────────────────────────────────────────────────────
-
-GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
 
 
 def _chain_shutdown_signals() -> None:

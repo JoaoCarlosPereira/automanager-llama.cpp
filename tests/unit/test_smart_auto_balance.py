@@ -99,24 +99,32 @@ def test_process_manager_handles_smart_calibration_flow():
     gpu_mgr = MagicMock()
     log_mgr = MagicMock()
     pm = ProcessManager(config, token_mgr, gpu_mgr, log_mgr)
-    
+
     weights = [GPUWeight(index=0, weight=100, name="G", active=True, is_main=True)]
     req = _make_request(weights, smart_calibration=True)
-    
-    # We must patch where it's USED if possible, or ensure the global one is patched.
-    # Since it's a local import in _run_auto_balance, we patch 'auto_balance.AutoBalanceProber'.
-    with patch("auto_balance.AutoBalanceProber") as mock_class:
-        prober_instance = mock_class.return_value
-        prober_instance.discover.return_value = (True, weights, "Done", {"proposal": {"threads": 8}})
-        
-        # Trigger background run
-        pm._run_auto_balance(req)
-        
+
+    # Patch _get_auto_balance_types in process_manager (where the cached class
+    # is returned) so the prober returns our fake success result instead of
+    # spawning real llama-server processes.  Also mock stop() so that the
+    # internal self.stop() call (which calls _wait_port_released) does not
+    # block on an actual port.
+    with patch("process_manager._get_auto_balance_types") as mock_get_types:
+        mock_prober_class = MagicMock()
+        prober_instance = mock_prober_class.return_value
+        prober_instance.discover.return_value = (
+            True, weights, "Done", {"proposal": {"threads": 8}}
+        )
+        mock_get_types.return_value = (mock_prober_class, MagicMock)
+
+        with patch.object(pm, "stop"):
+            pm._run_auto_balance(req)
+
         # Verify recovery_state
         state = pm.recovery_state
         assert state["active"] is False
         assert state.get("smart_calibration") is True
         assert state.get("smart_proposal") == {"threads": 8}
-        
-        # IMPORTANT: Verify that config.update_model_settings was NOT called (user must apply manually)
+
+        # IMPORTANT: Verify that config.update_model_settings was NOT called
+        # (user must apply manually)
         config.update_model_settings.assert_not_called()
