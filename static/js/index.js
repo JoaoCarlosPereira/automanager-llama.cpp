@@ -9,13 +9,13 @@ import {
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload,
-} from './metrics.js?v=4.0.7';
+} from './metrics.js?v=4.0.8';
 import {
     initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-} from './models.js?v=4.0.7';
+} from './models.js?v=4.0.8';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.0.7';
 
 window.modelConfigs = window.modelConfigs || {};

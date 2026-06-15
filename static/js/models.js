@@ -639,10 +639,12 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
     if (contextSize === null) return null;
 
     const cacheTypes = getEffectiveCacheTypes(tabId);
+    const mmprojDisabled = _isMmprojDisabledForModel(normalized);
 
     return {
         path: normalized,
         mmproj_path: getSelectedMmprojForModel(normalized) || null,
+        mmproj_disabled: mmprojDisabled,
         gpu_weights: collectDeviceWeightsFromUI(tabId),
         context_size: contextSize,
         parallel_slots: parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1,
@@ -779,6 +781,8 @@ export function resolveMmprojPath(model) {
     const modelJs = model.path.replace(/\\/g, '/');
     const cfg = window.modelConfigs[modelJs] || model.last_config || {};
     const saved = cfg.mmproj_path;
+    // Preserve the "Sem visão" sentinel
+    if (saved === '__no_vision__') return null;
     if (saved && candidates.includes(saved)) return saved;
     return candidates[0];
 }
@@ -790,12 +794,17 @@ export function buildModelVisionControlsHtml(model, modelJs) {
     if (!candidates.length) return importBtn;
 
     const selected = resolveMmprojPath(model);
-    const options = candidates.map((candidate) => {
+    let options = '';
+    // "Sem visão" option at the top
+    const noVisionSelected = selected === null ? ' selected' : '';
+    options += `<option value="__no_vision__"${noVisionSelected}>Sem visão</option>`;
+    const optionsList = candidates.map((candidate) => {
         const name = escapeHtml(candidate.split('/').pop());
         const value = escapeHtml(candidate);
         const selectedAttr = candidate === selected ? ' selected' : '';
         return `<option value="${value}" class="bg-slate-900"${selectedAttr}>${name}</option>`;
     }).join('');
+    options += optionsList;
 
     return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-[8px] font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[120px]" onchange="onMmprojChange('${safePath}', this)" onclick="event.stopPropagation()" title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
 }
@@ -805,11 +814,18 @@ export function getSelectedMmprojForModel(modelPath) {
     const selects = document.querySelectorAll('select[data-mmproj-for]');
     for (const select of selects) {
         if (select.getAttribute('data-mmproj-for') === normalized && select.value) {
+            if (select.value === '__no_vision__') return null;
             return select.value;
         }
     }
     const cfg = window.modelConfigs[normalized];
+    if (cfg?.mmproj_path === '__no_vision__') return null;
     return cfg?.mmproj_path || null;
+}
+
+function _isMmprojDisabledForModel(modelPath) {
+    const cfg = window.modelConfigs[modelPath];
+    return cfg?.mmproj_path === '__no_vision__';
 }
 
 export function openVisionImportModal(modelPath) {
@@ -873,7 +889,9 @@ export async function persistMmprojSelection(modelPath, mmprojPath, { silent = f
 }
 
 export async function onMmprojChange(modelPath, selectEl) {
-    await persistMmprojSelection(modelPath, selectEl?.value || null);
+    const val = selectEl?.value;
+    // Keep __no_vision__ as a sentinel so it persists in config
+    await persistMmprojSelection(modelPath, val || null);
 }
 
 async function ensureMmprojSelectionsForModels(models) {
@@ -887,6 +905,8 @@ async function ensureMmprojSelectionsForModels(models) {
 
         const saved = (model.last_config || window.modelConfigs[path] || {}).mmproj_path;
         if (saved && candidates.includes(saved)) continue;
+        // If user explicitly selected "Sem visão", don't re-apply a default
+        if (saved === '__no_vision__') continue;
 
         await persistMmprojSelection(path, resolved, { silent: true });
     }

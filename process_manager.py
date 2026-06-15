@@ -410,6 +410,7 @@ class ProcessManager:
         gpu_weights: List[GPUWeight],
         context_size: int,
         mmproj_path: Optional[str] = None,
+        mmproj_disabled: bool = False,
         split_mode: str = "layer",
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -525,7 +526,10 @@ class ProcessManager:
         if supports_cli_flag("--pinned-memory", llama_bin):
             cmd.append("--pinned-memory")
 
-        if mmproj_path and os.path.exists(mmproj_path):
+        if mmproj_disabled:
+            # User explicitly chose "Sem visão" — disable vision entirely
+            cmd.append("--no-mmproj")
+        elif mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
         else:
             cmd.append("--mmproj-auto")

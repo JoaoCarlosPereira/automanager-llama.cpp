@@ -79,6 +79,7 @@ class StartRequest(BaseModel):
     auto_balance_profile: Optional[bool] = None  # None = False no /start; True após aplicar proposta
     llama_server_bin: Optional[str] = None  # Binário llama-server para este modelo
     turboquant_preset: Optional[str] = None  # Preset TurboQuant+ (UI / persistência por modelo)
+    mmproj_disabled: bool = False  # True = usuário escolheu explicitamente "Sem visão"
 
 
 class DeleteRequest(BaseModel):

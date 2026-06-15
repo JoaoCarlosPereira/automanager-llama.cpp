@@ -218,6 +218,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "threads": req.threads,
         "threads_batch": req.threads_batch,
         "mmproj_path": req.mmproj_path,
+        "mmproj_disabled": req.mmproj_disabled,
         "split_mode": req.split_mode,
         "auto_balance": req.auto_balance,
         "thinking_enabled": req.thinking_enabled,
@@ -255,6 +256,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         gpu_weights=req.gpu_weights,
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
+        mmproj_disabled=req.mmproj_disabled,
         split_mode=req.split_mode,
         parallel_slots=req.parallel_slots,
         batch_size=req.batch_size,
@@ -418,7 +420,12 @@ async def get_config(authenticated: bool = Depends(require_auth)):
 async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    config_manager.update_model_settings(req.model_path, {"mmproj_path": req.mmproj_path})
+    settings = {"mmproj_path": req.mmproj_path}
+    if req.mmproj_path == "__no_vision__":
+        settings["mmproj_disabled"] = True
+    elif req.mmproj_path is None or (req.mmproj_path and req.mmproj_path != "__no_vision__"):
+        settings["mmproj_disabled"] = False
+    config_manager.update_model_settings(req.model_path, settings)
     return {"status": "ok", "mmproj_path": req.mmproj_path}
 
 
@@ -579,6 +586,9 @@ def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
     if not candidates:
         return None
     saved = model_cfg.get("mmproj_path")
+    # Preserve the explicit "Sem visão" sentinel
+    if saved == "__no_vision__":
+        return None
     if saved and saved in candidates:
         return saved
     return candidates[0]
@@ -598,7 +608,12 @@ def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) ->
     if not candidates:
         return import_btn
     selected = _resolved_mmproj_path(model, model_cfg)
-    options = ""
+    options = ''
+    # "Sem visão" option at the top
+    no_vision_selected = " selected" if selected is None else ""
+    options += (
+        f'<option value="__no_vision__"{no_vision_selected}>Sem visão</option>'
+    )
     for candidate in candidates:
         name = html.escape(os.path.basename(candidate))
         value = html.escape(candidate, quote=True)
@@ -1624,6 +1639,7 @@ def _auto_start_default_model() -> None:
                 parallel_slots = saved_cfg.get("parallel_slots", DEFAULT_PARALLEL_SLOTS)
                 batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
                 mmproj_path = saved_cfg.get("mmproj_path")
+                mmproj_disabled = saved_cfg.get("mmproj_disabled", False)
                 split_mode = saved_cfg.get("split_mode", "layer")
                 thinking_enabled = saved_cfg.get("thinking_enabled", True)
                 mtp_enabled = saved_cfg.get("mtp_enabled", False)
@@ -1650,6 +1666,7 @@ def _auto_start_default_model() -> None:
                 parallel_slots = DEFAULT_PARALLEL_SLOTS
                 batch_size = DEFAULT_BATCH_SIZE
                 mmproj_path = None
+                mmproj_disabled = False
                 split_mode = "layer"
                 thinking_enabled = True
                 mtp_enabled = False
@@ -1670,6 +1687,7 @@ def _auto_start_default_model() -> None:
                 gpu_weights=weights,
                 context_size=context_size,
                 mmproj_path=mmproj_path,
+                mmproj_disabled=mmproj_disabled,
                 split_mode=split_mode,
                 parallel_slots=parallel_slots,
                 batch_size=batch_size,
