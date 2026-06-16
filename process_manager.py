@@ -483,6 +483,14 @@ class ProcessManager:
         )
         api_token = self.token_mgr.get_or_create()
         server_ctx_size = compute_server_ctx_size(context_size, parallel_slots)
+
+        # Allocate port and acquire exclusive access under lock
+        with self._lock:
+            if port is None:
+                port = SERVER_PORT
+                while port in self.processes or not self._is_port_free(port):
+                    port += 1
+
         cmd = [
             llama_bin,
             "-m",
@@ -560,14 +568,8 @@ class ProcessManager:
 
         logger.info(f"Starting llama-server on port {port} for model {os.path.basename(model_path)}")
         try:
-            # Allocate port and acquire exclusive access under lock
+            # Stop any existing process on this port under lock
             with self._lock:
-                if port is None:
-                    port = SERVER_PORT
-                    while port in self.processes or not self._is_port_free(port):
-                        port += 1
-
-                # Stop any existing process on this port
                 if port in self.processes:
                     existing_proc = self.processes.pop(port)
                     try:
