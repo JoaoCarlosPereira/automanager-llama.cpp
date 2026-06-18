@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 
-from llama_manager import app, auth_manager, gpu_manager
+from llama_manager import app, auth_manager, gpu_manager, require_auth
 
 MOCK_PORT = 8001
 
@@ -196,14 +196,55 @@ def _apply_start(path: str, body: Optional[Dict[str, Any]] = None) -> None:
 mock_api = FastAPI()
 
 
-@mock_api.post("/login")
+@mock_api.post("/api/auth/login")
 async def mock_login(request: Request):
     body = await request.json()
     username = body.get("username", "")
     password = body.get("password", "")
     if username == "invalid" or password == "wrong":
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
-    return {"token": "e2e-test-token"}
+    response = JSONResponse({"status": "ok"})
+    response.set_cookie(key="session_token", value="e2e-mock-session-token", httponly=True)
+    return response
+
+
+@mock_api.get("/status")
+async def mock_status():
+    instances = []
+    if _mock_state["running"]:
+        path = _mock_state["model_path"] or _DEFAULT_START_PATH
+        name = _mock_state["model"] or path.split("/")[-1]
+        instances.append({
+            "port": 8085,
+            "status": "running",
+            "model": name,
+            "model_path": path,
+            "start_time": _mock_state["start_time"] or time.time(),
+            "config": _mock_state["config"] or {
+                "path": path,
+                "context_size": 65536,
+                "parallel_slots": 1,
+                "batch_size": 512,
+                "split_mode": "layer",
+                "gpu_weights": [
+                    {
+                        "index": 0,
+                        "weight": 100,
+                        "active": True,
+                        "is_main": True,
+                        "pinned": False,
+                        "name": "Mock GPU 0",
+                        "device": "gpu"
+                    }
+                ],
+            }
+        })
+    return {
+        "running": len(instances) > 0,
+        "model": instances[0]["model"] if instances else None,
+        "config": instances[0].get("config") if instances else None,
+        "instances": instances,
+    }
 
 
 @mock_api.post("/start")
@@ -232,6 +273,20 @@ async def mock_start(request: Request):
 
     _apply_start(path, body)
     return {"probing": False, "status": "ok", "port": 8085}
+
+
+@mock_api.post("/stop")
+async def mock_stop():
+    _mock_state.update(
+        {
+            "running": False,
+            "model": None,
+            "model_path": None,
+            "start_time": None,
+            "config": None,
+        }
+    )
+    return {"message": "Parado"}
 
 
 @mock_api.get("/metrics")
@@ -454,7 +509,7 @@ def _install_mocks() -> None:
     _original_routes = list(app.router.routes)
     _original_detect_gpus = gpu_manager.detect_gpus
     gpu_manager.detect_gpus = _fake_detect_gpus  # type: ignore[method-assign]
-    app.dependency_overrides[get_current_auth] = _fake_auth
+    app.dependency_overrides[require_auth] = _fake_auth
     _replace_routes()
     _reset_mock_data()
     _mocks_installed = True
@@ -469,7 +524,7 @@ def _remove_mocks() -> None:
         app.router.routes = list(_original_routes)
     if _original_detect_gpus is not None:
         gpu_manager.detect_gpus = _original_detect_gpus  # type: ignore[method-assign]
-    app.dependency_overrides.pop(get_current_auth, None)
+    app.dependency_overrides.pop(require_auth, None)
     _mocks_installed = False
 
 

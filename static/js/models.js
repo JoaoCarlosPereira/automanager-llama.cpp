@@ -116,7 +116,8 @@ function escapeHtml(value) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;');
 }
 
 function formatContextLabel(contextSize) {
@@ -853,7 +854,7 @@ export async function submitVisionImport(event) {
     const url = document.getElementById('vision-import-url')?.value.trim();
     if (!modelPath || !url) return;
     try {
-        const res = await fetch('/downloads', {
+        const res = await apiFetch('/downloads', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({url, model_path: modelPath}),
@@ -1113,7 +1114,7 @@ export function applyModelConfig(path, tabId) {
 
 export async function setDefaultModel(checkbox, path) {
     try {
-        await fetch('/set_default', {
+        await apiFetch('/set_default', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ path, add: checkbox.checked }),
@@ -1127,7 +1128,7 @@ export async function downloadModel() {
     const url = document.getElementById('download-url').value.trim();
     if (!url) return;
     try {
-        const res = await fetch('/downloads', {
+        const res = await apiFetch('/downloads', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({url}),
@@ -1358,8 +1359,10 @@ export async function stopModel(port = null) {
     if (!confirm("Encerrar esta instância?")) return;
     try {
         detachTabLogs();
-        const url = port ? `/stop?port=${port}` : '/stop';
-        await apiFetch(url, {method: 'POST'});
-        setTimeout(window.updateStatus, 1000);
+        const url = port !== null ? `/stop?port=${port}` : '/stop';
+        const res = await apiFetch(url, {method: 'POST'});
+        if (res.ok) {
+            setTimeout(window.updateStatus, 1000);
+        }
     } catch (e) {}
 }

@@ -32,7 +32,6 @@ _PRIVATE_NETWORKS = [
     ip_network("::1"),
     ip_network("fc00::/7"),
     ip_network("fe80::/10"),
-    ip_network("127.0.0.0/8"),
 ]
 
 # Max download size: 100 GB

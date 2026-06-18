@@ -650,7 +650,7 @@ export function resetToDefaults(tabId = null) {
     scope.querySelector('.tab-batch-size').value = String(window.__constants.DEFAULT_BATCH_SIZE);
     scope.querySelector('.tab-cache-type-k').value = window.__constants.DEFAULT_CACHE_TYPE;
     scope.querySelector('.tab-cache-type-v').value = window.__constants.DEFAULT_CACHE_TYPE;
-    scope.querySelector('.tab-ubatch-size').value = '512';
+    scope.querySelector('.tab-ubatch-size').value = String(window.__constants?.DEFAULT_UBATCH_SIZE ?? 512);
     
     scope.querySelector('.tab-thinking-toggle').checked = true;
     scope.querySelector('.tab-mtp-toggle').checked = false;

@@ -1,9 +1,10 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from config_manager import AuthManager, ConfigManager, TokenManager
+import llama_manager
 
 
 @pytest.fixture
@@ -84,3 +85,10 @@ def mock_http_credentials(valid_api_token: str) -> MagicMock:
     credentials = MagicMock()
     credentials.credentials = valid_api_token
     return credentials
+
+
+@pytest.fixture(autouse=True)
+def _disable_rate_limit():
+    """Disable slowapi rate limiting globally for all tests."""
+    with patch.object(llama_manager.limiter, "enabled", False):
+        yield

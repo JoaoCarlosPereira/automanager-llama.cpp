@@ -791,6 +791,25 @@ class OOMWatchdog:
             # Restart after a brief pause
             def _restart():
                 time.sleep(2)
-                self.pm.start(req)
-            
+                self.pm.start(
+                    model_path=req.path,
+                    gpu_weights=req.gpu_weights,
+                    context_size=req.context_size,
+                    mmproj_path=getattr(req, "mmproj_path", None),
+                    split_mode=getattr(req, "split_mode", "layer"),
+                    parallel_slots=getattr(req, "parallel_slots", 1),
+                    batch_size=getattr(req, "batch_size", 2048),
+                    ubatch_size=getattr(req, "ubatch_size", 512),
+                    cache_type_k=getattr(req, "cache_type_k", "f16"),
+                    cache_type_v=getattr(req, "cache_type_v", "f16"),
+                    numa_enabled=getattr(req, "numa_enabled", False),
+                    threads=getattr(req, "threads", 0),
+                    threads_batch=getattr(req, "threads_batch", 0),
+                    thinking_enabled=getattr(req, "thinking_enabled", True),
+                    mtp_enabled=getattr(req, "mtp_enabled", False),
+                    mtp_draft_tokens=getattr(req, "mtp_draft_tokens", 3),
+                    port=port,
+                    llama_server_bin=getattr(req, "llama_server_bin", None),
+                )
+
             threading.Thread(target=_restart, daemon=True).start()

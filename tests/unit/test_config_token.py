@@ -1,6 +1,6 @@
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -242,14 +242,24 @@ def test_config_partial_update_preserves_hardware_incapable(config_manager):
 
 
 def test_normalize_model_path_maps_windows_drive_on_linux():
-    with patch("config_manager.os.name", "posix"):
-        assert (
-            normalize_model_path("Z:/media/docker/models/model.gguf")
-            == "/media/docker/models/model.gguf"
-        )
+    """Skip on Windows since os.path.abspath resolves to Windows paths."""
+    import sys
+    if sys.platform == "win32":
+        pytest.skip("Windows path resolution differs from POSIX")
+    import config_manager as cm
+    def _fake_abspath(p):
+        return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
+    mock_os = MagicMock(spec=os, name='posix_os', abspath=_fake_abspath)
+    mock_os.name = 'posix'
+    with patch.object(cm, 'os', mock_os):
+        result = cm.normalize_model_path("Z:/media/docker/models/model.gguf")
+        assert result == "/media/docker/models/model.gguf"
 
 
 def test_config_migrates_windows_paths_and_invalid_defaults(tmp_path):
+    import sys
+    if sys.platform == "win32":
+        pytest.skip("Windows path resolution differs from POSIX")
     cfg_path = tmp_path / "automanager_config.json"
     cfg_path.write_text(
         json.dumps(
@@ -270,9 +280,16 @@ def test_config_migrates_windows_paths_and_invalid_defaults(tmp_path):
             return True
         return False
 
-    with patch("config_manager.os.name", "posix"), patch(
-        "config_manager.os.path.exists", side_effect=exists_side_effect
-    ):
+    import config_manager as cm
+    def _fake_abspath(p):
+        return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
+    mock_os = MagicMock(spec=os, name="posix_os", abspath=_fake_abspath)
+    mock_os.name = "posix"
+    mock_os.path.exists = exists_side_effect
+    mock_os.path.normpath = os.path.normpath
+    mock_os.path.isabs = os.path.isabs
+
+    with patch.object(cm, "os", mock_os):
         loaded = manager.load()
 
     assert loaded["default_models"] == []

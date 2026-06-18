@@ -412,9 +412,11 @@ class TestProxyEndpoint:
                 assert resp.status_code in [200, 502, 503]
 
     def test_proxy_unauthenticated(self, test_client):
+        """Proxy route is OpenAI-compatible and does not require session auth."""
         with patch.object(auth_manager, 'check_auth', return_value=False):
             resp = test_client.post("/v1/chat/completions", json={"model": "test"})
-            assert resp.status_code == 401
+            # Returns 503 when no model is loaded (auth is not checked on proxy)
+            assert resp.status_code == 503
 
 
 class TestInvalidateCache:
@@ -465,9 +467,16 @@ class TestDashboardHtml:
                                 assert "<html" in resp.text.lower()
 
     def test_root_unauthenticated(self, test_client):
-        with patch.object(auth_manager, 'check_auth', return_value=False):
-            resp = test_client.get("/")
-            assert resp.status_code == 401
+        """The root route serves the dashboard HTML without requiring auth."""
+        with patch.object(process_manager, 'get_status', return_value={"instances": [], "recovery": {}}):
+            with patch.object(gpu_manager, 'get_metrics', return_value={"cpu": 0, "gpus": []}):
+                with patch.object(model_scanner, 'scan', return_value={"models": [], "projectors": [], "storage": {}}):
+                    with patch.object(config_manager, 'get_config', return_value={}):
+                        with patch.object(llama_manager, 'token_manager') as mock_tm:
+                            mock_tm.get_or_create.return_value = "test-token"
+                            resp = test_client.get("/")
+                            assert resp.status_code == 200
+                            assert "text/html" in resp.headers.get("content-type", "").lower()
 
 
 class TestContextAndBatchPresets:

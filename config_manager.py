@@ -143,10 +143,19 @@ class ConfigManager:
                     return {}
             else:
                 return {}
-        config, changed = _migrate_config(config)
-        if changed:
-            self.save(config)
-        return config
+            config, changed = _migrate_config(config)
+            if changed:
+                # Save migration atomically inside the lock to avoid TOCTOU
+                tmp_path = self.config_path + ".tmp"
+                try:
+                    with open(tmp_path, "w") as f:
+                        json.dump(config, f, indent=2)
+                    os.replace(tmp_path, self.config_path)
+                except Exception as e:
+                    logger.error(f"Config save error: {e}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            return config
 
     def get_config(self) -> dict:
         return self.load()

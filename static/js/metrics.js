@@ -499,8 +499,14 @@ export async function startLogs(port, tabId, sessionKey = null) {
 
 export async function renewToken() {
     try {
-        // Needs proper endpoint
-        // await apiFetch('/api/key/renew', { method: 'POST' });
+        const res = await apiFetch('/api/key/renew', { method: 'POST' });
+        if (res.ok) {
+            const data = await res.json();
+            const el = document.getElementById('api-token');
+            if (el) {
+                el.textContent = data.key.substring(0, 11) + '…' + data.key.substring(data.key.length - 8);
+            }
+        }
     } catch (e) {}
 }
 

@@ -70,6 +70,21 @@ def _cfg_tip(text: str) -> str:
     )
 
 
+def _escape_js_attr(value: str) -> str:
+    """Escape a value for safe embedding inside a single-quoted JavaScript string within an HTML attribute.
+
+    This prevents XSS via model paths containing single quotes, angle brackets, etc.
+    """
+    return (value
+            .replace('\\', '\\\\')
+            .replace("'", "\\'")
+            .replace('<', '\\u003c')
+            .replace('>', '\\u003e')
+            .replace('&', '\\u0026')
+            .replace('\n', '\\n')
+            .replace('\r', '\\r'))
+
+
 _CFG_FIELD = 'cfg-field group/tip relative space-y-2'
 
 app = FastAPI(title="Automanager Llama.cpp")
@@ -356,7 +371,10 @@ async def clear_downloads(authenticated: bool = Depends(require_auth)):
 
 @app.get("/logs")
 async def stream_logs(request: Request, port: Optional[int] = None):
-    """SSE stream of llama-server logs (no auth — embedded dashboard console)."""
+    """SSE stream of llama-server logs."""
+    authenticated = auth_manager.check_auth(request)
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="Nao autenticado")
     return log_manager.stream_logs(stop_event=shutdown_event, request=request, port=port)
 
 
@@ -629,14 +647,14 @@ def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) ->
         options += (
             f'<option value="{value}" class="bg-slate-900"{selected_attr}>{name}</option>'
         )
-    safe_js = html.escape(model_js, quote=True)
+    safe_js = _escape_js_attr(model_js)
     return (
         f"{import_btn}"
-        f'<select data-mmproj-for="{safe_js}" '
+        f'<select data-mmproj-for="{html.escape(model_js, quote=True)}" '
         'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
         'rounded-lg px-2 py-1 text-[8px] font-bold focus:ring-2 focus:ring-violet-500/50 '
         'outline-none transition-all cursor-pointer max-w-[120px]" '
-        f"onchange=\"onMmprojChange('{model_js}', this)\" "
+        f"onchange=\"onMmprojChange('{safe_js}', this)\" "
         'onclick="event.stopPropagation()" '
         'title="Projetor de visão para este modelo" '
         'aria-label="Projetor de visão para este modelo">'
@@ -737,7 +755,7 @@ async def index(request: Request):
         m_js = m_path.replace("\\", "/")
         m_cfg = model_configs.get(m_js, {})
         stable_id = hashlib.md5(m_js.encode("utf-8")).hexdigest()[:12]
-        m_js_js = m_js.replace("'", "\\'")
+        m_js_js = _escape_js_attr(m_js)
         
         is_default = "checked" if (m_path in default_models or m_path == default_model) else ""
         has_config = "text-blue-400" if m_cfg and not m_cfg.get("hardware_incapable") else "text-slate-100"
@@ -1109,8 +1127,8 @@ def _build_html(
                  <div class="space-y-2 pt-4 border-t border-slate-800/30">
                     <label class="text-[8px] font-black text-slate-600 uppercase ml-1">Acesso API (OpenAI)</label>
                     <div class="bg-slate-900 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                        <code id="api-token" class="text-[9px] text-amber-500/80 font-mono truncate mr-2">{api_token}</code>
-                        <button onclick="navigator.clipboard.writeText(document.getElementById('api-token').innerText)" class="text-slate-600 hover:text-white"><i class="far fa-copy text-[10px]"></i></button>
+                        <code id="api-token" class="text-[9px] text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:])}</code>
+                        <button onclick="navigator.clipboard.writeText('{html.escape(api_token)}')" class="text-slate-600 hover:text-white"><i class="far fa-copy text-[10px]"></i></button>
                     </div>
                  </div>
 

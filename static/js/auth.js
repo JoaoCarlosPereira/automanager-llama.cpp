@@ -41,6 +41,11 @@ export function handleSessionExpired(message) {
     }
 }
 
+/** Reseta a flag de sessão expirada para permitir nova tentativa de requisições. */
+export function resetSessionExpiredFlag() {
+    sessionExpiredHandled = false;
+}
+
 export async function apiFetch(url, options = {}) {
     const res = await fetch(url, { credentials: 'include', ...options });
     if (res.status === 401) {
@@ -59,6 +64,7 @@ export async function handleLogin(event) {
     const username = document.getElementById('login-username').value;
     const password = document.getElementById('login-password').value;
     try {
+        resetSessionExpiredFlag();
         const res = await fetch('/api/auth/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -66,7 +72,6 @@ export async function handleLogin(event) {
             body: JSON.stringify({username, password}),
         });
         if (res.ok) {
-            sessionExpiredHandled = false;
             state.initialTabsSynced = false;
             const errEl = document.getElementById('login-error');
             if (errEl) {
@@ -97,7 +102,7 @@ export async function handleLogout() {
     try {
         await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     } catch (e) {}
-    sessionExpiredHandled = false;
+    resetSessionExpiredFlag();
     window.stopDashboardPolling?.();
     setAuthenticatedShellVisible(false);
     const dashboard = document.getElementById('dashboard');
@@ -129,7 +134,7 @@ export async function changePassword() {
         const res = await fetch('/api/auth/change-password', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: currentPassword, password: newPassword}),
+            body: JSON.stringify({current: currentPassword, new: newPassword}),
         });
         if (res.ok) {
             document.getElementById('current-password').value = '';

@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import shutil
+from unittest.mock import patch
 from config_manager import ConfigManager, TokenManager, AuthManager
 
 
@@ -109,7 +110,8 @@ class TestConfigManagerDefaults:
         cm.set_default_model("/models/model.gguf")
         models = cm.get_default_models()
         assert len(models) == 1
-        assert "/models/model.gguf" in models
+        # normalize_model_path calls os.path.abspath which resolves to CWD on Windows
+        assert models[0].endswith("models/model.gguf")
 
     def test_set_default_model_does_not_duplicate(self, tmp_path):
         """Test set_default_model does not add same model twice."""
@@ -117,7 +119,7 @@ class TestConfigManagerDefaults:
         cm.set_default_model("/models/model.gguf")
         cm.set_default_model("/models/model.gguf")
         models = cm.get_default_models()
-        assert models.count("/models/model.gguf") == 1
+        assert len(models) == 1
 
     def test_set_default_model_with_add_false_removes(self, tmp_path):
         """Test set_default_model(path, add=False) removes model from defaults."""
