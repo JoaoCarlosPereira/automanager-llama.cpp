@@ -509,8 +509,6 @@ class ProcessManager:
             "127.0.0.1",
             "--port",
             str(port),
-            "--tools",
-            "all",
             "--parallel",
             str(parallel_slots),
             "--ctx-size",
@@ -550,12 +548,9 @@ class ProcessManager:
         if supports_cli_flag("--pinned-memory", llama_bin):
             cmd.append("--pinned-memory")
 
-        if mmproj_disabled:
-            # User explicitly chose "Sem visão" — disable vision entirely
-            cmd.append("--no-mmproj")
-        elif mmproj_path and os.path.exists(mmproj_path):
+        if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
-        else:
+        elif not mmproj_disabled:
             cmd.append("--mmproj-auto")
 
         # Logic for reasoning and mtp
