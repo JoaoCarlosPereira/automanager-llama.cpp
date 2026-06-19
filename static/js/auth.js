@@ -118,7 +118,7 @@ export async function changePassword() {
     const statusEl = document.getElementById('password-change-status');
 
     statusEl.textContent = '';
-    statusEl.className = 'text-[10px] font-bold min-h-[1rem]';
+    statusEl.className = 'text-ui-body-sm font-bold min-h-[1rem]';
 
     if (!currentPassword || !newPassword) {
         showAlert('Informe a senha atual e a nova senha.');

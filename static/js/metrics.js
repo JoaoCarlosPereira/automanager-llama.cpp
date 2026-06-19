@@ -31,11 +31,11 @@ export async function updateStatus() {
             const dot = badge.querySelector('.status-dot');
             const txt = badge.querySelector('.status-text');
             if (hasInstances) {
-                badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
+                badge.className = 'px-4 py-1.5 rounded-full text-ui-label font-black tracking-widest flex items-center gap-2 glass border-emerald-500/30 text-emerald-500 uppercase glow-online';
                 if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse';
                 if (txt) txt.innerText = 'ONLINE';
             } else {
-                badge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-widest flex items-center gap-2 glass border-slate-700/50 text-slate-500 uppercase';
+                badge.className = 'px-4 py-1.5 rounded-full text-ui-label font-black tracking-widest flex items-center gap-2 glass border-slate-700/50 text-slate-500 uppercase';
                 if (dot) dot.className = 'w-1.5 h-1.5 rounded-full bg-slate-600';
                 if (txt) txt.innerText = 'OFFLINE';
             }
@@ -60,7 +60,7 @@ export async function updateStatus() {
             const isRunning = inst && inst.status === 'running';
             if (isRunning) {
                 statusBadge.innerText = 'ONLINE';
-                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
+                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, true, inst.port);
 
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
@@ -72,13 +72,13 @@ export async function updateStatus() {
                 }
             } else if (inst && inst.status === 'stopped') {
                 statusBadge.innerText = 'ERRO';
-                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-rose-500/40 text-rose-400 bg-rose-500/5';
+                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-rose-500/40 text-rose-400 bg-rose-500/5';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
 
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 transition-all duration-500';
             } else {
                 statusBadge.innerText = 'OFFLINE';
-                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
+                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
 
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500';
@@ -159,7 +159,7 @@ export async function updateStatus() {
 
                 if (statusBadge) {
                     statusBadge.innerHTML = `<i class="fas fa-sync animate-spin mr-2"></i> ${statusLabel}`;
-                    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
+                    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
                 }
                 if (dot) {
                     dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_5px_#f59e0b] animate-pulse shrink-0 transition-all duration-500';
@@ -181,7 +181,7 @@ export async function updateStatus() {
                 const globalLabel = (recovery?.smart_calibration ?? state.autoBalancePending)
                     ? 'CALIBRANDO'
                     : 'AUTO-BALANCE';
-                globalBadge.className = 'px-4 py-1.5 rounded-full text-[9px] font-black tracking-[0.2em] flex items-center gap-2 glass border-amber-500/30 text-amber-400 uppercase';
+                globalBadge.className = 'px-4 py-1.5 rounded-full text-ui-label font-black tracking-[0.2em] flex items-center gap-2 glass border-amber-500/30 text-amber-400 uppercase';
                 globalBadge.innerHTML = `<span class="status-dot w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span><span class="status-text">${globalLabel}</span>`;
             }
         } else if (!recovery?.active) {
@@ -279,7 +279,7 @@ export async function updateDownloads() {
         const data = await res.json();
         const container = document.getElementById('download-list');
         const entries = Object.entries(data.downloads || {});
-        if (entries.length === 0) { container.innerHTML = '<p class="text-[9px] text-slate-600 text-center uppercase tracking-widest py-4">Nenhum download ativo</p>'; return; }
+        if (entries.length === 0) { container.innerHTML = '<p class="text-ui-label text-slate-600 text-center uppercase tracking-widest py-4">Nenhum download ativo</p>'; return; }
 
         container.innerHTML = entries.map(([id, d]) => {
             const statusClass = d.status === 'completed' ? 'text-emerald-500'
@@ -292,33 +292,33 @@ export async function updateDownloads() {
             const eta = d.eta_seconds != null && d.eta_seconds > 0
                 ? formatDuration(d.eta_seconds)
                 : '--';
-            const familyLabel = d.family ? `<span class="text-[7px] text-slate-600 uppercase tracking-widest">${d.family}</span>` : '';
+            const familyLabel = d.family ? `<span class="text-ui-caption text-slate-600 uppercase tracking-widest">${d.family}</span>` : '';
             return `
                 <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
                     <div class="flex justify-between items-center gap-2">
                         <div class="min-w-0 flex-1">
-                            <p class="text-[9px] font-bold truncate text-slate-400 font-mono">${d.filename}</p>
+                            <p class="text-ui-label font-bold truncate text-slate-400 font-mono">${d.filename}</p>
                             ${familyLabel}
                         </div>
-                        <span class="text-[8px] font-black uppercase shrink-0 ${statusClass}">${d.status}</span>
+                        <span class="text-ui-label font-black uppercase shrink-0 ${statusClass}">${d.status}</span>
                     </div>
-                    <div class="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
                         <div class="h-full bg-blue-500 transition-all" style="width: ${progress}%"></div>
                     </div>
-                    <div class="flex justify-between items-center text-[8px] font-mono text-slate-500">
+                    <div class="flex justify-between items-center text-ui-label font-mono text-slate-500">
                         <span>${formatBytes(d.downloaded_bytes)} / ${formatBytes(d.total_bytes)}</span>
                         <span class="flex items-center gap-2">
                             ${isActive ? `<span class="text-blue-400">${formatSpeed(d.speed_bps)}</span>` : ''}
                             <span class="text-slate-300 font-black">${progress.toFixed(1)}%</span>
                         </span>
                     </div>
-                    <div class="flex justify-between items-center text-[8px] font-mono text-slate-500">
+                    <div class="flex justify-between items-center text-ui-label font-mono text-slate-500">
                         <span>Tempo: ${elapsed}</span>
                         ${isActive ? `<span>ETA: ${eta}</span>` : ''}
                     </div>
                     ${isActive ? `
                         <button type="button" onclick="cancelDownload('${id}')"
-                            class="w-full py-1.5 rounded-lg border border-red-500/30 text-[8px] font-black uppercase tracking-widest text-red-400 hover:bg-red-500/10 transition-all">
+                            class="w-full py-1.5 rounded-lg border border-red-500/30 text-ui-label font-black uppercase tracking-widest text-red-400 hover:bg-red-500/10 transition-all">
                             Cancelar
                         </button>` : ''}
                 </div>`;
@@ -438,13 +438,13 @@ function setLogStreamStatus(tab, status) {
     if (!statusEl) return;
     if (status === 'live') {
         statusEl.textContent = 'Fluxo de Dados Ativo';
-        statusEl.className = 'tab-log-status text-[9px] font-black text-emerald-500 uppercase tracking-widest';
+        statusEl.className = 'tab-log-status text-ui-label font-black text-emerald-500 uppercase tracking-widest';
     } else if (status === 'connecting') {
         statusEl.textContent = 'Conectando...';
-        statusEl.className = 'tab-log-status text-[9px] font-black text-slate-500 uppercase tracking-widest';
+        statusEl.className = 'tab-log-status text-ui-label font-black text-slate-500 uppercase tracking-widest';
     } else {
         statusEl.textContent = 'Fluxo interrompido';
-        statusEl.className = 'tab-log-status text-[9px] font-black text-amber-500 uppercase tracking-widest';
+        statusEl.className = 'tab-log-status text-ui-label font-black text-amber-500 uppercase tracking-widest';
     }
 }
 
@@ -542,8 +542,8 @@ export async function updateMetrics() {
             miniGpu.innerHTML = (data.gpus || []).map(g => `
                 <div class="glass min-w-[120px] p-3 rounded-xl border-b-2 border-blue-500/50 flex flex-col justify-between shrink-0">
                     <div class="flex justify-between items-center mb-1">
-                        <span class="text-[8px] font-black text-slate-500 uppercase">GPU ${g.index}</span>
-                        <span class="text-[8px] font-mono text-slate-400">${g.temp || '--'}°C</span>
+                        <span class="text-ui-label font-black text-slate-500 uppercase">GPU ${g.index}</span>
+                        <span class="text-ui-label font-mono text-slate-400">${g.temp || '--'}°C</span>
                     </div>
                     <div class="flex items-center gap-2">
                         <span class="text-xs font-bold text-white">${g.util}%</span>
@@ -551,7 +551,7 @@ export async function updateMetrics() {
                             <div class="h-full bg-blue-500" style="width: ${g.util}%"></div>
                         </div>
                     </div>
-                    <p class="text-[7px] text-slate-600 font-mono mt-1">${g.mem_used}MB</p>
+                    <p class="text-ui-label text-slate-400 font-mono mt-1">${g.mem_used}MB</p>
                 </div>
             `).join('');
         }

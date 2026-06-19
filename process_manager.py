@@ -501,8 +501,6 @@ class ProcessManager:
             model_path,
             "-ngl",
             str(n_gpu_layers),
-            "--flash-attn",
-            "on" if flash_attn_enabled else "off",
             "--cache-type-k",
             cache_type_k,
             "--cache-type-v",
@@ -531,6 +529,9 @@ class ProcessManager:
             "--api-key",
             api_token,
         ]
+
+        if flash_attn_enabled:
+            cmd.extend(["--flash-attn", "on"])
 
         if numa_enabled:
             cmd.extend(["--numa", resolve_numa_mode(gpu_weights)])

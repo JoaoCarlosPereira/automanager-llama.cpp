@@ -154,7 +154,7 @@ def test_process_manager_flash_attn_disabled(mock_exists, mock_bin):
             flash_attn_enabled=False,
         )
         args = mock_popen.call_args[0][0]
-        assert args[args.index("--flash-attn") + 1] == "off"
+        assert "--flash-attn" not in args
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)

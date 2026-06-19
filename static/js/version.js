@@ -64,7 +64,7 @@ export function showVersionModal(data) {
             const shortSha = (commit.sha || '').slice(0, 7);
             item.innerHTML = `
                 <p class="text-sm text-slate-100 leading-relaxed whitespace-pre-wrap break-words">${escapeHtml(commit.message || '')}</p>
-                <p class="text-[10px] text-slate-500 mt-2 font-mono">
+                <p class="text-ui-body-sm text-slate-500 mt-2 font-mono">
                     <span class="text-blue-400">${escapeHtml(shortSha)}</span>
                     <span class="mx-2">·</span>${escapeHtml(commit.author || '')}
                     <span class="mx-2">·</span>${escapeHtml(formatCommitDate(commit.date))}

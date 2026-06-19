@@ -195,8 +195,8 @@ export function renderNoTabShortcuts(models = null, cfg = null) {
         const displayName = model.name.replace(/\.gguf$/i, '');
         const contextLabel = formatContextLabel(saved.context_size);
         const badges = [
-            isRunning ? '<span class="text-[7px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">Online</span>' : '',
-            isDefault ? '<span class="text-[7px] font-black uppercase tracking-wider text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">Auto-Start</span>' : '',
+            isRunning ? '<span class="text-ui-caption font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/20">Online</span>' : '',
+            isDefault ? '<span class="text-ui-caption font-black uppercase tracking-wider text-blue-400 bg-blue-500/10 px-2 py-1 rounded border border-blue-500/20">Auto-Start</span>' : '',
         ].filter(Boolean).join('');
 
         const meta = [
@@ -210,13 +210,13 @@ export function renderNoTabShortcuts(models = null, cfg = null) {
                 class="group glass rounded-2xl border border-slate-800/80 hover:border-blue-500/40 bg-slate-900/40 hover:bg-slate-900/70 p-4 text-left transition-all active:scale-[0.99]">
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0 flex-1">
-                        <p class="text-[12px] font-bold text-slate-100 truncate group-hover:text-white">${escapeHtml(displayName)}</p>
-                        <p class="text-[8px] text-slate-500 font-mono uppercase truncate mt-1">${escapeHtml(model.dir || '/')}</p>
+                        <p class="text-ui-body-sm font-bold text-slate-100 truncate group-hover:text-white">${escapeHtml(displayName)}</p>
+                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-1">${escapeHtml(model.dir || '/')}</p>
                     </div>
-                    <i class="fas fa-arrow-right text-[9px] text-slate-600 group-hover:text-blue-400 transition-colors mt-1"></i>
+                    <i class="fas fa-arrow-right text-ui-label text-slate-600 group-hover:text-blue-400 transition-colors mt-1"></i>
                 </div>
                 ${badges ? `<div class="flex flex-wrap gap-1.5 mt-3">${badges}</div>` : ''}
-                ${meta ? `<p class="text-[8px] text-slate-500 font-mono mt-3 uppercase tracking-wider">${escapeHtml(meta)}</p>` : ''}
+                ${meta ? `<p class="text-ui-label text-slate-400 font-mono mt-3 uppercase tracking-wider">${escapeHtml(meta)}</p>` : ''}
             </button>
         `;
     }).join('');
@@ -257,13 +257,13 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     const tabBar = document.getElementById('tab-bar');
     const btn = document.createElement('button');
     btn.id = `btn-${tabId}`;
-    btn.className = 'tab-btn px-4 h-full flex items-center gap-3 text-[10px] font-bold text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all group relative min-w-[120px] max-w-[240px]';
+    btn.className = 'tab-btn px-4 h-full flex items-center gap-3 text-ui-body-sm font-bold text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all group relative min-w-[120px] max-w-[240px]';
     btn.onclick = () => switchTab(tabId);
     btn.innerHTML = `
         <div class="tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500"></div>
         <span class="tab-label truncate flex-1 text-left">${tabLabel}</span>
         <span onclick="event.stopPropagation(); closeTab('${tabId}')" class="tab-close-btn w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 hover:text-red-500 text-slate-600 transition-all">
-            <i class="fas fa-times text-[8px]"></i>
+            <i class="fas fa-times text-ui-label"></i>
         </span>
     `;
     tabBar.appendChild(btn);
@@ -485,7 +485,7 @@ export async function startSmartCalibration(path, tabId) {
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-magic animate-spin mr-2"></i> OTIMIZANDO...';
-    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
+    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400 bg-amber-500/5';
 
     state.autoBalancePending = true;
     state.autoBalanceTabId = tabId;
@@ -600,10 +600,10 @@ export function showProposedConfig(tabId, proposal, gpuWeights = null) {
         const changed = oldVal !== newVal;
         return `
             <div class="flex flex-col p-2 bg-slate-900/50 rounded-lg border border-slate-800">
-                <span class="text-[7px] text-slate-500 uppercase">${label}</span>
+                <span class="text-ui-caption text-slate-500 uppercase">${label}</span>
                 <div class="flex items-center gap-2 mt-1">
                     <span class="line-through opacity-40">${oldVal}</span>
-                    <i class="fas fa-arrow-right text-[7px] text-blue-500"></i>
+                    <i class="fas fa-arrow-right text-ui-caption text-blue-500"></i>
                     <span class="font-bold ${changed ? 'text-emerald-400' : 'text-slate-300'}">${newVal}</span>
                 </div>
             </div>
@@ -699,7 +699,7 @@ export async function applyProposedConfig(path, tabId) {
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> SALVANDO...';
-    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-[9px] font-black tracking-widest uppercase glass border-amber-500/40 text-amber-400';
+    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-ui-label font-black tracking-widest uppercase glass border-amber-500/40 text-amber-400';
 
     try {
         const res = await apiFetch('/start', {
@@ -795,7 +795,7 @@ export function resolveMmprojPath(model) {
 export function buildModelVisionControlsHtml(model, modelJs) {
     const candidates = model.mmproj_candidates || [];
     const safePath = modelJs.replace(/'/g, "\\'");
-    const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${safePath}')" class="vision-import-btn w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 transition-all" title="Importar projetor de visão" aria-label="Importar projetor de visão"><i class="fas fa-eye text-[9px]"></i></button>`;
+    const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${safePath}')" class="vision-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 transition-all" title="Importar projetor de visão" aria-label="Importar projetor de visão"><i class="fas fa-eye text-ui-label"></i></button>`;
     if (!candidates.length) return importBtn;
 
     const selected = resolveMmprojPath(model);
@@ -811,7 +811,7 @@ export function buildModelVisionControlsHtml(model, modelJs) {
     }).join('');
     options += optionsList;
 
-    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-[8px] font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[120px]" onchange="onMmprojChange('${safePath}', this)" onclick="event.stopPropagation()" title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
+    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[120px]" onchange="onMmprojChange('${safePath}', this)" onclick="event.stopPropagation()" title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
 }
 
 export function getSelectedMmprojForModel(modelPath) {
@@ -1041,16 +1041,16 @@ export async function initDashboard() {
 export function getTabActionsHtml(path, tabId, isRunning, port = 8085) {
     if (isRunning) {
         return `
-            <a href="/ui/${port}/" target="_blank" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all active:scale-95">
+            <a href="/ui/${port}/" target="_blank" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-ui-body-sm font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all active:scale-95">
                 <i class="fas fa-comments"></i> Chat
             </a>
-            <button onclick="stopModel(${port})" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 text-[10px] font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+            <button onclick="stopModel(${port})" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
                 Encerrar
             </button>
         `;
     }
     return `
-        <button onclick="startModel('${path}', '${tabId}')" class="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-blue-600/30 transition-all">
+        <button onclick="startModel('${path}', '${tabId}')" class="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white text-ui-body-sm font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-blue-600/30 transition-all">
             <i class="fas fa-bolt"></i> Iniciar Instância
         </button>
     `;
@@ -1220,19 +1220,19 @@ export async function updateModels() {
                  onauxclick="selectModelFromEvent(event, '${safePath}', '${m.id}')">
                 <div class="flex items-start justify-between gap-2 overflow-hidden">
                     <div class="flex-1 min-w-0">
-                        <p class="model-name text-[11px] font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
-                        <p class="text-[8px] text-slate-500 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
+                        <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
+                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
                     </div>
                     ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
                 </div>
                 <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
                     <div class="flex items-center gap-1 flex-wrap">
-                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-[9px]"></i></button>
-                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-6 h-6 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-[9px]"></i></button>
+                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
                         ${visionControls}
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
-                        <span class="text-[8px] font-black text-slate-600 uppercase">Auto-Start</span>
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
                         <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
                     </label>
                 </div>
@@ -1325,7 +1325,7 @@ export async function startModel(path, tabId) {
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> INICIANDO...';
-    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-[9px] font-black tracking-widest uppercase glass border-blue-500/50 text-blue-400';
+    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-ui-label font-black tracking-widest uppercase glass border-blue-500/50 text-blue-400';
 
     try {
         const res = await apiFetch('/start', {

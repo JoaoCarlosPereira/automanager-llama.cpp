@@ -526,7 +526,7 @@ export function updateTotal(tabId = null) {
     const badge = scope.querySelector('.tab-total-percent');
     if (!badge) return;
     badge.innerText = `CARGA: ${sum}%`;
-    badge.className = `tab-total-percent text-[10px] font-black tracking-widest uppercase ${sum === 100 ? 'text-blue-500/80' : 'text-red-500/80'}`;
+    badge.className = `tab-total-percent text-ui-body-sm font-black tracking-widest uppercase ${sum === 100 ? 'text-blue-500/80' : 'text-red-500/80'}`;
 }
 
 export function onGpuPinToggle(pinCheckbox, tabId = null) {
@@ -690,7 +690,7 @@ export function resetToDefaults(tabId = null) {
 
 export function modelIncapableBadgeHtml(incapable) {
     if (!incapable) return '';
-    return '<span class="text-[8px] font-black text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20 uppercase tracking-tighter">Incapaz</span>';
+    return '<span class="text-ui-label font-black text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20 uppercase tracking-tighter">Incapaz</span>';
 }
 
 export function updateThinkingBadge(enabled, tabId = null) {}
