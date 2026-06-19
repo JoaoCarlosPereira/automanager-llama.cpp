@@ -107,6 +107,7 @@ Automanager is a **control plane** (FastAPI on port **8000**) that manages a sin
 | `schemas.py` | Pydantic request/response models |
 | `paths.py` | Install path resolution (`paths.json`) |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
+| `installer/uninstall.sh` | Remove systemd service and venv; `--purge` removes config/logs |
 
 ---
 
@@ -284,7 +285,8 @@ automanager-llama.cpp/
 ├── schemas.py            # Pydantic models
 ├── paths.py              # Install path resolution (paths.json)
 ├── paths.json.example    # Default path template for new installs
-├── installer/setup.sh    # Quick-Install
+├── installer/setup.sh      # Quick-Install
+├── installer/uninstall.sh  # Remove service/venv (--purge for config/logs)
 ├── static/js/            # Dashboard assets (e.g. Pac-Man background)
 ├── logs/                 # Runtime logs (gitignored)
 ├── requirements.txt

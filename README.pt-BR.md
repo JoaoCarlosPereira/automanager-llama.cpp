@@ -106,6 +106,7 @@ O Automanager é um **plano de controle** (FastAPI na porta **8000**) que gerenc
 | `schemas.py` | Modelos Pydantic de requisição/resposta |
 | `paths.py` | Resolução de caminhos de instalação (`paths.json`) |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
+| `installer/uninstall.sh` | Remove servico systemd e venv; `--purge` remove config/logs |
 
 ---
 
@@ -283,7 +284,8 @@ automanager-llama.cpp/
 ├── schemas.py            # Modelos Pydantic
 ├── paths.py              # Resolução de caminhos (paths.json)
 ├── paths.json.example    # Template de caminhos para novas instalações
-├── installer/setup.sh    # Quick-Install
+├── installer/setup.sh      # Quick-Install
+├── installer/uninstall.sh  # Remove servico/venv (--purge para config/logs)
 ├── static/js/            # Assets do dashboard (ex.: fundo Pac-Man)
 ├── logs/                 # Logs em runtime (gitignored)
 ├── requirements.txt

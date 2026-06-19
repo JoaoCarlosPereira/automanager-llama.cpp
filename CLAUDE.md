@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Manage as systemd service: `systemctl restart llama-manager.service` / `systemctl status llama-manager.service`
 - View service logs: `journalctl -u llama-manager.service -f`
 - Quick-Install: `sudo bash installer/setup.sh`
+- Uninstall: `sudo bash installer/uninstall.sh` (add `--purge` to remove config/logs/paths.json)
 
 ## Development Rules
 For detailed technical guidelines, coding standards, and mandatory workflows, please refer to the [rules.md](rules.md) file.

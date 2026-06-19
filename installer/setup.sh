@@ -124,14 +124,46 @@ systemctl enable llama-manager.service
 systemctl restart llama-manager.service
 log_info "Systemd service configured"
 
+MANAGER_PORT=8000
+SERVER_PORT=8085
+
+LOCAL_IP="$(
+  cd "${PROJECT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
+import socket
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(("8.8.8.8", 1))
+    print(s.getsockname()[0])
+except Exception:
+    print("127.0.0.1")
+finally:
+    s.close()
+PY
+)"
+
 sleep 3
-if curl -sf http://localhost:8000/ >/dev/null 2>&1; then
+if curl -sf "http://localhost:${MANAGER_PORT}/" >/dev/null 2>&1; then
   log_info "Health check passed."
-  log_info "Dashboard: http://$(hostname -I | awk '{print $1}'):8000/"
-  log_info "Default login: admin / admin (change password after first login)"
 else
   log_warn "Health check failed. Run: journalctl -u llama-manager.service -f"
 fi
 
+echo ""
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  Automanager Llama.cpp instalado${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
+echo -e "  Dashboard:  ${YELLOW}http://${LOCAL_IP}:${MANAGER_PORT}/${NC}"
+echo -e "  API proxy:  ${YELLOW}http://${LOCAL_IP}:${MANAGER_PORT}/v1/${NC}"
+echo -e "  llama-server (interno): porta ${SERVER_PORT}"
+echo ""
+echo -e "  Login padrao: ${YELLOW}admin / admin${NC}"
+echo -e "  Altere a senha no primeiro acesso."
+echo ""
+echo -e "${GREEN}========================================${NC}"
+echo ""
+
 log_info "Installation complete."
 log_info "Edit ${PATHS_FILE} to change models, config, or logs locations, then rerun setup or restart the service."
+log_info "To uninstall later: sudo bash installer/uninstall.sh"
