@@ -1646,6 +1646,7 @@ class AutoBalanceProber:
             "mtp_enabled": request.mtp_enabled,
             "mtp_draft_tokens": request.mtp_draft_tokens,
             "numa_enabled": request.numa_enabled,
+            "flash_attn_enabled": request.flash_attn_enabled,
             "split_mode": request.split_mode,
         }
 
@@ -3080,6 +3081,7 @@ class AutoBalanceProber:
                     thinking_enabled=request.thinking_enabled,
                     mtp_enabled=request.mtp_enabled,
                     mtp_draft_tokens=request.mtp_draft_tokens,
+                    flash_attn_enabled=request.flash_attn_enabled,
                     total_layers=request.total_layers,
                     port=self.port,
                 )

@@ -1,6 +1,6 @@
 
 import pytest
-from schemas import StartRequest, GPUWeight, DEFAULT_CACHE_TYPE, CACHE_TYPE_PRESETS
+from schemas import StartRequest, GPUWeight, DEFAULT_CACHE_TYPE, CACHE_TYPE_PRESETS, DEFAULT_FLASH_ATTN_ENABLED
 from auto_balance import AutoBalancePlanner
 from process_manager import ProcessManager
 from unittest.mock import MagicMock, patch
@@ -14,6 +14,7 @@ def test_start_request_cache_type_defaults():
     assert req.cache_type_v == DEFAULT_CACHE_TYPE
     assert req.ubatch_size == 512
     assert req.numa_enabled is False
+    assert req.flash_attn_enabled is DEFAULT_FLASH_ATTN_ENABLED
     assert req.threads == 0
 
 def test_start_request_custom_performance_opts():
@@ -116,8 +117,44 @@ def test_process_manager_includes_performance_flags(mock_exists, mock_bin):
         assert "--threads-batch" in args
         assert "8" in args
         
+        assert "--flash-attn" in args
+        assert args[args.index("--flash-attn") + 1] == "on"
+        
         assert "--tools" in args
         assert "all" in args
+
+@patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
+@patch("process_manager.os.path.exists", return_value=True)
+def test_process_manager_flash_attn_disabled(mock_exists, mock_bin):
+    config_mgr = MagicMock()
+    token_mgr = MagicMock()
+    token_mgr.get_or_create.return_value = "test-token"
+    gpu_mgr = MagicMock()
+    gpu_mgr.normalize_gpu_weights.return_value = [{"index": 0, "weight": 100, "active": True, "name": "GPU0"}]
+    gpu_mgr.validate_gpu_weights.return_value = (True, "")
+    gpu_mgr.get_visible_devices.return_value = "0"
+    gpu_mgr.detect_model_layers.return_value = 32
+    cpu_info = MagicMock()
+    cpu_info.physical_cores = 8
+    gpu_mgr.detect_cpu_info.return_value = cpu_info
+    plan = MagicMock()
+    plan.tensor_split = ["1.0"]
+    plan.n_gpu_layers = 32
+    plan.gpu_pct = 100.0
+    gpu_mgr.compute_offload_plan.return_value = plan
+    gpu_mgr.resolve_main_gpu_index.return_value = "0"
+    log_mgr = MagicMock()
+    pm = ProcessManager(config_mgr, token_mgr, gpu_mgr, log_mgr)
+
+    with patch("process_manager.subprocess.Popen") as mock_popen:
+        pm.start(
+            model_path="/models/test.gguf",
+            gpu_weights=[{"index": 0, "weight": 100, "name": "GPU0", "active": True, "is_main": True}],
+            context_size=65536,
+            flash_attn_enabled=False,
+        )
+        args = mock_popen.call_args[0][0]
+        assert args[args.index("--flash-attn") + 1] == "off"
 
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)

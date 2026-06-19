@@ -660,6 +660,10 @@ export function resetToDefaults(tabId = null) {
     }
     syncMtpDraftTokensState(tabId);
     scope.querySelector('.tab-numa-toggle').checked = false;
+    const flashAttnToggle = scope.querySelector('.tab-flash-attn-toggle');
+    if (flashAttnToggle) {
+        flashAttnToggle.checked = window.__constants?.DEFAULT_FLASH_ATTN_ENABLED !== false;
+    }
     populateLlamaBinSelect(tabId, window.defaultLlamaBin || null);
     syncTurboquantPanelVisibility(tabId);
     

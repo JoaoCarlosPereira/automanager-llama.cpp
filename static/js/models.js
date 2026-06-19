@@ -414,6 +414,7 @@ function collectPinnedFieldsFromTab(tabId) {
         thinking: tab.querySelector('.tab-pin-thinking')?.checked ?? false,
         mtp: tab.querySelector('.tab-pin-mtp')?.checked ?? false,
         numa: tab.querySelector('.tab-pin-numa')?.checked ?? false,
+        flash_attn: tab.querySelector('.tab-pin-flash-attn')?.checked ?? false,
         split_mode: tab.querySelector('.tab-pin-split-mode')?.checked ?? false,
     };
 }
@@ -452,6 +453,7 @@ function applyPinnedFieldsToTab(tabId, pinnedFields) {
         thinking: '.tab-pin-thinking',
         mtp: '.tab-pin-mtp',
         numa: '.tab-pin-numa',
+        flash_attn: '.tab-pin-flash-attn',
         split_mode: '.tab-pin-split-mode',
     };
     for (const [key, selector] of Object.entries(selectors)) {
@@ -509,6 +511,7 @@ export async function startSmartCalibration(path, tabId) {
                 mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
                 mtp_draft_tokens: getMtpDraftTokens(tabId),
                 numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
+                flash_attn_enabled: tab.querySelector('.tab-flash-attn-toggle').checked,
                 split_mode: tab.querySelector('.tab-split-mode').value,
                 llama_server_bin: getSelectedLlamaBin(tabId),
                 turboquant_preset: getTurboquantPreset(tabId),
@@ -654,6 +657,7 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
         cache_type_k: cacheTypes.cache_type_k,
         cache_type_v: cacheTypes.cache_type_v,
         numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
+        flash_attn_enabled: tab.querySelector('.tab-flash-attn-toggle').checked,
         threads: parseInt(tab.querySelector('.tab-threads').value, 10) || 0,
         threads_batch: parseInt(tab.querySelector('.tab-threads-batch').value, 10) || 0,
         split_mode: tab.querySelector('.tab-split-mode').value,
@@ -1080,6 +1084,10 @@ export function applyModelConfig(path, tabId) {
     if (cfg.batch_size) tab.querySelector('.tab-batch-size').value = cfg.batch_size;
     if (cfg.ubatch_size) tab.querySelector('.tab-ubatch-size').value = cfg.ubatch_size;
     if (cfg.numa_enabled !== undefined) tab.querySelector('.tab-numa-toggle').checked = !!cfg.numa_enabled;
+    const flashAttnToggle = tab.querySelector('.tab-flash-attn-toggle');
+    if (flashAttnToggle) {
+        flashAttnToggle.checked = cfg.flash_attn_enabled !== false;
+    }
     if (cfg.threads !== undefined) tab.querySelector('.tab-threads').value = String(cfg.threads);
     if (cfg.threads_batch !== undefined) tab.querySelector('.tab-threads-batch').value = String(cfg.threads_batch);
     if (cfg.split_mode) tab.querySelector('.tab-split-mode').value = cfg.split_mode;

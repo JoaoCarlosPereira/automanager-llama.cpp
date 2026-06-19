@@ -7,6 +7,7 @@ DEFAULT_BATCH_SIZE = 2048
 DEFAULT_CACHE_TYPE = "f16"
 DEFAULT_MTP_ENABLED = False
 DEFAULT_MTP_DRAFT_TOKENS = 3
+DEFAULT_FLASH_ATTN_ENABLED = True
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 CACHE_TYPE_PRESETS = ["f16", "q8_0", "q4_0"]
 
@@ -63,6 +64,7 @@ class StartRequest(BaseModel):
     cache_type_k: str = DEFAULT_CACHE_TYPE
     cache_type_v: str = DEFAULT_CACHE_TYPE
     numa_enabled: bool = False
+    flash_attn_enabled: bool = DEFAULT_FLASH_ATTN_ENABLED
     threads: int = 0  # 0 = auto
     threads_batch: int = 0  # 0 = auto
     split_mode: str = "layer"

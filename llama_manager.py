@@ -31,6 +31,7 @@ from schemas import (
     CACHE_TYPE_PRESETS,
     DEFAULT_CACHE_TYPE,
     DEFAULT_MTP_DRAFT_TOKENS,
+    DEFAULT_FLASH_ATTN_ENABLED,
     GPUWeight,
     StartRequest,
     DeleteRequest,
@@ -54,7 +55,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.0.10"  # Major UI Refactor
+_DASHBOARD_JS_V = "4.0.11"  # Flash Attn toggle
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -238,6 +239,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "cache_type_k": req.cache_type_k,
         "cache_type_v": req.cache_type_v,
         "numa_enabled": req.numa_enabled,
+        "flash_attn_enabled": req.flash_attn_enabled,
         "threads": req.threads,
         "threads_batch": req.threads_batch,
         "mmproj_path": req.mmproj_path,
@@ -287,6 +289,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         cache_type_k=req.cache_type_k,
         cache_type_v=req.cache_type_v,
         numa_enabled=req.numa_enabled,
+        flash_attn_enabled=req.flash_attn_enabled,
         threads=req.threads,
         threads_batch=req.threads_batch,
         thinking_enabled=req.thinking_enabled,
@@ -1456,6 +1459,17 @@ def _build_html(
                                         <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
                                     </label>
                                 </div>
+                                <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-emerald-500/30 transition-all">
+                                    {_cfg_tip("Flash Attention acelera a inferência e reduz uso de VRAM no cache KV. Desative se o modelo/binário apresentar instabilidade ou incompatibilidade.")}
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="tab-flash-attn-toggle w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600" checked>
+                                        <span class="text-[10px] font-bold uppercase text-slate-500">Flash Attn</span>
+                                    </label>
+                                    <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
+                                        <input type="checkbox" class="tab-pin-flash-attn hidden">
+                                        <i class="fas fa-thumbtack text-[8px] text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>
+                                    </label>
+                                </div>
                                 <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-cyan-500/30 transition-all">
                                     {_cfg_tip("NUMA: com 2+ GPUs usa distribute (threads em todos os nós); com 1 GPU usa isolate (nó da GPU principal). Útil em servidores multi-socket com offload grande para RAM.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
@@ -1595,6 +1609,7 @@ def _build_html(
             DEFAULT_BATCH_SIZE: {default_batch_size},
             DEFAULT_CACHE_TYPE: {json.dumps(default_cache_type)},
             DEFAULT_MTP_DRAFT_TOKENS: {default_mtp_draft_tokens},
+            DEFAULT_FLASH_ATTN_ENABLED: {json.dumps(DEFAULT_FLASH_ATTN_ENABLED)},
             DEFAULT_MODEL: {json.dumps(default_model)},
             TURBOQUANT_PRESETS: {json.dumps(TURBOQUANT_PRESETS)},
             TURBOQUANT_DEFAULT_CACHE_K: {json.dumps(TURBOQUANT_DEFAULT_CACHE_K)},
@@ -1719,6 +1734,9 @@ def _auto_start_default_model() -> None:
                 cache_type_k=saved_cfg.get("cache_type_k", DEFAULT_CACHE_TYPE),
                 cache_type_v=saved_cfg.get("cache_type_v", DEFAULT_CACHE_TYPE),
                 numa_enabled=saved_cfg.get("numa_enabled", False),
+                flash_attn_enabled=saved_cfg.get(
+                    "flash_attn_enabled", DEFAULT_FLASH_ATTN_ENABLED
+                ),
                 threads=saved_cfg.get("threads", 0),
                 threads_batch=saved_cfg.get("threads_batch", 0),
                 thinking_enabled=thinking_enabled,

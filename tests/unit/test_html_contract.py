@@ -194,6 +194,8 @@ def test_template_contains_feature_toggles(html):
     assert "tab-pin-mtp" in html
     assert "tab-numa-toggle" in html
     assert "tab-pin-numa" in html
+    assert "tab-flash-attn-toggle" in html
+    assert "tab-pin-flash-attn" in html
     assert "tab-pin-split-mode" in html
     assert "tab-auto-balance-toggle" not in html
 

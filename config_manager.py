@@ -29,6 +29,7 @@ from paths import CONFIG_PATH
 from schemas import (
     DEFAULT_MTP_DRAFT_TOKENS,
     DEFAULT_MTP_ENABLED,
+    DEFAULT_FLASH_ATTN_ENABLED,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -205,6 +206,9 @@ class ConfigManager:
             "cache_type_k": merged.get("cache_type_k", DEFAULT_CACHE_TYPE),
             "cache_type_v": merged.get("cache_type_v", DEFAULT_CACHE_TYPE),
             "numa_enabled": merged.get("numa_enabled", False),
+            "flash_attn_enabled": merged.get(
+                "flash_attn_enabled", DEFAULT_FLASH_ATTN_ENABLED
+            ),
             "threads": merged.get("threads", 0),
             "threads_batch": merged.get("threads_batch", 0),
             "mmproj_path": merged.get("mmproj_path"),
