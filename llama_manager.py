@@ -656,9 +656,10 @@ def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) ->
         f'<select data-mmproj-for="{html.escape(model_js, quote=True)}" '
         'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
         'rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 '
-        'outline-none transition-all cursor-pointer max-w-[120px]" '
+        'outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" '
+        f"onmousedown=\"event.stopPropagation()\" onpointerdown=\"event.stopPropagation()\" "
+        f"onclick=\"event.stopPropagation()\" "
         f"onchange=\"onMmprojChange('{safe_js}', this)\" "
-        'onclick="event.stopPropagation()" '
         'title="Projetor de visão para este modelo" '
         'aria-label="Projetor de visão para este modelo">'
         f"{options}</select>"

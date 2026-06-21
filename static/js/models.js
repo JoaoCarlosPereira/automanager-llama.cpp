@@ -16,6 +16,7 @@ import {
     syncTurboquantPanelVisibility,
     applyTurboquantConfig,
     applyTurboquantPreset,
+    applySavedCacheTypes,
     syncTurboquantToCacheFields,
     syncMainCacheToTurboFields,
     getTurboquantPreset,
@@ -26,6 +27,11 @@ import {
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
+let deferredModelListUpdate = null;
+
+const MMproj_SELECT_ATTRS =
+    'onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" '
+    + 'onclick="event.stopPropagation()" onchange="onMmprojChange(\'__PATH__\', this)"';
 
 function syncTabLogPanelHeight(tabId) {
     const tab = document.getElementById(tabId);
@@ -73,6 +79,16 @@ if (typeof window !== 'undefined') {
             if (state.currentTabId) syncTabLogPanelHeight(state.currentTabId);
         }, 100);
     });
+
+    document.addEventListener('focusout', (event) => {
+        if (!event.target?.matches?.('.model-mmproj-select')) return;
+        if (!deferredModelListUpdate) return;
+        const render = deferredModelListUpdate;
+        deferredModelListUpdate = null;
+        requestAnimationFrame(() => {
+            render().catch(() => {});
+        });
+    }, true);
 }
 import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.0.7';
 import { checkForUpdates } from './version.js?v=4.0.7';
@@ -295,10 +311,15 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     if (activate) switchTab(tabId);
     
     // 5. Load Configs
+    const listed = state.lastModelsList?.find(m => m.path.replace(/\\/g, '/') === m_js);
+    if (listed?.last_config) {
+        mergeModelConfigFromServer(m_js, listed.last_config);
+    }
+
     if (window.modelConfigs[m_js]) {
         applyModelConfig(m_js, tabId);
     } else {
-        populateLlamaBinSelect(tabId);
+        syncTurboquantPanelVisibility(tabId);
         persistLlamaBinSettings(m_js, tabId, { silent: true });
     }
     
@@ -811,7 +832,8 @@ export function buildModelVisionControlsHtml(model, modelJs) {
     }).join('');
     options += optionsList;
 
-    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer max-w-[120px]" onchange="onMmprojChange('${safePath}', this)" onclick="event.stopPropagation()" title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
+    const selectAttrs = MMproj_SELECT_ATTRS.replace('__PATH__', safePath);
+    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" ${selectAttrs} title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
 }
 
 export function getSelectedMmprojForModel(modelPath) {
@@ -876,12 +898,96 @@ export async function submitVisionImport(event) {
     }
 }
 
+function mergeModelConfigFromServer(modelPath, lastConfig) {
+    if (!lastConfig) return;
+    const local = window.modelConfigs[modelPath] || {};
+    window.modelConfigs[modelPath] = { ...lastConfig, ...local };
+}
+
+function isMmprojSelectFocused() {
+    return document.activeElement?.matches?.('.model-mmproj-select');
+}
+
+function patchModelListItems(models, cfg) {
+    for (const model of models || []) {
+        const mJs = model.path.replace(/\\/g, '/');
+        const el = document.getElementById(`lib-${model.id}`);
+        if (!el) continue;
+
+        const isDefault = (cfg.default_models || []).includes(mJs) || cfg.default_model === mJs;
+        const status = (state.activeInstances || []).find(
+            i => i.model_path.replace(/\\/g, '/') === mJs
+        );
+        el.classList.remove(
+            'border-emerald-500/50', 'bg-emerald-500/5',
+            'border-slate-700/50', 'bg-slate-800/40',
+            'active-selection',
+        );
+        el.classList.add(
+            status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40',
+        );
+        if (state.currentSelectedModel === mJs) {
+            el.classList.add('active-selection');
+        }
+
+        const autoStart = el.querySelector('input[type="checkbox"]');
+        if (autoStart) autoStart.checked = isDefault;
+    }
+}
+
+function buildModelListHtml(models, cfg) {
+    return models.map(m => {
+        const m_js = m.path.replace(/\\/g, '/');
+        if (m.last_config && !tabHasPendingProposal(m_js)) {
+            mergeModelConfigFromServer(m_js, m.last_config);
+        }
+
+        const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
+        const status = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+        const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
+        const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
+
+        const safePath = m_js.replace(/'/g, "\\'");
+        const visionControls = buildModelVisionControlsHtml(m, m_js);
+        return `
+            <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
+                 title="Clique para abrir · Ctrl+clique para nova aba"
+                 onclick="selectModelFromEvent(event, '${safePath}', '${m.id}')"
+                 onauxclick="selectModelFromEvent(event, '${safePath}', '${m.id}')">
+                <div class="flex items-start justify-between gap-2 overflow-hidden">
+                    <div class="flex-1 min-w-0">
+                        <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
+                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
+                    </div>
+                    ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
+                </div>
+                <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
+                        ${visionControls}
+                    </div>
+                    <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
+                        <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
+                    </label>
+                </div>
+            </div>`;
+    }).join('');
+}
+
+async function renderModelList(container, models, cfg) {
+    container.innerHTML = buildModelListHtml(models, cfg);
+    await ensureMmprojSelectionsForModels(models);
+}
+
 export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false } = {}) {
     const normalized = (modelPath || '').replace(/\\/g, '/');
     if (!normalized) return;
     const mmproj = mmprojPath ? mmprojPath.replace(/\\/g, '/') : null;
     if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
     window.modelConfigs[normalized].mmproj_path = mmproj;
+    window.modelConfigs[normalized].mmproj_disabled = mmproj === '__no_vision__';
     try {
         await apiFetch('/models/mmproj', {
             method: 'POST',
@@ -905,13 +1011,14 @@ async function ensureMmprojSelectionsForModels(models) {
         const candidates = model.mmproj_candidates || [];
         if (!candidates.length) continue;
 
+        const saved = (window.modelConfigs[path] || model.last_config || {}).mmproj_path;
+        // If user explicitly selected "Sem visão", don't re-apply a default
+        if (saved === '__no_vision__') continue;
+
         const resolved = resolveMmprojPath(model);
         if (!resolved) continue;
 
-        const saved = (model.last_config || window.modelConfigs[path] || {}).mmproj_path;
         if (saved && candidates.includes(saved)) continue;
-        // If user explicitly selected "Sem visão", don't re-apply a default
-        if (saved === '__no_vision__') continue;
 
         await persistMmprojSelection(path, resolved, { silent: true });
     }
@@ -1092,9 +1199,8 @@ export function applyModelConfig(path, tabId) {
     if (cfg.threads_batch !== undefined) tab.querySelector('.tab-threads-batch').value = String(cfg.threads_batch);
     if (cfg.split_mode) tab.querySelector('.tab-split-mode').value = cfg.split_mode;
     populateLlamaBinSelect(tabId, cfg.llama_server_bin || null);
-    syncTurboquantPanelVisibility(tabId);
-    applyTurboquantConfig(tabId, cfg);
-    getEffectiveCacheTypes(tabId);
+    applySavedCacheTypes(tabId, cfg);
+    syncTurboquantPanelVisibility(tabId, { autoPreset: false });
     if (!cfg.llama_server_bin && getSelectedLlamaBin(tabId)) {
         persistLlamaBinSettings(path, tabId, { silent: true });
     }
@@ -1187,6 +1293,16 @@ export async function updateModels() {
         state.lastModelsList = data.models;
         state.lastConfig = cfg;
 
+        if (cfg.model_configs) {
+            for (const [rawPath, settings] of Object.entries(cfg.model_configs)) {
+                if (!settings || typeof settings !== 'object') continue;
+                const norm = rawPath.replace(/\\/g, '/');
+                if (!tabHasPendingProposal(norm)) {
+                    mergeModelConfigFromServer(norm, settings);
+                }
+            }
+        }
+
         renderNoTabShortcuts(data.models, cfg);
 
         const container = document.getElementById('model-list-container');
@@ -1200,46 +1316,15 @@ export async function updateModels() {
             dirInput.value = data.storage.path;
         }
 
-        container.innerHTML = data.models.map(m => {
-            const m_js = m.path.replace(/\\/g, '/');
-            if (m.last_config && !tabHasPendingProposal(m_js)) {
-                window.modelConfigs[m_js] = { ...(window.modelConfigs[m_js] || {}), ...m.last_config };
-            }
-            
-            const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
-            const status = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
-            const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
-            const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
+        const renderList = () => renderModelList(container, data.models, cfg);
 
-            const safePath = m_js.replace(/'/g, "\\'");
-            const visionControls = buildModelVisionControlsHtml(m, m_js);
-            return `
-            <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
-                 title="Clique para abrir · Ctrl+clique para nova aba"
-                 onclick="selectModelFromEvent(event, '${safePath}', '${m.id}')"
-                 onauxclick="selectModelFromEvent(event, '${safePath}', '${m.id}')">
-                <div class="flex items-start justify-between gap-2 overflow-hidden">
-                    <div class="flex-1 min-w-0">
-                        <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
-                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
-                    </div>
-                    ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
-                </div>
-                <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
-                    <div class="flex items-center gap-1 flex-wrap">
-                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
-                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
-                        ${visionControls}
-                    </div>
-                    <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
-                        <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
-                        <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
-                    </label>
-                </div>
-            </div>`;
-        }).join('');
-
-        await ensureMmprojSelectionsForModels(data.models);
+        if (isMmprojSelectFocused()) {
+            deferredModelListUpdate = renderList;
+            patchModelListItems(data.models, cfg);
+        } else {
+            deferredModelListUpdate = null;
+            await renderList();
+        }
     } catch (e) {}
 }
 
