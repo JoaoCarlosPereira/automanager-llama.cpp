@@ -278,6 +278,8 @@ def test_html_contains_version_update_modal(html):
 def test_html_contains_api_token(html):
     assert 'id="api-token"' in html
     assert FAKE_API_TOKEN in html
+    assert 'data-full-token="' in html
+    assert 'copyApiToken()' in html
 
 
 def test_html_injects_ip(html):

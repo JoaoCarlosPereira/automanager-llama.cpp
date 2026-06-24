@@ -497,14 +497,63 @@ export async function startLogs(port, tabId, sessionKey = null) {
     }
 }
 
+function formatApiTokenDisplay(key) {
+    if (!key || key.length <= 20) return key;
+    return key.substring(0, 11) + '…' + key.substring(key.length - 8);
+}
+
+function copyTextFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+}
+
+export async function copyApiToken() {
+    const el = document.getElementById('api-token');
+    const token = el?.dataset?.fullToken;
+    if (!token) return;
+
+    let copied = false;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(token);
+            copied = true;
+        }
+    } catch (_) {}
+
+    if (!copied) {
+        copied = copyTextFallback(token);
+    }
+
+    if (!copied) return;
+
+    const btn = el.parentElement?.querySelector('button');
+    const icon = btn?.querySelector('i');
+    if (!icon) return;
+    icon.classList.remove('far', 'fa-copy');
+    icon.classList.add('fas', 'fa-check', 'text-emerald-500');
+    setTimeout(() => {
+        icon.classList.remove('fas', 'fa-check', 'text-emerald-500');
+        icon.classList.add('far', 'fa-copy');
+    }, 1500);
+}
+
 export async function renewToken() {
     try {
         const res = await apiFetch('/api/key/renew', { method: 'POST' });
         if (res.ok) {
             const data = await res.json();
             const el = document.getElementById('api-token');
-            if (el) {
-                el.textContent = data.key.substring(0, 11) + '…' + data.key.substring(data.key.length - 8);
+            if (el && data.key) {
+                el.dataset.fullToken = data.key;
+                el.textContent = formatApiTokenDisplay(data.key);
             }
         }
     } catch (e) {}

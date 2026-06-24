@@ -7,9 +7,9 @@ import {
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
 } from './gpu.js?v=4.0.7';
 import {
-    stopDashboardPolling, startDashboardPolling, renewToken, updateMetrics, updateStatus,
+    stopDashboardPolling, startDashboardPolling, renewToken, copyApiToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload,
-} from './metrics.js?v=4.0.8';
+} from './metrics.js?v=4.0.9';
 import {
     initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
     startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
@@ -43,6 +43,7 @@ win.selectModelFromEvent = selectModelFromEvent;
 win.closeTab = closeTab;
 win.applyModelConfig = applyModelConfig;
 win.renewToken = renewToken;
+win.copyApiToken = copyApiToken;
 win.updateTotal = updateTotal;
 win.balanceWeights = balanceWeights;
 win.resetToDefaults = resetToDefaults;

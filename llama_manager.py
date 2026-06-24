@@ -1144,8 +1144,8 @@ def _build_html(
                  <div class="space-y-2 pt-4 border-t border-slate-800/30">
                     <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Acesso API (OpenAI)</label>
                     <div class="bg-slate-900 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                        <code id="api-token" class="text-ui-label text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:])}</code>
-                        <button onclick="navigator.clipboard.writeText('{html.escape(api_token)}')" class="text-slate-600 hover:text-white"><i class="far fa-copy text-ui-body-sm"></i></button>
+                        <code id="api-token" data-full-token="{html.escape(api_token)}" class="text-ui-label text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:])}</code>
+                        <button type="button" onclick="copyApiToken()" title="Copiar token" class="text-slate-600 hover:text-white shrink-0"><i class="far fa-copy text-ui-body-sm"></i></button>
                     </div>
                  </div>
 
