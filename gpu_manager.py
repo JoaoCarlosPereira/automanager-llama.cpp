@@ -661,11 +661,28 @@ class GPUManager(GPUDetector):
         return "0"
 
     def validate_gpu_weights(self, gpu_weights: List[GPUWeight]) -> Tuple[bool, str]:
-        active = [w for w in gpu_weights if w.active and w.weight > 0 and w.device == "gpu"]
-        if not active:
-            return False, "No active GPUs selected. Enable at least one GPU with weight > 0."
+        active_gpus = [
+            w for w in gpu_weights if w.active and w.weight > 0 and w.device == "gpu"
+        ]
+        has_active_cpu = any(
+            w.active and w.weight > 0 and w.device == "cpu" for w in gpu_weights
+        )
 
-        has_active_cpu = any(w.active and w.device == "cpu" for w in gpu_weights)
+        if not active_gpus and not has_active_cpu:
+            return False, (
+                "Nenhum dispositivo ativo selecionado. "
+                "Ative pelo menos uma GPU ou a CPU para offload."
+            )
+
+        if not active_gpus and has_active_cpu:
+            cpu_total = self.sum_active_weight(gpu_weights, "cpu")
+            if abs(cpu_total - 100.0) > 1.0:
+                return False, (
+                    f"Peso da CPU ativa: {cpu_total:.1f}% (esperado ~100%). "
+                    "Ajuste o peso para somar 100%."
+                )
+            return True, ""
+
         if not has_active_cpu:
             gpu_total = self.sum_active_weight(gpu_weights, "gpu")
             if abs(gpu_total - 100.0) > 1.0:

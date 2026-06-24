@@ -182,14 +182,14 @@ def test_validate_gpu_weights_no_active_devices(gpu_mgr):
     weights = [GPUWeight(index=0, weight=0, name="A", device="gpu", active=False)]
     ok, msg = gpu_mgr.validate_gpu_weights(weights)
     assert ok is False
-    assert "ativo" in msg.lower() or "active" in msg.lower()
+    assert "dispositivo" in msg.lower() or "device" in msg.lower()
 
 
-def test_validate_gpu_weights_cpu_only_rejected(gpu_mgr):
+def test_validate_gpu_weights_cpu_only_ok(gpu_mgr):
     weights = [GPUWeight(index=-1, weight=100, name="C", device="cpu")]
     ok, msg = gpu_mgr.validate_gpu_weights(weights)
-    assert ok is False
-    assert "gpu" in msg.lower()
+    assert ok is True
+    assert msg == ""
 
 
 def test_validate_gpu_weights_inactive_excluded_from_sum(gpu_mgr):

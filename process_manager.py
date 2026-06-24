@@ -518,15 +518,19 @@ class ProcessManager:
             "--ubatch-size",
             str(ubatch_size),
             "--mlock",
-            "--main-gpu",
-            main_gpu,
-            "--split-mode",
-            split_mode,
-            "--tensor-split",
-            ",".join(split),
-            "--api-key",
-            api_token,
         ]
+
+        if split:
+            cmd.extend([
+                "--main-gpu",
+                main_gpu,
+                "--split-mode",
+                split_mode,
+                "--tensor-split",
+                ",".join(split),
+            ])
+
+        cmd.extend(["--api-key", api_token])
 
         if flash_attn_enabled:
             cmd.extend(["--flash-attn", "on"])
@@ -564,7 +568,7 @@ class ProcessManager:
 
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env["CUDA_VISIBLE_DEVICES"] = visible
+        env["CUDA_VISIBLE_DEVICES"] = visible if visible is not None else ""
 
         logger.info(f"Starting llama-server on port {port} for model {os.path.basename(model_path)}")
         try:

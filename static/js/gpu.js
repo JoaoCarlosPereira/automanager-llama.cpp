@@ -555,7 +555,9 @@ export function collectDeviceWeightsFromUI(tabId = null) {
 
 export function validateDeviceWeights(weights) {
     const active = weights.filter(w => w.active);
-    if (!active.some(w => w.device === 'gpu')) return { ok: false, message: 'SELECIONE UMA GPU' };
+    const hasGpu = active.some(w => w.device === 'gpu');
+    const hasCpu = active.some(w => w.device === 'cpu');
+    if (!hasGpu && !hasCpu) return { ok: false, message: 'SELECIONE UM DISPOSITIVO' };
     const total = getActiveWeightTotal(weights);
     if (Math.abs(total - 100) > 1) return { ok: false, message: `CARGA TOTAL: ${total}% (DEVE SER 100%)` };
     return { ok: true, message: '' };

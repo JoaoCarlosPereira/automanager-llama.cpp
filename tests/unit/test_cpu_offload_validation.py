@@ -49,13 +49,13 @@ def test_validate_gpu_weights_only_gpu_selected_ok(gpu_mgr):
     assert ok is True
 
 
-def test_validate_gpu_weights_cpu_only_rejected(gpu_mgr):
+def test_validate_gpu_weights_cpu_only_ok(gpu_mgr):
     weights = [
         GPUWeight(index=-1, weight=100, name="CPU", active=True, device="cpu"),
     ]
     ok, msg = gpu_mgr.validate_gpu_weights(weights)
-    assert ok is False
-    assert "gpu" in msg.lower()
+    assert ok is True
+    assert msg == ""
 
 
 def test_validate_gpu_weights_cpu_any_weight_ok(gpu_mgr):
@@ -145,15 +145,12 @@ def test_start_with_active_cpu_accepts_any_cpu_weight(pm):
         assert "70" not in exc.detail
 
 
-def test_start_with_active_cpu_rejects_cpu_only(pm):
+def test_start_with_active_cpu_only_ok(pm):
     weights = [
         GPUWeight(index=0, weight=0, name="GPU0", active=False, device="gpu"),
         GPUWeight(index=-1, weight=100, name="CPU", active=True, device="cpu"),
     ]
-    with pytest.raises(HTTPException) as exc:
-        _start_with_weights(pm, weights)
-    assert exc.value.status_code == 400
-    assert "gpu" in exc.value.detail.lower()
+    _start_with_weights(pm, weights)
 
 
 def test_start_without_active_cpu_rejects_partial_gpu_sum(pm):
