@@ -60,6 +60,46 @@ _DASHBOARD_JS_V = "4.0.12"  # UI typography readability
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
 
+# httpx auto-decompresses bodies; forwarding these headers breaks browsers.
+_PROXY_OMIT_HEADERS = frozenset({
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+})
+
+
+def _filter_proxy_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _PROXY_OMIT_HEADERS
+    }
+
+
+def _inject_ui_base_tag(html: str, port: int) -> str:
+    """Rewrite llama-server index HTML for reverse-proxy under /ui/{port}/."""
+    base_tag = f'<base href="/ui/{port}/">'
+    html, count = re.subn(
+        r"(<head[^>]*>)",
+        rf"\1{base_tag}",
+        html,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if count == 0:
+        html = f"<head>{base_tag}</head>{html}"
+    return html.replace(
+        "base: new URL('.', location).pathname.slice(0, -1)",
+        f'base: "/ui/{port}"',
+    )
+
 
 def _cfg_tip(text: str) -> str:
     """Balão explicativo exibido ao passar o mouse sobre um campo de configuração."""
@@ -400,16 +440,7 @@ async def ui_proxy(request: Request, port: int, path: str = ""):
         if is_index:
             resp = await client.get(target_url, headers=headers, timeout=10.0)
             if resp.status_code == 200:
-                html = resp.text
-                base_tag = f'<base href="/ui/{port}/">'
-                if "<head>" in html:
-                    html = html.replace("<head>", f"<head>{base_tag}")
-                else:
-                    html = f"<head>{base_tag}</head>{html}"
-                html = html.replace(
-                    "base: new URL('.', location).pathname.slice(0, -1)",
-                    f'base: "/ui/{port}"',
-                )
+                html = _inject_ui_base_tag(resp.text, port)
                 return HTMLResponse(content=html, status_code=200)
 
         resp = await client.request(
@@ -422,7 +453,7 @@ async def ui_proxy(request: Request, port: int, path: str = ""):
         return StreamingResponse(
             resp.aiter_bytes(),
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=_filter_proxy_headers(dict(resp.headers)),
         )
     except httpx.RequestError as exc:
         logger.error("UI proxy error to port %s: %s", port, exc)
@@ -601,7 +632,7 @@ async def openai_proxy(request: Request, path: str):
         return StreamingResponse(
             resp.aiter_bytes(),
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=_filter_proxy_headers(dict(resp.headers)),
         )
     except httpx.RequestError as exc:
         logger.error(f"Proxy error to port {target_instance['port']}: {exc}")
