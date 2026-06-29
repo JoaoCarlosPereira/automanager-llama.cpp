@@ -552,6 +552,9 @@ class ProcessManager:
         if supports_cli_flag("--pinned-memory", llama_bin):
             cmd.append("--pinned-memory")
 
+        if supports_cli_flag("--kv-unified", llama_bin):
+            cmd.append("--kv-unified")
+
         if mmproj_path and os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
         elif not mmproj_disabled:
