@@ -1498,7 +1498,7 @@ def _build_html(
                                         <input type="checkbox" class="tab-mtp-toggle w-5 h-5 bg-slate-950 border-slate-700 rounded text-amber-600">
                                         <span class="text-ui-body-sm font-bold uppercase text-slate-500">MTP</span>
                                     </label>
-                                    <input type="number" min="1" max="4" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-ui-body-sm font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" value="{default_mtp_draft_tokens}">
+                                    <input type="number" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-ui-body-sm font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" value="{default_mtp_draft_tokens}">
                                     <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
                                         <input type="checkbox" class="tab-pin-mtp hidden">
                                         <i class="fas fa-thumbtack text-ui-label text-slate-700 group-hover/pin:text-blue-500 transition-colors"></i>

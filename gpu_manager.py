@@ -804,7 +804,7 @@ def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: "G
     if draft_tokens is None:
         draft_tokens = 1
 
-    tokens = max(1, min(4, int(draft_tokens)))
+    tokens = int(draft_tokens)
     reason = ""
     if not detector.detect_model_mtp(model_path):
         logger.warning(
@@ -814,7 +814,12 @@ def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: "G
         )
         reason = "MTP ativado na UI (model-info inconclusivo)"
 
-    return ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(tokens)], True, reason
+    token_str = str(tokens)
+    return [
+        "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", token_str,
+        "--spec-draft-n-min", token_str,
+    ], True, reason
 
 def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
     """Helper for context size calculation. Clamps to at least 1."""

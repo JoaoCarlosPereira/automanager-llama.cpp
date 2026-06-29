@@ -751,8 +751,7 @@ export function getMtpDraftTokens(tabId = null) {
     const input = scope.querySelector('.tab-mtp-draft-tokens');
     const fallback = window.__constants?.DEFAULT_MTP_DRAFT_TOKENS ?? 3;
     const raw = parseInt(input?.value, 10);
-    const n = Number.isFinite(raw) ? raw : fallback;
-    return Math.max(1, Math.min(4, n));
+    return Number.isFinite(raw) ? raw : fallback;
 }
 
 export function syncMtpDraftTokensState(tabId = null) {

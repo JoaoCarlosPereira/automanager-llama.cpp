@@ -1213,7 +1213,7 @@ export function applyModelConfig(path, tabId) {
     const mtpDraft = tab.querySelector('.tab-mtp-draft-tokens');
     if (mtpDraft) {
         const tokens = cfg.mtp_draft_tokens ?? window.__constants?.DEFAULT_MTP_DRAFT_TOKENS ?? 3;
-        mtpDraft.value = String(Math.max(1, Math.min(4, tokens)));
+        mtpDraft.value = String(tokens);
     }
     syncMtpDraftTokensState(tabId);
     
