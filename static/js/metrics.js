@@ -588,6 +588,22 @@ export async function copyApiToken() {
     }, 1500);
 }
 
+export async function refreshApiToken() {
+    // Popula o token após login SPA: o GET / público renderiza o campo
+    // vazio de propósito (não vazar o segredo para anônimos).
+    const el = document.getElementById('api-token');
+    if (!el || el.dataset.fullToken) return;
+    try {
+        const res = await apiFetch('/api/key');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.key) {
+            el.dataset.fullToken = data.key;
+            el.textContent = formatApiTokenDisplay(data.key);
+        }
+    } catch (e) {}
+}
+
 export async function renewToken() {
     try {
         const res = await apiFetch('/api/key/renew', { method: 'POST' });

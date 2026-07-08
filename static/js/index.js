@@ -8,7 +8,7 @@ import {
 } from './gpu.js?v=4.2.0';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, copyApiToken, updateMetrics, updateStatus,
-    updateDownloads, clearCompletedDownloads, cancelDownload,
+    updateDownloads, clearCompletedDownloads, cancelDownload, refreshApiToken,
 } from './metrics.js?v=4.2.0';
 import {
     initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
@@ -48,6 +48,7 @@ win.closeTab = closeTab;
 win.applyModelConfig = applyModelConfig;
 win.renewToken = renewToken;
 win.copyApiToken = copyApiToken;
+win.refreshApiToken = refreshApiToken;
 win.updateTotal = updateTotal;
 win.balanceWeights = balanceWeights;
 win.resetToDefaults = resetToDefaults;

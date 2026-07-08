@@ -83,6 +83,7 @@ export async function handleLogin(event) {
             document.getElementById('login-overlay').style.display = 'none';
             document.getElementById('dashboard').style.display = 'flex';
             setAuthenticatedShellVisible(true);
+            window.refreshApiToken?.();
             await window.initDashboard();
             window.startDashboardPolling();
         } else {
