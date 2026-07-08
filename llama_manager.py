@@ -13,7 +13,7 @@ import html
 import uvicorn
 import httpx
 from typing import List, Optional, Tuple, Dict, Any, Literal
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,7 +21,19 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from config_manager import ConfigManager, TokenManager, AuthManager, SESSION_IDLE_SECONDS
+from config_manager import (
+    ConfigManager,
+    TokenManager,
+    AuthManager,
+    SESSION_IDLE_SECONDS,
+    normalize_model_path,
+)
+from proxy_router import (
+    ProxyError,
+    ProxyRouter,
+    rewrite_json_model,
+    rewrite_sse_stream,
+)
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
@@ -43,6 +55,8 @@ from schemas import (
     SetMmprojRequest,
     SetThinkingRequest,
     SetLlamaBinRequest,
+    ProxyConfigRequest,
+    SetModelProxyRequest,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -53,7 +67,7 @@ from schemas import (
     TURBOQUANT_CACHE_V_PRESETS,
 )
 from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_server_ctx_size
-from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
+from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
 _DASHBOARD_JS_V = "4.1.0"  # UI typography readability
@@ -153,6 +167,13 @@ auth_manager = AuthManager(config_manager, token_manager)
 
 model_scanner = ModelScanner(config_manager, process_manager)
 download_mgr = DownloadManager()
+proxy_router = ProxyRouter(
+    get_status=process_manager.get_status,
+    config_manager=config_manager,
+    sessions_path=os.path.join(
+        os.path.dirname(CONFIG_PATH) or ".", "proxy_sessions.json"
+    ),
+)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -613,10 +634,221 @@ async def _aggregate_models_response(
     return JSONResponse({"object": "list", "data": merged})
 
 
+def _find_primary_instance(
+    instances: List[Dict[str, Any]], primary_model_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Instância online do modelo principal (menor porta em caso de réplicas)."""
+    if not primary_model_path:
+        return None
+    norm = normalize_model_path(primary_model_path)
+    matches = [
+        inst for inst in instances
+        if normalize_model_path(inst.get("model_path") or "") == norm
+    ]
+    if not matches:
+        return None
+    return min(matches, key=lambda i: i["port"])
+
+
+def _is_primary_model_request(
+    requested_model: str,
+    primary_model_path: Optional[str],
+    primary_instance: Optional[Dict[str, Any]],
+) -> bool:
+    """True quando o modelo pedido é o principal exposto (nome ou path)."""
+    if not primary_model_path:
+        return False
+    candidates = {primary_model_path, os.path.basename(primary_model_path)}
+    if primary_instance:
+        candidates.add(primary_instance.get("model") or "")
+        candidates.add(primary_instance.get("model_path") or "")
+    return requested_model in candidates
+
+
+async def _primary_only_models_response(
+    instances: List[Dict[str, Any]],
+    proxy_settings: Dict[str, Any],
+    headers: Dict[str, str],
+) -> JSONResponse:
+    """Com o modo proxy ativo, /v1/models expõe somente o principal (ADR-003)."""
+    primary = _find_primary_instance(
+        instances, proxy_settings.get("primary_model_path")
+    )
+    if primary is None:
+        logger.warning(
+            "[proxy] modo ativo sem modelo principal online; /v1/models vazio"
+        )
+        return JSONResponse({"object": "list", "data": []})
+    entries: List[Dict[str, Any]] = []
+    try:
+        resp = await client.get(
+            f"http://127.0.0.1:{primary['port']}/v1/models", headers=headers
+        )
+        resp.raise_for_status()
+        entries = resp.json().get("data") or []
+    except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+        logger.warning(
+            "Falha ao listar modelos da instancia principal na porta %s: %s",
+            primary.get("port"), exc,
+        )
+    if not entries:
+        entries = [{
+            "id": primary.get("model"),
+            "object": "model",
+            "owned_by": "automanager",
+        }]
+    return JSONResponse({"object": "list", "data": entries[:1]})
+
+
+async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]):
+    """Encaminha uma requisição ao modelo principal via ProxyRouter (PRD F4-F8)."""
+    client_ip = request.client.host if request.client else ""
+    user_agent = request.headers.get("user-agent", "")
+    is_stream = bool(data.get("stream"))
+
+    try:
+        decision = await proxy_router.resolve(
+            headers=request.headers,
+            body=data,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+    except ProxyError as exc:
+        return JSONResponse(exc.payload(), status_code=exc.status_code)
+
+    attempts = 0
+    while True:
+        logger.info(
+            "[proxy] route external_model=%s internal_model=%s backend=%s gpu=%s "
+            "affinity_key=%s sticky_hit=%s reason=%s stream=%s "
+            "prompt_tokens_estimated=%s",
+            decision.external_model, decision.internal_model,
+            decision.backend_port, decision.gpu, decision.affinity_key,
+            decision.sticky_hit, decision.reason, is_stream,
+            decision.prompt_tokens_estimated,
+        )
+        forward_body = json.dumps(
+            {**data, "model": decision.internal_model}, ensure_ascii=False
+        ).encode("utf-8")
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
+        telemetry = {
+            "x-automanager-backend": str(decision.backend_port),
+            "x-automanager-backend-model": decision.internal_model,
+        }
+
+        try:
+            if is_stream:
+                upstream = await client.send(
+                    client.build_request(
+                        "POST", target_url, content=forward_body,
+                        headers=headers, timeout=None,
+                    ),
+                    stream=True,
+                )
+
+                async def stream_generator(response=upstream, dec=decision):
+                    usage_holder: Dict[str, Any] = {}
+                    try:
+                        if dec.rewrite:
+                            # Reescrita por linha (ADR-006)
+                            async for chunk in rewrite_sse_stream(
+                                response.aiter_bytes(), dec.external_model,
+                                usage_holder,
+                            ):
+                                yield chunk
+                        else:
+                            # Backend principal: repasse bruto, sem parse
+                            async for chunk in response.aiter_bytes():
+                                yield chunk
+                    finally:
+                        await response.aclose()
+                        await proxy_router.release(
+                            dec.backend_port,
+                            affinity_key=dec.affinity_key,
+                            usage=usage_holder.get("usage"),
+                        )
+
+                response_headers = _filter_proxy_headers(dict(upstream.headers))
+                response_headers.update(telemetry)
+                return StreamingResponse(
+                    stream_generator(),
+                    status_code=upstream.status_code,
+                    media_type="text/event-stream",
+                    headers=response_headers,
+                )
+
+            usage: Optional[Dict[str, Any]] = None
+            try:
+                resp = await client.post(
+                    target_url, content=forward_body, headers=headers, timeout=None
+                )
+                content = resp.content
+                if decision.rewrite:
+                    content, usage = rewrite_json_model(
+                        content, decision.external_model
+                    )
+                else:
+                    _, usage = rewrite_json_model(content, decision.external_model)
+                response_headers = _filter_proxy_headers(dict(resp.headers))
+                response_headers.update(telemetry)
+                return Response(
+                    content=content,
+                    status_code=resp.status_code,
+                    headers=response_headers,
+                    media_type=resp.headers.get("content-type"),
+                )
+            finally:
+                await proxy_router.release(
+                    decision.backend_port,
+                    affinity_key=decision.affinity_key,
+                    usage=usage,
+                )
+        except httpx.RequestError as exc:
+            logger.warning(
+                "[proxy] backend %s unavailable: %s", decision.backend_port, exc
+            )
+            if is_stream:
+                # Slot ainda reservado (o gerador não chegou a rodar)
+                await proxy_router.release(
+                    decision.backend_port, affinity_key=decision.affinity_key
+                )
+            if attempts >= 1:
+                return JSONResponse(
+                    ProxyError(
+                        502, "Erro ao conectar na instancia do modelo",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            attempts += 1
+            try:
+                new_decision = await proxy_router.reassign(decision.affinity_key)
+            except ProxyError as pe:
+                return JSONResponse(pe.payload(), status_code=pe.status_code)
+            if new_decision is None:
+                return JSONResponse(
+                    ProxyError(
+                        502, "Erro ao conectar na instancia do modelo",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            await proxy_router.acquire(new_decision.backend_port)
+            new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
+            decision = new_decision
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def openai_proxy(request: Request, path: str):
     """Proxy OpenAI-compatible requests to the correct llama-server instance,
-    routing by the 'model' field in the request body (single-port multi-model)."""
+    routing by the 'model' field in the request body (single-port multi-model).
+
+    Com o Modo Proxy Inteligente ativo, requisições ao modelo principal são
+    roteadas pelo ProxyRouter (sticky + least-busy); o restante segue o fluxo
+    legado inalterado (ADR-003/ADR-004)."""
     body = await request.body()
     data: Dict[str, Any] = {}
     requested_model = None
@@ -632,12 +864,29 @@ async def openai_proxy(request: Request, path: str):
     if not instances:
         raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
 
+    proxy_settings = config_manager.get_smart_proxy_settings()
+    proxy_enabled = bool(proxy_settings.get("enabled"))
+
     # /v1/models nao tem corpo para rotear: agregar todas as instancias em vez
     # de responder apenas com o modelo da porta default.
     if request.method == "GET" and path.strip("/") == "models":
         list_headers = _filter_proxy_headers(dict(request.headers))
         list_headers.pop("host", None)
+        if proxy_enabled:
+            return await _primary_only_models_response(
+                instances, proxy_settings, list_headers
+            )
         return await _aggregate_models_response(instances, list_headers)
+
+    if proxy_enabled and request.method == "POST" and requested_model:
+        primary_instance = _find_primary_instance(
+            instances, proxy_settings.get("primary_model_path")
+        )
+        if _is_primary_model_request(
+            requested_model, proxy_settings.get("primary_model_path"),
+            primary_instance,
+        ):
+            return await _smart_proxy_forward(request, path, data)
 
     if requested_model:
         target_instance = next(
@@ -696,6 +945,208 @@ async def openai_proxy(request: Request, path: str):
         raise HTTPException(
             status_code=502, detail="Erro ao conectar na instancia do modelo"
         )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints administrativos do Modo Proxy Inteligente (PRD F10)
+# ---------------------------------------------------------------------------
+
+def _known_model_path(path: str) -> bool:
+    """Valida primary_model_path: arquivo existente, instância online ou config."""
+    if not path:
+        return False
+    norm = normalize_model_path(path)
+    if os.path.exists(norm):
+        return True
+    instances = process_manager.get_status().get("instances", [])
+    if any(
+        normalize_model_path(inst.get("model_path") or "") == norm
+        for inst in instances
+    ):
+        return True
+    model_configs = config_manager.get_config().get("model_configs", {})
+    return any(normalize_model_path(key) == norm for key in model_configs)
+
+
+@app.post("/proxy/config")
+async def set_proxy_config(
+    req: ProxyConfigRequest, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    partial = req.model_dump(exclude_unset=True)
+    primary = partial.get("primary_model_path")
+    if primary and not _known_model_path(primary):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Modelo principal desconhecido: {primary}",
+        )
+    merged = config_manager.update_smart_proxy_settings(partial)
+    logger.info(
+        "[proxy] config updated enabled=%s primary=%s",
+        merged["enabled"], merged["primary_model_path"],
+    )
+    return {"message": "Configuracao salva", "smart_proxy": merged}
+
+
+@app.post("/models/proxy")
+async def set_model_proxy(
+    req: SetModelProxyRequest, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    settings: Dict[str, Any] = {}
+    if req.proxy_eligible is not None:
+        settings["proxy_eligible"] = req.proxy_eligible
+    if req.max_parallel_requests is not None:
+        settings["max_parallel_requests"] = req.max_parallel_requests
+    if not settings:
+        raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
+    config_manager.update_model_settings(req.model_path, settings)
+    return {"message": "Configuracao salva"}
+
+
+@app.get("/proxy/status")
+async def proxy_status(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    settings = config_manager.get_smart_proxy_settings()
+    backends = proxy_router.backends_snapshot()
+    primary = next((b for b in backends if b["role"] == "primary"), None)
+    sessions = await proxy_router.sessions()
+    return {
+        "enabled": settings["enabled"],
+        "primary_model_path": settings["primary_model_path"],
+        "exposed_model": primary["model"] if primary else None,
+        "primary": primary,
+        "backends": backends,
+        "sessions_count": len(sessions),
+        "ttl_minutes": settings["ttl_minutes"],
+        "max_wait_seconds": settings["max_wait_seconds"],
+    }
+
+
+@app.get("/proxy/backends")
+async def proxy_backends(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return proxy_router.backends_snapshot()
+
+
+@app.post("/proxy/backends/{port}/enable")
+async def proxy_backend_enable(
+    port: int, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    proxy_router.set_backend_enabled(port, True)
+    return {"message": "Backend habilitado", "state": "online"}
+
+
+@app.post("/proxy/backends/{port}/disable")
+async def proxy_backend_disable(
+    port: int, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    proxy_router.set_backend_enabled(port, False)
+    return {"message": "Backend desabilitado", "state": "disabled"}
+
+
+def _session_view(session, backends_by_port: Dict[int, Dict[str, Any]]) -> dict:
+    backend = backends_by_port.get(session.backend_port, {})
+    return {
+        "affinity_key": session.affinity_key,
+        "backend_port": session.backend_port,
+        "external_model": session.external_model,
+        "internal_model": session.internal_model,
+        "detected_tag": session.detected_tag,
+        "created_at": session.created_at,
+        "last_used_at": session.last_used_at,
+        "request_count": session.request_count,
+        "tokens_processed": session.tokens_processed,
+        "gpu": backend.get("gpu"),
+        "backend_state": backend.get("state", "offline"),
+    }
+
+
+@app.get("/proxy/sessions")
+async def proxy_sessions(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    backends_by_port = {b["port"]: b for b in proxy_router.backends_snapshot()}
+    sessions = await proxy_router.sessions()
+    return [_session_view(s, backends_by_port) for s in sessions]
+
+
+@app.delete("/proxy/sessions")
+async def proxy_sessions_clear(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    removed = await proxy_router.clear_sessions()
+    logger.info("[proxy] admin cleared %d sticky session(s)", removed)
+    return {"removed": removed}
+
+
+@app.delete("/proxy/sessions/{affinity_key:path}")
+async def proxy_session_delete(
+    affinity_key: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    removed = await proxy_router.clear_sessions(affinity_key)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Sessao nao encontrada")
+    return {"removed": removed}
+
+
+@app.post("/proxy/sessions/{affinity_key:path}/reassign")
+async def proxy_session_reassign(
+    affinity_key: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        decision = await proxy_router.reassign(affinity_key)
+    except ProxyError as exc:
+        return JSONResponse(exc.payload(), status_code=exc.status_code)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Sessao nao encontrada")
+    return decision
+
+
+@app.post("/proxy/resolve")
+async def proxy_resolve(request: Request, authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Corpo JSON invalido")
+    settings = config_manager.get_smart_proxy_settings()
+    if not settings.get("enabled"):
+        return {"proxy_enabled": False}
+    try:
+        decision = await proxy_router.resolve(
+            headers=request.headers,
+            body=data,
+            client_ip=request.client.host if request.client else "",
+            user_agent=request.headers.get("user-agent", ""),
+            dry_run=True,
+        )
+    except ProxyError as exc:
+        return JSONResponse(exc.payload(), status_code=exc.status_code)
+    return {
+        "proxy_enabled": True,
+        "external_model": decision.external_model,
+        "detected_tag": decision.detected_tag,
+        "affinity_key": decision.affinity_key,
+        "selected_backend": decision.backend_port,
+        "internal_model": decision.internal_model,
+        "gpu": decision.gpu,
+        "reason": decision.reason,
+        "sticky_hit": decision.sticky_hit,
+    }
 
 
 def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
@@ -839,6 +1290,12 @@ async def index(request: Request):
     default_models = config_manager.get_config().get("default_models", [])
     model_configs = config_manager.get_config().get("model_configs", {})
 
+    smart_proxy_cfg = config_manager.get_smart_proxy_settings()
+    if not isinstance(smart_proxy_cfg, dict):
+        smart_proxy_cfg = {}
+    proxy_primary_path = smart_proxy_cfg.get("primary_model_path")
+    proxy_enabled = bool(smart_proxy_cfg.get("enabled") is True)
+
     model_items = ""
     for m in models:
         m_path = m["path"]
@@ -852,6 +1309,17 @@ async def index(request: Request):
         is_default = "checked" if (m_path in default_models or m_path == default_model) else ""
         has_config = "text-blue-400" if m_cfg and not m_cfg.get("hardware_incapable") else "text-slate-100"
         
+        is_proxy_primary = (
+            "checked"
+            if proxy_primary_path
+            and normalize_model_path(m_path) == proxy_primary_path
+            else ""
+        )
+        is_proxy_eligible = (
+            "checked" if m_cfg.get("proxy_eligible", True) else ""
+        )
+        proxy_max_parallel = m_cfg.get("max_parallel_requests") or 1
+
         hardware_incapable = bool(m_cfg.get("hardware_incapable"))
         incapable_badge = '<span class="shrink-0 text-ui-label font-black uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded-lg border border-red-500/30 ml-2">Incapaz</span>' if hardware_incapable else ''
         incapable_row_class = 'border-red-500/40 bg-red-950/20' if hardware_incapable else ''
@@ -881,6 +1349,22 @@ async def index(request: Request):
                     <span class="text-ui-label font-black text-slate-600 uppercase">Padrão</span>
                     <input type="checkbox" class="w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" {is_default} onclick="event.stopPropagation(); setDefaultModel(this, '{m_js_js}')">
                 </div>
+            </div>
+            <div class="proxy-model-controls flex items-center justify-between gap-2 pt-2 border-t border-slate-800/40">
+                <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1.5 cursor-pointer" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
+                        <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
+                        <input type="checkbox" class="proxy-primary-checkbox w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" data-path="{html.escape(m_js, quote=True)}" {is_proxy_primary} onclick="event.stopPropagation(); setProxyPrimary(this, '{m_js_js}')">
+                    </label>
+                    <label class="flex items-center gap-1.5 cursor-pointer" title="Usar como backend secundário no proxy inteligente">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
+                        <input type="checkbox" class="proxy-eligible-checkbox w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" {is_proxy_eligible} onclick="event.stopPropagation(); setProxyEligible(this, '{m_js_js}')">
+                    </label>
+                </div>
+                <label class="flex items-center gap-1.5" title="Máximo de requisições paralelas roteadas para este backend">
+                    <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
+                    <input type="number" min="1" max="16" value="{proxy_max_parallel}" class="proxy-max-parallel w-12 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 outline-none" onclick="event.stopPropagation()" onchange="setProxyMaxParallel(this, '{m_js_js}')">
+                </label>
             </div>
         </div>"""
 
@@ -934,6 +1418,7 @@ async def index(request: Request):
         default_batch_size=DEFAULT_BATCH_SIZE,
         default_cache_type=DEFAULT_CACHE_TYPE,
         default_mtp_draft_tokens=DEFAULT_MTP_DRAFT_TOKENS,
+        proxy_enabled=proxy_enabled,
     ))
 
 
@@ -957,9 +1442,11 @@ def _build_html(
     default_batch_size: int,
     default_cache_type: str,
     default_mtp_draft_tokens: int,
+    proxy_enabled: bool = False,
 ) -> str:
     """Build the full HTML template."""
 
+    proxy_enabled_attr = "checked" if proxy_enabled else ""
     login_overlay_style = "none" if is_authenticated else "flex"
     shell_style = "flex" if is_authenticated else "none"
     login_overlay = f"""
@@ -1280,6 +1767,18 @@ def _build_html(
                  </div>
 
                  <div class="space-y-2 pt-4 border-t border-slate-800/30">
+                    <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Proxy Inteligente</label>
+                    <div class="bg-slate-900 p-3 rounded-lg border border-slate-800 space-y-2">
+                        <label class="flex items-center justify-between cursor-pointer gap-2">
+                            <span class="text-ui-body-sm text-slate-300 font-bold">Ativar Modo Proxy Inteligente</span>
+                            <input type="checkbox" id="proxy-enabled-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-violet-600 cursor-pointer shrink-0" {proxy_enabled_attr} onchange="proxyToggleEnabled(this)">
+                        </label>
+                        <p id="proxy-primary-hint" class="text-ui-label text-amber-400/90 leading-relaxed hidden">Nenhum modelo principal definido. Marque "Principal" em um modelo da biblioteca para expor a API.</p>
+                        <p class="text-ui-label text-slate-500 leading-relaxed">Com o modo ativo, a API /v1 expõe somente o modelo principal e distribui conversas/subagentes entre as instâncias online automaticamente.</p>
+                    </div>
+                 </div>
+
+                 <div class="space-y-2 pt-4 border-t border-slate-800/30">
                     <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Alterar Senha Admin</label>
                     <input type="password" id="current-password" placeholder="Senha atual" class="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm outline-none">
                     <input type="password" id="new-password" placeholder="Nova senha" class="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm outline-none">
@@ -1348,6 +1847,31 @@ def _build_html(
                     <!-- Dinâmico -->
                 </div>
             </div>
+
+            <!-- PROXY INTELIGENTE (PRD F9) -->
+            <section id="proxy-panel" class="px-6 md:px-8 py-4 bg-slate-950/20 border-b border-slate-800/30 shrink-0">
+                <div class="glass p-5 rounded-2xl border-l-2 border-violet-600 space-y-4">
+                    <div class="flex items-center justify-between flex-wrap gap-3">
+                        <div class="flex items-center gap-3">
+                            <i class="fas fa-route text-violet-400"></i>
+                            <p class="text-ui-body-sm font-black text-slate-400 uppercase tracking-widest">Proxy Inteligente</p>
+                            <span id="proxy-mode-badge" class="px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-slate-700/50 text-slate-500">OFF</span>
+                        </div>
+                        <div class="text-ui-label text-slate-500 uppercase tracking-widest">
+                            Modelo exposto: <span id="proxy-exposed-model" class="text-slate-200 font-bold normal-case tracking-normal">—</span>
+                        </div>
+                    </div>
+                    <div id="proxy-panel-body" class="space-y-4 hidden">
+                        <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+                        <div>
+                            <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest mb-2">
+                                Sessões sticky ativas <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
+                            </p>
+                            <div id="proxy-sessions-list" class="space-y-1.5"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
             <!-- TABS AREA -->
             <div class="flex-1 flex flex-col bg-slate-900/10">
@@ -1916,6 +2440,7 @@ async def shutdown_event_handler():
     """Signal all background tasks to stop and kill llama-server."""
     logger.info("Encerrando Automanager Llama.cpp...")
     shutdown_event.set()
+    await proxy_router.flush()
     oom_watchdog.stop()
     process_manager.stop()
 

@@ -87,6 +87,12 @@ def mock_index_deps(monkeypatch):
 
     config_manager = MagicMock()
     config_manager.get_config.return_value = {"default_model": None, "model_configs": {}}
+    config_manager.get_smart_proxy_settings.return_value = {
+        "enabled": False,
+        "primary_model_path": None,
+        "ttl_minutes": 180,
+        "max_wait_seconds": 30,
+    }
     monkeypatch.setattr(llama_manager, "config_manager", config_manager)
 
     process_manager = MagicMock()
@@ -238,6 +244,49 @@ def test_html_contains_model_list(html):
 def test_html_contains_default_model_toggle(html):
     """Each library item carries an auto-start (default) checkbox."""
     assert "setDefaultModel(this," in html
+
+
+# ── Proxy Inteligente ─────────────────────────────────────────────────────
+
+
+def test_html_contains_proxy_global_toggle(html):
+    """Checkbox global do Modo Proxy Inteligente na sidebar (task 07)."""
+    assert 'id="proxy-enabled-toggle"' in html
+    assert 'proxyToggleEnabled(this)' in html
+    assert 'id="proxy-primary-hint"' in html
+    assert "Ativar Modo Proxy Inteligente" in html
+
+
+def test_html_contains_proxy_model_controls(html):
+    """Controles Principal/Proxy/Paralelo por item da biblioteca (task 07)."""
+    assert "proxy-primary-checkbox" in html
+    assert "setProxyPrimary(this," in html
+    assert "proxy-eligible-checkbox" in html
+    assert "setProxyEligible(this," in html
+    assert "proxy-max-parallel" in html
+    assert "setProxyMaxParallel(this," in html
+
+
+def test_html_contains_proxy_monitor_panel(html):
+    """Card de monitoramento 'Proxy Inteligente' no dashboard (task 08)."""
+    assert 'id="proxy-panel"' in html
+    assert 'id="proxy-mode-badge"' in html
+    assert 'id="proxy-exposed-model"' in html
+    assert 'id="proxy-backends-list"' in html
+    assert 'id="proxy-sessions-list"' in html
+    assert 'id="proxy-sessions-count"' in html
+
+
+def test_html_proxy_toggle_checked_state_follows_config(client, mock_index_deps):
+    llama_manager.config_manager.get_smart_proxy_settings.return_value = {
+        "enabled": True,
+        "primary_model_path": "/tmp/models/test.gguf",
+        "ttl_minutes": 180,
+        "max_wait_seconds": 30,
+    }
+    html = client.get("/").text
+    start = html.index('id="proxy-enabled-toggle"')
+    assert "checked" in html[start:start + 300]
 
 
 # ── Downloads ─────────────────────────────────────────────────────────────

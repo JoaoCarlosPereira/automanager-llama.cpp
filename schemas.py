@@ -8,6 +8,10 @@ DEFAULT_CACHE_TYPE = "f16"
 DEFAULT_MTP_ENABLED = False
 DEFAULT_MTP_DRAFT_TOKENS = 3
 DEFAULT_FLASH_ATTN_ENABLED = True
+DEFAULT_PROXY_ELIGIBLE = True
+DEFAULT_MAX_PARALLEL_REQUESTS = 1
+DEFAULT_PROXY_TTL_MINUTES = 180
+DEFAULT_PROXY_MAX_WAIT_SECONDS = 30
 BATCH_SIZE_PRESETS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
 CACHE_TYPE_PRESETS = ["f16", "q8_0", "q4_0"]
 
@@ -127,6 +131,23 @@ class SetLlamaBinRequest(BaseModel):
 class SetDefaultRequest(BaseModel):
     path: Optional[str] = None
     add: bool = True
+
+
+class ProxyConfigRequest(BaseModel):
+    """Atualização parcial da chave global smart_proxy."""
+    enabled: Optional[bool] = None
+    primary_model_path: Optional[str] = None
+    ttl_minutes: Optional[int] = Field(default=None, ge=1)
+    max_wait_seconds: Optional[int] = Field(default=None, ge=1)
+
+
+class SetModelProxyRequest(BaseModel):
+    """Flags de participação no proxy inteligente, por modelo."""
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str
+    proxy_eligible: Optional[bool] = None
+    max_parallel_requests: Optional[int] = Field(default=None, ge=1)
 
 
 class RenameRequest(BaseModel):

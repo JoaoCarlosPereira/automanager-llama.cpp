@@ -7,12 +7,16 @@ import {
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.1.0';
 import { getTabActionsHtml } from './models.js?v=4.1.0';
+import { updateProxyPanel } from './proxy.js?v=4.1.0';
 
 export async function updateStatus() {
     try {
         const res = await apiFetch('/status');
         if (sessionExpiredHandled || !res.ok) return;
         const data = await res.json();
+
+        // Painel do Proxy Inteligente acompanha o polling (throttle interno)
+        updateProxyPanel();
 
         state.activeInstances = data.instances || [];
         const runningInstances = state.activeInstances.filter(i => i.status === 'running');

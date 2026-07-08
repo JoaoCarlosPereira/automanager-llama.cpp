@@ -17,6 +17,10 @@ import {
     onMmprojChange, closeTab, startSmartCalibration,
 } from './models.js?v=4.1.0';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.1.0';
+import {
+    proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
+    updateProxyPanel, proxyDeleteSession, proxyReassignSession,
+} from './proxy.js?v=4.1.0';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -65,6 +69,13 @@ win.cancelDownload = cancelDownload;
 win.checkForUpdates = checkForUpdates;
 win.dismissVersionModal = dismissVersionModal;
 win.startSmartCalibration = startSmartCalibration;
+win.proxyToggleEnabled = proxyToggleEnabled;
+win.setProxyPrimary = setProxyPrimary;
+win.setProxyEligible = setProxyEligible;
+win.setProxyMaxParallel = setProxyMaxParallel;
+win.updateProxyPanel = updateProxyPanel;
+win.proxyDeleteSession = proxyDeleteSession;
+win.proxyReassignSession = proxyReassignSession;
 win.runSmartCalibration = (btn) => {
     const tab = btn?.closest('.tab-content');
     if (!tab?.dataset?.path || !tab.id) return;

@@ -39,9 +39,20 @@ from schemas import (
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
     DEFAULT_CACHE_TYPE,
+    DEFAULT_PROXY_ELIGIBLE,
+    DEFAULT_MAX_PARALLEL_REQUESTS,
+    DEFAULT_PROXY_TTL_MINUTES,
+    DEFAULT_PROXY_MAX_WAIT_SECONDS,
 )
 
 DEFAULT_THINKING_ENABLED = True
+
+DEFAULT_SMART_PROXY = {
+    "enabled": False,
+    "primary_model_path": None,
+    "ttl_minutes": DEFAULT_PROXY_TTL_MINUTES,
+    "max_wait_seconds": DEFAULT_PROXY_MAX_WAIT_SECONDS,
+}
 
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
 
@@ -232,6 +243,10 @@ class ConfigManager:
             "pinned_fields": merged.get("pinned_fields") or {},
             "llama_server_bin": llama_server_bin,
             "turboquant_preset": turboquant_preset,
+            "proxy_eligible": merged.get("proxy_eligible", DEFAULT_PROXY_ELIGIBLE),
+            "max_parallel_requests": merged.get(
+                "max_parallel_requests", DEFAULT_MAX_PARALLEL_REQUESTS
+            ),
             "last_started": datetime.now(timezone.utc).isoformat(),
         }
         if "hardware_incapable_message" in merged:
@@ -264,6 +279,34 @@ class ConfigManager:
         # Clear legacy field for cleanliness
         config.pop("default_model", None)
         self.save(config)
+
+    def get_smart_proxy_settings(self) -> dict:
+        """Chave global smart_proxy mesclada sobre os defaults."""
+        config = self.load()
+        stored = config.get("smart_proxy")
+        if not isinstance(stored, dict):
+            stored = {}
+        return {**DEFAULT_SMART_PROXY, **stored}
+
+    def update_smart_proxy_settings(self, partial: dict) -> dict:
+        """Merge parcial sobre a chave global smart_proxy (setter dedicado)."""
+        config = self.load()
+        stored = config.get("smart_proxy")
+        if not isinstance(stored, dict):
+            stored = {}
+        merged = {**DEFAULT_SMART_PROXY, **stored, **(partial or {})}
+        primary = merged.get("primary_model_path")
+        merged["primary_model_path"] = (
+            normalize_model_path(primary) if primary else None
+        )
+        for key in ("ttl_minutes", "max_wait_seconds"):
+            value = merged.get(key)
+            if not isinstance(value, int) or value < 1:
+                merged[key] = DEFAULT_SMART_PROXY[key]
+        merged["enabled"] = bool(merged.get("enabled"))
+        config["smart_proxy"] = merged
+        self.save(config)
+        return merged
 
     def get_default_models(self) -> list[str]:
         config = self.config.load() if hasattr(self, "config") else self.load()

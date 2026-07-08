@@ -1,0 +1,875 @@
+"""Roteador do Modo Proxy Inteligente.
+
+Mantém a tabela de sessões sticky (afinidade conversa/subagente -> backend),
+os contadores de requisições em andamento por porta e a seleção least-busy
+de backends. Não importa llama_manager: dependências entram por injeção
+(ADR-004). Persistência das sessões em JSON atômico (ADR-005).
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+
+from config_manager import lookup_model_config, normalize_model_path
+from schemas import (
+    DEFAULT_CONTEXT_SIZE,
+    DEFAULT_MAX_PARALLEL_REQUESTS,
+    DEFAULT_PARALLEL_SLOTS,
+    DEFAULT_PROXY_ELIGIBLE,
+)
+
+logger = logging.getLogger("automanager")
+
+AGENT_TAG_RE = re.compile(r"\[AGENT:([A-Za-z0-9_-]+)\]")
+
+# Margem de segurança sobre a estimativa de tokens (chars//4) — TechSpec.
+TOKEN_ESTIMATE_MARGIN = 1.1
+# Persistência oportunista dos contadores de sessão (a cada N usos).
+PERSIST_EVERY_N_REQUESTS = 20
+# Intervalo do polling de espera por slot livre.
+BUSY_POLL_SECONDS = 0.25
+
+MAIN_TAG = "main"
+
+
+class ProxyError(Exception):
+    """Erro de roteamento com resposta no formato de erro OpenAI."""
+
+    def __init__(self, status_code: int, message: str, code: str = "proxy_error"):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+        self.code = code
+
+    def payload(self) -> dict:
+        return {
+            "error": {
+                "message": self.message,
+                "type": self.code,
+                "code": self.code,
+            }
+        }
+
+
+@dataclass
+class StickySession:
+    affinity_key: str
+    backend_port: int
+    backend_model_path: str
+    external_model: str
+    internal_model: str
+    detected_tag: Optional[str]
+    created_at: str
+    last_used_at: str
+    request_count: int = 0
+    tokens_processed: int = 0
+
+
+@dataclass
+class RouteDecision:
+    backend_port: int
+    internal_model: str
+    external_model: str
+    affinity_key: str
+    detected_tag: Optional[str]
+    sticky_hit: bool
+    reason: str
+    rewrite: bool
+    prompt_tokens_estimated: int = 0
+    gpu: str = ""
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat()
+
+
+def _content_text(content: Any) -> str:
+    """Extrai texto de um campo content (string ou lista de partes)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return ""
+
+
+def gpu_label(instance: Dict[str, Any]) -> str:
+    """Nome amigável da GPU da instância a partir de config.gpu_weights."""
+    config = instance.get("config") or {}
+    weights = config.get("gpu_weights") or []
+    gpus = [
+        w for w in weights
+        if isinstance(w, dict) and w.get("device", "gpu") == "gpu" and w.get("active", True)
+    ]
+    if not gpus:
+        return "CPU"
+    main = next((w for w in gpus if w.get("is_main")), None)
+    chosen = main or max(gpus, key=lambda w: w.get("weight", 0))
+    name = chosen.get("name") or "GPU"
+    index = chosen.get("index")
+    return f"{name} #{index}" if index is not None else name
+
+
+def _rewrite_sse_line(
+    line: bytes, external_model: str, usage_holder: Optional[dict] = None
+) -> bytes:
+    """Reescreve o campo model de uma linha `data: {json}`; fail-open (ADR-006)."""
+    has_cr = line.endswith(b"\r")
+    stripped = line[:-1] if has_cr else line
+    if not stripped.lstrip().startswith(b"data:"):
+        return line
+    prefix_len = stripped.index(b"data:") + len(b"data:")
+    payload = stripped[prefix_len:].strip()
+    if not payload or payload == b"[DONE]":
+        return line
+    try:
+        obj = json.loads(payload)
+    except ValueError:
+        return line
+    if not isinstance(obj, dict):
+        return line
+    if usage_holder is not None and isinstance(obj.get("usage"), dict):
+        usage_holder["usage"] = obj["usage"]
+    if "model" not in obj:
+        return line
+    obj["model"] = external_model
+    rewritten = b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return rewritten + b"\r" if has_cr else rewritten
+
+
+async def rewrite_sse_stream(
+    byte_iter, external_model: str, usage_holder: Optional[dict] = None
+):
+    """Buffer incremental por linha: reescreve eventos SSE sem reter o corpo.
+
+    Emite somente linhas completas (delimitadas por \\n); o resíduo final é
+    emitido no fechamento do stream para não truncar a resposta (ADR-006).
+    """
+    buffer = b""
+    async for chunk in byte_iter:
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            yield _rewrite_sse_line(line, external_model, usage_holder) + b"\n"
+    if buffer:
+        yield _rewrite_sse_line(buffer, external_model, usage_holder)
+
+
+def rewrite_json_model(
+    content: bytes, external_model: str
+) -> Tuple[bytes, Optional[dict]]:
+    """Reescreve o model de uma resposta JSON não-stream; retorna (body, usage)."""
+    try:
+        obj = json.loads(content)
+    except ValueError:
+        return content, None
+    if not isinstance(obj, dict):
+        return content, None
+    usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else None
+    if "model" in obj:
+        obj["model"] = external_model
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8"), usage
+    return content, usage
+
+
+class ProxyRouter:
+    """Decide o backend de cada requisição ao modelo principal."""
+
+    def __init__(
+        self,
+        get_status: Callable[[], dict],
+        config_manager,
+        sessions_path,
+        now: Optional[Callable[[], datetime]] = None,
+    ) -> None:
+        self._get_status = get_status
+        self._config = config_manager
+        self._sessions_path = Path(sessions_path)
+        self._now = now or _utcnow
+        self._lock = asyncio.Lock()
+        self._sessions: Dict[str, StickySession] = {}
+        self._in_flight: Dict[int, int] = {}
+        self._disabled_ports: set = set()
+        self._unsaved_uses = 0
+        self._load_sessions()
+
+    # ------------------------------------------------------------------
+    # Extração de afinidade (PRD F5)
+    # ------------------------------------------------------------------
+
+    def extract_affinity(
+        self,
+        headers: Mapping[str, str],
+        body: dict,
+        client_ip: str,
+        user_agent: str,
+    ) -> Tuple[str, Optional[str]]:
+        """Retorna (affinity_key, detected_tag) na ordem de precedência do PRD."""
+        lower_headers = {str(k).lower(): v for k, v in headers.items()}
+        tag = self.detect_tag(body)
+
+        session_id = lower_headers.get("x-automanager-session-id")
+        if session_id:
+            return f"sid:{session_id}", tag
+        agent_id = lower_headers.get("x-automanager-agent-id")
+        if agent_id:
+            return f"aid:{agent_id}", tag
+
+        metadata = body.get("metadata")
+        if isinstance(metadata, dict):
+            if metadata.get("session_id"):
+                return f"sid:{metadata['session_id']}", tag
+            if metadata.get("agent_id"):
+                return f"aid:{metadata['agent_id']}", tag
+
+        digest = self._stable_hash(body, client_ip, user_agent)
+        if tag:
+            return f"agent:{tag}:{digest[:8]}", tag
+        return f"hash:{digest[:16]}", tag
+
+    @staticmethod
+    def detect_tag(body: dict) -> Optional[str]:
+        """Primeira tag [AGENT:...] no conteúdo (mensagens system primeiro)."""
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return None
+        ordered = sorted(
+            (m for m in messages if isinstance(m, dict)),
+            key=lambda m: 0 if m.get("role") == "system" else 1,
+        )
+        for message in ordered:
+            match = AGENT_TAG_RE.search(_content_text(message.get("content")))
+            if match:
+                return match.group(1)
+        return None
+
+    def _stable_hash(self, body: dict, client_ip: str, user_agent: str) -> str:
+        """Hash estável: primeiro system + primeira user + modelo + IP + UA.
+
+        Não usa timestamp/request-id — a mesma conversa gera sempre a
+        mesma chave (PRD F5).
+        """
+        first_system = ""
+        first_user = ""
+        messages = body.get("messages")
+        if isinstance(messages, list):
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                text = _content_text(message.get("content"))
+                if not first_system and message.get("role") == "system":
+                    first_system = text
+                elif not first_user and message.get("role") == "user":
+                    first_user = text
+                if first_system and first_user:
+                    break
+        raw = "\x1f".join(
+            [first_system, first_user, str(body.get("model") or ""), client_ip or "",
+             user_agent or ""]
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def estimate_prompt_tokens(body: dict) -> int:
+        """Estimativa chars//4 sobre as mensagens serializadas (TechSpec)."""
+        messages = body.get("messages") or []
+        try:
+            serialized = json.dumps(messages, ensure_ascii=False)
+        except (TypeError, ValueError):
+            serialized = str(messages)
+        return max(0, len(serialized) // 4)
+
+    # ------------------------------------------------------------------
+    # Persistência (ADR-005)
+    # ------------------------------------------------------------------
+
+    def _load_sessions(self) -> None:
+        if not self._sessions_path.exists():
+            return
+        try:
+            with open(self._sessions_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("[proxy] sessions file unreadable, starting empty: %s", exc)
+            return
+        now = self._now()
+        ttl = self._ttl()
+        loaded = 0
+        for item in raw.get("sessions", []):
+            try:
+                session = StickySession(**item)
+            except TypeError:
+                continue
+            if self._is_expired(session, now, ttl):
+                continue
+            self._sessions[session.affinity_key] = session
+            loaded += 1
+        if loaded:
+            logger.info("[proxy] restored %d sticky session(s) from disk", loaded)
+
+    def _save_sessions(self) -> None:
+        """Escrita atômica (.tmp + os.replace), mesmo padrão do ConfigManager."""
+        tmp_path = str(self._sessions_path) + ".tmp"
+        try:
+            self._sessions_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"sessions": [asdict(s) for s in self._sessions.values()]},
+                    f,
+                    indent=2,
+                )
+            os.replace(tmp_path, str(self._sessions_path))
+            self._unsaved_uses = 0
+        except OSError as exc:
+            logger.error("[proxy] failed to persist sessions: %s", exc)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    async def flush(self) -> None:
+        """Persistência explícita (shutdown)."""
+        async with self._lock:
+            self._save_sessions()
+
+    # ------------------------------------------------------------------
+    # TTL / sessões
+    # ------------------------------------------------------------------
+
+    def _settings(self) -> dict:
+        return self._config.get_smart_proxy_settings()
+
+    def _ttl(self) -> timedelta:
+        return timedelta(minutes=self._settings().get("ttl_minutes", 180))
+
+    @staticmethod
+    def _is_expired(session: StickySession, now: datetime, ttl: timedelta) -> bool:
+        try:
+            last = datetime.fromisoformat(session.last_used_at)
+        except (TypeError, ValueError):
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last) > ttl
+
+    def _expire_locked(self) -> None:
+        now = self._now()
+        ttl = self._ttl()
+        expired = [
+            key for key, session in self._sessions.items()
+            if self._is_expired(session, now, ttl)
+        ]
+        for key in expired:
+            del self._sessions[key]
+        if expired:
+            logger.info("[proxy] expired %d sticky session(s) by TTL", len(expired))
+            self._save_sessions()
+
+    async def sessions(self) -> List[StickySession]:
+        async with self._lock:
+            self._expire_locked()
+            return list(self._sessions.values())
+
+    async def clear_sessions(self, affinity_key: Optional[str] = None) -> int:
+        async with self._lock:
+            if affinity_key is None:
+                removed = len(self._sessions)
+                self._sessions.clear()
+            else:
+                removed = 1 if self._sessions.pop(affinity_key, None) else 0
+            if removed:
+                self._save_sessions()
+            return removed
+
+    # ------------------------------------------------------------------
+    # Contadores in-flight
+    # ------------------------------------------------------------------
+
+    async def acquire(self, port: int) -> None:
+        async with self._lock:
+            self._in_flight[port] = self._in_flight.get(port, 0) + 1
+
+    async def release(
+        self,
+        port: int,
+        *,
+        affinity_key: Optional[str] = None,
+        usage: Optional[dict] = None,
+    ) -> None:
+        async with self._lock:
+            current = self._in_flight.get(port, 0)
+            self._in_flight[port] = max(0, current - 1)
+            if affinity_key and usage:
+                session = self._sessions.get(affinity_key)
+                if session:
+                    total = usage.get("total_tokens")
+                    if isinstance(total, (int, float)) and total > 0:
+                        session.tokens_processed += int(total)
+
+    def in_flight(self, port: int) -> int:
+        return self._in_flight.get(port, 0)
+
+    # ------------------------------------------------------------------
+    # Backends / elegibilidade
+    # ------------------------------------------------------------------
+
+    def set_backend_enabled(self, port: int, enabled: bool) -> None:
+        if enabled:
+            self._disabled_ports.discard(port)
+        else:
+            self._disabled_ports.add(port)
+        logger.info(
+            "[proxy] backend %s %s by admin", port,
+            "enabled" if enabled else "disabled",
+        )
+
+    def is_backend_disabled(self, port: int) -> bool:
+        return port in self._disabled_ports
+
+    def _running_instances(self) -> List[Dict[str, Any]]:
+        status = self._get_status() or {}
+        return [
+            inst for inst in status.get("instances", [])
+            if inst.get("status") == "running" and inst.get("port") is not None
+        ]
+
+    def _model_flags(self, model_configs: dict, model_path: str) -> Tuple[bool, int]:
+        cfg = lookup_model_config(model_configs, model_path or "")
+        eligible = cfg.get("proxy_eligible", DEFAULT_PROXY_ELIGIBLE)
+        max_parallel = cfg.get("max_parallel_requests", DEFAULT_MAX_PARALLEL_REQUESTS)
+        if not isinstance(max_parallel, int) or max_parallel < 1:
+            max_parallel = DEFAULT_MAX_PARALLEL_REQUESTS
+        return bool(eligible), max_parallel
+
+    @staticmethod
+    def _ctx_per_slot(instance: Dict[str, Any]) -> int:
+        config = instance.get("config") or {}
+        ctx = config.get("context_size") or DEFAULT_CONTEXT_SIZE
+        slots = config.get("parallel_slots") or DEFAULT_PARALLEL_SLOTS
+        return int(ctx) // max(1, int(slots))
+
+    def _find_primary(
+        self, instances: List[Dict[str, Any]], primary_model_path: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        if not primary_model_path:
+            return None
+        norm = normalize_model_path(primary_model_path)
+        matches = [
+            inst for inst in instances
+            if normalize_model_path(inst.get("model_path") or "") == norm
+        ]
+        if not matches:
+            return None
+        # Duas instâncias do mesmo model_path: resolve para a de menor porta (ADR-005)
+        return min(matches, key=lambda i: i["port"])
+
+    def backends_snapshot(self) -> List[Dict[str, Any]]:
+        """Visão administrativa dos backends (estados PRD F3)."""
+        settings = self._settings()
+        primary_norm = (
+            normalize_model_path(settings["primary_model_path"])
+            if settings.get("primary_model_path") else None
+        )
+        model_configs = self._config.get_config().get("model_configs", {})
+        snapshot = []
+        for inst in self._running_instances():
+            port = inst["port"]
+            model_path = inst.get("model_path") or ""
+            eligible, max_parallel = self._model_flags(model_configs, model_path)
+            is_primary = (
+                primary_norm is not None
+                and normalize_model_path(model_path) == primary_norm
+            )
+            in_flight = self.in_flight(port)
+            if port in self._disabled_ports:
+                state = "disabled"
+            elif not eligible and not is_primary:
+                state = "not_eligible"
+            elif in_flight >= max_parallel:
+                state = "busy"
+            else:
+                state = "online"
+            snapshot.append({
+                "port": port,
+                "model": inst.get("model"),
+                "model_path": model_path,
+                "gpu": gpu_label(inst),
+                "role": "primary" if is_primary else "secondary",
+                "state": state,
+                "in_flight": in_flight,
+                "max_parallel": max_parallel,
+                "ctx_per_slot": self._ctx_per_slot(inst),
+            })
+        return snapshot
+
+    # ------------------------------------------------------------------
+    # Seleção (ADR-001)
+    # ------------------------------------------------------------------
+
+    def _candidates(
+        self,
+        instances: List[Dict[str, Any]],
+        model_configs: dict,
+        primary_port: Optional[int],
+        needed_ctx: int,
+        ignore_capacity: bool,
+        exclude_ports: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
+        """Backends elegíveis para NOVA sessão (PRD F6)."""
+        result = []
+        for inst in instances:
+            port = inst["port"]
+            if exclude_ports and port in exclude_ports:
+                continue
+            if port in self._disabled_ports:
+                continue
+            eligible, max_parallel = self._model_flags(
+                model_configs, inst.get("model_path") or ""
+            )
+            if not eligible and port != primary_port:
+                continue
+            if needed_ctx > self._ctx_per_slot(inst):
+                continue
+            if not ignore_capacity and self.in_flight(port) >= max_parallel:
+                continue
+            result.append(inst)
+        return result
+
+    def _pick_least_busy(
+        self, candidates: List[Dict[str, Any]], primary_port: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Menos ocupado por in-flight; empates: menos sessões sticky
+        atribuídas (espalha subagentes entre GPUs), secundário antes do
+        principal (PRD F6) e menor porta."""
+        if not candidates:
+            return None
+        session_counts: Dict[int, int] = {}
+        for session in self._sessions.values():
+            session_counts[session.backend_port] = (
+                session_counts.get(session.backend_port, 0) + 1
+            )
+        return min(
+            candidates,
+            key=lambda i: (
+                self.in_flight(i["port"]),
+                session_counts.get(i["port"], 0),
+                1 if i["port"] == primary_port else 0,
+                i["port"],
+            ),
+        )
+
+    def _register_session_locked(
+        self,
+        affinity_key: str,
+        instance: Dict[str, Any],
+        external_model: str,
+        tag: Optional[str],
+    ) -> StickySession:
+        now_iso = _iso(self._now())
+        session = StickySession(
+            affinity_key=affinity_key,
+            backend_port=instance["port"],
+            backend_model_path=instance.get("model_path") or "",
+            external_model=external_model,
+            internal_model=instance.get("model") or "",
+            detected_tag=tag,
+            created_at=now_iso,
+            last_used_at=now_iso,
+        )
+        self._sessions[affinity_key] = session
+        self._save_sessions()
+        return session
+
+    def _touch_session_locked(self, session: StickySession) -> None:
+        session.last_used_at = _iso(self._now())
+        session.request_count += 1
+        self._unsaved_uses += 1
+        if self._unsaved_uses >= PERSIST_EVERY_N_REQUESTS:
+            self._save_sessions()
+
+    async def resolve(
+        self,
+        *,
+        headers: Mapping[str, str],
+        body: dict,
+        client_ip: str,
+        user_agent: str,
+        dry_run: bool = False,
+    ) -> RouteDecision:
+        """Decide o backend para a requisição ao modelo principal.
+
+        Quando dry_run=False a decisão já reserva o slot (in-flight +1);
+        o chamador DEVE chamar release(port, ...) ao concluir.
+        """
+        settings = self._settings()
+        max_wait = settings.get("max_wait_seconds", 30)
+        deadline = asyncio.get_event_loop().time() + max_wait
+
+        while True:
+            async with self._lock:
+                decision, wait_reason = self._resolve_locked(
+                    settings=settings,
+                    headers=headers,
+                    body=body,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    dry_run=dry_run,
+                )
+                if decision is not None:
+                    return decision
+            if dry_run:
+                # dry_run nunca espera: sem capacidade é tratado como erro
+                raise ProxyError(503, wait_reason or "Nenhum backend disponivel")
+            if asyncio.get_event_loop().time() >= deadline:
+                raise ProxyError(
+                    503,
+                    wait_reason
+                    or "Todos os backends ocupados; tente novamente",
+                    code="backend_busy",
+                )
+            await asyncio.sleep(BUSY_POLL_SECONDS)
+
+    def _resolve_locked(
+        self,
+        *,
+        settings: dict,
+        headers: Mapping[str, str],
+        body: dict,
+        client_ip: str,
+        user_agent: str,
+        dry_run: bool,
+    ) -> Tuple[Optional[RouteDecision], Optional[str]]:
+        """Uma tentativa de decisão sob o lock.
+
+        Retorna (decision, None) em sucesso, (None, motivo) quando deve
+        aguardar slot livre. Levanta ProxyError para falhas definitivas.
+        """
+        self._expire_locked()
+        affinity_key, tag = self.extract_affinity(headers, body, client_ip, user_agent)
+        needed_ctx = int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
+        est_tokens = self.estimate_prompt_tokens(body)
+
+        instances = self._running_instances()
+        primary = self._find_primary(instances, settings.get("primary_model_path"))
+        if primary is None:
+            raise ProxyError(
+                503,
+                "Modelo principal do proxy nao esta online. Defina/inicie a "
+                "instancia principal no Automanager.",
+                code="primary_offline",
+            )
+        primary_port = primary["port"]
+        external_model = primary.get("model") or ""
+        model_configs = self._config.get_config().get("model_configs", {})
+
+        def _decision(
+            instance: Dict[str, Any], sticky_hit: bool, reason: str
+        ) -> RouteDecision:
+            return RouteDecision(
+                backend_port=instance["port"],
+                internal_model=instance.get("model") or "",
+                external_model=external_model,
+                affinity_key=affinity_key,
+                detected_tag=tag,
+                sticky_hit=sticky_hit,
+                reason=reason,
+                rewrite=instance["port"] != primary_port,
+                prompt_tokens_estimated=est_tokens,
+                gpu=gpu_label(instance),
+            )
+
+        def _commit(
+            instance: Dict[str, Any],
+            sticky_hit: bool,
+            reason: str,
+            session: Optional[StickySession],
+        ) -> RouteDecision:
+            if not dry_run:
+                if session is None:
+                    session = self._register_session_locked(
+                        affinity_key, instance, external_model, tag
+                    )
+                    logger.info(
+                        "[proxy] new sticky session affinity_key=%s "
+                        "selected_backend=%s reason=%s",
+                        affinity_key, instance["port"], reason,
+                    )
+                self._touch_session_locked(session)
+                self._in_flight[instance["port"]] = (
+                    self._in_flight.get(instance["port"], 0) + 1
+                )
+            return _decision(instance, sticky_hit, reason)
+
+        by_port = {inst["port"]: inst for inst in instances}
+        existing = self._sessions.get(affinity_key)
+
+        if existing is not None:
+            inst = by_port.get(existing.backend_port)
+            if inst is None:
+                # Porta mudou (restart): re-vincula pelo model_path durável
+                norm = normalize_model_path(existing.backend_model_path or "")
+                inst = next(
+                    (
+                        i for i in instances
+                        if normalize_model_path(i.get("model_path") or "") == norm
+                    ),
+                    None,
+                )
+                if inst is not None:
+                    existing.backend_port = inst["port"]
+            if inst is not None and inst["port"] in self._disabled_ports:
+                inst = None
+            if inst is not None:
+                _, max_parallel = self._model_flags(
+                    model_configs, inst.get("model_path") or ""
+                )
+                if dry_run:
+                    return _decision(inst, True, "sticky"), None
+                if self.in_flight(inst["port"]) >= max_parallel:
+                    return None, (
+                        f"Backend {inst['port']} ocupado para sessao sticky"
+                    )
+                return _commit(inst, True, "sticky", existing), None
+            # Backend caiu/desabilitado: reatribui UMA vez (PRD F7)
+            old_port = existing.backend_port
+            candidates = self._candidates(
+                instances, model_configs, primary_port, needed_ctx,
+                ignore_capacity=dry_run,
+            )
+            new_inst = self._pick_least_busy(candidates, primary_port)
+            if new_inst is None:
+                fallback = self._candidates(
+                    instances, model_configs, primary_port, needed_ctx,
+                    ignore_capacity=True,
+                )
+                if not fallback:
+                    raise ProxyError(
+                        503, "Nenhum backend com contexto suficiente disponivel",
+                        code="no_backend",
+                    )
+                return None, "Aguardando slot para reatribuir sessao"
+            logger.warning("[proxy] backend %s unavailable", old_port)
+            if not dry_run:
+                existing.backend_port = new_inst["port"]
+                existing.backend_model_path = new_inst.get("model_path") or ""
+                existing.internal_model = new_inst.get("model") or ""
+                self._save_sessions()
+                logger.warning(
+                    "[proxy] reassigned affinity_key=%s old_backend=%s "
+                    "new_backend=%s reason=backend_down",
+                    affinity_key, old_port, new_inst["port"],
+                )
+            return _commit(new_inst, False, "reassign_backend_down", existing), None
+
+        # ---------------- Nova sessão ----------------
+        is_main = tag is None or tag == MAIN_TAG
+
+        if is_main:
+            # Conversa principal prefere o principal (PRD F6)
+            if primary_port not in self._disabled_ports:
+                _, max_parallel = self._model_flags(
+                    model_configs, primary.get("model_path") or ""
+                )
+                primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+                if primary_ctx_ok:
+                    if dry_run:
+                        return _decision(primary, False, "main_preference"), None
+                    if self.in_flight(primary_port) < max_parallel:
+                        return _commit(primary, False, "main_preference", None), None
+                    return None, "Backend principal ocupado"
+            # Principal desabilitado ou sem contexto: least-busy nos demais
+            candidates = self._candidates(
+                instances, model_configs, primary_port, needed_ctx,
+                ignore_capacity=dry_run, exclude_ports={primary_port},
+            )
+            chosen = self._pick_least_busy(candidates, primary_port)
+            if chosen is None:
+                raise ProxyError(
+                    503, "Nenhum backend disponivel para a conversa principal",
+                    code="no_backend",
+                )
+            return _commit(chosen, False, "least_busy", None), None
+
+        # Subagente: least-busy entre todos os elegíveis (inclui principal)
+        candidates = self._candidates(
+            instances, model_configs, primary_port, needed_ctx,
+            ignore_capacity=dry_run,
+        )
+        chosen = self._pick_least_busy(candidates, primary_port)
+        if chosen is None:
+            any_eligible = self._candidates(
+                instances, model_configs, primary_port, needed_ctx,
+                ignore_capacity=True,
+            )
+            if not any_eligible:
+                raise ProxyError(
+                    503, "Nenhum backend com contexto suficiente disponivel",
+                    code="no_backend",
+                )
+            return None, "Todos os backends elegiveis ocupados"
+        return _commit(chosen, False, "least_busy", None), None
+
+    # ------------------------------------------------------------------
+    # Reassign administrativo
+    # ------------------------------------------------------------------
+
+    async def reassign(self, affinity_key: str) -> Optional[RouteDecision]:
+        """Força a sessão a migrar para o melhor backend disponível."""
+        async with self._lock:
+            session = self._sessions.get(affinity_key)
+            if session is None:
+                return None
+            settings = self._settings()
+            instances = self._running_instances()
+            primary = self._find_primary(
+                instances, settings.get("primary_model_path")
+            )
+            if primary is None:
+                raise ProxyError(503, "Modelo principal do proxy nao esta online",
+                                 code="primary_offline")
+            model_configs = self._config.get_config().get("model_configs", {})
+            exclude = {session.backend_port} if len(instances) > 1 else None
+            candidates = self._candidates(
+                instances, model_configs, primary["port"], 0,
+                ignore_capacity=True, exclude_ports=exclude,
+            )
+            chosen = self._pick_least_busy(candidates, primary["port"])
+            if chosen is None:
+                raise ProxyError(503, "Nenhum backend disponivel para reassign",
+                                 code="no_backend")
+            old_port = session.backend_port
+            session.backend_port = chosen["port"]
+            session.backend_model_path = chosen.get("model_path") or ""
+            session.internal_model = chosen.get("model") or ""
+            session.last_used_at = _iso(self._now())
+            self._save_sessions()
+            logger.warning(
+                "[proxy] reassigned affinity_key=%s old_backend=%s "
+                "new_backend=%s reason=admin",
+                affinity_key, old_port, chosen["port"],
+            )
+            return RouteDecision(
+                backend_port=chosen["port"],
+                internal_model=chosen.get("model") or "",
+                external_model=session.external_model,
+                affinity_key=affinity_key,
+                detected_tag=session.detected_tag,
+                sticky_hit=False,
+                reason="reassign_admin",
+                rewrite=chosen["port"] != primary["port"],
+                gpu=gpu_label(chosen),
+            )
