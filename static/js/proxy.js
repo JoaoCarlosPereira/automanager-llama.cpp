@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.1.0';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.0';
 
 // updateStatus roda a cada 1s; o painel consulta o proxy a cada 3 ticks.
 const POLL_EVERY_TICKS = 3;

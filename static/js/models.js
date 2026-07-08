@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.1.0';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.1.0';
+import { state } from './state.js?v=4.2.0';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.0';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.1.0';
+} from './gpu.js?v=4.2.0';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -90,8 +90,8 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.1.0';
-import { checkForUpdates } from './version.js?v=4.1.0';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.0';
+import { checkForUpdates } from './version.js?v=4.2.0';
 
 // --- TAB MANAGEMENT ---
 
@@ -911,7 +911,8 @@ function mergeModelConfigFromServer(modelPath, lastConfig) {
 }
 
 function isMmprojSelectFocused() {
-    return document.activeElement?.matches?.('.model-mmproj-select');
+    // Também evita re-render enquanto o usuário edita o limite de paralelismo
+    return document.activeElement?.matches?.('.model-mmproj-select, .proxy-max-parallel');
 }
 
 function patchModelListItems(models, cfg) {
@@ -939,8 +940,23 @@ function patchModelListItems(models, cfg) {
             el.classList.add('active-selection');
         }
 
-        const autoStart = el.querySelector('input[type="checkbox"]');
+        const autoStart = el.querySelector('.autostart-checkbox');
         if (autoStart) autoStart.checked = isDefault;
+
+        // Mantém os controles do proxy em sincronia no patch incremental
+        const primaryCb = el.querySelector('.proxy-primary-checkbox');
+        if (primaryCb && document.activeElement !== primaryCb) {
+            primaryCb.checked = (cfg.smart_proxy || {}).primary_model_path === mJs;
+        }
+        const mCfg = (cfg.model_configs || {})[mJs] || {};
+        const eligibleCb = el.querySelector('.proxy-eligible-checkbox');
+        if (eligibleCb && document.activeElement !== eligibleCb) {
+            eligibleCb.checked = mCfg.proxy_eligible !== false;
+        }
+        const parallelInput = el.querySelector('.proxy-max-parallel');
+        if (parallelInput && document.activeElement !== parallelInput) {
+            parallelInput.value = mCfg.max_parallel_requests || 1;
+        }
     }
 }
 
@@ -955,6 +971,11 @@ function buildModelListHtml(models, cfg) {
         const status = (state.activeInstances || []).find(i => (i.model_path || '').replace(/\\/g, '/') === m_js);
         const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
         const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
+
+        const mCfg = (cfg.model_configs || {})[m_js] || {};
+        const isProxyPrimary = (cfg.smart_proxy || {}).primary_model_path === m_js;
+        const isProxyEligible = mCfg.proxy_eligible !== false;
+        const proxyMaxParallel = mCfg.max_parallel_requests || 1;
 
         const safePath = m_js.replace(/'/g, "\\'");
         const visionControls = buildModelVisionControlsHtml(m, m_js);
@@ -978,7 +999,23 @@ function buildModelListHtml(models, cfg) {
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
-                        <input type="checkbox" class="w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
+                        <input type="checkbox" class="autostart-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
+                    </label>
+                </div>
+                <div class="proxy-model-controls flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-700/30" onclick="event.stopPropagation()">
+                    <div class="flex items-center gap-3">
+                        <label class="flex items-center gap-1.5 cursor-pointer" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
+                            <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
+                            <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-path="${escapeHtml(m_js)}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, '${safePath}')">
+                        </label>
+                        <label class="flex items-center gap-1.5 cursor-pointer" title="Usar como backend secundário no proxy inteligente">
+                            <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
+                            <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}')">
+                        </label>
+                    </div>
+                    <label class="flex items-center gap-1" title="Máximo de requisições paralelas roteadas para este backend">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
+                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-11 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 outline-none" onchange="setProxyMaxParallel(this, '${safePath}')">
                     </label>
                 </div>
             </div>`;

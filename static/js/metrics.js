@@ -1,13 +1,13 @@
-import { state } from './state.js?v=4.1.0';
-import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.1.0';
+import { state } from './state.js?v=4.2.0';
+import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.2.0';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
-} from './gpu.js?v=4.1.0';
-import { getTabActionsHtml } from './models.js?v=4.1.0';
-import { updateProxyPanel } from './proxy.js?v=4.1.0';
+} from './gpu.js?v=4.2.0';
+import { getTabActionsHtml } from './models.js?v=4.2.0';
+import { updateProxyPanel } from './proxy.js?v=4.2.0';
 
 export async function updateStatus() {
     try {
@@ -121,7 +121,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.1.0').then(m => {
+                        import('./models.js?v=4.2.0').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,
