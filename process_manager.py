@@ -238,6 +238,23 @@ class ProcessManager:
 
         run_id = self.recovery_state.get("run_id")
 
+        # Multi-instância: se o modelo a calibrar já está carregado, sua
+        # instância antiga distorceria a leitura de VRAM da sondagem (nas
+        # versões single-instance o probe sempre partia de VRAM livre).
+        with self._lock:
+            same_model_ports = [
+                p for p, req in self._requests.items()
+                if req is not None and req.path == request.path
+            ]
+        for p in same_model_ports:
+            logger.info(
+                "Auto-balance: parando instancia existente do modelo na porta %s "
+                "antes da calibracao", p,
+            )
+            self.stop(p)
+        if same_model_ports:
+            time.sleep(3.0)  # aguarda o driver liberar a VRAM antes de sondar
+
         try:
             prober = AutoBalanceProber(
                 self, self.config, self.gpu_manager, self.log_manager
@@ -662,8 +679,7 @@ class ProcessManager:
 
 class OOMWatchdog:
     OOM_PATTERNS = re.compile(
-        r"(?:CUDA out of memory|failed to allocate CUDA buffer|malloc failed|torch runtime raised c10.Error)",
-        re.IGNORECASE
+        r"(?i)(out of memory|cuda error|failed to allocate|malloc failed|c10\.Error)"
     )
 
     def __init__(
@@ -682,6 +698,7 @@ class OOMWatchdog:
         self._consecutive_oom = 0
         self._last_oom_time = 0
         self._oom_cooldown = 30  # seconds
+        self._log_offsets: Dict[int, int] = {}
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name="oom-watchdog")
@@ -692,30 +709,54 @@ class OOMWatchdog:
         if self._thread:
             self._thread.join()
 
+    def _read_new_log(self, port: int) -> str:
+        """Read the per-port server log since the last watchdog scan.
+
+        The process' stdout/stderr are already consumed by the log-streaming
+        thread, so OOM detection must read the log file on disk (server.log for
+        the default port, server_{port}.log otherwise).
+        """
+        if self.log_manager is None:
+            return ""
+        try:
+            path = self.log_manager.get_server_log_path(port)
+        except Exception:
+            return ""
+        offset = self._log_offsets.get(port, 0)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                chunk = f.read()
+                self._log_offsets[port] = f.tell()
+                return chunk
+        except OSError:
+            return ""
+
     def _run(self):
         """Main loop for log-based OOM detection.
-        
-        Periodically scans all active llama-server processes for OOM patterns
-        in their stderr output. When detected, triggers recovery logic.
+
+        Periodically scans each active llama-server's log file for OOM patterns
+        and triggers recovery logic when detected.
         """
         while not self._stop.is_set():
             try:
-                now = time.time()
                 with self.pm._lock:
                     active_ports = [p for p, proc in self.pm.processes.items()
                                     if proc is not None and proc.poll() is None]
 
+                # Drop offsets for ports that are no longer running so a
+                # restarted instance on the same port re-scans from the top.
+                for stale in [p for p in self._log_offsets if p not in active_ports]:
+                    self._log_offsets.pop(stale, None)
+
                 for port in active_ports:
                     try:
-                        proc = self.pm.processes[port]
-                        if proc is None:
-                            continue
-                        stderr_output = proc.stderr.read() if proc.stderr else ""
-                        if stderr_output and self.OOM_PATTERNS.search(stderr_output):
-                            logger.warning(f"OOM detected on port {port} from stderr")
+                        chunk = self._read_new_log(port)
+                        if chunk and self.OOM_PATTERNS.search(chunk):
+                            logger.warning(f"OOM detected on port {port} from server log")
                             self._handle_oom(port)
                     except Exception:
-                        pass
+                        logger.exception("Watchdog OOM scan error on port %s", port)
             except Exception:
                 logger.exception("Watchdog loop error")
             time.sleep(5)
@@ -723,102 +764,98 @@ class OOMWatchdog:
     def _handle_oom(self, port: int) -> None:
         """Handle OOM signal for a specific port."""
         now = time.time()
+        # Só o estado compartilhado do ProcessManager precisa do lock. stop()/
+        # start() readquirem self.pm._lock (não reentrante); segurá-lo aqui
+        # causaria deadlock, então lemos o necessário e liberamos antes.
         with self.pm._lock:
-            # Update consecutive counter (global to watchdog)
             if (now - self._last_oom_time) > self._oom_cooldown:
                 self._consecutive_oom = 0
             self._consecutive_oom += 1
             self._last_oom_time = now
 
-            # Check if auto-balance is currently running to avoid race conditions
-            is_active = getattr(self.pm, "_auto_balance_active", False)
-            if is_active is True:
+            if getattr(self.pm, "_auto_balance_active", False) is True:
                 logger.info("Watchdog: Skipping OOM handle during active auto-balance")
                 return
-            
+
             # Robust request retrieval (handle both dicts and MagicMocks)
             reqs = getattr(self.pm, "_requests", {})
-            req = None
-            if isinstance(reqs, dict):
-                req = reqs.get(port)
-            elif hasattr(reqs, "get"):
-                req = reqs.get(port)
-            
-            if not req:
-                return
-                
-            logger.warning(f"OOM detected on port {port}! Consecutive: {self._consecutive_oom}")
-            self.pm.stop(port)
-            
-            # Recovery logic
-            weights = getattr(req, "gpu_weights", [])
-            active_weights = [w for w in weights if w.active and w.device == "gpu"]
-            
-            if self._consecutive_oom >= 3:
-                # Fallback: reduce active to 50%, ensure inactive are 0
-                for w in weights:
-                    if w.active:
-                        w.weight = 50.0
-                    else:
-                        w.weight = 0.0
-            else:
-                # Conservative recovery: reduce main and redistribute
-                if active_weights:
-                    # Find main (highest weight for now)
-                    main_w = max(active_weights, key=lambda x: x.weight)
-                    reduction = 10.0
-                    main_w.weight -= reduction
-                    
-                    others = [w for w in active_weights if w != main_w]
-                    if others:
-                        boost = reduction / len(others)
-                        for w in others:
-                            w.weight += boost
-                
-                # Always ensure inactive GPUs have 0 weight during recovery
-                for w in weights:
-                    if not w.active:
-                        w.weight = 0.0
+            req = reqs.get(port) if hasattr(reqs, "get") else None
 
-            # Save and restart
-            if self.config:
-                # Use model_dump if available (Pydantic V2), fallback to dict()
-                weights_data = []
-                for w in weights:
-                    if hasattr(w, "model_dump"):
-                        weights_data.append(w.model_dump())
-                    else:
-                        weights_data.append(w.dict())
+        if not req:
+            return
 
-                self.config.update_model_settings(req.path, {
-                    "gpu_weights": weights_data,
-                    "last_failure": "OOM",
-                    "last_failure_time": now
-                })
-            
-            # Restart after a brief pause
-            def _restart():
-                time.sleep(2)
-                self.pm.start(
-                    model_path=req.path,
-                    gpu_weights=req.gpu_weights,
-                    context_size=req.context_size,
-                    mmproj_path=getattr(req, "mmproj_path", None),
-                    split_mode=getattr(req, "split_mode", "layer"),
-                    parallel_slots=getattr(req, "parallel_slots", 1),
-                    batch_size=getattr(req, "batch_size", 2048),
-                    ubatch_size=getattr(req, "ubatch_size", 512),
-                    cache_type_k=getattr(req, "cache_type_k", "f16"),
-                    cache_type_v=getattr(req, "cache_type_v", "f16"),
-                    numa_enabled=getattr(req, "numa_enabled", False),
-                    flash_attn_enabled=getattr(req, "flash_attn_enabled", True),
-                    threads=getattr(req, "threads", 0),
-                    threads_batch=getattr(req, "threads_batch", 0),
-                    thinking_enabled=getattr(req, "thinking_enabled", True),
-                    mtp_enabled=getattr(req, "mtp_enabled", False),
-                    mtp_draft_tokens=getattr(req, "mtp_draft_tokens", 3),
-                    port=port,
-                    llama_server_bin=getattr(req, "llama_server_bin", None),
-                )
+        logger.warning(f"OOM detected on port {port}! Consecutive: {self._consecutive_oom}")
+        self.pm.stop(port)
 
-            threading.Thread(target=_restart, daemon=True).start()
+        # Recovery logic
+        weights = getattr(req, "gpu_weights", [])
+        active_weights = [w for w in weights if w.active and w.device == "gpu"]
+
+        if self._consecutive_oom >= 3:
+            # Fallback: reduce active to 50%, ensure inactive are 0
+            for w in weights:
+                if w.active:
+                    w.weight = 50.0
+                else:
+                    w.weight = 0.0
+        else:
+            # Conservative recovery: reduce main and redistribute
+            if active_weights:
+                # Find main (highest weight for now)
+                main_w = max(active_weights, key=lambda x: x.weight)
+                reduction = 10.0
+                main_w.weight -= reduction
+
+                others = [w for w in active_weights if w != main_w]
+                if others:
+                    boost = reduction / len(others)
+                    for w in others:
+                        w.weight += boost
+
+            # Always ensure inactive GPUs have 0 weight during recovery
+            for w in weights:
+                if not w.active:
+                    w.weight = 0.0
+
+        # Save and restart
+        if self.config:
+            # Use model_dump if available (Pydantic V2), fallback to dict()
+            weights_data = []
+            for w in weights:
+                if hasattr(w, "model_dump"):
+                    weights_data.append(w.model_dump())
+                else:
+                    weights_data.append(w.dict())
+
+            self.config.update_model_settings(req.path, {
+                "gpu_weights": weights_data,
+                "last_failure": "OOM",
+                "last_failure_time": now
+            })
+
+        # Restart after a brief pause
+        def _restart():
+            time.sleep(2)
+            self.pm.start(
+                model_path=req.path,
+                gpu_weights=req.gpu_weights,
+                context_size=req.context_size,
+                mmproj_path=getattr(req, "mmproj_path", None),
+                split_mode=getattr(req, "split_mode", "layer"),
+                parallel_slots=getattr(req, "parallel_slots", 1),
+                batch_size=getattr(req, "batch_size", 2048),
+                ubatch_size=getattr(req, "ubatch_size", 512),
+                cache_type_k=getattr(req, "cache_type_k", "f16"),
+                cache_type_v=getattr(req, "cache_type_v", "f16"),
+                numa_enabled=getattr(req, "numa_enabled", False),
+                flash_attn_enabled=getattr(req, "flash_attn_enabled", True),
+                threads=getattr(req, "threads", 0),
+                threads_batch=getattr(req, "threads_batch", 0),
+                thinking_enabled=getattr(req, "thinking_enabled", True),
+                mtp_enabled=getattr(req, "mtp_enabled", False),
+                mtp_draft_tokens=getattr(req, "mtp_draft_tokens", 3),
+                port=port,
+                llama_server_bin=getattr(req, "llama_server_bin", None),
+            )
+
+        threading.Thread(target=_restart, daemon=True).start()

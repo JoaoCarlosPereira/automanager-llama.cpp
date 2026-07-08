@@ -19,6 +19,18 @@ def test_client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def authed_known_port(monkeypatch):
+    """O ui_proxy agora exige sessão e uma porta de instância conhecida."""
+    monkeypatch.setattr(llama_manager.auth_manager, "check_auth", lambda request: True)
+    monkeypatch.setattr(
+        llama_manager.process_manager,
+        "get_status",
+        lambda: {"instances": [{"port": 8085, "status": "running"}]},
+    )
+    yield
+
+
 def test_filter_proxy_headers_strips_content_encoding():
     headers = {
         "content-type": "application/javascript",
@@ -83,3 +95,15 @@ def test_ui_proxy_index_injects_base_tag(mock_get, test_client):
 
     assert resp.status_code == 200
     assert '<base href="/ui/8085/">' in resp.text
+
+
+def test_ui_proxy_requires_auth(monkeypatch, test_client):
+    monkeypatch.setattr(llama_manager.auth_manager, "check_auth", lambda request: False)
+    resp = test_client.get("/ui/8085/")
+    assert resp.status_code == 401
+
+
+def test_ui_proxy_rejects_unknown_port(test_client):
+    # Porta que não corresponde a nenhuma instância → 404 (evita proxy cego em loopback).
+    resp = test_client.get("/ui/6379/")
+    assert resp.status_code == 404

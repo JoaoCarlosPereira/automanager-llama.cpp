@@ -514,7 +514,27 @@ class DownloadManager:
                 if self._downloads.get(download_id, {}).get("cancel_requested"):
                     raise DownloadCancelled()
 
-            response = requests.get(url, stream=True, timeout=300)
+            # Segue redirects manualmente revalidando cada salto: requests segue
+            # redirects por padrão, o que permitiria burlar _validate_download_url
+            # apontando para um host interno (ex.: 169.254.169.254) via 302.
+            current_url = url
+            response = None
+            for _ in range(6):
+                if not _validate_download_url(current_url):
+                    raise Exception("URL de download bloqueada (destino não permitido).")
+                response = requests.get(
+                    current_url, stream=True, timeout=300, allow_redirects=False
+                )
+                if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+                    next_url = response.headers.get("location")
+                    response.close()
+                    if not next_url:
+                        raise Exception("Redirecionamento de download inválido.")
+                    current_url = urllib.parse.urljoin(current_url, next_url)
+                    continue
+                break
+            else:
+                raise Exception("Excesso de redirecionamentos no download.")
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
             if total_size > MAX_DOWNLOAD_SIZE:

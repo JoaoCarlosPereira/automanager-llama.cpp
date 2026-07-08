@@ -1,5 +1,5 @@
-﻿import { state } from './state.js?v=4.0.7';
-import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.7';
+import { state } from './state.js?v=4.1.0';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.1.0';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.0.8';
+} from './gpu.js?v=4.1.0';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -90,8 +90,8 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.0.7';
-import { checkForUpdates } from './version.js?v=4.0.7';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.1.0';
+import { checkForUpdates } from './version.js?v=4.1.0';
 
 // --- TAB MANAGEMENT ---
 
@@ -544,7 +544,7 @@ export async function startSmartCalibration(path, tabId) {
 
         if (!res.ok) {
             const err = await res.json();
-            alert("Erro na calibração: " + (err.detail || "Falha"));
+            showToast("Erro na calibração: " + (err.detail || "Falha"), 'error');
             state.autoBalancePending = false;
             state.autoBalanceTabId = null;
             state.autoBalanceSeenActive = false;
@@ -564,7 +564,7 @@ export async function startSmartCalibration(path, tabId) {
         }
         window.updateStatus?.();
     } catch (e) {
-        alert("Erro de rede.");
+        showToast("Erro de rede.", 'error');
         state.autoBalancePending = false;
         state.autoBalanceTabId = null;
         state.autoBalanceSeenActive = false;
@@ -705,10 +705,10 @@ export async function applyProposedConfig(path, tabId) {
     const payload = collectStartPayloadFromTab(normalized, tabId, {
         autoBalanceProfile: true,
     });
-    if (!payload) return alert('Contexto inválido');
+    if (!payload) { showToast('Contexto inválido', 'error'); return; }
 
     const weightValidation = validateDeviceWeights(payload.gpu_weights);
-    if (!weightValidation.ok) return alert(weightValidation.message);
+    if (!weightValidation.ok) { showToast(weightValidation.message, 'error'); return; }
 
     window.modelConfigs[normalized] = {
         ...(window.modelConfigs[normalized] || {}),
@@ -720,7 +720,7 @@ export async function applyProposedConfig(path, tabId) {
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> SALVANDO...';
-    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-ui-label font-black tracking-widest uppercase glass border-amber-500/40 text-amber-400';
+    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-amber-500/40 text-amber-400';
 
     try {
         const res = await apiFetch('/start', {
@@ -731,7 +731,7 @@ export async function applyProposedConfig(path, tabId) {
 
         if (!res.ok) {
             const err = await res.json();
-            alert('Erro ao salvar/iniciar: ' + (err.detail || 'Falha'));
+            showToast('Erro ao salvar/iniciar: ' + (err.detail || 'Falha'), 'error');
             window.updateStatus();
             return;
         }
@@ -748,7 +748,7 @@ export async function applyProposedConfig(path, tabId) {
         await window.updateModels?.();
         await window.updateStatus();
     } catch (e) {
-        alert('Erro de rede ao salvar configuração.');
+        showToast('Erro de rede ao salvar configuração.', 'error');
         window.updateStatus();
     }
 }
@@ -855,6 +855,10 @@ function _isMmprojDisabledForModel(modelPath) {
     return cfg?.mmproj_path === '__no_vision__';
 }
 
+function onVisionModalKeydown(event) {
+    if (event.key === 'Escape') closeVisionImportModal();
+}
+
 export function openVisionImportModal(modelPath) {
     const modal = document.getElementById('vision-import-modal');
     const pathInput = document.getElementById('vision-import-model-path');
@@ -865,6 +869,7 @@ export function openVisionImportModal(modelPath) {
     modal.classList.remove('hidden');
     modal.classList.add('flex');
     urlInput.focus();
+    document.addEventListener('keydown', onVisionModalKeydown);
 }
 
 export function closeVisionImportModal() {
@@ -872,6 +877,7 @@ export function closeVisionImportModal() {
     if (!modal) return;
     modal.classList.add('hidden');
     modal.classList.remove('flex');
+    document.removeEventListener('keydown', onVisionModalKeydown);
 }
 
 export async function submitVisionImport(event) {
@@ -887,14 +893,14 @@ export async function submitVisionImport(event) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            alert('Erro ao iniciar download: ' + (err.detail || 'Erro desconhecido'));
+            showToast('Erro ao iniciar download: ' + (err.detail || 'Erro desconhecido'), 'error');
             return;
         }
         closeVisionImportModal();
         window.updateDownloads();
         window.updateModels();
     } catch (e) {
-        alert('Erro de rede ao iniciar download do projetor.');
+        showToast('Erro de rede ao iniciar download do projetor.', 'error');
     }
 }
 
@@ -916,16 +922,19 @@ function patchModelListItems(models, cfg) {
 
         const isDefault = (cfg.default_models || []).includes(mJs) || cfg.default_model === mJs;
         const status = (state.activeInstances || []).find(
-            i => i.model_path.replace(/\\/g, '/') === mJs
+            i => (i.model_path || '').replace(/\\/g, '/') === mJs
         );
         el.classList.remove(
             'border-emerald-500/50', 'bg-emerald-500/5',
             'border-slate-700/50', 'bg-slate-800/40',
             'active-selection',
         );
-        el.classList.add(
-            status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40',
-        );
+        // classList.add rejeita tokens com espaço (InvalidCharacterError) — separar.
+        if (status) {
+            el.classList.add('border-emerald-500/50', 'bg-emerald-500/5');
+        } else {
+            el.classList.add('border-slate-700/50', 'bg-slate-800/40');
+        }
         if (state.currentSelectedModel === mJs) {
             el.classList.add('active-selection');
         }
@@ -943,7 +952,7 @@ function buildModelListHtml(models, cfg) {
         }
 
         const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
-        const status = (state.activeInstances || []).find(i => i.model_path.replace(/\\/g, '/') === m_js);
+        const status = (state.activeInstances || []).find(i => (i.model_path || '').replace(/\\/g, '/') === m_js);
         const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
         const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
 
@@ -963,8 +972,8 @@ function buildModelListHtml(models, cfg) {
                 </div>
                 <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
                     <div class="flex items-center gap-1 flex-wrap">
-                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
-                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); renameModel('${safePath}')" title="Renomear modelo" aria-label="Renomear modelo" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
                         ${visionControls}
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
@@ -995,7 +1004,7 @@ export async function persistMmprojSelection(modelPath, mmprojPath, { silent = f
             body: JSON.stringify({ model_path: normalized, mmproj_path: mmproj }),
         });
     } catch (e) {
-        if (!silent) alert('Erro ao salvar projetor de visão.');
+        if (!silent) showToast('Erro ao salvar projetor de visão.', 'error');
     }
 }
 
@@ -1079,10 +1088,10 @@ export async function persistLlamaBinSettings(modelPath, tabId, { silent = false
             body: JSON.stringify(payload),
         });
         if (!res.ok && !silent) {
-            alert('Erro ao salvar versão do llama.cpp.');
+            showToast('Erro ao salvar versão do llama.cpp.', 'error');
         }
     } catch (e) {
-        if (!silent) alert('Erro ao salvar versão do llama.cpp.');
+        if (!silent) showToast('Erro ao salvar versão do llama.cpp.', 'error');
     }
 }
 
@@ -1176,6 +1185,9 @@ export function selectModel(path, elementId, forceNew = false) {
 }
 
 export function selectModelFromEvent(event, path, elementId) {
+    // onauxclick também dispara no botão direito (button 2): ignorar para não
+    // abrir/trocar de aba junto com o menu de contexto. Só o do meio (1) força nova aba.
+    if (event?.type === 'auxclick' && event.button !== 1) return;
     const forceNew = !!(event?.ctrlKey || event?.metaKey || event?.button === 1);
     if (forceNew) event?.preventDefault?.();
     selectModel(path, elementId, forceNew);
@@ -1234,7 +1246,7 @@ export async function setDefaultModel(checkbox, path) {
             body: JSON.stringify({ path, add: checkbox.checked }),
         });
     } catch (e) {
-        alert("Erro ao salvar configuracao.");
+        showToast("Erro ao salvar configuração.", 'error');
     }
 }
 
@@ -1264,7 +1276,7 @@ export async function saveModelsDir() {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            alert('Erro: ' + (err.detail || 'Inacessivel'));
+            showToast('Erro: ' + (err.detail || 'Inacessível'), 'error');
             return;
         }
         await updateModels();
@@ -1325,13 +1337,15 @@ export async function updateModels() {
             deferredModelListUpdate = null;
             await renderList();
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error('updateModels error:', e);
+    }
 }
 
 export async function renameModel(path) {
     const normalized = path.replace(/\\/g, '/');
     const currentName = normalized.split('/').pop().replace(/\.gguf$/i, '');
-    const newName = prompt('Novo nome:', currentName);
+    const newName = await showPrompt('Novo nome do modelo:', currentName, { confirmLabel: 'Renomear' });
     if (!newName || newName === currentName) return;
     try {
         const res = await apiFetch('/rename', {
@@ -1342,7 +1356,7 @@ export async function renameModel(path) {
         if (sessionExpiredHandled || !res.ok) {
             if (!sessionExpiredHandled) {
                 const err = await res.json().catch(() => ({}));
-                alert('Erro ao renomear: ' + (err.detail || 'Falha desconhecida'));
+                showToast('Erro ao renomear: ' + (err.detail || 'Falha desconhecida'), 'error');
             }
             return;
         }
@@ -1368,12 +1382,12 @@ export async function renameModel(path) {
 
         await updateModels();
     } catch (e) {
-        alert('Erro de rede ao renomear modelo.');
+        showToast('Erro de rede ao renomear modelo.', 'error');
     }
 }
 
 export async function deleteModel(path) {
-    if (!confirm('Excluir modelo permanentemente?')) return;
+    if (!await showConfirm('Excluir este modelo permanentemente? O arquivo .gguf será removido do disco.', { confirmLabel: 'Excluir' })) return;
     const normalized = path.replace(/\\/g, '/');
     try {
         const res = await apiFetch('/delete', {
@@ -1383,7 +1397,7 @@ export async function deleteModel(path) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            alert('Erro: ' + (err.detail || 'Falha ao excluir'));
+            showToast('Erro: ' + (err.detail || 'Falha ao excluir'), 'error');
             return;
         }
 
@@ -1391,7 +1405,7 @@ export async function deleteModel(path) {
         delete window.modelConfigs[normalized];
         await updateModels();
     } catch (e) {
-        alert('Erro de rede ao excluir modelo.');
+        showToast('Erro de rede ao excluir modelo.', 'error');
     }
 }
 
@@ -1399,18 +1413,22 @@ export async function startModel(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
 
+    // Evita duplo clique disparando dois POST /start (poderia subir duas instâncias).
+    if (tab.dataset.starting === '1') return;
+
     const payload = collectStartPayloadFromTab(path, tabId, { autoBalanceProfile: false });
-    if (!payload) return alert('Contexto inválido');
+    if (!payload) { showToast('Contexto inválido', 'error'); return; }
 
     const weightValidation = validateDeviceWeights(payload.gpu_weights);
-    if (!weightValidation.ok) return alert(weightValidation.message);
+    if (!weightValidation.ok) { showToast(weightValidation.message, 'error'); return; }
 
+    tab.dataset.starting = '1';
     hideProposedConfig(tabId);
     clearScreenSnapshot(tabId);
 
     const statusBadge = tab.querySelector('.tab-status-badge');
     statusBadge.innerHTML = '<i class="fas fa-circle-notch animate-spin mr-2"></i> INICIANDO...';
-    statusBadge.className = 'tab-status-badge px-4 py-2 rounded-xl text-ui-label font-black tracking-widest uppercase glass border-blue-500/50 text-blue-400';
+    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-blue-500/50 text-blue-400';
 
     try {
         const res = await apiFetch('/start', {
@@ -1421,7 +1439,7 @@ export async function startModel(path, tabId) {
         
         if (!res.ok) {
             const err = await res.json();
-            alert("Erro: " + (err.detail || "Falha ao iniciar"));
+            showToast("Erro: " + (err.detail || "Falha ao iniciar"), 'error');
             window.updateStatus();
             return;
         }
@@ -1440,16 +1458,18 @@ export async function startModel(path, tabId) {
             i => (i.model_path || '').replace(/\\/g, '/') === path.replace(/\\/g, '/')
         );
         if (!inst || inst.status !== 'running') {
-            alert('O servidor encerrou logo após iniciar. Verifique os logs abaixo.');
+            showToast('O servidor encerrou logo após iniciar. Verifique os logs abaixo.', 'error');
         }
     } catch (e) {
-        alert("Erro de rede.");
+        showToast("Erro de rede.", 'error');
         window.updateStatus();
+    } finally {
+        delete tab.dataset.starting;
     }
 }
 
 export async function stopModel(port = null) {
-    if (!confirm("Encerrar esta instância?")) return;
+    if (!await showConfirm("Encerrar esta instância?", { confirmLabel: 'Encerrar' })) return;
     try {
         detachTabLogs();
         const url = port !== null ? `/stop?port=${port}` : '/stop';

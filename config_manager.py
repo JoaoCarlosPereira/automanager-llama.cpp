@@ -21,9 +21,14 @@ def _hash_password_bcrypt(password: str) -> str:
 
 def _verify_password_bcrypt(password: str, hashed: str) -> bool:
     """Verify password against bcrypt hash."""
-    return bcrypt.checkpw(
-        password.encode("utf-8"), hashed.encode("utf-8")
-    )
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"), hashed.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        # Hash legado (SHA-256 hex) não é um hash bcrypt válido; o caller
+        # tenta o caminho de migração SHA-256 em seguida.
+        return False
 
 from paths import CONFIG_PATH
 from schemas import (

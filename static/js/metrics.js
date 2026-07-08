@@ -1,12 +1,12 @@
-import { state } from './state.js?v=4.0.7';
-import { apiFetch, sessionExpiredHandled } from './auth.js?v=4.0.7';
+import { state } from './state.js?v=4.1.0';
+import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.1.0';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
-} from './gpu.js?v=4.0.7';
-import { getTabActionsHtml } from './models.js?v=4.0.7';
+} from './gpu.js?v=4.1.0';
+import { getTabActionsHtml } from './models.js?v=4.1.0';
 
 export async function updateStatus() {
     try {
@@ -58,31 +58,39 @@ export async function updateStatus() {
             const dot = tabBtn?.querySelector('.tab-status-dot');
 
             const isRunning = inst && inst.status === 'running';
-            if (isRunning) {
-                statusBadge.innerText = 'ONLINE';
-                statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
-                actions.innerHTML = getTabActionsHtml(path, tab.id, true, inst.port);
+            // Só reescreve badge/ações quando o estado realmente muda: recriar os
+            // botões a cada poll (1s) matava hover/transições e engolia cliques.
+            const renderKey = isRunning
+                ? `running:${inst.port}`
+                : (inst && inst.status === 'stopped') ? 'stopped' : 'offline';
+            const stateChanged = tabEl.dataset.lastRenderKey !== renderKey;
 
-                if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
+            if (isRunning) {
+                if (stateChanged) {
+                    statusBadge.innerText = 'ONLINE';
+                    statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
+                    actions.innerHTML = getTabActionsHtml(path, tab.id, true, inst.port);
+                    if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
+                }
 
                 if (document.activeElement?.closest(`#${tab.id}`) === null) {
                     if (inst.config && !tabEl?.dataset.proposal) {
-                        window.modelConfigs[path] = inst.config;
+                        // Merge: preserva ajustes locais (mmproj/pins) ausentes em inst.config.
+                        window.modelConfigs[path] = { ...(window.modelConfigs[path] || {}), ...inst.config };
                     }
                 }
-            } else if (inst && inst.status === 'stopped') {
+            } else if (stateChanged && inst && inst.status === 'stopped') {
                 statusBadge.innerText = 'ERRO';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-rose-500/40 text-rose-400 bg-rose-500/5';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
-
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 transition-all duration-500';
-            } else {
+            } else if (stateChanged) {
                 statusBadge.innerText = 'OFFLINE';
                 statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
                 actions.innerHTML = getTabActionsHtml(path, tab.id, false);
-
                 if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500';
             }
+            tabEl.dataset.lastRenderKey = renderKey;
 
             if (inst && (inst.status === 'running' || inst.status === 'stopped')) {
                 if (state.currentTabId === tab.id) {
@@ -109,7 +117,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.0.7').then(m => {
+                        import('./models.js?v=4.1.0').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,
@@ -199,8 +207,12 @@ function normalizePath(p) {
 function findRecoveryTab(recovery) {
     const modelPath = normalizePath(recovery?.model);
     if (modelPath) {
+        // Com modelo conhecido, só casa pela aba do mesmo modelo. Cair para a aba
+        // atual aplicaria badge "CALIBRANDO" e sobrescreveria os pesos de OUTRO modelo.
         const byPath = state.activeTabs.find(t => t.path === modelPath);
         if (byPath) return byPath;
+        const byId = state.activeTabs.find(t => t.id === state.autoBalanceTabId);
+        return byId || null;
     }
     if (state.autoBalanceTabId) {
         const byId = state.activeTabs.find(t => t.id === state.autoBalanceTabId);
@@ -262,13 +274,13 @@ export async function cancelDownload(downloadId) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            alert('Erro: ' + (err.detail || 'Falha ao cancelar download'));
+            showToast('Erro: ' + (err.detail || 'Falha ao cancelar download'), 'error');
             return;
         }
         await updateDownloads();
         window.updateModels?.();
     } catch (e) {
-        alert('Erro de rede ao cancelar download.');
+        showToast('Erro de rede ao cancelar download.', 'error');
     }
 }
 
@@ -328,9 +340,12 @@ export async function updateDownloads() {
 
 export async function clearCompletedDownloads() {
     try {
-        await apiFetch('/downloads/clear', { method: 'POST' });
-        window.updateDownloads();
-    } catch (e) {}
+        const res = await apiFetch('/downloads/clear', { method: 'POST' });
+        await window.updateDownloads();
+        if (res.ok) showToast('Downloads concluídos removidos da lista.', 'success');
+    } catch (e) {
+        showToast('Erro de rede ao limpar downloads.', 'error');
+    }
 }
 
 let dashboardPollIntervals = [];
@@ -368,9 +383,22 @@ export function attachTabLogs(tabId, portOverride = null, { force = false, sessi
     const inst = state.activeInstances.find(
         i => normalizePath(i.model_path) === path
     );
-    let port = portOverride ?? inst?.port ?? state.currentActivePort;
+    // Sem currentActivePort de fallback: para uma aba sem instância própria isso
+    // conectaria o console aos logs de OUTRA instância. Só usa override explícito
+    // ou a porta da instância desta aba.
+    let port = portOverride ?? inst?.port;
     port = Number(port);
-    if (!Number.isFinite(port) || port <= 0) return;
+    if (!Number.isFinite(port) || port <= 0) {
+        detachTabLogs();
+        const box = tab.querySelector('.tab-log-box');
+        if (box) {
+            box.innerHTML = '';
+            box.dataset.connecting = '1';
+            appendLogLine(box, 'Aguardando instância...', { tone: 'muted', replaceConnecting: false });
+        }
+        setLogStreamStatus(tab, 'stopped');
+        return;
+    }
 
     const key = sessionKey ?? buildLogSessionKey(port, inst?.start_time);
     if (
@@ -387,14 +415,21 @@ export function attachTabLogs(tabId, portOverride = null, { force = false, sessi
 function consumeLogSseBuffer(buffer, box, tab) {
     const parts = buffer.split('\n');
     const remainder = parts.pop() || '';
+    let added = 0;
     for (const rawLine of parts) {
         if (!rawLine.startsWith('data:')) continue;
         const lineText = rawLine.slice(5).replace(/^\s/, '');
         if (!lineText) continue;
         appendLogLine(box, lineText);
+        added += lineText.length + 1;
     }
+    // Contador incremental em vez de ler box.innerText (força reflow de até 800 nós a cada chunk).
     const sizeEl = tab?.querySelector('.tab-log-size');
-    if (sizeEl) sizeEl.innerText = `${(box.innerText.length / 1024).toFixed(1)} KB`;
+    if (sizeEl && added) {
+        const bytes = (Number(box.dataset.logBytes) || 0) + added;
+        box.dataset.logBytes = String(bytes);
+        sizeEl.innerText = `${(bytes / 1024).toFixed(1)} KB`;
+    }
     return remainder;
 }
 
@@ -428,9 +463,12 @@ function appendLogLine(box, text, { tone = 'default', replaceConnecting = true }
                 : 'text-slate-400';
     line.className = `mb-1 border-l border-slate-800 pl-3 ${toneClass}`;
     line.innerHTML = formatLogLine(text);
+    // Stick-to-bottom: só rola se o usuário já estava no fim, para não arrastar
+    // de volta quem rolou para cima lendo um erro.
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     box.appendChild(line);
     while (box.childNodes.length > 800) box.removeChild(box.firstChild);
-    box.scrollTop = box.scrollHeight;
+    if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
 function setLogStreamStatus(tab, status) {
@@ -465,6 +503,7 @@ export async function startLogs(port, tabId, sessionKey = null) {
 
     box.innerHTML = '';
     box.dataset.connecting = '1';
+    box.dataset.logBytes = '0';
     appendLogLine(box, 'Conectando ao console da instancia...', { tone: 'muted', replaceConnecting: false });
     setLogStreamStatus(tab, 'connecting');
 
@@ -585,24 +624,47 @@ export async function updateMetrics() {
             });
         });
         
-        // Mini GPU Cards
-        const miniGpu = document.getElementById('mini-gpu-metrics');
-        if (miniGpu) {
-            miniGpu.innerHTML = (data.gpus || []).map(g => `
-                <div class="glass min-w-[120px] p-3 rounded-xl border-b-2 border-blue-500/50 flex flex-col justify-between shrink-0">
-                    <div class="flex justify-between items-center mb-1">
-                        <span class="text-ui-label font-black text-slate-500 uppercase">GPU ${g.index}</span>
-                        <span class="text-ui-label font-mono text-slate-400">${g.temp || '--'}°C</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-bold text-white">${g.util}%</span>
-                        <div class="flex-1 h-0.5 bg-slate-800 rounded-full overflow-hidden">
-                            <div class="h-full bg-blue-500" style="width: ${g.util}%"></div>
-                        </div>
-                    </div>
-                    <p class="text-ui-label text-slate-400 font-mono mt-1">${g.mem_used}MB</p>
-                </div>
-            `).join('');
-        }
+        // Mini GPU Cards — atualização keyed (sem rebuild via innerHTML a cada 2s,
+        // que causava flicker e reiniciava transições).
+        renderMiniGpuCards(data.gpus || []);
     } catch (e) {}
+}
+
+function renderMiniGpuCards(gpus) {
+    const miniGpu = document.getElementById('mini-gpu-metrics');
+    if (!miniGpu) return;
+
+    // (Re)cria os cards apenas quando o conjunto de GPUs muda.
+    const key = gpus.map(g => g.index).join(',');
+    if (miniGpu.dataset.gpuKey !== key) {
+        miniGpu.dataset.gpuKey = key;
+        miniGpu.innerHTML = gpus.map(g => `
+            <div data-gpu-card="${g.index}" class="glass min-w-[120px] p-3 rounded-xl border-b-2 border-blue-500/50 flex flex-col justify-between shrink-0">
+                <div class="flex justify-between items-center mb-1">
+                    <span class="text-ui-label font-black text-slate-500 uppercase">GPU ${g.index}</span>
+                    <span data-gpu-temp class="text-ui-label font-mono text-slate-400">--°C</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span data-gpu-util class="text-xs font-bold text-white">0%</span>
+                    <div class="flex-1 h-0.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div data-gpu-util-bar class="h-full bg-blue-500 transition-all duration-700" style="width: 0%"></div>
+                    </div>
+                </div>
+                <p data-gpu-mem class="text-ui-label text-slate-400 font-mono mt-1">0MB</p>
+            </div>
+        `).join('');
+    }
+
+    for (const g of gpus) {
+        const card = miniGpu.querySelector(`[data-gpu-card="${g.index}"]`);
+        if (!card) continue;
+        const temp = card.querySelector('[data-gpu-temp]');
+        const util = card.querySelector('[data-gpu-util]');
+        const bar = card.querySelector('[data-gpu-util-bar]');
+        const mem = card.querySelector('[data-gpu-mem]');
+        if (temp) temp.textContent = `${g.temp || '--'}°C`;
+        if (util) util.textContent = `${g.util}%`;
+        if (bar) bar.style.width = `${g.util}%`;
+        if (mem) mem.textContent = `${g.mem_used}MB`;
+    }
 }

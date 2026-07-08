@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.0.7';
-import { apiFetch } from './auth.js?v=4.0.7';
+import { state } from './state.js?v=4.1.0';
+import { apiFetch } from './auth.js?v=4.1.0';
 
 const CPU_INDEX = -1;
 
@@ -657,9 +657,12 @@ export function showAutoBalanceProgress(recovery, tabId = null) {
             : 'Aguarde, isso pode levar alguns minutos';
     }
 
+    const wasHidden = el.classList.contains('hidden');
     el.classList.remove('hidden');
     syncAutoBalanceCancelButton(true, tabId);
-    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Só rola na primeira exibição: chamado a cada poll (1s) durante a calibração,
+    // um scrollIntoView repetido sequestraria a rolagem do usuário.
+    if (wasHidden) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 export function hideAutoBalanceProgress(tabId = null) {

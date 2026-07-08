@@ -67,6 +67,49 @@ def test_openai_proxy_routing(mock_stream, mock_post, mock_request, mock_get_sta
     assert response.status_code == 404
     assert "nao esta carregado" in response.json()["detail"].lower()
 
+def _models_resp(model_id):
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"object": "list", "data": [{"id": model_id, "object": "model"}]}
+    return resp
+
+@patch("llama_manager.process_manager.get_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+def test_openai_proxy_models_aggregates_all_instances(mock_get, mock_get_status, mock_instances):
+    mock_get_status.return_value = {"instances": mock_instances}
+
+    async def fake_get(url, **kwargs):
+        if "8085" in url:
+            return _models_resp("/path/to/model_a.gguf")
+        return _models_resp("/path/to/model_b.gguf")
+
+    mock_get.side_effect = fake_get
+
+    response = client.get("/v1/models")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "list"
+    ids = [m["id"] for m in payload["data"]]
+    assert sorted(ids) == ["/path/to/model_a.gguf", "/path/to/model_b.gguf"]
+
+@patch("llama_manager.process_manager.get_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+def test_openai_proxy_models_skips_unreachable_instance(mock_get, mock_get_status, mock_instances):
+    mock_get_status.return_value = {"instances": mock_instances}
+
+    async def fake_get(url, **kwargs):
+        if "8085" in url:
+            raise httpx.ConnectError("connection refused")
+        return _models_resp("/path/to/model_b.gguf")
+
+    mock_get.side_effect = fake_get
+
+    response = client.get("/v1/models")
+    assert response.status_code == 200
+    ids = [m["id"] for m in response.json()["data"]]
+    assert ids == ["/path/to/model_b.gguf"]
+
 @patch("llama_manager.process_manager.get_status")
 def test_openai_proxy_no_instances(mock_get_status):
     mock_get_status.return_value = {"instances": []}

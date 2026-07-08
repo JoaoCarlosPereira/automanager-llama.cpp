@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import socket
@@ -16,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from slowapi import Limiter
+from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
@@ -55,7 +56,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.0.12"  # UI typography readability
+_DASHBOARD_JS_V = "4.1.0"  # UI typography readability
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -134,6 +135,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Rate limiter for login endpoint
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
 app.state.limiter = limiter
+# Sem o handler registrado, exceder o limite vira 500 em vez de 429.
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Shared HTTP client for proxying
 client = httpx.AsyncClient()
@@ -150,7 +153,9 @@ auth_manager = AuthManager(config_manager, token_manager)
 
 model_scanner = ModelScanner(config_manager, process_manager)
 download_mgr = DownloadManager()
-oom_watchdog = OOMWatchdog(process_manager)
+oom_watchdog = OOMWatchdog(
+    process_manager, config_manager, gpu_manager, log_manager
+)
 
 shutdown_event = threading.Event()
 
@@ -348,7 +353,9 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
 async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    process_manager.stop(port)
+    # stop() bloqueia até a porta liberar (até ~10s); fora do event loop para
+    # não congelar /metrics, /logs e demais requisições concorrentes.
+    await asyncio.to_thread(process_manager.stop, port)
     return {"message": "Parado"}
 
 
@@ -424,6 +431,16 @@ async def stream_logs(request: Request, port: Optional[int] = None):
 @app.api_route("/ui/{port}/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def ui_proxy(request: Request, port: int, path: str = ""):
     """Proxy llama-server web UI through the manager (fixes relative asset paths)."""
+    if not require_auth(request):
+        raise HTTPException(status_code=401)
+    # Só faz proxy para portas de instâncias conhecidas — evita usar o manager
+    # como proxy cego para qualquer serviço em loopback do host.
+    known_ports = {
+        inst.get("port") for inst in process_manager.get_status().get("instances", [])
+    }
+    if port not in known_ports:
+        raise HTTPException(status_code=404, detail="Instancia inexistente")
+
     is_index = not path or path == "index.html"
     if is_index:
         path = ""
@@ -560,7 +577,40 @@ async def renew_api_key(authenticated: bool = Depends(require_auth)):
 async def system_version_check(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return check_for_updates(INSTALL_ROOT)
+    # check_for_updates faz `git fetch` (até ~30s); em thread para não bloquear
+    # o event loop enquanto aguarda a rede.
+    return await asyncio.to_thread(check_for_updates, INSTALL_ROOT)
+
+
+async def _aggregate_models_response(
+    instances: List[Dict[str, Any]], headers: Dict[str, str]
+) -> JSONResponse:
+    """Agrega o /v1/models de todas as instancias llama-server em execucao."""
+
+    async def fetch_models(inst: Dict[str, Any]) -> List[Dict[str, Any]]:
+        url = f"http://127.0.0.1:{inst['port']}/v1/models"
+        try:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("data") or []
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+            logger.warning(
+                "Falha ao listar modelos da instancia na porta %s: %s",
+                inst.get("port"), exc,
+            )
+            return []
+
+    results = await asyncio.gather(*(fetch_models(inst) for inst in instances))
+    merged: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for models in results:
+        for model in models:
+            model_id = model.get("id")
+            if model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            merged.append(model)
+    return JSONResponse({"object": "list", "data": merged})
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
@@ -581,6 +631,13 @@ async def openai_proxy(request: Request, path: str):
     instances = process_manager.get_status().get("instances", [])
     if not instances:
         raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
+
+    # /v1/models nao tem corpo para rotear: agregar todas as instancias em vez
+    # de responder apenas com o modelo da porta default.
+    if request.method == "GET" and path.strip("/") == "models":
+        list_headers = _filter_proxy_headers(dict(request.headers))
+        list_headers.pop("host", None)
+        return await _aggregate_models_response(instances, list_headers)
 
     if requested_model:
         target_instance = next(
@@ -808,16 +865,16 @@ async def index(request: Request):
                 <div class="flex items-start justify-between">
                     <div class="flex items-center gap-2 overflow-hidden">
                         <i class="fas fa-cube text-blue-400 text-ui-body-sm shrink-0"></i>
-                        <p class="model-name text-ui-body font-bold {has_config} truncate">{m_name}</p>
+                        <p class="model-name text-ui-body font-bold {has_config} truncate">{html.escape(m_name)}</p>
                     </div>
                     {incapable_badge}
                 </div>
-                <p class="text-ui-label text-slate-400 truncate font-mono mt-1 uppercase opacity-80">{m_dir}</p>
+                <p class="text-ui-label text-slate-400 truncate font-mono mt-1 uppercase opacity-80">{html.escape(m_dir)}</p>
             </div>
             <div class="flex items-center justify-between gap-2 mt-1">
                 <div class="flex items-center gap-1 flex-wrap">
-                    <button onclick="event.stopPropagation(); renameModel('{m_js_js}')" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-blue-400 transition-all"><i class="fas fa-edit text-ui-label"></i></button>
-                    <button onclick="event.stopPropagation(); deleteModel('{m_js_js}')" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-all"><i class="fas fa-trash-alt text-ui-label"></i></button>
+                    <button onclick="event.stopPropagation(); renameModel('{m_js_js}')" title="Renomear modelo" aria-label="Renomear modelo" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-blue-400 transition-all"><i class="fas fa-edit text-ui-label"></i></button>
+                    <button onclick="event.stopPropagation(); deleteModel('{m_js_js}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-all"><i class="fas fa-trash-alt text-ui-label"></i></button>
                     {vision_controls}
                 </div>
                 <div class="flex items-center gap-2">
@@ -852,7 +909,9 @@ async def index(request: Request):
         selected = "selected" if val == 512 else ""
         ubatch_opts += f'<option value="{val}" class="bg-slate-900" {selected}>{val}</option>'
 
-    api_token = token_manager.get_or_create()
+    # Só expõe o token da API no HTML quando há sessão válida; GET / é público
+    # (serve a tela de login) e não deve vazar o segredo para anônimos.
+    api_token = token_manager.get_or_create() if is_authenticated else ""
     local_ip = get_local_ip()
 
     return HTMLResponse(_build_html(
@@ -1069,6 +1128,40 @@ def _build_html(
         
         .model-item-container.active-selection {{ border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }}
 
+        /* --- Polish: cursor, foco por teclado, transições --- */
+        button:not(:disabled), [onclick], label[onclick], a[href] {{ cursor: pointer; }}
+        button:disabled {{ cursor: not-allowed; }}
+        :focus-visible {{ outline: 2px solid rgba(59, 130, 246, 0.6); outline-offset: 2px; border-radius: 8px; }}
+        .model-mmproj-select, input, select, textarea {{ transition: box-shadow 0.15s ease, border-color 0.15s ease; }}
+
+        @keyframes panel-in {{ from {{ opacity: 0; transform: translateY(-6px); }} to {{ opacity: 1; transform: none; }} }}
+        .tab-auto-balance-progress:not(.hidden),
+        .tab-auto-balance-alert:not(.hidden),
+        .tab-proposed-config:not(.hidden),
+        .tab-mtp-warning:not(.hidden) {{ animation: panel-in 0.25s ease; }}
+        .tab-content.active {{ animation: panel-in 0.2s ease; }}
+
+        /* --- Toasts --- */
+        #toast-container {{ position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; max-width: min(92vw, 26rem); }}
+        .toast {{
+            display: flex; align-items: flex-start; gap: 0.65rem;
+            padding: 0.85rem 1rem; border-radius: 0.9rem;
+            background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+            color: #e2e8f0; font-size: var(--text-body-sm);
+            transform: translateY(10px); opacity: 0;
+            transition: transform 0.22s ease, opacity 0.22s ease;
+        }}
+        .toast.show {{ transform: translateY(0); opacity: 1; }}
+        .toast.toast-error {{ border-color: rgba(244, 63, 94, 0.5); }}
+        .toast.toast-success {{ border-color: rgba(16, 185, 129, 0.5); }}
+        .toast.toast-info {{ border-color: rgba(59, 130, 246, 0.5); }}
+        .toast .toast-icon {{ margin-top: 0.1rem; }}
+        .toast-error .toast-icon {{ color: #fb7185; }}
+        .toast-success .toast-icon {{ color: #34d399; }}
+        .toast-info .toast-icon {{ color: #60a5fa; }}
+
         .cfg-field {{
             position: relative;
             overflow: visible;
@@ -1119,6 +1212,7 @@ def _build_html(
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
+    <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <!-- SIDEBAR (MENU RETRATIL) -->
     <aside id="sidebar" class="fixed top-0 left-0 h-full w-80 glass border-r border-slate-800 z-40 overflow-y-auto custom-scroll flex flex-col shadow-2xl collapsed" style="display: {shell_style};">
@@ -1145,11 +1239,16 @@ def _build_html(
 
             <!-- Download -->
             <section class="pt-6 border-t border-slate-800/50">
-                <p class="text-ui-body-sm font-black text-slate-500 uppercase tracking-widest mb-3">Download GGUF</p>
+                <div class="flex items-center justify-between mb-3">
+                    <p class="text-ui-body-sm font-black text-slate-500 uppercase tracking-widest">Download GGUF</p>
+                    <button type="button" onclick="clearCompletedDownloads()" title="Remover downloads concluídos, cancelados e com falha da lista" aria-label="Limpar lista de downloads" class="text-ui-label font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 flex items-center gap-1.5 transition-colors">
+                        <i class="fas fa-broom text-ui-label"></i> Limpar
+                    </button>
+                </div>
                 <div class="space-y-3">
                     <div class="relative">
                         <input type="text" id="download-url" placeholder="URL HuggingFace..." class="w-full pl-4 pr-10 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-300 focus:ring-1 focus:ring-blue-500/50 outline-none">
-                        <button onclick="downloadModel()" class="absolute right-2 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400"><i class="fas fa-arrow-down"></i></button>
+                        <button onclick="downloadModel()" title="Iniciar download" aria-label="Iniciar download" class="absolute right-2 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400"><i class="fas fa-arrow-down"></i></button>
                     </div>
                 </div>
                 <div id="download-list" class="mt-4 space-y-2"></div>
@@ -1175,7 +1274,7 @@ def _build_html(
                  <div class="space-y-2 pt-4 border-t border-slate-800/30">
                     <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Acesso API (OpenAI)</label>
                     <div class="bg-slate-900 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
-                        <code id="api-token" data-full-token="{html.escape(api_token)}" class="text-ui-label text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:])}</code>
+                        <code id="api-token" data-full-token="{html.escape(api_token)}" class="text-ui-label text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:]) if api_token else ''}</code>
                         <button type="button" onclick="copyApiToken()" title="Copiar token" class="text-slate-600 hover:text-white shrink-0"><i class="far fa-copy text-ui-body-sm"></i></button>
                     </div>
                  </div>

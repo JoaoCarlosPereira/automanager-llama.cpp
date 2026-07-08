@@ -1118,7 +1118,7 @@ class AutoBalanceProber:
         """
         model_name = os.path.basename(request.path) if request.path else "?"
         try:
-            server_log_path = self.log_manager.get_server_log_path()
+            server_log_path = self.log_manager.get_server_log_path(self.port)
         except Exception:  # pragma: no cover - defensive
             server_log_path = "?"
         log_tail = crash.log_tail or []
@@ -1613,10 +1613,15 @@ class AutoBalanceProber:
         """Heurística para sugerir a melhor performance baseada na VRAM sobrando."""
         all_gpus = self.gpu_manager.detect_gpus()
         vram_map = {g["index"]: g["vram"] for g in all_gpus}
-        
+        # VRAM disponível no início da calibração (desconta outras instâncias);
+        # não relemos aqui porque o modelo sondado ainda está carregado.
+        available_map = getattr(self, "_initial_available_vram", None) or {}
+
         # 1. Calcular VRAM total disponível nas GPUs ativas
         active_indices = [w.index for w in final_weights if w.active and w.device == "gpu"]
-        total_vram_mb = sum(vram_map.get(idx, 0) for idx in active_indices)
+        total_vram_mb = sum(
+            available_map.get(idx, vram_map.get(idx, 0)) for idx in active_indices
+        )
         
         # 2. Estimar uso atual
         est = self.planner.estimate_model_vram_mb(
@@ -1684,6 +1689,32 @@ class AutoBalanceProber:
 
         return proposal
 
+    def _available_vram_by_index(
+        self, vram_total_by_index: Dict[int, int]
+    ) -> Dict[int, int]:
+        """VRAM disponível por GPU (total - uso atual do driver).
+
+        Em multi-instância outras instâncias llama-server permanecem
+        carregadas durante a calibração; os caps da cascata devem considerar
+        apenas a VRAM livre — como ocorria quando a sondagem partia de GPUs
+        vazias. Sem métricas, retorna o total (comportamento antigo).
+        """
+        available = dict(vram_total_by_index)
+        try:
+            metrics = self.gpu_manager.get_metrics()
+            gpu_entries = list(metrics.get("gpus", []) or [])
+        except Exception:
+            return available
+        for gpu in gpu_entries:
+            try:
+                idx = int(gpu.get("index"))
+                used = int(float(gpu.get("mem_used", 0) or 0))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if idx in available and used > 0:
+                available[idx] = max(0, available[idx] - used)
+        return available
+
     def _discover_empirical(
         self, request
     ) -> Tuple[bool, List[GPUWeight], str, Optional[Dict[str, Any]]]:
@@ -1692,7 +1723,11 @@ class AutoBalanceProber:
         if not all_gpus:
             return False, request.gpu_weights, "Nenhuma GPU detectada.", None
 
-        vram_by_index = {g["index"]: g["vram"] for g in all_gpus}
+        vram_total_by_index = {g["index"]: g["vram"] for g in all_gpus}
+        vram_by_index = self._available_vram_by_index(vram_total_by_index)
+        # Guarda a disponibilidade no início da calibração: a proposta smart é
+        # gerada com o modelo de sondagem ainda carregado e não pode reler.
+        self._initial_available_vram = dict(vram_by_index)
         active_indices = [
             w.index
             for w in request.gpu_weights
@@ -1738,8 +1773,8 @@ class AutoBalanceProber:
             "  model=%s path=%s\n"
             "  context_size=%d parallel_slots=%d\n"
             "  weights_mb=%d (%.2f GB)  kv_cache_mb=%d  total_mb=%d (%.2f GB)\n"
-            "  active_gpus=%d | total_vram=%d MB (%.2f GB)\n"
-            "  gpu_vram={%s}\n"
+            "  active_gpus=%d | vram_disponivel=%d MB (%.2f GB)\n"
+            "  gpu_vram_disponivel={%s} (total={%s})\n"
             "  gpu_names={%s}\n"
             "  main_index=%d\n"
             "  spill_order=%s\n"
@@ -1758,6 +1793,7 @@ class AutoBalanceProber:
             total_active_vram,
             total_active_vram / 1024.0,
             ", ".join(f"{i}: {vram_by_index.get(i, 0)}" for i in active_indices),
+            ", ".join(f"{i}: {vram_total_by_index.get(i, 0)}" for i in active_indices),
             ", ".join(f"{i}: {gpu_names.get(i, '?')}" for i in active_indices),
             main_index,
             spill_order,
@@ -3078,12 +3114,21 @@ class AutoBalanceProber:
                     split_mode=request.split_mode,
                     parallel_slots=request.parallel_slots,
                     batch_size=request.batch_size,
+                    # Sonda deve refletir o consumo real de VRAM da carga final:
+                    # cache/ubatch/threads/numa/binário afetam a memória usada.
+                    ubatch_size=request.ubatch_size,
+                    cache_type_k=request.cache_type_k,
+                    cache_type_v=request.cache_type_v,
+                    threads=request.threads,
+                    threads_batch=request.threads_batch,
+                    numa_enabled=request.numa_enabled,
                     thinking_enabled=request.thinking_enabled,
                     mtp_enabled=request.mtp_enabled,
                     mtp_draft_tokens=request.mtp_draft_tokens,
                     flash_attn_enabled=request.flash_attn_enabled,
                     total_layers=request.total_layers,
                     port=self.port,
+                    llama_server_bin=request.llama_server_bin,
                 )
             except Exception as exc:
                 logger.error(
@@ -3276,7 +3321,9 @@ class AutoBalanceProber:
         self.process_manager.recovery_state = state
 
     def _wait_for_outcome(self) -> str:
-        path = self.log_manager.get_server_log_path()
+        # self.port: em multi-instância a sonda não roda na porta default e o
+        # log fica em server_{port}.log — ler server.log observaria outra instância.
+        path = self.log_manager.get_server_log_path(self.port)
         deadline = time.time() + PROBE_TIMEOUT_SEC
         last_pos = 0
         start_time = time.time()

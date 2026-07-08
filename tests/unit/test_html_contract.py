@@ -275,11 +275,20 @@ def test_html_contains_version_update_modal(html):
 # ── API token / IP / config ───────────────────────────────────────────────
 
 
-def test_html_contains_api_token(html):
+def test_html_contains_api_token(client):
+    # O token só deve ser renderizado para uma sessão autenticada.
+    client.cookies.set("session_token", FakeAuthManager.valid_session)
+    html = client.get("/").text
     assert 'id="api-token"' in html
     assert FAKE_API_TOKEN in html
     assert 'data-full-token="' in html
     assert 'copyApiToken()' in html
+
+
+def test_html_omits_api_token_when_unauthenticated(html):
+    # GET / é público (tela de login); não deve vazar o token para anônimos.
+    assert FAKE_API_TOKEN not in html
+    assert 'data-full-token=""' in html
 
 
 def test_html_injects_ip(html):
