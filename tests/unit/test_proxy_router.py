@@ -341,6 +341,48 @@ class TestSelection:
         assert again.backend_port != dead_port
 
     @pytest.mark.asyncio
+    async def test_concurrent_same_hash_branches_across_backends(self, router):
+        """Subagentes sem tag e com prompts idênticos (mesma hash) em
+        paralelo devem ramificar para backends livres, não enfileirar."""
+        body = body_with()  # sem tag -> hash:
+        d1 = await resolve(router, body=body)
+        d2 = await resolve(router, body=body)  # base ocupada -> ramo #2
+        d3 = await resolve(router, body=body)  # -> ramo #3
+        ports = {d1.backend_port, d2.backend_port, d3.backend_port}
+        assert ports == {8085, 8086, 8087}
+        assert d1.affinity_key.startswith("hash:")
+        assert d2.affinity_key == f"{d1.affinity_key}#2"
+        assert d3.affinity_key == f"{d1.affinity_key}#3"
+        assert d2.reason == "hash_branch"
+        for d in (d1, d2, d3):
+            await router.release(d.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_hash_branch_is_sticky_on_reuse(self, router):
+        body = body_with()
+        d1 = await resolve(router, body=body)
+        d2 = await resolve(router, body=body)
+        await router.release(d2.backend_port)
+        # Base segue ocupada; nova requisição concorrente reusa o ramo #2
+        d2_again = await resolve(router, body=body)
+        assert d2_again.affinity_key == d2.affinity_key
+        assert d2_again.backend_port == d2.backend_port
+        assert d2_again.sticky_hit is True
+        assert d2_again.reason == "sticky_branch"
+        await router.release(d1.backend_port)
+        await router.release(d2_again.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_tagged_sessions_never_branch(self, router, status_holder):
+        """Afinidade explícita (tag) mantém sticky estrito: espera, não ramifica."""
+        d1 = await resolve(router, body=body_with(tag="rock"))
+        with pytest.raises(ProxyError):
+            # Mesmo com backends livres, a sessão da tag espera o próprio
+            # backend (timeout de 1s do fixture) em vez de ramificar
+            await resolve(router, body=body_with(tag="rock"))
+        await router.release(d1.backend_port)
+
+    @pytest.mark.asyncio
     async def test_untagged_new_session_overflows_when_primary_busy(
         self, router
     ):

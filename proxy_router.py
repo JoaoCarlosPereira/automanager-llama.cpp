@@ -35,6 +35,8 @@ TOKEN_ESTIMATE_MARGIN = 1.1
 PERSIST_EVERY_N_REQUESTS = 20
 # Intervalo do polling de espera por slot livre.
 BUSY_POLL_SECONDS = 0.25
+# Limite de ramificações de uma sessão hash: (afinidade fraca) sob concorrência.
+MAX_HASH_BRANCHES = 8
 
 MAIN_TAG = "main"
 
@@ -601,6 +603,54 @@ class ProxyRouter:
         if self._unsaved_uses >= PERSIST_EVERY_N_REQUESTS:
             self._save_sessions()
 
+    def _hash_branch_locked(
+        self,
+        affinity_key: str,
+        by_port: Dict[int, Dict[str, Any]],
+        instances: List[Dict[str, Any]],
+        model_configs: dict,
+        primary_port: int,
+        needed_ctx: int,
+        _decision,
+        _commit,
+    ) -> Optional[RouteDecision]:
+        """Ramifica uma sessão hash: ocupada para um backend livre.
+
+        Sessões de afinidade fraca não distinguem subagentes com prompts
+        iniciais idênticos; sob concorrência, cada fluxo extra vira um ramo
+        sticky próprio (hash:...#2, #3, ...) no backend menos ocupado.
+        Retorna None quando não há backend livre (o chamador espera).
+        """
+        for n in range(2, MAX_HASH_BRANCHES + 1):
+            branch_key = f"{affinity_key}#{n}"
+            branch = self._sessions.get(branch_key)
+            if branch is not None:
+                b_inst = by_port.get(branch.backend_port)
+                if b_inst is None or branch.backend_port in self._disabled_ports:
+                    continue  # ramo órfão: deixa o TTL limpar
+                _, b_max = self._model_flags(
+                    model_configs, b_inst.get("model_path") or ""
+                )
+                if self.in_flight(b_inst["port"]) < b_max:
+                    return _commit(
+                        b_inst, True, "sticky_branch", branch, key=branch_key
+                    )
+                continue  # ramo também ocupado: tenta o próximo
+            candidates = self._candidates(
+                instances, model_configs, primary_port, needed_ctx,
+                ignore_capacity=False,
+            )
+            chosen = self._pick_least_busy(candidates, primary_port)
+            if chosen is None:
+                return None
+            logger.info(
+                "[proxy] concurrent hash session branched affinity_key=%s "
+                "branch=%s selected_backend=%s reason=hash_branch",
+                affinity_key, branch_key, chosen["port"],
+            )
+            return _commit(chosen, False, "hash_branch", None, key=branch_key)
+        return None
+
     async def resolve(
         self,
         *,
@@ -677,13 +727,14 @@ class ProxyRouter:
         model_configs = self._config.get_config().get("model_configs", {})
 
         def _decision(
-            instance: Dict[str, Any], sticky_hit: bool, reason: str
+            instance: Dict[str, Any], sticky_hit: bool, reason: str,
+            key: Optional[str] = None,
         ) -> RouteDecision:
             return RouteDecision(
                 backend_port=instance["port"],
                 internal_model=instance.get("model") or "",
                 external_model=external_model,
-                affinity_key=affinity_key,
+                affinity_key=key or affinity_key,
                 detected_tag=tag,
                 sticky_hit=sticky_hit,
                 reason=reason,
@@ -697,22 +748,24 @@ class ProxyRouter:
             sticky_hit: bool,
             reason: str,
             session: Optional[StickySession],
+            key: Optional[str] = None,
         ) -> RouteDecision:
+            key = key or affinity_key
             if not dry_run:
                 if session is None:
                     session = self._register_session_locked(
-                        affinity_key, instance, external_model, tag
+                        key, instance, external_model, tag
                     )
                     logger.info(
                         "[proxy] new sticky session affinity_key=%s "
                         "selected_backend=%s reason=%s",
-                        affinity_key, instance["port"], reason,
+                        key, instance["port"], reason,
                     )
                 self._touch_session_locked(session)
                 self._in_flight[instance["port"]] = (
                     self._in_flight.get(instance["port"], 0) + 1
                 )
-            return _decision(instance, sticky_hit, reason)
+            return _decision(instance, sticky_hit, reason, key=key)
 
         by_port = {inst["port"]: inst for inst in instances}
         existing = self._sessions.get(affinity_key)
@@ -740,6 +793,18 @@ class ProxyRouter:
                 if dry_run:
                     return _decision(inst, True, "sticky"), None
                 if self.in_flight(inst["port"]) >= max_parallel:
+                    # Afinidade fraca (hash:): requisições SIMULTÂNEAS com a
+                    # mesma assinatura são fluxos paralelos (subagentes) — uma
+                    # conversa não sobrepõe turnos. Ramifica para backend livre
+                    # em vez de enfileirar (spec original: "muitas requisições
+                    # simultâneas parecidas → pode distribuir").
+                    if affinity_key.startswith("hash:"):
+                        branched = self._hash_branch_locked(
+                            affinity_key, by_port, instances, model_configs,
+                            primary_port, needed_ctx, _decision, _commit,
+                        )
+                        if branched is not None:
+                            return branched, None
                     return None, (
                         f"Backend {inst['port']} ocupado para sessao sticky"
                     )
