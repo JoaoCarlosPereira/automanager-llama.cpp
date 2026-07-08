@@ -70,7 +70,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.0"  # Proxy Inteligente: controles por modelo na biblioteca
+_DASHBOARD_JS_V = "4.2.1"  # fix layout dos controles do proxy na sidebar
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1350,20 +1350,18 @@ async def index(request: Request):
                     <input type="checkbox" class="w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-blue-600 cursor-pointer" {is_default} onclick="event.stopPropagation(); setDefaultModel(this, '{m_js_js}')">
                 </div>
             </div>
-            <div class="proxy-model-controls flex items-center justify-between gap-2 pt-2 border-t border-slate-800/40">
-                <div class="flex items-center gap-3">
-                    <label class="flex items-center gap-1.5 cursor-pointer" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
-                        <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
-                        <input type="checkbox" class="proxy-primary-checkbox w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" data-path="{html.escape(m_js, quote=True)}" {is_proxy_primary} onclick="event.stopPropagation(); setProxyPrimary(this, '{m_js_js}')">
-                    </label>
-                    <label class="flex items-center gap-1.5 cursor-pointer" title="Usar como backend secundário no proxy inteligente">
-                        <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
-                        <input type="checkbox" class="proxy-eligible-checkbox w-3.5 h-3.5 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" {is_proxy_eligible} onclick="event.stopPropagation(); setProxyEligible(this, '{m_js_js}')">
-                    </label>
-                </div>
-                <label class="flex items-center gap-1.5" title="Máximo de requisições paralelas roteadas para este backend">
+            <div class="proxy-model-controls flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-2 border-t border-slate-800/40 min-w-0">
+                <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
+                    <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
+                    <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" data-path="{html.escape(m_js, quote=True)}" {is_proxy_primary} onclick="event.stopPropagation(); setProxyPrimary(this, '{m_js_js}')">
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Usar como backend secundário no proxy inteligente">
+                    <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
+                    <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" {is_proxy_eligible} onclick="event.stopPropagation(); setProxyEligible(this, '{m_js_js}')">
+                </label>
+                <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
                     <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
-                    <input type="number" min="1" max="16" value="{proxy_max_parallel}" class="proxy-max-parallel w-12 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 outline-none" onclick="event.stopPropagation()" onchange="setProxyMaxParallel(this, '{m_js_js}')">
+                    <input type="number" min="1" max="16" value="{proxy_max_parallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onclick="event.stopPropagation()" onchange="setProxyMaxParallel(this, '{m_js_js}')">
                 </label>
             </div>
         </div>"""

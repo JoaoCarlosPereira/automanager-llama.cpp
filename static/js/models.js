@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.0';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.0';
+import { state } from './state.js?v=4.2.1';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.1';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.0';
+} from './gpu.js?v=4.2.1';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -90,8 +90,8 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.0';
-import { checkForUpdates } from './version.js?v=4.2.0';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.1';
+import { checkForUpdates } from './version.js?v=4.2.1';
 
 // --- TAB MANAGEMENT ---
 
@@ -1002,20 +1002,18 @@ function buildModelListHtml(models, cfg) {
                         <input type="checkbox" class="autostart-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
                     </label>
                 </div>
-                <div class="proxy-model-controls flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-700/30" onclick="event.stopPropagation()">
-                    <div class="flex items-center gap-3">
-                        <label class="flex items-center gap-1.5 cursor-pointer" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
-                            <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
-                            <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-path="${escapeHtml(m_js)}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, '${safePath}')">
-                        </label>
-                        <label class="flex items-center gap-1.5 cursor-pointer" title="Usar como backend secundário no proxy inteligente">
-                            <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
-                            <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}')">
-                        </label>
-                    </div>
-                    <label class="flex items-center gap-1" title="Máximo de requisições paralelas roteadas para este backend">
+                <div class="proxy-model-controls flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 pt-2 border-t border-slate-700/30 min-w-0" onclick="event.stopPropagation()">
+                    <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
+                        <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
+                        <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-path="${escapeHtml(m_js)}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, '${safePath}')">
+                    </label>
+                    <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Usar como backend secundário no proxy inteligente">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
+                        <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}')">
+                    </label>
+                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
-                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-11 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 outline-none" onchange="setProxyMaxParallel(this, '${safePath}')">
+                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, '${safePath}')">
                     </label>
                 </div>
             </div>`;

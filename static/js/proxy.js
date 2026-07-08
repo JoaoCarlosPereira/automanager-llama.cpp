@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.0';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.1';
 
 // updateStatus roda a cada 1s; o painel consulta o proxy a cada 3 ticks.
 const POLL_EVERY_TICKS = 3;
@@ -232,8 +232,7 @@ function render(status, sessions) {
 
 export async function proxyDeleteSession(affinityKey) {
     const ok = await showConfirm(
-        'Remover sessão sticky?',
-        'A próxima requisição desta conversa será roteada novamente.',
+        'Remover sessão sticky? A próxima requisição desta conversa será roteada novamente.',
     );
     if (!ok) return;
     const res = await apiFetch(`/proxy/sessions/${encodeURIComponent(affinityKey)}`, {
@@ -249,8 +248,8 @@ export async function proxyDeleteSession(affinityKey) {
 
 export async function proxyReassignSession(affinityKey) {
     const ok = await showConfirm(
-        'Reatribuir sessão?',
-        'A sessão será movida para o melhor backend disponível.',
+        'Reatribuir sessão para o melhor backend disponível?',
+        { danger: false, confirmLabel: 'Reatribuir' },
     );
     if (!ok) return;
     const res = await apiFetch(
