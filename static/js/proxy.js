@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.1';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.2';
 
 // updateStatus roda a cada 1s; o painel consulta o proxy a cada 3 ticks.
 const POLL_EVERY_TICKS = 3;
@@ -141,14 +141,23 @@ const STATE_STYLES = {
     offline: 'text-slate-500 border-slate-700/50 bg-slate-800/40',
 };
 
+// Rótulos exibidos em PT-BR; os valores da API permanecem em inglês (contrato)
+const STATE_LABELS = {
+    online: 'ONLINE',
+    busy: 'OCUPADO',
+    disabled: 'DESATIVADO',
+    not_eligible: 'FORA DO PROXY',
+    offline: 'OFFLINE',
+};
+
 function renderModeBadge(enabled) {
     const badge = document.getElementById('proxy-mode-badge');
     if (!badge) return;
     if (enabled) {
-        badge.innerText = 'ON';
+        badge.innerText = 'ATIVO';
         badge.className = 'px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-violet-500/40 text-violet-300 bg-violet-500/10';
     } else {
-        badge.innerText = 'OFF';
+        badge.innerText = 'INATIVO';
         badge.className = 'px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-slate-700/50 text-slate-500';
     }
 }
@@ -168,14 +177,14 @@ function backendCard(backend) {
     <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}">
         <div class="flex items-center justify-between gap-2">
             <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
-            <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(backend.state)}</span>
+            <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[backend.state] || backend.state)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
             <span>${role} · ${esc(backend.gpu)}</span>
             <span class="font-mono">porta ${esc(backend.port)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${esc(backend.in_flight)}/${esc(backend.max_parallel)} req ativa(s)</span>
+            <span>${esc(backend.in_flight)}/${esc(backend.max_parallel)} requisição(ões) ativa(s)</span>
             <span class="font-mono">ctx/slot ${esc(backend.ctx_per_slot)}</span>
         </div>
     </div>`;
@@ -189,7 +198,7 @@ function sessionRow(session) {
     <div class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-900/50 border border-slate-800/60" data-proxy-session="${esc(session.affinity_key)}">
         <div class="min-w-0">
             <p class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(label)} <span class="text-slate-500 font-normal">→ ${esc(session.gpu || '?')} / ${esc(session.internal_model)}</span></p>
-            <p class="text-ui-label text-slate-500 font-mono truncate">${esc(session.affinity_key)} · ${esc(session.request_count)} request(s)${esc(tokens)} · ${esc(lastUsed)}</p>
+            <p class="text-ui-label text-slate-500 font-mono truncate">${esc(session.affinity_key)} · ${esc(session.request_count)} requisição(ões)${esc(tokens)} · ${esc(lastUsed)}</p>
         </div>
         <div class="flex items-center gap-1 shrink-0">
             <button type="button" class="proxy-session-reassign w-7 h-7 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-violet-400 transition-all" title="Reatribuir sessão a outro backend" data-key="${esc(session.affinity_key)}"><i class="fas fa-random text-ui-label"></i></button>

@@ -70,7 +70,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.1"  # fix layout dos controles do proxy na sidebar
+_DASHBOARD_JS_V = "4.2.2"  # UI do proxy 100% em PT-BR
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1853,7 +1853,7 @@ def _build_html(
                         <div class="flex items-center gap-3">
                             <i class="fas fa-route text-violet-400"></i>
                             <p class="text-ui-body-sm font-black text-slate-400 uppercase tracking-widest">Proxy Inteligente</p>
-                            <span id="proxy-mode-badge" class="px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-slate-700/50 text-slate-500">OFF</span>
+                            <span id="proxy-mode-badge" class="px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-slate-700/50 text-slate-500">INATIVO</span>
                         </div>
                         <div class="text-ui-label text-slate-500 uppercase tracking-widest">
                             Modelo exposto: <span id="proxy-exposed-model" class="text-slate-200 font-bold normal-case tracking-normal">—</span>
@@ -1863,7 +1863,7 @@ def _build_html(
                         <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
                         <div>
                             <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest mb-2">
-                                Sessões sticky ativas <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
+                                Sessões ativas (sticky) <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
                             </p>
                             <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
                         </div>
