@@ -1865,7 +1865,7 @@ def _build_html(
                             <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest mb-2">
                                 Sessões sticky ativas <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
                             </p>
-                            <div id="proxy-sessions-list" class="space-y-1.5"></div>
+                            <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
                         </div>
                     </div>
                 </div>
