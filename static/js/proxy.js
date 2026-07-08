@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.2';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.3';
 
 // updateStatus roda a cada 1s; o painel consulta o proxy a cada 3 ticks.
 const POLL_EVERY_TICKS = 3;
@@ -190,9 +190,19 @@ function backendCard(backend) {
     </div>`;
 }
 
+function formatLocalDateTime(iso) {
+    // Timestamps das sessões são ISO-8601 UTC; exibe no fuso do navegador
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+        return iso.replace('T', ' ').slice(0, 19);
+    }
+    return date.toLocaleString('pt-BR');
+}
+
 function sessionRow(session) {
     const label = session.detected_tag || session.affinity_key;
-    const lastUsed = (session.last_used_at || '').replace('T', ' ').slice(0, 19);
+    const lastUsed = formatLocalDateTime(session.last_used_at);
     const tokens = session.tokens_processed ? ` · ${session.tokens_processed} tokens` : '';
     return `
     <div class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-900/50 border border-slate-800/60" data-proxy-session="${esc(session.affinity_key)}">

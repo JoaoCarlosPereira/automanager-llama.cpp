@@ -70,7 +70,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.2"  # UI do proxy 100% em PT-BR
+_DASHBOARD_JS_V = "4.2.3"  # horario das sessoes no fuso local
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
