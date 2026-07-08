@@ -790,6 +790,17 @@ class ProxyRouter:
                         return _decision(primary, False, "main_preference"), None
                     if self.in_flight(primary_port) < max_parallel:
                         return _commit(primary, False, "main_preference", None), None
+                    # PRD F7: sessão NOVA não espera backend ocupado —
+                    # transborda para um secundário elegível livre.
+                    overflow = self._candidates(
+                        instances, model_configs, primary_port, needed_ctx,
+                        ignore_capacity=False, exclude_ports={primary_port},
+                    )
+                    chosen = self._pick_least_busy(overflow, primary_port)
+                    if chosen is not None:
+                        return _commit(
+                            chosen, False, "primary_busy_overflow", None
+                        ), None
                     return None, "Backend principal ocupado"
             # Principal desabilitado ou sem contexto: least-busy nos demais
             candidates = self._candidates(

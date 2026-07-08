@@ -341,7 +341,24 @@ class TestSelection:
         assert again.backend_port != dead_port
 
     @pytest.mark.asyncio
-    async def test_busy_primary_times_out_with_openai_error(self, router):
+    async def test_untagged_new_session_overflows_when_primary_busy(
+        self, router
+    ):
+        """PRD F7: sessão nova não espera — transborda para secundário livre."""
+        first = await resolve(router, body=body_with())  # ocupa primary (max=1)
+        second = await resolve(router, body=body_with(user="outra conversa"))
+        assert second.backend_port in (8086, 8087)
+        assert second.reason == "primary_busy_overflow"
+        assert second.rewrite is True
+        await router.release(first.backend_port)
+        await router.release(second.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_busy_primary_times_out_with_openai_error(
+        self, router, status_holder
+    ):
+        # Somente o principal online: sem secundário para transbordar
+        status_holder["instances"] = [make_instance(8085, MAIN_PATH)]
         first = await resolve(router, body=body_with())  # ocupa primary (max=1)
         with pytest.raises(ProxyError) as exc_info:
             await resolve(router, body=body_with(user="outra conversa"))
@@ -350,7 +367,8 @@ class TestSelection:
         await router.release(first.backend_port)
 
     @pytest.mark.asyncio
-    async def test_slot_freed_during_wait_is_used(self, router):
+    async def test_slot_freed_during_wait_is_used(self, router, status_holder):
+        status_holder["instances"] = [make_instance(8085, MAIN_PATH)]
         first = await resolve(router, body=body_with())
 
         async def free_soon():
