@@ -44,6 +44,23 @@ def make_instance(port, model_path, ctx=65536, slots=1, gpu_name="NVIDIA RTX 309
     }
 
 
+def make_platform_instance(port=9100, backend_id="platform:codex"):
+    return {
+        "port": port,
+        "status": "running",
+        "model": "Codex",
+        "model_path": None,
+        "backend_id": backend_id,
+        "backend_type": "platform",
+        "provider": "codex",
+        "config": {
+            "backend_id": backend_id,
+            "backend_type": "platform",
+            "provider": "codex",
+        },
+    }
+
+
 DEFAULT_INSTANCES = [
     make_instance(8085, MAIN_PATH, gpu_name="NVIDIA RTX 3090", gpu_index=0),
     make_instance(8086, AUX0_PATH, gpu_name="Tesla P100", gpu_index=1),
@@ -325,6 +342,85 @@ class TestSelection:
         assert decision.backend_port == 8087
         await router.release(d_main.backend_port)
         await router.release(decision.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_platform_secondary_requires_explicit_proxy_eligibility(
+        self, router, proxy_config, status_holder
+    ):
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_platform_instance(),
+        ]
+        d_main = await resolve(router, body=body_with())
+        with pytest.raises(ProxyError) as exc_info:
+            await resolve(router, body=body_with(tag="a1"))
+        assert exc_info.value.code == "no_backend"
+
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        decision = await resolve(router, body=body_with(tag="a1"))
+        assert decision.backend_port == 9100
+        assert decision.backend_id == "platform:codex"
+        assert decision.backend_type == "platform"
+        await router.release(d_main.backend_port)
+        await router.release(decision.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_platform_primary_routes_through_sidecar_when_eligible(
+        self, router, proxy_config, status_holder
+    ):
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_platform_instance(),
+        ]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        decision = await resolve(router, body=body_with(model="codex-pro"))
+        assert decision.backend_port == 9100
+        assert decision.internal_model == "codex-pro"
+        assert decision.external_model == "codex-pro"
+        assert decision.backend_type == "platform"
+        assert decision.rewrite is False
+        await router.release(decision.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_platform_primary_must_be_proxy_eligible(
+        self, router, proxy_config, status_holder
+    ):
+        status_holder["instances"] = [make_platform_instance()]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        with pytest.raises(ProxyError) as exc_info:
+            await resolve(router, body=body_with(model="codex-pro"))
+        assert exc_info.value.code == "backend_not_eligible"
+
+    def test_backend_snapshot_includes_platform_identity(
+        self, router, proxy_config, status_holder
+    ):
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_platform_instance(),
+        ]
+        snapshot = router.backends_snapshot()
+        platform = next(b for b in snapshot if b["backend_type"] == "platform")
+        assert platform["backend_id"] == "platform:codex"
+        assert platform["provider"] == "codex"
+        assert platform["state"] == "not_eligible"
+
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        enabled = next(
+            b for b in router.backends_snapshot()
+            if b["backend_id"] == "platform:codex"
+        )
+        assert enabled["state"] == "online"
 
     @pytest.mark.asyncio
     async def test_disabled_backend_never_gets_new_sessions(self, router):
