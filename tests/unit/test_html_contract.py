@@ -267,6 +267,27 @@ def test_html_contains_proxy_model_controls(html):
     assert "setProxyMaxParallel(this," in html
 
 
+def test_static_js_contains_platform_card_contract():
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    with open(os.path.join(root, "static", "js", "models.js"), encoding="utf-8") as f:
+        js = f.read()
+    assert "platform-card" in js
+    assert "data-backend-id" in js
+    assert "startPlatform" in js
+    assert "stopPlatform" in js
+    assert "/platforms/${encodeURIComponent(backendId)}/${action}" in js
+    assert "setProxyEligible(this, null, '${safeBackendId}')" in js
+
+
+def test_static_proxy_controls_send_backend_id_payloads():
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    with open(os.path.join(root, "static", "js", "proxy.js"), encoding="utf-8") as f:
+        js = f.read()
+    assert "primary_backend_id" in js
+    assert "backend_id: backendId" in js
+    assert "updateBackendConfigCache(path, backendId" in js
+
+
 def test_html_contains_proxy_monitor_panel(html):
     """Card de monitoramento 'Proxy Inteligente' no dashboard (task 08)."""
     assert 'id="proxy-panel"' in html
