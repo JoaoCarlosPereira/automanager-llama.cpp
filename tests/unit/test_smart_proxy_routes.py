@@ -41,6 +41,25 @@ def make_instance(port, model_path, ctx=65536, slots=1, gpu_name="NVIDIA RTX 309
     }
 
 
+def make_platform_instance(port=9100, backend_id="platform:codex", model="Codex"):
+    return {
+        "port": port,
+        "status": "running",
+        "model": model,
+        "model_path": None,
+        "backend_id": backend_id,
+        "backend_type": "platform",
+        "provider": "codex",
+        "config": {
+            "backend_id": backend_id,
+            "backend_type": "platform",
+            "provider": "codex",
+            "proxy_eligible": True,
+            "max_parallel_requests": 1,
+        },
+    }
+
+
 def default_instances():
     return [
         make_instance(8085, MAIN_PATH, gpu_name="NVIDIA RTX 3090", gpu_index=0),
@@ -86,12 +105,23 @@ def _mock_response(payload: dict, port: int = 0):
     resp.headers = httpx.Headers({"Content-Type": "application/json"})
     content = json.dumps(payload).encode()
     resp.content = content
+    resp.json.return_value = payload
 
     async def aiter_bytes():
         yield content
 
     resp.aiter_bytes = aiter_bytes
     return resp
+
+
+def _models_response(model_ids):
+    return _mock_response({
+        "object": "list",
+        "data": [
+            {"id": model_id, "object": "model", "owned_by": "test"}
+            for model_id in model_ids
+        ],
+    })
 
 
 def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
@@ -338,6 +368,16 @@ class TestAdminEndpoints:
         assert status["exposed_model"] == "main.gguf"
         assert status["primary"]["port"] == 8085
 
+    def test_proxy_config_accepts_platform_primary_backend(self, smart_env):
+        response = client.post(
+            "/proxy/config",
+            json={"enabled": True, "primary_backend_id": "platform:codex"},
+        )
+        assert response.status_code == 200
+        payload = response.json()["smart_proxy"]
+        assert payload["primary_backend_id"] == "platform:codex"
+        assert client.get("/proxy/status").json()["primary_backend_id"] == "platform:codex"
+
     def test_proxy_config_rejects_unknown_primary(self, smart_env):
         response = client.post(
             "/proxy/config", json={"primary_model_path": "/nao/existe.gguf"}
@@ -355,11 +395,22 @@ class TestAdminEndpoints:
         aux0 = next(b for b in backends if b["port"] == 8086)
         assert aux0["state"] == "not_eligible"
 
+    def test_models_proxy_accepts_platform_backend_id(self, smart_env):
+        response = client.post(
+            "/models/proxy",
+            json={"backend_id": "platform:codex", "proxy_eligible": True},
+        )
+        assert response.status_code == 200
+        config = smart_env.cfg.get_config()
+        assert config["platform_configs"]["platform:codex"]["proxy_eligible"] is True
+        assert "platform:codex" not in config.get("model_configs", {})
+
     def test_backends_snapshot_shape(self, smart_env):
         backends = client.get("/proxy/backends").json()
         assert len(backends) == 3
         primary = next(b for b in backends if b["port"] == 8085)
         assert primary["role"] == "primary"
+        assert primary["backend_type"] == "local"
         assert primary["gpu"] == "NVIDIA RTX 3090 #0"
         assert primary["ctx_per_slot"] == 65536
         aux1 = next(b for b in backends if b["port"] == 8087)
@@ -426,6 +477,24 @@ class TestAdminEndpoints:
         response = client.post("/proxy/resolve", json=chat_body())
         assert response.json() == {"proxy_enabled": False}
 
+    def test_resolve_returns_sidecar_backend_for_platform_primary(self, smart_env):
+        smart_env.holder["instances"] = [make_platform_instance()]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        response = client.post(
+            "/proxy/resolve", json=chat_body(model="codex-pro")
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["selected_backend"] == 9100
+        assert payload["backend_id"] == "platform:codex"
+        assert payload["backend_type"] == "platform"
+        assert payload["internal_model"] == "codex-pro"
+
     def test_primary_switch_affects_new_sessions_only(self, smart_env):
         first = client.post("/proxy/resolve", json=chat_body()).json()
         assert first["selected_backend"] == 8085
@@ -459,3 +528,203 @@ class TestProxyDisabled:
         assert response.json()["id"] == "legacy"
         assert "x-automanager-backend" not in response.headers
         assert smart_env.router._sessions == {}
+
+
+class TestHybridV1Availability:
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_operator_flow_start_platform_exposes_sidecar_model(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        active = {"value": False}
+
+        class FakePlatformManager:
+            def start_backend(self, backend_id, sidecar):
+                active["value"] = True
+                return {
+                    "backend_id": backend_id,
+                    "backend_type": "platform",
+                    "provider": "codex",
+                    "active": True,
+                    "status": "running",
+                    "sidecar_port": 9100,
+                }
+
+            def runtime_states(self):
+                return [{
+                    "backend_id": "platform:codex",
+                    "backend_type": "platform",
+                    "provider": "codex",
+                    "active": active["value"],
+                    "status": "running" if active["value"] else "detected",
+                    "sidecar_port": 9100 if active["value"] else None,
+                }]
+
+            def active_instances(self):
+                return [make_platform_instance()] if active["value"] else []
+
+            def catalog(self):
+                return []
+
+            def get(self, backend_id):
+                return {"backend_id": backend_id}
+
+        sidecar = MagicMock()
+        sidecar.status.return_value = {"status": "running", "port": 9100}
+        monkeypatch.setattr(llama_manager, "platform_manager", FakePlatformManager())
+        monkeypatch.setattr(llama_manager, "cliproxy_sidecar", sidecar)
+
+        start = client.post("/platforms/platform:codex/start")
+        assert start.status_code == 200
+
+        def side_effect(url, *args, **kwargs):
+            if "9100" in url:
+                return _models_response(["codex-pro"])
+            return _models_response([])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["codex-pro"]
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_v1_models_returns_local_models_when_no_platform_active(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(llama_manager.platform_manager, "active_instances", lambda: [])
+
+        def side_effect(url, *args, **kwargs):
+            if "8085" in url:
+                return _models_response(["main.gguf"])
+            if "8086" in url:
+                return _models_response(["aux0.gguf"])
+            return _models_response(["aux1.gguf"])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == [
+            "main.gguf",
+            "aux0.gguf",
+            "aux1.gguf",
+        ]
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_v1_models_merges_active_sidecar_models(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(
+            llama_manager.platform_manager,
+            "active_instances",
+            lambda: [make_platform_instance()],
+        )
+
+        def side_effect(url, *args, **kwargs):
+            if "9100" in url:
+                return _models_response(["codex-pro"])
+            if "8085" in url:
+                return _models_response(["main.gguf"])
+            return _models_response([])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        ids = [item["id"] for item in response.json()["data"]]
+        assert ids == ["main.gguf", "codex-pro"]
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_v1_models_dedupes_local_and_sidecar_ids(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(
+            llama_manager.platform_manager,
+            "active_instances",
+            lambda: [make_platform_instance()],
+        )
+
+        def side_effect(url, *args, **kwargs):
+            if "9100" in url:
+                return _models_response(["main.gguf", "codex-pro"])
+            if "8085" in url:
+                return _models_response(["main.gguf"])
+            return _models_response([])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        ids = [item["id"] for item in response.json()["data"]]
+        assert ids == ["main.gguf", "codex-pro"]
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_chat_with_sidecar_model_id_forwards_to_sidecar_port(
+        self, mock_post, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(
+            llama_manager.platform_manager,
+            "active_instances",
+            lambda: [make_platform_instance()],
+        )
+        mock_post.return_value = _mock_response({"id": "chatcmpl-1", "model": "codex-pro"})
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(model="codex-pro")
+        )
+
+        assert response.status_code == 200
+        assert "9100" in mock_post.call_args.args[0]
+        assert response.json()["model"] == "codex-pro"
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_sidecar_models_failure_does_not_break_local_listing(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(
+            llama_manager.platform_manager,
+            "active_instances",
+            lambda: [make_platform_instance()],
+        )
+
+        def side_effect(url, *args, **kwargs):
+            if "9100" in url:
+                raise httpx.ConnectError("refused")
+            if "8085" in url:
+                return _models_response(["main.gguf"])
+            return _models_response([])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["main.gguf"]
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_smart_proxy_platform_primary_forwards_to_sidecar(
+        self, mock_post, smart_env
+    ):
+        smart_env.holder["instances"] = [make_platform_instance()]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        mock_post.return_value = _mock_response({"id": "chatcmpl-1", "model": "codex-pro"})
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(model="codex-pro")
+        )
+
+        assert response.status_code == 200
+        assert "9100" in mock_post.call_args.args[0]
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert sent["model"] == "codex-pro"
+        assert response.headers["x-automanager-backend-type"] == "platform"
