@@ -17,6 +17,7 @@
 - [Início rápido](#início-rápido)
 - [Funcionalidades](#funcionalidades)
 - [Arquitetura](#arquitetura)
+- [Integrações híbridas de plataforma](#integrações-híbridas-de-plataforma)
 - [Referência da API](#referência-da-api)
 - [Requisitos de hardware](#requisitos-de-hardware)
 - [Instalação](#instalação)
@@ -58,6 +59,7 @@
 | **Ciclo de status** | OFFLINE → INICIANDO → ONLINE → (REALOCANDO) → PARANDO; UI esmaece métricas offline | Estável |
 | **Stream de logs** | Console SSE com saída do `llama-server` | Estável |
 | **Auth por sessão + API key** | Cookie de sessão e Bearer token para clientes API | Estável |
+| **Modelos híbridos de plataforma** | Detecta Codex, Claude Code e Google Antigravity e expõe essas ferramentas no mesmo fluxo do dashboard/API | MVP |
 | **Quick-Install** | `installer/setup.sh` idempotente (venv, systemd, health check) | Estável |
 | **Código modular** | Lógica em módulos; `llama_manager.py` como raiz de composição (rotas + UI) | Estável |
 
@@ -102,11 +104,34 @@ O Automanager é um **plano de controle** (FastAPI na porta **8000**) que gerenc
 | `gpu_manager.py` | Detecção de GPU, tensor split, `CUDA_VISIBLE_DEVICES` |
 | `process_manager.py` | Subprocesso `llama-server`, watchdog OOM |
 | `model_manager.py` | Varredura de modelos, renomear/excluir, downloads |
+| `platform_manager.py` | Detecção no startup e ciclo de vida do sidecar CLIProxyAPI para integrações de plataforma |
+| `proxy_router.py` | Seleção de backends do proxy inteligente, sessões sticky e roteamento local/plataforma |
 | `log_manager.py` | Logs rotativos em `logs/`, streaming SSE |
 | `schemas.py` | Modelos Pydantic de requisição/resposta |
 | `paths.py` | Resolução de caminhos de instalação (`paths.json`) |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
 | `installer/uninstall.sh` | Remove servico systemd e venv; `--purge` remove config/logs |
+
+---
+
+## Integrações híbridas de plataforma
+
+O AutoManager pode mostrar ferramentas CLI baseadas em assinatura ao lado dos
+modelos locais `.gguf`. O MVP suporta Codex, Claude Code e Google Antigravity.
+
+- A detecção roda uma vez quando o AutoManager inicia. Reinicie o AutoManager
+  após instalar, remover ou mover uma das ferramentas suportadas.
+- O AutoManager não coleta credenciais de provedor, chaves de API ou logins de
+  plataforma. Ele usa a autenticação que já existe nas ferramentas CLI
+  instaladas.
+- Iniciar um card de plataforma inicia um sidecar local compartilhado do
+  CLIProxyAPI. Integrações ativas aparecem em `/status`, e os IDs reais de
+  modelo retornados pelo sidecar passam por `/v1/models`.
+- Backends de plataforma ficam fora do proxy inteligente até você habilitar a
+  participação daquele backend. O principal do proxy pode ser um
+  `primary_model_path` local ou um `primary_backend_id` de plataforma.
+- Se uma CLI suportada for detectada, mas o CLIProxyAPI estiver ausente, o card
+  continua visível com o motivo de indisponibilidade.
 
 ---
 
@@ -117,15 +142,21 @@ URL base: `http://<host>:8000`. A maioria dos endpoints exige **cookie de sessã
 | Método | Caminho | Descrição |
 |--------|---------|-----------|
 | `GET` | `/` | UI do dashboard (HTML) |
-| `GET` | `/status` | Estado do `llama-server` e modelo carregado |
+| `GET` | `/status` | Estado de runtime local e de plataformas |
 | `GET` | `/metrics` | CPU, RAM, GPU (uso / temp / potência / VRAM) |
-| `GET` | `/models` | Lista modelos `.gguf` em `MODELS_DIR` |
+| `GET` | `/models` | Lista modelos `.gguf` e cards de integrações de plataforma |
 | `GET` | `/downloads` | Progresso de downloads ativos |
 | `POST` | `/downloads` | Inicia download: `{ "url": "...", "filename": "opcional" }` |
 | `GET` | `/logs` | Stream SSE do log do servidor |
 | `GET` | `/config` | Configuração atual (hash de senha omitido) |
 | `POST` | `/start` | Inicia servidor: `{ "path", "gpu_weights", "context_size", "mmproj_path?", "split_mode?" }` |
 | `POST` | `/stop` | Para o `llama-server` |
+| `POST` | `/platforms/{backend_id}/start` | Inicia uma integração de plataforma e o sidecar compartilhado |
+| `POST` | `/platforms/{backend_id}/stop` | Para uma integração; para o sidecar quando nenhuma plataforma fica ativa |
+| `POST` | `/models/proxy` | Atualiza elegibilidade de proxy para `model_path` local ou `backend_id` de plataforma |
+| `POST` | `/proxy/config` | Atualiza o proxy inteligente, incluindo `primary_model_path` ou `primary_backend_id` |
+| `GET` | `/v1/models` | Lista OpenAI-compatible de servidores locais e sidecar de plataforma ativo |
+| `*` | `/v1/{path}` | Encaminhamento OpenAI-compatible para servidores locais ou sidecar de plataforma |
 | `POST` | `/set_default` | Define modelo padrão: `{ "path": string \| null }` |
 | `POST` | `/rename` | Renomeia arquivo: `{ "path", "new_name" }` |
 | `POST` | `/delete` | Exclui arquivo: `{ "path" }` |
