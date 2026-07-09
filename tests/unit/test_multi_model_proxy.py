@@ -3,6 +3,7 @@ import json
 import httpx
 from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
+import llama_manager
 from llama_manager import app, process_manager, auth_manager
 
 client = TestClient(app)
@@ -29,6 +30,7 @@ async def mock_aiter(items):
 @pytest.fixture(autouse=True)
 def override_auth():
     app.dependency_overrides[auth_manager.check_auth] = lambda: True
+    app.dependency_overrides[llama_manager.require_api_token] = lambda: True
     yield
     app.dependency_overrides.clear()
 
@@ -44,6 +46,7 @@ def test_openai_proxy_routing(mock_stream, mock_post, mock_request, mock_get_sta
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = 200
     mock_resp.headers = httpx.Headers({"Content-Type": "application/json"})
+    mock_resp.content = b'{"id": "chatcmpl-123"}'
     mock_resp.aiter_bytes = MagicMock(return_value=mock_aiter([b'{"id": "chatcmpl-123"}']))
     mock_post.return_value = mock_resp
 
@@ -74,9 +77,12 @@ def _models_resp(model_id):
     resp.json.return_value = {"object": "list", "data": [{"id": model_id, "object": "model"}]}
     return resp
 
+@patch("llama_manager.config_manager.get_model_aliases", return_value={})
 @patch("llama_manager.process_manager.get_status")
 @patch("llama_manager.client.get", new_callable=AsyncMock)
-def test_openai_proxy_models_aggregates_all_instances(mock_get, mock_get_status, mock_instances):
+def test_openai_proxy_models_aggregates_all_instances(
+    mock_get, mock_get_status, _mock_aliases, mock_instances
+):
     mock_get_status.return_value = {"instances": mock_instances}
 
     async def fake_get(url, **kwargs):
@@ -93,9 +99,12 @@ def test_openai_proxy_models_aggregates_all_instances(mock_get, mock_get_status,
     ids = [m["id"] for m in payload["data"]]
     assert sorted(ids) == ["/path/to/model_a.gguf", "/path/to/model_b.gguf"]
 
+@patch("llama_manager.config_manager.get_model_aliases", return_value={})
 @patch("llama_manager.process_manager.get_status")
 @patch("llama_manager.client.get", new_callable=AsyncMock)
-def test_openai_proxy_models_skips_unreachable_instance(mock_get, mock_get_status, mock_instances):
+def test_openai_proxy_models_skips_unreachable_instance(
+    mock_get, mock_get_status, _mock_aliases, mock_instances
+):
     mock_get_status.return_value = {"instances": mock_instances}
 
     async def fake_get(url, **kwargs):

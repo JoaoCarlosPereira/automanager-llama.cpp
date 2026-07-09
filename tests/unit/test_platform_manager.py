@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from platform_manager import (
@@ -5,7 +7,23 @@ from platform_manager import (
     CLIProxySidecarManager,
     PlatformIntegrationError,
     PlatformIntegrationManager,
+    clear_platform_listing_registry,
+    default_executable_resolver,
+    filter_models_for_provider,
+    lookup_platform_bare_id,
+    platform_client_facing_model,
+    platform_model_listing_entry,
+    platform_model_listing_id,
+    register_platform_model_listings,
+    resolve_platform_listing_model,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_listing_registry():
+    clear_platform_listing_registry()
+    yield
+    clear_platform_listing_registry()
 
 
 def resolver_for(mapping):
@@ -17,6 +35,152 @@ def resolver_for(mapping):
 
 def entry(catalog, backend_id):
     return next(item for item in catalog if item["backend_id"] == backend_id)
+
+
+class TestFilterModelsForProvider:
+    SAMPLE = [
+        {"id": "gpt-5.4", "owned_by": "openai"},
+        {"id": "gemini-3.1-pro-low", "owned_by": "antigravity"},
+        {"id": "claude-sonnet-4-6", "owned_by": "claude"},
+    ]
+
+    def test_codex_keeps_openai_only(self):
+        result = filter_models_for_provider(self.SAMPLE, "codex")
+        assert [m["id"] for m in result] == ["gpt-5.4"]
+
+    def test_antigravity_keeps_antigravity_only(self):
+        result = filter_models_for_provider(self.SAMPLE, "antigravity")
+        assert [m["id"] for m in result] == ["gemini-3.1-pro-low"]
+
+    def test_claude_keeps_claude_only(self):
+        result = filter_models_for_provider(self.SAMPLE, "claude")
+        assert [m["id"] for m in result] == ["claude-sonnet-4-6"]
+
+    def test_unknown_provider_returns_all(self):
+        result = filter_models_for_provider(self.SAMPLE, "unknown")
+        assert len(result) == 3
+
+
+class TestPlatformModelListing:
+    def test_listing_id_uses_opaque_slug_for_blocked_names(self):
+        assert (
+            platform_model_listing_id("gemini-3.1-pro-low", "antigravity")
+            == "antigravity-31prolow.gguf"
+        )
+
+    def test_listing_id_uses_custom_suffix_for_safe_names(self):
+        assert platform_model_listing_id("some-model", "cloud") == "some-model-custom.gguf"
+
+    def test_listing_entry_includes_metadata(self):
+        entry = platform_model_listing_entry(
+            {"id": "gemini-3.1-pro-low", "owned_by": "antigravity"},
+            provider="antigravity",
+        )
+        assert entry["id"] == "antigravity-31prolow.gguf"
+        assert entry["owned_by"] == "llamacpp"
+        assert entry["meta"]["root_model"] == "gemini-3.1-pro-low"
+        assert entry["meta"]["n_ctx"] > 0
+
+    def test_resolve_uses_registry(self):
+        register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
+        assert resolve_platform_listing_model("antigravity-31prolow.gguf") == "gemini-3.1-pro-low"
+
+    def test_resolve_skips_local_gguf_ids(self):
+        local_ids = {"Qwen3.6-35B.gguf"}
+        assert resolve_platform_listing_model("Qwen3.6-35B.gguf", local_ids) == "Qwen3.6-35B.gguf"
+
+    def test_client_facing_model_uses_opaque_listing(self):
+        register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
+        assert platform_client_facing_model("gemini-3.1-pro-low") == "antigravity-31prolow.gguf"
+
+    def test_client_facing_model_preserves_alias(self):
+        aliases = {"gpt-4o": "gemini-3.1-pro-low"}
+        assert platform_client_facing_model("gpt-4o", aliases=aliases) == "gpt-4o"
+
+    def test_client_facing_model_preserves_virtual_listing_id(self):
+        register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
+        assert platform_client_facing_model("antigravity-31prolow.gguf") == "antigravity-31prolow.gguf"
+
+
+class TestDefaultExecutableResolver:
+    def test_finds_codex_in_user_local_bin(self, tmp_path, monkeypatch):
+        home = tmp_path / "user"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        codex = local_bin / "codex"
+        codex.write_text("#!/bin/sh\necho codex\n", encoding="utf-8")
+        codex.chmod(0o755)
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "platform_manager._user_home_dirs",
+            lambda: [str(home)],
+        )
+        monkeypatch.setattr("platform_manager.shutil.which", lambda _name: None)
+
+        assert default_executable_resolver("codex") == str(codex)
+
+    def test_finds_agy_in_user_local_bin(self, tmp_path, monkeypatch):
+        home = tmp_path / "user"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        agy = local_bin / "agy"
+        agy.write_text("#!/bin/sh\necho agy\n", encoding="utf-8")
+        agy.chmod(0o755)
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "platform_manager._user_home_dirs",
+            lambda: [str(home)],
+        )
+        monkeypatch.setattr("platform_manager.shutil.which", lambda _name: None)
+
+        assert default_executable_resolver("agy") == str(agy)
+
+    def test_finds_codex_standalone_package_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "user"
+        codex = (
+            home
+            / ".codex"
+            / "packages"
+            / "standalone"
+            / "current"
+            / "bin"
+            / "codex"
+        )
+        codex.parent.mkdir(parents=True)
+        codex.write_text("#!/bin/sh\necho codex\n", encoding="utf-8")
+        codex.chmod(0o755)
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "platform_manager._user_home_dirs",
+            lambda: [str(home)],
+        )
+        monkeypatch.setattr("platform_manager.shutil.which", lambda _name: None)
+
+        assert default_executable_resolver("codex") == str(codex)
+
+    def test_detects_antigravity_via_agy_candidate(self, tmp_config_manager, tmp_path):
+        home = tmp_path / "user"
+        local_bin = home / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        agy = local_bin / "agy"
+        agy.write_text("#!/bin/sh\necho agy\n", encoding="utf-8")
+        agy.chmod(0o755)
+
+        manager = PlatformIntegrationManager(
+            tmp_config_manager,
+            executable_resolver=lambda command: (
+                str(agy) if command == "agy" else None
+            ),
+        )
+
+        antigravity = entry(manager.catalog(), "platform:google-antigravity")
+
+        assert antigravity["detected"] is True
+        assert antigravity["executable_command"] == "agy"
+        assert antigravity["executable_path"] == str(agy)
 
 
 class FakeProcess:
@@ -113,7 +277,7 @@ class TestPlatformIntegrationManager:
     ):
         tmp_config_manager.update_platform_settings(
             "platform:codex",
-            {"proxy_eligible": True, "max_parallel_requests": 2},
+            {"proxy_eligible": True, "max_parallel_requests": 2, "auto_start": True},
         )
         manager = PlatformIntegrationManager(
             tmp_config_manager,
@@ -128,6 +292,7 @@ class TestPlatformIntegrationManager:
         assert codex["status"] == "detected"
         assert codex["proxy_eligible"] is True
         assert codex["max_parallel_requests"] == 2
+        assert codex["auto_start"] is True
 
     def test_detection_is_startup_only_for_manager_instance(
         self, tmp_config_manager

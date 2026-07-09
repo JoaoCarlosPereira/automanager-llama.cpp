@@ -6,7 +6,7 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.2.3';
-import { getTabActionsHtml } from './models.js?v=4.2.3';
+import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.12';
 import { updateProxyPanel } from './proxy.js?v=4.2.3';
 
 export async function updateStatus() {
@@ -20,6 +20,7 @@ export async function updateStatus() {
 
         state.activeInstances = data.instances || [];
         state.platforms = data.platforms || state.platforms || [];
+        state.sidecarStatus = data.sidecar || state.sidecarStatus || null;
         const runningInstances = state.activeInstances.filter(i => i.status === 'running');
         const recovery = data.recovery;
         const autoBalancing = !!(recovery?.active && recovery?.auto_balance);
@@ -48,6 +49,7 @@ export async function updateStatus() {
 
         // --- Sincronizar Abas ---
         state.activeTabs.forEach(tab => {
+            if (tab.kind === 'platform') return;
             const path = tab.path;
             const inst = state.activeInstances.find(i => (i.model_path || '').replace(/\\/g, '/') === path);
             const tabEl = document.getElementById(tab.id);
@@ -105,6 +107,7 @@ export async function updateStatus() {
                 detachTabLogs();
             }
         });
+        refreshPlatformTabsFromStatus();
 
         // --- Lógica de Auto-Balance / Recovery ---
         if (isAutoBalanceRunComplete(recovery)) {
@@ -384,13 +387,17 @@ export function attachTabLogs(tabId, portOverride = null, { force = false, sessi
     const tab = document.getElementById(tabId);
     if (!tab) return;
 
-    const path = normalizePath(tab.dataset.path);
-    const inst = state.activeInstances.find(
-        i => normalizePath(i.model_path) === path
-    );
-    // Sem currentActivePort de fallback: para uma aba sem instância própria isso
-    // conectaria o console aos logs de OUTRA instância. Só usa override explícito
-    // ou a porta da instância desta aba.
+    const backendId = tab.dataset.backendId;
+    let inst = null;
+    if (backendId) {
+        inst = state.activeInstances.find(i => i.backend_id === backendId);
+    } else {
+        const path = normalizePath(tab.dataset.path);
+        inst = state.activeInstances.find(
+            i => normalizePath(i.model_path) === path
+        );
+    }
+
     let port = portOverride ?? inst?.port;
     port = Number(port);
     if (!Number.isFinite(port) || port <= 0) {

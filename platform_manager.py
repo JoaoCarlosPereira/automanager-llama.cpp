@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import glob
+import hashlib
 import os
+import platform
+import re
 import signal
 import shutil
 import socket
@@ -11,9 +15,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from paths import INSTALL_ROOT
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 ExecutableResolver = Callable[[str], Optional[str]]
@@ -55,7 +61,7 @@ DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         backend_id="platform:google-antigravity",
         provider="antigravity",
         display_name="Google Antigravity",
-        command_candidates=("antigravity", "antigravity.cmd", "antigravity.exe"),
+        command_candidates=("agy", "antigravity", "antigravity.cmd", "antigravity.exe"),
     ),
 )
 
@@ -69,6 +75,322 @@ DEFAULT_CLIPROXY_CANDIDATES = (
 )
 
 CLIPROXY_DEFAULT_PORT = 8317
+
+# owned_by retornado pelo CLIProxyAPI em GET /v1/models por integração.
+PLATFORM_MODEL_LISTING_MARKER = "-custom"
+PLATFORM_MODEL_LISTING_SUFFIX = ".gguf"
+
+# Substrings que o Cursor BYOK rejeita mesmo com sufixo -custom (validação server-side).
+CURSOR_BLOCKED_MODEL_TOKENS = (
+    "gemini",
+    "claude",
+    "gpt",
+    "codex",
+    "openai",
+    "sonnet",
+    "opus",
+    "o1",
+    "o3",
+)
+
+# listing_id exposto na API -> id real do sidecar
+_PLATFORM_LISTING_REGISTRY: Dict[str, str] = {}
+
+
+def clear_platform_listing_registry() -> None:
+    _PLATFORM_LISTING_REGISTRY.clear()
+
+
+def register_platform_listing(listing_id: str, bare_id: str) -> None:
+    if listing_id and bare_id:
+        _PLATFORM_LISTING_REGISTRY[listing_id] = bare_id
+
+
+def lookup_platform_bare_id(listing_id: str) -> Optional[str]:
+    return _PLATFORM_LISTING_REGISTRY.get(listing_id)
+
+
+def lookup_platform_listing_id(bare_id: str) -> Optional[str]:
+    matches = [
+        listing_id
+        for listing_id, root in _PLATFORM_LISTING_REGISTRY.items()
+        if root == bare_id
+    ]
+    if not matches:
+        return None
+    virtual = [listing_id for listing_id in matches if listing_id != bare_id]
+    return virtual[0] if virtual else matches[0]
+
+
+def platform_listing_registry_populated() -> bool:
+    return bool(_PLATFORM_LISTING_REGISTRY)
+
+
+def _provider_slug(provider: str) -> str:
+    slug = re.sub(r"[^a-z0-9]", "", (provider or "cloud").lower())
+    return slug[:12] or "cloud"
+
+
+def _needs_cursor_safe_name(bare: str) -> bool:
+    lower = bare.lower()
+    return any(token in lower for token in CURSOR_BLOCKED_MODEL_TOKENS)
+
+
+def _cursor_safe_slug(bare: str, provider: str) -> str:
+    """Nome estilo Qwen local — sem tokens bloqueados pelo Cursor."""
+    prov = _provider_slug(provider)
+    compact = re.sub(r"[^a-z0-9]", "", bare.lower())
+    for token in CURSOR_BLOCKED_MODEL_TOKENS:
+        compact = compact.replace(token, "")
+    if len(compact) >= 4:
+        return f"{prov}-{compact[:20]}"
+    digest = hashlib.sha256(bare.encode()).hexdigest()[:10]
+    return f"{prov}-{digest}"
+
+
+def _bare_platform_model_id(model_id: str) -> str:
+    """ID real do sidecar, sem sufixos virtuais de listagem."""
+    bare = str(model_id or "").strip()
+    if bare.endswith(PLATFORM_MODEL_LISTING_SUFFIX):
+        bare = bare[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+    if bare.endswith(PLATFORM_MODEL_LISTING_MARKER):
+        bare = bare[: -len(PLATFORM_MODEL_LISTING_MARKER)]
+    return bare
+
+
+def platform_model_listing_id(model_id: str, provider: str = "") -> str:
+    """ID exposto em /v1/models — .gguf local; slug opaco se o Cursor bloquear o nome."""
+    bare = _bare_platform_model_id(model_id)
+    if not bare:
+        return model_id
+    if _needs_cursor_safe_name(bare):
+        return f"{_cursor_safe_slug(bare, provider)}{PLATFORM_MODEL_LISTING_SUFFIX}"
+    return f"{bare}{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
+
+
+def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
+    """Registra variantes de listagem (atual + legado) e retorna o ID principal."""
+    bare = _bare_platform_model_id(bare_id)
+    if not bare:
+        return bare_id
+    primary = platform_model_listing_id(bare, provider)
+    register_platform_listing(primary, bare)
+    legacy = f"{bare}{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
+    register_platform_listing(legacy, bare)
+    return primary
+
+
+def is_platform_listing_id(
+    model_name: str, local_model_ids: Optional[set[str]] = None
+) -> bool:
+    """True quando o ID é virtual de plataforma (não um .gguf local real)."""
+    if not model_name:
+        return False
+    if local_model_ids and model_name in local_model_ids:
+        return False
+    if lookup_platform_bare_id(model_name):
+        return True
+    if model_name.endswith(f"{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"):
+        return True
+    if model_name.endswith(PLATFORM_MODEL_LISTING_SUFFIX):
+        bare = model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+        return bool(bare) and bare not in (local_model_ids or set())
+    return False
+
+
+def platform_model_listing_entry(model: Dict, provider: str = "") -> Dict:
+    """Enriquece entrada de plataforma para espelhar /v1/models do llama-server."""
+    root_id = str(model.get("id") or "")
+    prov = provider or str(model.get("owned_by") or "")
+    listing_id = register_platform_model_listings(root_id, prov)
+    source_meta = model.get("meta") if isinstance(model.get("meta"), dict) else {}
+    # Mesmo shape que llama-server — clientes como Cursor comparam estas chaves.
+    meta = {
+        "vocab_type": int(source_meta.get("vocab_type", 0)),
+        "n_vocab": int(source_meta.get("n_vocab", 0)),
+        "n_ctx": int(source_meta.get("n_ctx") or source_meta.get("context_length") or 1_048_576),
+        "n_ctx_train": int(
+            source_meta.get("n_ctx_train")
+            or source_meta.get("n_ctx")
+            or source_meta.get("context_length")
+            or 1_048_576
+        ),
+        "n_embd": int(source_meta.get("n_embd", 0)),
+        "n_params": int(source_meta.get("n_params", 0)),
+        "size": int(source_meta.get("size", 0)),
+        "root_model": root_id,
+    }
+    entry = {
+        **model,
+        "id": listing_id,
+        "object": model.get("object") or "model",
+        "owned_by": "llamacpp",
+        "aliases": model.get("aliases") if isinstance(model.get("aliases"), list) else [],
+        "tags": model.get("tags") if isinstance(model.get("tags"), list) else [],
+        "created": int(model.get("created") or time.time()),
+        "meta": meta,
+    }
+    entry.pop("root_model", None)
+    return entry
+
+
+def platform_client_facing_model(
+    requested: str,
+    local_model_ids: Optional[set[str]] = None,
+    aliases: Optional[Dict[str, str]] = None,
+    provider: str = "",
+) -> str:
+    """ID do campo `model` nas respostas /v1/* — espelha o que o cliente enviou."""
+    original = str(requested or "").strip()
+    if not original:
+        return original
+    if aliases and original in aliases:
+        return original
+    if is_platform_listing_id(original, local_model_ids):
+        return original
+    listing = lookup_platform_listing_id(original)
+    if listing:
+        return listing
+    return platform_model_listing_id(original, provider)
+
+
+def resolve_platform_listing_model(
+    model_name: str, local_model_ids: Optional[set[str]] = None
+) -> str:
+    """Converte ID virtual de plataforma de volta ao ID do sidecar."""
+    if not model_name:
+        return model_name
+    if local_model_ids and model_name in local_model_ids:
+        return model_name
+    mapped = lookup_platform_bare_id(model_name)
+    if mapped:
+        return mapped
+    custom_suffix = f"{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
+    if model_name.endswith(custom_suffix):
+        return model_name[: -len(custom_suffix)]
+    if is_platform_listing_id(model_name, local_model_ids):
+        return model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+    return model_name
+
+
+def should_skip_platform_model_listing(
+    model_id: str, local_model_ids: Optional[set[str]] = None
+) -> bool:
+    """Evita listar no sidecar um modelo já exposto por instância local."""
+    bare = _bare_platform_model_id(model_id)
+    if not bare:
+        return True
+    local_ids = local_model_ids or set()
+    return (
+        model_id in local_ids
+        or bare in local_ids
+        or f"{bare}{PLATFORM_MODEL_LISTING_SUFFIX}" in local_ids
+    )
+
+
+PLATFORM_MODEL_OWNED_BY: Dict[str, tuple[str, ...]] = {
+    "codex": ("openai",),
+    "claude": ("claude",),
+    "antigravity": ("antigravity",),
+}
+
+
+def filter_models_for_provider(
+    models: List[Dict], provider: str
+) -> List[Dict]:
+    """Mantém apenas modelos do provedor da plataforma (sidecar agrega todos)."""
+    owners = PLATFORM_MODEL_OWNED_BY.get((provider or "").strip().lower())
+    if not owners:
+        return list(models)
+    allowed = {owner.lower() for owner in owners}
+    return [
+        model
+        for model in models
+        if str(model.get("owned_by") or "").lower() in allowed
+    ]
+
+
+def _is_executable(path: str) -> bool:
+    if not path or not os.path.isfile(path):
+        return False
+    if _IS_WINDOWS:
+        lower = path.lower()
+        if lower.endswith((".exe", ".bat", ".cmd")):
+            return True
+    return os.access(path, os.X_OK)
+
+
+def _user_home_dirs() -> List[str]:
+    homes: List[str] = []
+    home = os.path.expanduser("~")
+    if home and home not in homes:
+        homes.append(home)
+    if not _IS_WINDOWS:
+        for pattern in ("/home/*", "/root"):
+            for path in glob.glob(pattern):
+                if os.path.isdir(path) and path not in homes:
+                    homes.append(path)
+    return homes
+
+
+def _search_bin_directories() -> List[str]:
+    dirs: List[str] = []
+    for home in _user_home_dirs():
+        for rel in (".local/bin", "bin"):
+            candidate = os.path.join(home, rel)
+            if os.path.isdir(candidate) and candidate not in dirs:
+                dirs.append(candidate)
+    if not _IS_WINDOWS:
+        for path in ("/usr/local/bin", "/usr/bin", "/opt/homebrew/bin"):
+            if os.path.isdir(path) and path not in dirs:
+                dirs.append(path)
+    return dirs
+
+
+def _tool_specific_paths(command: str) -> List[str]:
+    paths: List[str] = []
+    for home in _user_home_dirs():
+        if command in ("codex", "codex.exe"):
+            paths.append(
+                os.path.join(
+                    home, ".codex", "packages", "standalone", "current", "bin", "codex"
+                )
+            )
+        if command in ("agy", "antigravity"):
+            paths.append(os.path.join(home, ".local", "bin", command))
+    return paths
+
+
+def default_executable_resolver(command: str) -> Optional[str]:
+    """Resolve a platform executable from PATH and known install locations."""
+    found = shutil.which(command)
+    if found and _is_executable(found):
+        return os.path.normpath(found)
+
+    seen: set[str] = set()
+
+    def add(path: Optional[str]) -> Optional[str]:
+        if not path:
+            return None
+        norm = os.path.normpath(path)
+        if norm in seen:
+            return None
+        seen.add(norm)
+        if _is_executable(norm):
+            return norm
+        return None
+
+    for directory in _search_bin_directories():
+        resolved = add(os.path.join(directory, command))
+        if resolved:
+            return resolved
+
+    for path in _tool_specific_paths(command):
+        resolved = add(path)
+        if resolved:
+            return resolved
+
+    return None
 
 
 class PlatformIntegrationError(Exception):
@@ -89,6 +411,7 @@ class CLIProxySidecarManager:
         self,
         platform_manager: "PlatformIntegrationManager",
         *,
+        log_manager=None,
         runtime_dir: Optional[os.PathLike | str] = None,
         port_start: int = CLIPROXY_DEFAULT_PORT,
         popen_factory: PopenFactory = subprocess.Popen,
@@ -97,6 +420,7 @@ class CLIProxySidecarManager:
         health_timeout: float = 5.0,
     ) -> None:
         self._platform_manager = platform_manager
+        self._log_manager = log_manager
         self._runtime_dir = Path(runtime_dir or Path(INSTALL_ROOT) / "data" / "cliproxy")
         self._port_start = port_start
         self._popen = popen_factory
@@ -151,6 +475,9 @@ class CLIProxySidecarManager:
                 self._last_error = "CLIProxyAPI sidecar did not become healthy"
                 self._terminate_locked()
                 raise CLIProxySidecarError(self._last_error)
+
+            if self._log_manager is not None:
+                self._log_manager.start_streaming(port, proc, cmd=cmd)
 
             self._last_error = None
             return self.status()
@@ -248,7 +575,7 @@ class PlatformIntegrationManager:
         cliproxy_candidates: Iterable[str] = DEFAULT_CLIPROXY_CANDIDATES,
     ) -> None:
         self._config = config_manager
-        self._resolver = executable_resolver or shutil.which
+        self._resolver = executable_resolver or default_executable_resolver
         self._definitions = tuple(platform_definitions)
         self._cliproxy_candidates = tuple(cliproxy_candidates)
         self._cliproxy = self._detect_executable(
@@ -326,6 +653,7 @@ class PlatformIntegrationManager:
                     "provider": state.get("provider"),
                     "proxy_eligible": state.get("proxy_eligible"),
                     "max_parallel_requests": state.get("max_parallel_requests"),
+                    "auto_start": state.get("auto_start"),
                 },
             })
         return instances
@@ -414,6 +742,7 @@ class PlatformIntegrationManager:
             "cliproxy_executable_path": self._cliproxy.path,
             "proxy_eligible": bool(config.get("proxy_eligible", False)),
             "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
+            "auto_start": bool(config.get("auto_start", False)),
         }
 
     def _status_and_reason(

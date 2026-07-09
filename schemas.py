@@ -150,6 +150,7 @@ class SetModelProxyRequest(BaseModel):
     backend_id: Optional[str] = None
     proxy_eligible: Optional[bool] = None
     max_parallel_requests: Optional[int] = Field(default=None, ge=1)
+    auto_start: Optional[bool] = None
 
 
 class RenameRequest(BaseModel):
@@ -164,6 +165,20 @@ class SetModelsDirRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class CLIProxyAuthStartRequest(BaseModel):
+    method: Optional[str] = None
+
+
+class CLIProxyAuthCallbackRequest(BaseModel):
+    callback_url: str = Field(..., min_length=8)
+
+
+class ModelAliasRequest(BaseModel):
+    """Alias externo (ex.: gpt-4o no Cursor) -> modelo real no backend."""
+    alias: str = Field(..., min_length=1)
+    target: Optional[str] = None
 
 
 class VersionCommit(BaseModel):

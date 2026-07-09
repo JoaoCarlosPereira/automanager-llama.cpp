@@ -15,6 +15,7 @@ import llama_manager
 from config_manager import ConfigManager
 from llama_manager import app, auth_manager
 from proxy_router import ProxyRouter
+from platform_manager import platform_model_listing_id
 
 client = TestClient(app)
 
@@ -71,6 +72,7 @@ def default_instances():
 @pytest.fixture(autouse=True)
 def override_auth():
     app.dependency_overrides[llama_manager.require_auth] = lambda: True
+    app.dependency_overrides[llama_manager.require_api_token] = lambda: True
     app.dependency_overrides[auth_manager.check_auth] = lambda: True
     yield
     app.dependency_overrides.clear()
@@ -203,24 +205,40 @@ class TestSmartRouting:
         assert len(set(ports)) == 1
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
-    def test_v1_models_returns_only_primary(self, mock_get, smart_env):
-        resp = MagicMock(spec=httpx.Response)
-        resp.raise_for_status.return_value = None
-        resp.json.return_value = {
-            "object": "list", "data": [{"id": "main.gguf", "object": "model"}]
-        }
-        mock_get.return_value = resp
-        response = client.get("/v1/models")
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        assert data[0]["id"] == "main.gguf"
+    def test_v1_models_lists_all_instances_when_proxy_enabled(self, mock_get, smart_env):
+        """Clientes externos (Cursor) precisam ver todos os modelos em /v1/models."""
 
-    def test_v1_models_empty_when_primary_offline(self, smart_env):
-        smart_env.holder["instances"] = [make_instance(8086, AUX0_PATH)]
+        def side_effect(url, *args, **kwargs):
+            if "8085" in url:
+                return _models_response(["main.gguf"])
+            if "8086" in url:
+                return _models_response(["aux0.gguf"])
+            return _models_response(["aux1.gguf"])
+
+        mock_get.side_effect = side_effect
         response = client.get("/v1/models")
         assert response.status_code == 200
-        assert response.json()["data"] == []
+        ids = [item["id"] for item in response.json()["data"]]
+        assert ids == ["main.gguf", "aux0.gguf", "aux1.gguf"]
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_v1_models_includes_aux_when_primary_offline(self, mock_get, smart_env):
+        smart_env.holder["instances"] = [make_instance(8086, AUX0_PATH)]
+
+        def side_effect(url, *args, **kwargs):
+            if "8086" in url:
+                return _models_response(["aux0.gguf"])
+            return _models_response([])
+
+        mock_get.side_effect = side_effect
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        assert [item["id"] for item in response.json()["data"]] == ["aux0.gguf"]
+
+    def test_v1_models_503_when_no_instances(self, smart_env):
+        smart_env.holder["instances"] = []
+        response = client.get("/v1/models")
+        assert response.status_code == 503
 
     def test_error_when_primary_offline_on_chat(self, smart_env):
         smart_env.holder["instances"] = [make_instance(8086, AUX0_PATH)]
@@ -517,6 +535,7 @@ class TestProxyDisabled:
         mock_resp = MagicMock(spec=httpx.Response)
         mock_resp.status_code = 200
         mock_resp.headers = httpx.Headers({"Content-Type": "application/json"})
+        mock_resp.content = b'{"id": "legacy", "model": "main.gguf"}'
 
         async def aiter_bytes():
             yield b'{"id": "legacy", "model": "main.gguf"}'
@@ -585,7 +604,9 @@ class TestHybridV1Availability:
         mock_get.side_effect = side_effect
         response = client.get("/v1/models")
         assert response.status_code == 200
-        assert [item["id"] for item in response.json()["data"]] == ["codex-pro"]
+        assert [item["id"] for item in response.json()["data"]] == [
+            platform_model_listing_id("codex-pro", "codex")
+        ]
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_v1_models_returns_local_models_when_no_platform_active(
@@ -634,7 +655,7 @@ class TestHybridV1Availability:
         response = client.get("/v1/models")
         assert response.status_code == 200
         ids = [item["id"] for item in response.json()["data"]]
-        assert ids == ["main.gguf", "codex-pro"]
+        assert ids == ["main.gguf", platform_model_listing_id("codex-pro", "codex")]
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_v1_models_dedupes_local_and_sidecar_ids(
@@ -659,7 +680,7 @@ class TestHybridV1Availability:
         response = client.get("/v1/models")
         assert response.status_code == 200
         ids = [item["id"] for item in response.json()["data"]]
-        assert ids == ["main.gguf", "codex-pro"]
+        assert ids == ["main.gguf", platform_model_listing_id("codex-pro", "codex")]
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_chat_with_sidecar_model_id_forwards_to_sidecar_port(
@@ -672,6 +693,7 @@ class TestHybridV1Availability:
             "active_instances",
             lambda: [make_platform_instance()],
         )
+        codex_listing = platform_model_listing_id("codex-pro", "codex")
         mock_post.return_value = _mock_response({"id": "chatcmpl-1", "model": "codex-pro"})
 
         response = client.post(
@@ -680,7 +702,7 @@ class TestHybridV1Availability:
 
         assert response.status_code == 200
         assert "9100" in mock_post.call_args.args[0]
-        assert response.json()["model"] == "codex-pro"
+        assert response.json()["model"] == codex_listing
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_sidecar_models_failure_does_not_break_local_listing(
@@ -727,4 +749,25 @@ class TestHybridV1Availability:
         assert "9100" in mock_post.call_args.args[0]
         sent = json.loads(mock_post.call_args.kwargs["content"])
         assert sent["model"] == "codex-pro"
-        assert response.headers["x-automanager-backend-type"] == "platform"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_platform_chat_requires_api_token(
+        self, mock_post, smart_env, monkeypatch
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+        monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+        monkeypatch.setattr(
+            llama_manager.platform_manager,
+            "active_instances",
+            lambda: [make_platform_instance()],
+        )
+        app.dependency_overrides.pop(llama_manager.require_api_token, None)
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(model="codex-pro")
+        )
+        assert response.status_code == 401
+        assert response.json()["error"]["message"] == "Invalid API Key"
+        mock_post.assert_not_called()
+
+        app.dependency_overrides[llama_manager.require_api_token] = lambda: True

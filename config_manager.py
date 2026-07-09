@@ -64,7 +64,17 @@ DEFAULT_PLATFORM_BACKEND_IDS = (
 DEFAULT_PLATFORM_CONFIG = {
     "proxy_eligible": False,
     "max_parallel_requests": DEFAULT_MAX_PARALLEL_REQUESTS,
+    "auto_start": False,
 }
+
+# Nomes aceitos pelo Cursor em BYOK (validação server-side do editor).
+CURSOR_COMPATIBLE_ALIAS_NAMES = (
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4",
+    "gpt-3.5-turbo",
+    "o3-mini",
+)
 
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
 
@@ -268,12 +278,15 @@ class ConfigManager:
             **{
                 k: v
                 for k, v in merged.items()
-                if k not in {"proxy_eligible", "max_parallel_requests"}
+                if k not in {"proxy_eligible", "max_parallel_requests", "auto_start"}
             },
             "proxy_eligible": bool(
                 merged.get("proxy_eligible", DEFAULT_PLATFORM_CONFIG["proxy_eligible"])
             ),
             "max_parallel_requests": max_parallel,
+            "auto_start": bool(
+                merged.get("auto_start", DEFAULT_PLATFORM_CONFIG["auto_start"])
+            ),
         }
         platform_configs[backend_id] = entry
         config["platform_configs"] = platform_configs
@@ -404,6 +417,43 @@ class ConfigManager:
         self.save(config)
         return merged
 
+    def get_model_aliases(self) -> Dict[str, str]:
+        """Mapa alias_externo -> id_modelo_real (para clientes como Cursor)."""
+        config = self.load()
+        stored = config.get("model_aliases")
+        if not isinstance(stored, dict):
+            return {}
+        cleaned: Dict[str, str] = {}
+        for alias, target in stored.items():
+            alias_key = str(alias or "").strip()
+            target_val = str(target or "").strip()
+            if alias_key and target_val:
+                cleaned[alias_key] = target_val
+        return cleaned
+
+    def resolve_model_alias(self, model_name: Optional[str]) -> str:
+        if not model_name:
+            return model_name or ""
+        aliases = self.get_model_aliases()
+        return aliases.get(model_name, model_name)
+
+    def set_model_alias(self, alias: str, target: Optional[str]) -> Dict[str, str]:
+        alias_key = str(alias or "").strip()
+        if not alias_key:
+            raise ValueError("alias is required")
+        config = self.load()
+        aliases = config.get("model_aliases")
+        if not isinstance(aliases, dict):
+            aliases = {}
+        target_val = str(target or "").strip()
+        if target_val:
+            aliases[alias_key] = target_val
+        else:
+            aliases.pop(alias_key, None)
+        config["model_aliases"] = aliases
+        self.save(config)
+        return self.get_model_aliases()
+
     def get_default_models(self) -> list[str]:
         config = self.config.load() if hasattr(self, "config") else self.load()
         defaults = config.get("default_models")
@@ -526,6 +576,17 @@ class AuthManager:
         self.config.save(config)
         return True
 
+    def check_api_token(self, request: Request = None) -> bool:
+        """Bearer API token only — for OpenAI-compatible /v1 routes."""
+        if request is None:
+            return False
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.lower().startswith("bearer "):
+            return False
+        token = auth_header[7:].strip()
+        stored = self.config.load().get("api_token", "")
+        return bool(token and token == stored and self.token_mgr.validate(token))
+
     def check_auth(self, request: Request = None) -> bool:
         """FastAPI dependency: session cookie or Bearer API token."""
         if request is None:
@@ -533,13 +594,7 @@ class AuthManager:
         session_token = request.cookies.get("session_token")
         if session_token and self.verify_session(session_token):
             return True
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:].strip()
-            stored = self.config.load().get("api_token", "")
-            if token and token == stored and self.token_mgr.validate(token):
-                return True
-        return False
+        return self.check_api_token(request)
 
     def check_auth_cookie(self, request: Request) -> bool:
         session_token = request.cookies.get("session_token")

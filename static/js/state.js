@@ -9,6 +9,7 @@ export const state = {
     currentRunningModelPath: null,
     activeInstances: [],
     platforms: [],
+    sidecarStatus: null,
     currentActivePort: 8085,
     manualGpuOverride: false,
     autoBalancePending: false,

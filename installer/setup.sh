@@ -59,6 +59,10 @@ log_info "Detected ${GPU_COUNT} NVIDIA GPU(s)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_DIR}/.venv"
+
+# shellcheck source=platform_tools.sh
+source "${SCRIPT_DIR}/platform_tools.sh"
+install_platform_tools || log_warn "Continuing setup without full platform tool support."
 PATHS_FILE="${PROJECT_DIR}/paths.json"
 PATHS_EXAMPLE="${PROJECT_DIR}/paths.json.example"
 
@@ -112,7 +116,7 @@ ExecStop=/bin/sh -c '/usr/bin/pkill -9 -f llama-server 2>/dev/null || true'
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
-Environment=PATH=${VENV_DIR}/bin:/usr/local/cuda/bin:/usr/bin:/bin
+Environment=PATH=${VENV_DIR}/bin:/root/.local/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
 
 [Install]
@@ -149,6 +153,24 @@ else
   log_warn "Health check failed. Run: journalctl -u llama-manager.service -f"
 fi
 
+(cd "${PROJECT_DIR}" && HOME=/root "${VENV_DIR}/bin/python" - <<'PY'
+from platform_manager import PlatformIntegrationManager
+from config_manager import ConfigManager
+from paths import CONFIG_PATH
+
+manager = PlatformIntegrationManager(ConfigManager(CONFIG_PATH))
+for item in manager.catalog():
+    status = item.get("status")
+    reason = item.get("reason") or ""
+    path = item.get("executable_path") or "-"
+    print(f"  {item['display_name']}: {status} ({path})")
+    if reason:
+        print(f"    reason: {reason}")
+cliproxy = manager.cliproxy_detection
+print(f"  CLIProxyAPI: {'detected' if cliproxy.detected else 'missing'} ({cliproxy.path or '-'})")
+PY
+) 2>/dev/null || log_warn "Could not print platform detection summary."
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Automanager Llama.cpp instalado${NC}"
@@ -160,6 +182,9 @@ echo -e "  llama-server (interno): porta ${SERVER_PORT}"
 echo ""
 echo -e "  Login padrao: ${YELLOW}admin / admin${NC}"
 echo -e "  Altere a senha no primeiro acesso."
+echo ""
+echo -e "  Plataformas hibridas: Codex, Antigravity (agy) e Claude Code"
+echo -e "  sao instaladas pelo setup. Autentique cada CLI antes de usar."
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo ""

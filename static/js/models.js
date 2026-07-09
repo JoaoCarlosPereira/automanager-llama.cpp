@@ -1,5 +1,5 @@
 import { state } from './state.js?v=4.2.3';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.3';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.7';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -29,6 +29,8 @@ const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
 let deferredModelListUpdate = null;
 const platformActions = new Set();
+let cliproxyAuthPollTimer = null;
+let cliproxyAuthSessionId = null;
 
 const MMproj_SELECT_ATTRS =
     'onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" '
@@ -91,7 +93,8 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.3';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.12';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
 import { checkForUpdates } from './version.js?v=4.2.3';
 
 // --- TAB MANAGEMENT ---
@@ -119,6 +122,19 @@ function findTabForModel(path, { forceNew = false } = {}) {
     if (forceNew) return null;
     return state.activeTabs.find(t => t.path === normalized && document.getElementById(t.id)) || null;
 }
+
+function findTabForBackend(backendId, { forceNew = false } = {}) {
+    if (!backendId || forceNew) return null;
+    return state.activeTabs.find(
+        t => t.kind === 'platform' && t.backendId === backendId && document.getElementById(t.id)
+    ) || null;
+}
+
+const PLATFORM_LIMITS_INFO = {
+    codex: 'Modelos via assinatura OpenAI/Codex. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
+    claude: 'Modelos via assinatura Claude. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
+    antigravity: 'Modelos via Google Antigravity. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
+};
 
 function fallbackModelId(path) {
     let hash = 0;
@@ -167,6 +183,33 @@ const PLATFORM_STATUS_LABELS = {
     not_ready: 'INDISPONIVEL',
     missing: 'NAO DETECTADO',
 };
+
+function platformAuthSummary(platform) {
+    const auth = platform.cliproxy_auth || {};
+    if (!platform.detected || platform.cliproxy_detected === false) return '';
+    if (auth.authenticated) {
+        const count = (auth.accounts || []).length;
+        return count > 1 ? `Autenticado (${count} contas)` : 'Autenticado';
+    }
+    return 'Nao autenticado';
+}
+
+function platformAuthClass(platform) {
+    const auth = platform.cliproxy_auth || {};
+    if (auth.authenticated) {
+        return 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10';
+    }
+    return 'text-amber-300 border-amber-500/30 bg-amber-500/10';
+}
+
+function buildPlatformAuthButton(platform, safeBackendId) {
+    if (!platform.detected || platform.cliproxy_detected === false) return '';
+    const auth = platform.cliproxy_auth || {};
+    const provider = platform.provider || '';
+    const label = auth.authenticated ? 'Reautenticar' : 'Autenticar';
+    const displayName = platform.display_name || platform.name || provider;
+    return `<button type="button" onclick="event.stopPropagation(); startCliproxyAuth('${safeBackendId}', '${jsString(provider)}', '${jsString(displayName)}')" title="${label} no CLIProxyAPI" aria-label="${label}" class="w-8 h-8 flex items-center justify-center rounded bg-amber-600/10 text-amber-300 hover:bg-amber-600/20"><i class="fas fa-key text-ui-label"></i></button>`;
+}
 
 function platformStatusClass(status) {
     if (status === 'running') return 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10';
@@ -367,6 +410,424 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     bindGpuManualListeners(tabId);
     bindTabLogPanelHeightSync(tabId);
     return tabId;
+}
+
+function platformTabId(backendId) {
+    return `ptab-${String(backendId || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+export function createPlatformTab(backendId, displayName, forceNew = false) {
+    const existing = findTabForBackend(backendId, { forceNew });
+    if (existing) {
+        switchTab(existing.id);
+        return existing.id;
+    }
+
+    const tabId = nextTabInstanceId(platformTabId(backendId));
+    const tabLabel = escapeHtml(displayName || backendId);
+
+    const tabBar = document.getElementById('tab-bar');
+    const btn = document.createElement('button');
+    btn.id = `btn-${tabId}`;
+    btn.className = 'tab-btn px-4 h-full flex items-center gap-3 text-ui-body-sm font-bold text-slate-500 border-b-2 border-transparent hover:text-slate-300 transition-all group relative min-w-[120px] max-w-[240px]';
+    btn.onclick = () => switchTab(tabId);
+    btn.innerHTML = `
+        <div class="tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500"></div>
+        <span class="tab-label truncate flex-1 text-left"><i class="fas fa-cloud text-violet-500/70 text-ui-label mr-1"></i>${tabLabel}</span>
+        <span onclick="event.stopPropagation(); closeTab('${tabId}')" class="tab-close-btn w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 hover:text-red-500 text-slate-600 transition-all">
+            <i class="fas fa-times text-ui-label"></i>
+        </span>
+    `;
+    tabBar.appendChild(btn);
+
+    const template = document.getElementById('platform-tab-template');
+    const content = template.content.cloneNode(true);
+    const tabDiv = content.querySelector('.tab-content');
+    tabDiv.id = tabId;
+    tabDiv.dataset.backendId = backendId;
+    tabDiv.dataset.path = backendId;
+    tabDiv.querySelector('.platform-tab-name').innerText = displayName || backendId;
+    document.getElementById('tabs-container').appendChild(tabDiv);
+
+    state.activeTabs.push({
+        id: tabId,
+        path: backendId,
+        backendId,
+        name: displayName || backendId,
+        kind: 'platform',
+    });
+
+    bindPlatformTabListeners(tabId, backendId);
+    bindTabLogPanelHeightSync(tabId);
+    populatePlatformTab(tabId, backendId);
+    switchTab(tabId);
+    loadPlatformTabDetails(tabId, backendId);
+    return tabId;
+}
+
+function bindPlatformTabListeners(tabId, backendId) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+    const safeId = jsString(backendId);
+
+    tab.querySelector('.platform-auth-btn')?.addEventListener('click', () => {
+        const platform = platformDisplayState(
+            (state.lastPlatformList || []).find(p => p.backend_id === backendId) || { backend_id: backendId }
+        );
+        startCliproxyAuth(backendId, platform.provider || '', platform.display_name || platform.name || backendId);
+    });
+
+    tab.querySelector('.platform-refresh-models-btn')?.addEventListener('click', () => {
+        loadPlatformTabDetails(tabId, backendId);
+    });
+
+    tab.querySelector('.platform-cursor-save-alias')?.addEventListener('click', () => {
+        const alias = tab.querySelector('.platform-cursor-alias-select')?.value;
+        const target = tab.querySelector('.platform-cursor-target-select')?.value;
+        if (alias && target) saveModelAlias(alias, target, tab);
+    });
+
+    refreshPlatformCursorSection(tab);
+
+    tab.querySelector('.platform-proxy-primary')?.addEventListener('change', (e) => {
+        setProxyPrimary(e.target, null, backendId);
+    });
+    tab.querySelector('.platform-proxy-eligible')?.addEventListener('change', (e) => {
+        setProxyEligible(e.target, null, backendId);
+    });
+    tab.querySelector('.platform-proxy-parallel')?.addEventListener('change', (e) => {
+        setProxyMaxParallel(e.target, null, backendId);
+    });
+    tab.querySelector('.platform-autostart')?.addEventListener('change', (e) => {
+        setPlatformAutoStart(e.target, backendId);
+    });
+
+    const clearLogsBtn = tab.querySelector('.tab-clear-logs-btn');
+    if (clearLogsBtn) {
+        clearLogsBtn.onclick = () => {
+            tab.querySelector('.tab-log-box').innerHTML = '';
+            tab.querySelector('.tab-log-box').dataset.connecting = '0';
+            const sizeEl = tab.querySelector('.tab-log-size');
+            if (sizeEl) sizeEl.innerText = '0 KB';
+        };
+    }
+}
+
+function formatPlatformTimestamp(value) {
+    if (!value) return '—';
+    const date = new Date(Number(value) * 1000);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleString();
+}
+
+function renderPlatformModelsList(tab, models) {
+    const list = tab.querySelector('.platform-models-list');
+    if (!list) return;
+    if (!models?.length) {
+        list.innerHTML = '<p class="text-ui-label text-slate-600 italic">Nenhum modelo listado. Verifique autenticação e se a integração está rodando.</p>';
+        syncPlatformCursorSelectors(tab, models || []);
+        return;
+    }
+    list.innerHTML = models.map((model) => {
+        const id = model.id || model.name || 'modelo';
+        const cursorId = model.cursor_id || model.id;
+        const safeId = jsString(id);
+        const owned = escapeHtml(model.owned_by || 'cliproxy');
+        return `
+            <div class="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-slate-950/50 border border-slate-800/60">
+                <div class="min-w-0">
+                    <span class="text-sm font-mono text-slate-200 truncate block">${escapeHtml(id)}</span>
+                    <span class="text-ui-label text-cyan-400/80 font-mono truncate block">Cursor: ${escapeHtml(cursorId)}</span>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    <span class="text-ui-label text-slate-600 uppercase">${owned}</span>
+                    <button type="button" class="platform-cursor-quick-alias px-2 py-1 rounded-lg border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase hover:bg-cyan-500/10" data-model-id="${escapeHtml(id)}" title="Criar alias para o Cursor">Cursor</button>
+                </div>
+            </div>`;
+    }).join('');
+    list.querySelectorAll('.platform-cursor-quick-alias').forEach((btn) => {
+        btn.addEventListener('click', () => quickCursorAlias(btn.dataset.modelId, tab));
+    });
+    syncPlatformCursorSelectors(tab, models);
+}
+
+async function fetchModelAliasState() {
+    const res = await apiFetch('/model-aliases');
+    if (!res.ok) return { aliases: {}, cursor_compatible_names: [] };
+    return res.json();
+}
+
+function renderPlatformCursorAliases(tab, aliasState) {
+    const list = tab.querySelector('.platform-cursor-aliases-list');
+    if (!list) return;
+    const aliases = aliasState?.aliases || {};
+    const entries = Object.entries(aliases);
+    if (!entries.length) {
+        list.innerHTML = '<li class="text-slate-600 italic">Nenhum alias configurado.</li>';
+        return;
+    }
+    list.innerHTML = entries.map(([alias, target]) => `
+        <li class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-950/40 border border-slate-800/50">
+            <span><span class="text-cyan-300">${escapeHtml(alias)}</span> → <span class="text-slate-300">${escapeHtml(target)}</span></span>
+            <button type="button" class="text-rose-400 hover:text-rose-300 text-ui-label uppercase font-black" data-alias="${escapeHtml(alias)}">Remover</button>
+        </li>`).join('');
+    list.querySelectorAll('button[data-alias]').forEach((btn) => {
+        btn.addEventListener('click', () => saveModelAlias(btn.dataset.alias, null, tab));
+    });
+}
+
+function syncPlatformCursorSelectors(tab, models) {
+    const aliasSelect = tab.querySelector('.platform-cursor-alias-select');
+    const targetSelect = tab.querySelector('.platform-cursor-target-select');
+    if (!aliasSelect || !targetSelect) return;
+    const names = state.cursorCompatibleNames?.length
+        ? state.cursorCompatibleNames
+        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini'];
+    if (!aliasSelect.options.length) {
+        aliasSelect.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+    }
+    const currentTarget = targetSelect.value;
+    targetSelect.innerHTML = (models || []).map((m) => {
+        const id = m.id || m.name;
+        return `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`;
+    }).join('');
+    if (currentTarget && [...targetSelect.options].some(o => o.value === currentTarget)) {
+        targetSelect.value = currentTarget;
+    }
+}
+
+async function saveModelAlias(alias, target, tab) {
+    try {
+        const res = await apiFetch('/model-aliases', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ alias, target: target || null }),
+        });
+        if (!res.ok) throw new Error('alias');
+        const data = await res.json();
+        window.lastConfig = { ...(window.lastConfig || {}), model_aliases: data.aliases };
+        if (tab) renderPlatformCursorAliases(tab, data);
+        if (target) {
+            showToast(`Alias "${alias}" → "${target}". No Cursor, selecione "${alias}".`, 'success');
+        } else {
+            showToast(`Alias "${alias}" removido.`, 'success');
+        }
+    } catch {
+        showToast('Falha ao salvar alias.', 'error');
+    }
+}
+
+async function quickCursorAlias(targetModel, tab) {
+    if (!targetModel) return;
+    const aliasState = await fetchModelAliasState();
+    const used = new Set(Object.keys(aliasState.aliases || {}));
+    const names = aliasState.cursor_compatible_names?.length
+        ? aliasState.cursor_compatible_names
+        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4'];
+    const existing = Object.entries(aliasState.aliases || {}).find(([, t]) => t === targetModel);
+    if (existing) {
+        showToast(`Já mapeado: use "${existing[0]}" no Cursor.`, 'success');
+        return;
+    }
+    const alias = names.find(n => !used.has(n)) || names[0];
+    await saveModelAlias(alias, targetModel, tab);
+    const aliasSelect = tab?.querySelector('.platform-cursor-alias-select');
+    const targetSelect = tab?.querySelector('.platform-cursor-target-select');
+    if (aliasSelect) aliasSelect.value = alias;
+    if (targetSelect) targetSelect.value = targetModel;
+}
+
+async function refreshPlatformCursorSection(tab) {
+    const aliasState = await fetchModelAliasState();
+    state.cursorCompatibleNames = aliasState.cursor_compatible_names || [];
+    renderPlatformCursorAliases(tab, aliasState);
+}
+
+export function populatePlatformTab(tabId, backendId, detail = null) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+
+    const catalog = (state.lastPlatformList || []).find(p => p.backend_id === backendId) || {};
+    const runtime = (state.platforms || []).find(p => p.backend_id === backendId) || {};
+    const platform = platformDisplayState(detail || { ...catalog, ...runtime });
+    const cfg = window.lastConfig || {};
+    const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
+    const smartProxy = cfg.smart_proxy || {};
+    const auth = platform.cliproxy_auth || detail?.cliproxy_auth || {};
+    const sidecar = detail?.sidecar || state.sidecarStatus || {};
+
+    tab.querySelector('.platform-tab-name').innerText = platform.display_name || platform.name || backendId;
+    tab.querySelector('.platform-tab-provider').innerText = (platform.provider || 'platform').toUpperCase();
+    tab.querySelector('.platform-info-backend-id').textContent = backendId;
+    tab.querySelector('.platform-info-executable').textContent = platform.executable_path || '—';
+    tab.querySelector('.platform-info-cliproxy').textContent = platform.cliproxy_executable_path || '—';
+
+    const port = platform.sidecar_port || sidecar.port;
+    tab.querySelector('.platform-info-sidecar').textContent = port ? `127.0.0.1:${port}` : '—';
+    tab.querySelector('.platform-info-start-time').textContent = formatPlatformTimestamp(platform.start_time);
+
+    const errEl = tab.querySelector('.platform-info-error');
+    const errText = platform.last_error || platform.reason || '';
+    if (errText) {
+        errEl.textContent = errText;
+        errEl.classList.remove('hidden');
+    } else {
+        errEl.classList.add('hidden');
+        errEl.textContent = '';
+    }
+
+    const authSummary = tab.querySelector('.platform-auth-summary');
+    authSummary.innerHTML = `<span class="inline-flex px-2 py-0.5 rounded border ${platformAuthClass(platform)}">${escapeHtml(platformAuthSummary(platform) || 'Status desconhecido')}</span>`;
+
+    const accountsEl = tab.querySelector('.platform-auth-accounts');
+    const accounts = auth.accounts || [];
+    accountsEl.innerHTML = accounts.length
+        ? accounts.map(a => `<li class="truncate"><i class="fas fa-user-circle text-slate-600 mr-1"></i>${escapeHtml(a)}</li>`).join('')
+        : '<li class="text-slate-600 italic">Nenhuma conta autenticada</li>';
+
+    const methods = auth.available_methods || [];
+    tab.querySelector('.platform-auth-methods').textContent = methods.length
+        ? `Métodos: ${methods.join(', ')} (padrão: ${auth.default_method || 'oauth'})`
+        : 'Métodos de login não disponíveis';
+
+    const limitsInfo = PLATFORM_LIMITS_INFO[platform.provider] || 'Limites definidos pela conta autenticada no provedor cloud.';
+    tab.querySelector('.platform-limits-info').textContent = limitsInfo;
+    tab.querySelector('.platform-limits-parallel').textContent = String(
+        pCfg.max_parallel_requests || platform.max_parallel_requests || 1
+    );
+
+    const primaryCb = tab.querySelector('.platform-proxy-primary');
+    const eligibleCb = tab.querySelector('.platform-proxy-eligible');
+    const parallelInput = tab.querySelector('.platform-proxy-parallel');
+    const autoStartCb = tab.querySelector('.platform-autostart');
+    if (primaryCb && document.activeElement !== primaryCb) {
+        primaryCb.checked = smartProxy.primary_backend_id === backendId;
+    }
+    if (eligibleCb && document.activeElement !== eligibleCb) {
+        eligibleCb.checked = pCfg.proxy_eligible === true;
+    }
+    if (parallelInput && document.activeElement !== parallelInput) {
+        parallelInput.value = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
+    }
+    if (autoStartCb && document.activeElement !== autoStartCb) {
+        autoStartCb.checked = pCfg.auto_start === true;
+    }
+
+    if (detail?.available_models) {
+        const cursorIds = detail.cursor_model_ids || [];
+        const models = detail.available_models.map((m, index) => ({
+            ...m,
+            cursor_id: cursorIds[index] || m.id,
+        }));
+        renderPlatformModelsList(tab, models);
+    }
+
+    refreshPlatformTabStatus(tabId, platform, port);
+}
+
+export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform = {}) {
+    const safeId = jsString(backendId);
+    const provider = jsString(platform.provider || '');
+    const displayName = jsString(platform.display_name || platform.name || backendId);
+    if (isRunning) {
+        return `
+            <button type="button" onclick="stopPlatform('${safeId}')" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+                Encerrar
+            </button>
+            <button type="button" onclick="startCliproxyAuth('${safeId}', '${provider}', '${displayName}')" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+                <i class="fas fa-key"></i> Conta
+            </button>`;
+    }
+    const canStart = platform.detected && platform.status !== 'not_ready' && platform.status !== 'missing';
+    return `
+        <button type="button" ${canStart ? '' : 'disabled'} onclick="startPlatform('${safeId}')" class="px-8 py-3 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none text-white text-ui-body-sm font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-violet-600/30 transition-all">
+            <i class="fas fa-bolt"></i> Iniciar Integração
+        </button>
+        <button type="button" onclick="startCliproxyAuth('${safeId}', '${provider}', '${displayName}')" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+            <i class="fas fa-key"></i> Autenticar
+        </button>`;
+}
+
+function refreshPlatformTabStatus(tabId, platform, port) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+    const statusBadge = tab.querySelector('.tab-status-badge');
+    const actions = tab.querySelector('.tab-actions');
+    const tabBtn = document.getElementById(`btn-${tabId}`);
+    const dot = tabBtn?.querySelector('.tab-status-dot');
+    const isRunning = platform.status === 'running';
+
+    if (isRunning) {
+        statusBadge.innerText = 'ONLINE';
+        statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-emerald-500/40 text-emerald-400 bg-emerald-500/5';
+        if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981] animate-pulse shrink-0 transition-all duration-500';
+    } else if (platform.status === 'not_ready' || platform.status === 'missing') {
+        statusBadge.innerText = 'INDISPONIVEL';
+        statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-rose-500/40 text-rose-400 bg-rose-500/5';
+        if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 transition-all duration-500';
+    } else {
+        statusBadge.innerText = 'OFFLINE';
+        statusBadge.className = 'tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500';
+        if (dot) dot.className = 'tab-status-dot w-1.5 h-1.5 rounded-full bg-slate-700 shrink-0 transition-all duration-500';
+    }
+
+    if (actions) {
+        actions.innerHTML = getPlatformTabActionsHtml(platform.backend_id, tabId, isRunning, platform);
+    }
+
+    if (state.currentTabId === tabId) {
+        if (isRunning && port) {
+            attachTabLogs(tabId, port, {
+                force: false,
+                sessionKey: `platform:${port}:${platform.start_time ?? 0}`,
+            });
+        } else {
+            detachTabLogs();
+            const box = tab.querySelector('.tab-log-box');
+            if (box) {
+                box.innerHTML = '';
+                box.dataset.connecting = '1';
+                appendPlatformLogPlaceholder(box, isRunning ? 'Aguardando logs do sidecar...' : 'Inicie a integração para ver requisições.');
+            }
+        }
+    }
+}
+
+function appendPlatformLogPlaceholder(box, text) {
+    if (!box) return;
+    box.innerHTML = `<div class="text-slate-600 text-ui-label italic border-l border-slate-800 pl-3">${escapeHtml(text)}</div>`;
+    delete box.dataset.connecting;
+}
+
+export async function loadPlatformTabDetails(tabId, backendId) {
+    const tab = document.getElementById(tabId);
+    if (!tab) return;
+    const list = tab.querySelector('.platform-models-list');
+    if (list) {
+        list.innerHTML = '<p class="text-ui-label text-slate-600 italic"><i class="fas fa-sync animate-spin mr-1"></i> Carregando modelos...</p>';
+    }
+    try {
+        const res = await apiFetch(`/platforms/${encodeURIComponent(backendId)}`);
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            if (list) list.innerHTML = `<p class="text-ui-label text-rose-400">${escapeHtml(err.detail || 'Falha ao carregar')}</p>`;
+            return;
+        }
+        const detail = await res.json();
+        state.sidecarStatus = detail.sidecar || state.sidecarStatus;
+        populatePlatformTab(tabId, backendId, detail);
+        await refreshPlatformCursorSection(tab);
+    } catch {
+        if (list) list.innerHTML = '<p class="text-ui-label text-rose-400">Erro de rede ao carregar detalhes.</p>';
+    }
+}
+
+export function refreshPlatformTabsFromStatus() {
+    state.activeTabs
+        .filter(t => t.kind === 'platform')
+        .forEach((tab) => {
+            populatePlatformTab(tab.id, tab.backendId);
+        });
 }
 
 function bindTabListeners(tabId) {
@@ -786,6 +1247,10 @@ export async function applyProposedConfig(path, tabId) {
 
         await window.updateModels?.();
         await window.updateStatus();
+        const openTab = state.activeTabs.find(t => t.kind === 'platform' && t.backendId === backendId);
+        if (openTab) {
+            await loadPlatformTabDetails(openTab.id, backendId);
+        }
     } catch (e) {
         showToast('Erro de rede ao salvar configuração.', 'error');
         window.updateStatus();
@@ -975,6 +1440,10 @@ function patchPlatformListItems(platforms, cfg) {
         if (eligibleCb && document.activeElement !== eligibleCb) {
             eligibleCb.checked = pCfg.proxy_eligible === true;
         }
+        const autoStartCb = el.querySelector('.platform-autostart-checkbox');
+        if (autoStartCb && document.activeElement !== autoStartCb) {
+            autoStartCb.checked = pCfg.auto_start === true;
+        }
         const parallelInput = el.querySelector('.proxy-max-parallel');
         if (parallelInput && document.activeElement !== parallelInput) {
             parallelInput.value = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
@@ -1043,17 +1512,23 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
         platform.detected ? '' : 'Aplicativo nao encontrado nesta maquina.'
     );
     const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
+    const platformAutoStart = pCfg.auto_start === true;
     const isProxyPrimary = (cfg.smart_proxy || {}).primary_backend_id === backendId;
     const isProxyEligible = pCfg.proxy_eligible === true;
     const proxyMaxParallel = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
     const runningClass = isRunning ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
+    const authSummary = platformAuthSummary(platform);
     const actionHtml = isRunning
         ? `<button type="button" ${canStop ? '' : 'disabled'} onclick="event.stopPropagation(); stopPlatform('${safeBackendId}')" title="Parar integração" aria-label="Parar integração" class="w-8 h-8 flex items-center justify-center rounded bg-red-600/10 text-red-400 hover:bg-red-600/20 disabled:opacity-40 disabled:pointer-events-none"><i class="fas fa-stop text-ui-label"></i></button>`
         : `<button type="button" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation(); startPlatform('${safeBackendId}')" title="Iniciar integração" aria-label="Iniciar integração" class="w-8 h-8 flex items-center justify-center rounded bg-blue-600/10 text-blue-300 hover:bg-blue-600/20 disabled:opacity-40 disabled:pointer-events-none"><i class="fas fa-bolt text-ui-label"></i></button>`;
+    const authButtonHtml = buildPlatformAuthButton(platform, safeBackendId);
 
     return `
-            <div id="${platformDomId(backendId)}" class="model-item-container platform-card group p-3 rounded-xl border transition-all ${runningClass}"
-                 data-backend-id="${escapeHtml(backendId)}" data-backend-type="platform">
+            <div id="${platformDomId(backendId)}" class="model-item-container platform-card group p-3 rounded-xl border transition-all cursor-pointer ${runningClass}"
+                 data-backend-id="${escapeHtml(backendId)}" data-backend-type="platform"
+                 title="Clique para abrir · Ctrl+clique para nova aba"
+                 onclick="selectPlatformFromEvent(event, '${safeBackendId}')"
+                 onauxclick="selectPlatformFromEvent(event, '${safeBackendId}')">
                 <div class="flex items-start justify-between gap-2 overflow-hidden">
                     <div class="flex-1 min-w-0">
                         <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(platform.display_name || platform.name || backendId)}</p>
@@ -1063,9 +1538,16 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                 </div>
                 <div class="flex items-center justify-between gap-2 mt-3">
                     <span class="px-2 py-1 rounded border text-ui-label font-black uppercase tracking-widest ${statusClass}">${escapeHtml(statusLabel)}</span>
-                    <div class="flex items-center gap-1">${isBusy ? '<i class="fas fa-sync animate-spin text-blue-300 text-ui-label"></i>' : ''}${actionHtml}</div>
+                    <div class="flex items-center gap-1">${authButtonHtml}${isBusy ? '<i class="fas fa-sync animate-spin text-blue-300 text-ui-label"></i>' : ''}${actionHtml}</div>
                 </div>
+                ${authSummary ? `<p class="mt-2 text-ui-label leading-snug"><span class="inline-flex px-2 py-0.5 rounded border ${platformAuthClass(platform)}">${escapeHtml(authSummary)}</span></p>` : ''}
                 ${reason ? `<p class="mt-2 text-ui-label text-slate-500 leading-snug">${escapeHtml(reason)}</p>` : ''}
+                <div class="flex items-center justify-end mt-3 pt-2 border-t border-slate-700/30" onclick="event.stopPropagation()">
+                    <label class="flex items-center gap-1.5 cursor-pointer">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
+                        <input type="checkbox" class="platform-autostart-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${platformAutoStart ? 'checked' : ''} onclick="setPlatformAutoStart(this, '${safeBackendId}')">
+                    </label>
+                </div>
                 <div class="proxy-model-controls flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 pt-2 border-t border-slate-700/30 min-w-0" onclick="event.stopPropagation()">
                     <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Backend principal exposto pela API no Modo Proxy Inteligente">
                         <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
@@ -1353,6 +1835,24 @@ export function selectModelFromEvent(event, path, elementId) {
     selectModel(path, elementId, forceNew);
 }
 
+export function selectPlatform(backendId, forceNew = false) {
+    const container = document.getElementById(platformDomId(backendId));
+    const catalog = (state.lastPlatformList || []).find(p => p.backend_id === backendId) || {};
+    const platform = platformDisplayState(catalog);
+    const name = platform.display_name || platform.name || backendId;
+    createPlatformTab(backendId, name, forceNew);
+
+    document.querySelectorAll('.model-item-container').forEach(el => el.classList.remove('active-selection'));
+    if (container) container.classList.add('active-selection');
+}
+
+export function selectPlatformFromEvent(event, backendId) {
+    if (event?.type === 'auxclick' && event.button !== 1) return;
+    const forceNew = !!(event?.ctrlKey || event?.metaKey || event?.button === 1);
+    if (forceNew) event?.preventDefault?.();
+    selectPlatform(backendId, forceNew);
+}
+
 export function applyModelConfig(path, tabId) {
     const cfg = window.modelConfigs[path];
     const tab = document.getElementById(tabId);
@@ -1407,6 +1907,31 @@ export async function setDefaultModel(checkbox, path) {
         });
     } catch (e) {
         showToast("Erro ao salvar configuração.", 'error');
+    }
+}
+
+export async function setPlatformAutoStart(checkbox, backendId) {
+    try {
+        const res = await apiFetch('/models/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                backend_id: backendId,
+                auto_start: checkbox.checked,
+            }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar Auto-Start');
+        }
+        window.platformConfigs = window.platformConfigs || {};
+        window.platformConfigs[backendId] = {
+            ...(window.platformConfigs[backendId] || {}),
+            auto_start: checkbox.checked,
+        };
+    } catch (e) {
+        checkbox.checked = !checkbox.checked;
+        showToast(e.message || "Erro ao salvar Auto-Start.", 'error');
     }
 }
 
@@ -1532,6 +2057,10 @@ async function platformAction(backendId, action) {
     } finally {
         platformActions.delete(backendId);
         await updateModels();
+        const openTab = state.activeTabs.find(t => t.kind === 'platform' && t.backendId === backendId);
+        if (openTab) {
+            await loadPlatformTabDetails(openTab.id, backendId);
+        }
     }
 }
 
@@ -1541,6 +2070,220 @@ export async function startPlatform(backendId) {
 
 export async function stopPlatform(backendId) {
     await platformAction(backendId, 'stop');
+}
+
+function cliproxyAuthElements() {
+    return {
+        modal: document.getElementById('cliproxy-auth-modal'),
+        title: document.getElementById('cliproxy-auth-title'),
+        subtitle: document.getElementById('cliproxy-auth-subtitle'),
+        status: document.getElementById('cliproxy-auth-status'),
+        deviceBox: document.getElementById('cliproxy-auth-device'),
+        deviceCode: document.getElementById('cliproxy-auth-device-code'),
+        deviceUrl: document.getElementById('cliproxy-auth-device-url'),
+        oauthBox: document.getElementById('cliproxy-auth-oauth'),
+        oauthUrl: document.getElementById('cliproxy-auth-oauth-url'),
+        instructions: document.getElementById('cliproxy-auth-instructions'),
+        callbackBox: document.getElementById('cliproxy-auth-callback-box'),
+        callbackInput: document.getElementById('cliproxy-auth-callback-input'),
+        callbackBtn: document.getElementById('cliproxy-auth-callback-btn'),
+        log: document.getElementById('cliproxy-auth-log'),
+        cancelBtn: document.getElementById('cliproxy-auth-cancel-btn'),
+    };
+}
+
+function resetCliproxyAuthModal() {
+    const els = cliproxyAuthElements();
+    if (!els.modal) return;
+    els.status.textContent = 'Preparando autenticacao...';
+    els.deviceBox.classList.add('hidden');
+    els.oauthBox.classList.add('hidden');
+    if (els.callbackBox) els.callbackBox.classList.add('hidden');
+    els.log.classList.add('hidden');
+    els.log.textContent = '';
+    els.cancelBtn.classList.add('hidden');
+    if (els.callbackInput) els.callbackInput.value = '';
+    if (els.callbackBtn) els.callbackBtn.disabled = false;
+    els.deviceCode.textContent = '';
+    els.deviceUrl.textContent = '';
+    els.deviceUrl.href = '#';
+    els.oauthUrl.textContent = '';
+    els.oauthUrl.href = '#';
+    els.instructions.textContent = '';
+}
+
+export function closeCliproxyAuthModal() {
+    if (cliproxyAuthPollTimer) {
+        clearInterval(cliproxyAuthPollTimer);
+        cliproxyAuthPollTimer = null;
+    }
+    cliproxyAuthSessionId = null;
+    const els = cliproxyAuthElements();
+    if (els.modal) {
+        els.modal.classList.add('hidden');
+        els.modal.classList.remove('flex');
+    }
+}
+
+function renderCliproxyAuthSession(session) {
+    const els = cliproxyAuthElements();
+    if (!els.modal || !session) return;
+
+    const statusText = {
+        pending: 'Gerando instrucoes de autenticacao...',
+        waiting: 'Aguardando voce concluir o login no navegador.',
+        waiting_callback: 'Abra o link, faca login e cole a URL de callback abaixo.',
+        completed: 'Autenticacao concluida com sucesso.',
+        failed: 'Falha na autenticacao.',
+        cancelled: 'Autenticacao cancelada.',
+    };
+    els.status.textContent = session.error || statusText[session.status] || session.status_message || session.callback_hint || 'Processando...';
+
+    if (session.device_code) {
+        els.deviceBox.classList.remove('hidden');
+        els.deviceCode.textContent = session.device_code;
+        if (session.auth_url) {
+            els.deviceUrl.href = session.auth_url;
+            els.deviceUrl.textContent = session.auth_url;
+        }
+    } else if (session.auth_url) {
+        els.oauthBox.classList.remove('hidden');
+        els.oauthUrl.href = session.auth_url;
+        els.oauthUrl.textContent = session.auth_url;
+        if ((session.instructions || []).length) {
+            els.instructions.textContent = session.instructions.join('\n');
+        }
+        if (session.needs_callback && els.callbackBox) {
+            els.callbackBox.classList.remove('hidden');
+            if (session.callback_submitted && els.callbackBtn) {
+                els.callbackBtn.disabled = true;
+                els.callbackBtn.textContent = 'Callback enviado';
+            }
+        }
+    }
+
+    if (session.output_tail && session.status === 'failed') {
+        els.log.classList.remove('hidden');
+        els.log.textContent = session.output_tail;
+    } else if (els.log) {
+        els.log.classList.add('hidden');
+        els.log.textContent = '';
+    }
+
+    if (session.status === 'waiting' || session.status === 'waiting_callback' || session.status === 'pending') {
+        els.cancelBtn.classList.remove('hidden');
+    } else {
+        els.cancelBtn.classList.add('hidden');
+    }
+}
+
+export async function submitCliproxyAuthCallback() {
+    const els = cliproxyAuthElements();
+    if (!cliproxyAuthSessionId || !els.callbackInput) return;
+    const callbackUrl = els.callbackInput.value.trim();
+    if (!callbackUrl) {
+        showToast('Cole a URL de callback completa.', 'error');
+        return;
+    }
+    if (els.callbackBtn) els.callbackBtn.disabled = true;
+    try {
+        const res = await apiFetch(`/cliproxy/auth/sessions/${encodeURIComponent(cliproxyAuthSessionId)}/callback`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_url: callbackUrl }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.detail || 'Nao foi possivel enviar o callback.');
+        }
+        renderCliproxyAuthSession(data.session);
+        showToast('Callback enviado. Aguardando confirmacao...', 'success');
+        if (!cliproxyAuthPollTimer) {
+            cliproxyAuthPollTimer = setInterval(pollCliproxyAuthSession, 2000);
+        }
+        pollCliproxyAuthSession();
+    } catch (e) {
+        if (els.callbackBtn) els.callbackBtn.disabled = false;
+        showToast(e.message || 'Erro ao enviar callback.', 'error');
+    }
+}
+
+async function pollCliproxyAuthSession() {
+    if (!cliproxyAuthSessionId) return;
+    try {
+        const res = await apiFetch(`/cliproxy/auth/sessions/${encodeURIComponent(cliproxyAuthSessionId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const session = data.session;
+        renderCliproxyAuthSession(session);
+        if (session.status === 'completed') {
+            if (cliproxyAuthPollTimer) {
+                clearInterval(cliproxyAuthPollTimer);
+                cliproxyAuthPollTimer = null;
+            }
+            await apiFetch('/cliproxy/restart', { method: 'POST' });
+            showToast('Autenticacao concluida. Sidecar atualizado.', 'success');
+            await updateModels();
+            if (window.updateStatus) await window.updateStatus();
+            closeCliproxyAuthModal();
+        } else if (session.status === 'failed' || session.status === 'cancelled') {
+            if (cliproxyAuthPollTimer) {
+                clearInterval(cliproxyAuthPollTimer);
+                cliproxyAuthPollTimer = null;
+            }
+            if (session.status === 'failed') {
+                showToast(session.error || 'Falha na autenticacao do CLIProxyAPI.', 'error');
+            }
+        }
+    } catch (e) {
+        // ignore transient polling errors
+    }
+}
+
+export async function startCliproxyAuth(_backendId, provider, displayName) {
+    const els = cliproxyAuthElements();
+    if (!els.modal || !provider) return;
+
+    closeCliproxyAuthModal();
+    resetCliproxyAuthModal();
+    els.title.textContent = `Autenticar ${displayName || provider}`;
+    els.subtitle.textContent = 'Abra o link, faca login e cole a URL de callback que o navegador mostrar em localhost.';
+    els.modal.classList.remove('hidden');
+    els.modal.classList.add('flex');
+
+    try {
+        const res = await apiFetch(`/cliproxy/auth/${encodeURIComponent(provider)}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.detail || 'Nao foi possivel iniciar a autenticacao.');
+        }
+        cliproxyAuthSessionId = data.session?.id || null;
+        renderCliproxyAuthSession(data.session);
+        if (cliproxyAuthSessionId) {
+            cliproxyAuthPollTimer = setInterval(pollCliproxyAuthSession, 2000);
+            pollCliproxyAuthSession();
+        }
+    } catch (e) {
+        els.status.textContent = e.message || 'Erro ao iniciar autenticacao.';
+        showToast(els.status.textContent, 'error');
+    }
+}
+
+export async function cancelCliproxyAuth() {
+    if (!cliproxyAuthSessionId) {
+        closeCliproxyAuthModal();
+        return;
+    }
+    try {
+        await apiFetch(`/cliproxy/auth/sessions/${encodeURIComponent(cliproxyAuthSessionId)}`, {
+            method: 'DELETE',
+        });
+    } catch (e) {}
+    closeCliproxyAuthModal();
 }
 
 export async function renameModel(path) {

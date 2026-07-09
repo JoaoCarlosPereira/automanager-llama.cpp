@@ -482,7 +482,7 @@ class TestProxyEndpoint:
 
     def test_proxy_forward(self, test_client):
         """Test proxying requests to llama-server."""
-        with patch.object(auth_manager, 'check_auth', return_value=True):
+        with patch.object(auth_manager, 'check_api_token', return_value=True):
             with patch.object(llama_manager, 'client') as mock_httpx_client:
                 mock_response = MagicMock()
                 mock_response.status_code = 200
@@ -491,16 +491,16 @@ class TestProxyEndpoint:
                 mock_httpx_client.get.return_value = mock_response
                 resp = test_client.post("/v1/chat/completions",
                                        json={"model": "test", "messages": []},
-                                       cookies={"session_token": "valid-token"})
+                                       headers={"Authorization": "Bearer test-token"})
                 # Proxy should forward the request
                 assert resp.status_code in [200, 502, 503]
 
     def test_proxy_unauthenticated(self, test_client):
-        """Proxy route is OpenAI-compatible and does not require session auth."""
-        with patch.object(auth_manager, 'check_auth', return_value=False):
+        """OpenAI-compatible /v1 routes require a valid Bearer API token."""
+        with patch.object(auth_manager, 'check_api_token', return_value=False):
             resp = test_client.post("/v1/chat/completions", json={"model": "test"})
-            # Returns 503 when no model is loaded (auth is not checked on proxy)
-            assert resp.status_code == 503
+            assert resp.status_code == 401
+            assert resp.json()["error"]["type"] == "authentication_error"
 
 
 class TestInvalidateCache:

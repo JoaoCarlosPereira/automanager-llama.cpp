@@ -10,6 +10,7 @@ import re
 import glob
 import logging
 import html
+from urllib.parse import unquote
 import uvicorn
 import httpx
 from typing import List, Optional, Tuple, Dict, Any, Literal
@@ -27,6 +28,7 @@ from config_manager import (
     AuthManager,
     SESSION_IDLE_SECONDS,
     normalize_model_path,
+    CURSOR_COMPATIBLE_ALIAS_NAMES,
 )
 from proxy_router import (
     ProxyError,
@@ -38,10 +40,22 @@ from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager, _is_projector_filename
+from cliproxy_auth import CLIProxyAuthManager
 from platform_manager import (
+    CLIProxySidecarError,
     CLIProxySidecarManager,
     PlatformIntegrationError,
     PlatformIntegrationManager,
+    clear_platform_listing_registry,
+    filter_models_for_provider,
+    lookup_platform_bare_id,
+    platform_client_facing_model,
+    platform_listing_registry_populated,
+    platform_model_listing_entry,
+    platform_model_listing_id,
+    register_platform_model_listings,
+    resolve_platform_listing_model,
+    should_skip_platform_model_listing,
 )
 from version_manager import check_for_updates
 from schemas import (
@@ -62,6 +76,9 @@ from schemas import (
     SetLlamaBinRequest,
     ProxyConfigRequest,
     SetModelProxyRequest,
+    CLIProxyAuthStartRequest,
+    CLIProxyAuthCallbackRequest,
+    ModelAliasRequest,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -75,7 +92,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.3"  # horario das sessoes no fuso local
+_DASHBOARD_JS_V = "4.2.16"  # IDs opacos plataforma (Cursor BYOK)
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -172,7 +189,8 @@ auth_manager = AuthManager(config_manager, token_manager)
 
 model_scanner = ModelScanner(config_manager, process_manager)
 platform_manager = PlatformIntegrationManager(config_manager)
-cliproxy_sidecar = CLIProxySidecarManager(platform_manager)
+cliproxy_sidecar = CLIProxySidecarManager(platform_manager, log_manager=log_manager)
+cliproxy_auth_manager = CLIProxyAuthManager(platform_manager)
 download_mgr = DownloadManager()
 proxy_router = ProxyRouter(
     get_status=lambda: _hybrid_status(),
@@ -191,6 +209,24 @@ shutdown_event = threading.Event()
 def require_auth(request: Request) -> bool:
     """FastAPI dependency wrapper so Request injection works reliably."""
     return auth_manager.check_auth(request)
+
+
+def require_api_token(request: Request) -> bool:
+    """OpenAI-compatible routes: Bearer API token only (same as llama-server --api-key)."""
+    return auth_manager.check_api_token(request)
+
+
+def _openai_auth_error() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": {
+                "message": "Invalid API Key",
+                "type": "authentication_error",
+                "code": 401,
+            }
+        },
+    )
 
 # Context and Batch presets for the UI
 CONTEXT_PRESET_VALUES = [4096, 8192, 16384, 32768, 65536, 131072, "custom"]
@@ -227,7 +263,14 @@ def _hybrid_status() -> Dict[str, Any]:
 
 def _model_catalog_response() -> Dict[str, Any]:
     result = dict(model_scanner.scan() or {})
-    result["platforms"] = platform_manager.catalog()
+    auth_status = cliproxy_auth_manager.list_status()
+    platforms = []
+    for item in platform_manager.catalog():
+        entry = dict(item)
+        provider = entry.get("provider")
+        entry["cliproxy_auth"] = auth_status.get(provider or "", {})
+        platforms.append(entry)
+    result["platforms"] = platforms
     return result
 
 
@@ -415,6 +458,62 @@ async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(r
     return {"message": "Parado"}
 
 
+async def _fetch_sidecar_models(port: int) -> List[Dict[str, Any]]:
+    """Lista modelos expostos pelo sidecar CLIProxyAPI, se estiver online."""
+    try:
+        resp = await client.get(
+            f"http://127.0.0.1:{port}/v1/models",
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("data") or []
+    except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+        logger.debug("Falha ao listar modelos do sidecar na porta %s: %s", port, exc)
+        return []
+
+
+def _platform_detail_payload(backend_id: str) -> Dict[str, Any]:
+    item = platform_manager.get(backend_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Integracao de plataforma nao encontrada")
+    runtime = platform_manager.runtime_state(backend_id) or {}
+    provider = item.get("provider") or ""
+    auth_status = cliproxy_auth_manager.list_status().get(provider, {})
+    platform_configs = config_manager.get_platform_configs()
+    p_cfg = platform_configs.get(backend_id, {})
+    sidecar = cliproxy_sidecar.status()
+    return {
+        **item,
+        **runtime,
+        "cliproxy_auth": auth_status,
+        "platform_config": p_cfg,
+        "sidecar": sidecar,
+        "smart_proxy": config_manager.get_smart_proxy_settings(),
+    }
+
+
+@app.get("/platforms/{backend_id}")
+async def get_platform_detail(
+    backend_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    payload = _platform_detail_payload(backend_id)
+    sidecar_port = payload.get("sidecar", {}).get("port")
+    if payload.get("status") == "running" and sidecar_port:
+        all_models = await _fetch_sidecar_models(sidecar_port)
+        filtered = filter_models_for_provider(
+            all_models, payload.get("provider") or ""
+        )
+        payload["available_models"] = filtered
+        payload["cursor_model_ids"] = [
+            platform_model_listing_entry(m)["id"] for m in filtered
+        ]
+    else:
+        payload["available_models"] = []
+    return payload
+
+
 @app.post("/platforms/{backend_id}/start")
 async def start_platform(
     backend_id: str, authenticated: bool = Depends(require_auth)
@@ -453,6 +552,107 @@ async def stop_platform(
         "platform": state,
         "sidecar": cliproxy_sidecar.status(),
     }
+
+
+@app.get("/cliproxy/auth")
+async def get_cliproxy_auth(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {
+        "providers": cliproxy_auth_manager.list_status(),
+        "sidecar": cliproxy_sidecar.status(),
+    }
+
+
+@app.post("/cliproxy/auth/{provider}/start")
+async def start_cliproxy_auth(
+    provider: str,
+    req: CLIProxyAuthStartRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        session = await asyncio.to_thread(
+            cliproxy_auth_manager.start_login, provider, req.method
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"session": session}
+
+
+@app.get("/cliproxy/auth/sessions/{session_id}")
+async def get_cliproxy_auth_session(
+    session_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    session = cliproxy_auth_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Sessao de autenticacao nao encontrada")
+    return {"session": session}
+
+
+@app.post("/cliproxy/auth/sessions/{session_id}/callback")
+async def submit_cliproxy_auth_callback(
+    session_id: str,
+    req: CLIProxyAuthCallbackRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        session = await asyncio.to_thread(
+            cliproxy_auth_manager.submit_callback,
+            session_id,
+            req.callback_url,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Sessao de autenticacao nao encontrada")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"session": session}
+
+
+@app.delete("/cliproxy/auth/sessions/{session_id}")
+async def cancel_cliproxy_auth_session(
+    session_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    session = await asyncio.to_thread(
+        cliproxy_auth_manager.cancel_session, session_id
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Sessao de autenticacao nao encontrada")
+    return {"session": session}
+
+
+@app.post("/cliproxy/restart")
+async def restart_cliproxy_sidecar(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    active = platform_manager.active_instances()
+
+    def _restart() -> dict:
+        cliproxy_sidecar.stop()
+        if active:
+            try:
+                cliproxy_sidecar.ensure_running()
+            except CLIProxySidecarError as exc:
+                raise RuntimeError(str(exc)) from exc
+        return cliproxy_sidecar.status()
+
+    try:
+        status = await asyncio.to_thread(_restart)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    _invalidate_models_cache()
+    return {"sidecar": status, "active_platforms": len(active)}
 
 
 @app.post("/auto-balance/cancel")
@@ -589,6 +789,29 @@ async def get_config(authenticated: bool = Depends(require_auth)):
     return config
 
 
+@app.get("/model-aliases")
+async def list_model_aliases(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {
+        "aliases": config_manager.get_model_aliases(),
+        "cursor_compatible_names": list(CURSOR_COMPATIBLE_ALIAS_NAMES),
+    }
+
+
+@app.post("/model-aliases")
+async def set_model_alias(
+    req: ModelAliasRequest, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        aliases = config_manager.set_model_alias(req.alias, req.target)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"message": "Alias salvo", "aliases": aliases}
+
+
 @app.post("/models/mmproj")
 async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
@@ -682,6 +905,7 @@ async def _aggregate_models_response(
     instances: List[Dict[str, Any]], headers: Dict[str, str]
 ) -> JSONResponse:
     """Agrega o /v1/models de todas as instancias llama-server em execucao."""
+    clear_platform_listing_registry()
 
     async def fetch_models(inst: Dict[str, Any]) -> List[Dict[str, Any]]:
         port = inst.get("port")
@@ -691,7 +915,18 @@ async def _aggregate_models_response(
         try:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
-            return resp.json().get("data") or []
+            models = resp.json().get("data") or []
+            if inst.get("backend_type") == "platform":
+                local_ids = _local_model_ids(instances)
+                provider = str(inst.get("provider") or "")
+                models = [
+                    platform_model_listing_entry(m, provider=provider)
+                    for m in models
+                    if not should_skip_platform_model_listing(
+                        str(m.get("id") or ""), local_ids
+                    )
+                ]
+            return models
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
             logger.warning(
                 "Falha ao listar modelos da instancia na porta %s: %s",
@@ -710,6 +945,192 @@ async def _aggregate_models_response(
             seen_ids.add(model_id)
             merged.append(model)
     return JSONResponse({"object": "list", "data": merged})
+
+
+def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Adiciona entradas de alias (ex.: gpt-4o) com o mesmo shape dos modelos locais."""
+    aliases = config_manager.get_model_aliases()
+    if not aliases:
+        return models
+    existing_ids = {str(m.get("id") or "") for m in models}
+    augmented = list(models)
+    for alias, target in aliases.items():
+        if alias in existing_ids:
+            continue
+        entry = platform_model_listing_entry(
+            {"id": target, "owned_by": "platform"}, provider="platform"
+        )
+        entry["id"] = alias
+        augmented.append(entry)
+        existing_ids.add(alias)
+    return augmented
+
+
+async def _v1_models_payload(
+    instances: List[Dict[str, Any]], headers: Dict[str, str]
+) -> Dict[str, Any]:
+    response = await _aggregate_models_response(instances, headers)
+    payload = json.loads(response.body)
+    payload["data"] = _inject_model_aliases(payload.get("data") or [])
+    return payload
+
+
+def _find_model_in_v1_list(
+    models: List[Dict[str, Any]], model_id: str
+) -> Optional[Dict[str, Any]]:
+    """Busca modelo na listagem agregada (aceita id com ou sem .gguf)."""
+    decoded = unquote(model_id or "").strip()
+    if not decoded:
+        return None
+    candidates = [decoded]
+    mapped = lookup_platform_bare_id(decoded)
+    if mapped:
+        candidates.extend([mapped, platform_model_listing_id(mapped)])
+    listing = platform_model_listing_id(decoded)
+    if listing not in candidates:
+        candidates.append(listing)
+    bare = resolve_platform_listing_model(decoded)
+    if bare and bare not in candidates:
+        candidates.append(bare)
+        listing_bare = platform_model_listing_id(bare)
+        if listing_bare not in candidates:
+            candidates.append(listing_bare)
+    by_id = {str(m.get("id") or ""): m for m in models}
+    for candidate in candidates:
+        if candidate in by_id:
+            return by_id[candidate]
+    return None
+
+
+async def _ensure_platform_listing_registry(
+    instances: List[Dict[str, Any]], headers: Optional[Dict[str, str]] = None
+) -> None:
+    """Garante mapa listing->sidecar antes de rotear chat (sem depender de GET /v1/models)."""
+    if platform_listing_registry_populated():
+        return
+    hdrs = headers or {}
+    for inst in instances:
+        if inst.get("backend_type") != "platform":
+            continue
+        port = inst.get("port")
+        if not port:
+            continue
+        provider = str(inst.get("provider") or "")
+        try:
+            resp = await client.get(
+                f"http://127.0.0.1:{port}/v1/models", headers=hdrs, timeout=5.0
+            )
+            resp.raise_for_status()
+            local_ids = _local_model_ids(instances)
+            for m in resp.json().get("data") or []:
+                root = str(m.get("id") or "")
+                if not root or should_skip_platform_model_listing(root, local_ids):
+                    continue
+                register_platform_model_listings(root, provider)
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+            logger.debug(
+                "Falha ao montar registry de modelos plataforma na porta %s: %s",
+                port, exc,
+            )
+
+
+def _find_target_instance(
+    instances: List[Dict[str, Any]], requested_model: Optional[str]
+) -> Dict[str, Any]:
+    if requested_model:
+        target = next(
+            (
+                inst
+                for inst in instances
+                if _instance_matches_model(inst, requested_model, instances)
+            ),
+            None,
+        )
+        if not target:
+            target = next(
+                (
+                    inst for inst in instances
+                    if inst.get("backend_type") == "platform"
+                ),
+                None,
+            )
+        if not target:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Modelo '{requested_model}' nao esta carregado.",
+            )
+        return target
+    return next(
+        (i for i in instances if i.get("port") == SERVER_PORT), instances[0]
+    )
+
+
+def _platform_response_model_name(
+    client_requested_model: Optional[str],
+    target_instance: Dict[str, Any],
+    instances: List[Dict[str, Any]],
+) -> Optional[str]:
+    if target_instance.get("backend_type") != "platform" or not client_requested_model:
+        return None
+    return platform_client_facing_model(
+        str(client_requested_model),
+        _local_model_ids(instances),
+        config_manager.get_model_aliases(),
+        provider=str(target_instance.get("provider") or ""),
+    )
+
+
+def _local_model_ids(instances: List[Dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for inst in instances:
+        if inst.get("backend_type") == "platform":
+            continue
+        if inst.get("model"):
+            ids.add(inst["model"])
+        path = inst.get("model_path")
+        if path:
+            ids.add(path)
+            ids.add(os.path.basename(path))
+    return ids
+
+
+def _prepare_request_model(
+    data: Dict[str, Any], instances: List[Dict[str, Any]]
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Resolve apenas alias no corpo; sufixo .gguf de plataforma é resolvido no encaminhamento."""
+    requested = data.get("model")
+    if not requested:
+        return data, None
+    original = str(requested)
+    resolved = config_manager.resolve_model_alias(original)
+    if resolved == original:
+        return data, None
+    return {**data, "model": resolved}, original
+
+
+def _forward_model_for_backend(
+    model_name: str,
+    target_instance: Dict[str, Any],
+    instances: List[Dict[str, Any]],
+) -> str:
+    if target_instance.get("backend_type") != "platform":
+        return model_name
+    return resolve_platform_listing_model(model_name, _local_model_ids(instances))
+
+
+def _instance_matches_model(
+    inst: Dict[str, Any],
+    requested_model: str,
+    instances: List[Dict[str, Any]],
+) -> bool:
+    if inst.get("model") == requested_model or inst.get("model_path") == requested_model:
+        return True
+    if inst.get("backend_type") != "platform":
+        return False
+    local_ids = _local_model_ids(instances)
+    bare = resolve_platform_listing_model(requested_model, local_ids)
+    listing = platform_model_listing_id(bare)
+    return requested_model in {bare, listing}
 
 
 def _find_primary_instance(
@@ -950,13 +1371,19 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-async def openai_proxy(request: Request, path: str):
+async def openai_proxy(
+    request: Request,
+    path: str,
+    authenticated: bool = Depends(require_api_token),
+):
     """Proxy OpenAI-compatible requests to the correct llama-server instance,
     routing by the 'model' field in the request body (single-port multi-model).
 
     Com o Modo Proxy Inteligente ativo, requisições ao modelo principal são
     roteadas pelo ProxyRouter (sticky + least-busy); o restante segue o fluxo
     legado inalterado (ADR-003/ADR-004)."""
+    if not authenticated:
+        return _openai_auth_error()
     body = await request.body()
     data: Dict[str, Any] = {}
     requested_model = None
@@ -975,16 +1402,37 @@ async def openai_proxy(request: Request, path: str):
     proxy_settings = config_manager.get_smart_proxy_settings()
     proxy_enabled = bool(proxy_settings.get("enabled"))
 
-    # /v1/models nao tem corpo para rotear: agregar todas as instancias em vez
-    # de responder apenas com o modelo da porta default.
-    if request.method == "GET" and path.strip("/") == "models":
+    # /v1/models: agregar todas as instancias (locais + plataforma) para clientes
+    # OpenAI-compatíveis (Cursor, etc.) validarem nomes de modelo na listagem.
+    # O Modo Proxy Inteligente continua atuando apenas em POST /v1/chat/completions.
+    path_norm = path.strip("/")
+    if request.method == "GET" and path_norm.startswith("models"):
         list_headers = _filter_proxy_headers(dict(request.headers))
         list_headers.pop("host", None)
-        if proxy_enabled:
-            return await _primary_only_models_response(
-                instances, proxy_settings, list_headers
-            )
-        return await _aggregate_models_response(instances, list_headers)
+        payload = await _v1_models_payload(instances, list_headers)
+        if path_norm == "models":
+            return JSONResponse(payload)
+        if path_norm.startswith("models/"):
+            model_id = path_norm.split("/", 1)[1]
+            match = _find_model_in_v1_list(payload.get("data") or [], model_id)
+            if match is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Modelo '{unquote(model_id)}' nao encontrado.",
+                )
+            return JSONResponse(match)
+
+    route_headers = _filter_proxy_headers(dict(request.headers))
+    route_headers.pop("host", None)
+    await _ensure_platform_listing_registry(instances, route_headers)
+
+    client_requested_model = requested_model
+    external_model_name: Optional[str] = None
+    if requested_model:
+        data, external_model_name = _prepare_request_model(data, instances)
+        requested_model = data.get("model")
+        if body and data:
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     if proxy_enabled and request.method == "POST" and requested_model:
         primary_instance = _find_primary_instance(instances, proxy_settings)
@@ -993,52 +1441,63 @@ async def openai_proxy(request: Request, path: str):
         ):
             return await _smart_proxy_forward(request, path, data)
 
-    if requested_model:
-        target_instance = next(
-            (
-                inst
-                for inst in instances
-                if inst.get("model") == requested_model
-                or inst.get("model_path") == requested_model
-            ),
-            None,
-        )
-        if not target_instance:
-            target_instance = next(
-                (
-                    inst for inst in instances
-                    if inst.get("backend_type") == "platform"
-                ),
-                None,
-            )
-        if not target_instance:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Modelo '{requested_model}' nao esta carregado.",
-            )
+    target_instance = _find_target_instance(instances, requested_model)
+    forward_model = _forward_model_for_backend(
+        str(requested_model or ""), target_instance, instances
+    )
+    if requested_model and forward_model != requested_model:
+        data = {**data, "model": forward_model}
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        headers_need_rebuild = True
     else:
-        # Sem modelo especificado: usar a instancia da porta default (8085).
-        target_instance = next(
-            (i for i in instances if i.get("port") == SERVER_PORT), instances[0]
-        )
+        headers_need_rebuild = external_model_name is not None
+
+    client_facing_model = _platform_response_model_name(
+        client_requested_model, target_instance, instances
+    )
 
     target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
     headers = dict(request.headers)
     headers.pop("host", None)
+    if headers_need_rebuild:
+        headers.pop("content-length", None)
 
     try:
         if request.method == "POST":
-            if data.get("stream"):
+            is_stream = bool(data.get("stream"))
+            if is_stream:
                 async def stream_generator():
                     async with client.stream(
                         "POST", target_url, content=body, headers=headers, timeout=None
                     ) as response:
-                        async for chunk in response.aiter_bytes():
-                            yield chunk
+                        byte_iter = response.aiter_bytes()
+                        if client_facing_model:
+                            async for chunk in rewrite_sse_stream(
+                                byte_iter, client_facing_model
+                            ):
+                                yield chunk
+                        else:
+                            async for chunk in byte_iter:
+                                yield chunk
 
-                return StreamingResponse(stream_generator(), media_type="text/event-stream")
+                return StreamingResponse(
+                    stream_generator(), media_type="text/event-stream"
+                )
 
-            resp = await client.post(target_url, content=body, headers=headers, timeout=None)
+            resp = await client.post(
+                target_url, content=body, headers=headers, timeout=None
+            )
+            content = resp.content
+            if client_facing_model:
+                content, _ = rewrite_json_model(content, client_facing_model)
+            response_headers = _filter_proxy_headers(dict(resp.headers))
+            response_headers.pop("content-length", None)
+            return Response(
+                content=content,
+                status_code=resp.status_code,
+                headers=response_headers,
+                media_type=resp.headers.get("content-type"),
+            )
         elif request.method == "GET":
             resp = await client.get(
                 target_url, params=request.query_params, headers=headers
@@ -1048,10 +1507,16 @@ async def openai_proxy(request: Request, path: str):
                 request.method, target_url, content=body, headers=headers
             )
 
-        return StreamingResponse(
-            resp.aiter_bytes(),
+        content = await resp.aread()
+        if client_facing_model:
+            content, _ = rewrite_json_model(content, client_facing_model)
+        response_headers = _filter_proxy_headers(dict(resp.headers))
+        response_headers.pop("content-length", None)
+        return Response(
+            content=content,
             status_code=resp.status_code,
-            headers=_filter_proxy_headers(dict(resp.headers)),
+            headers=response_headers,
+            media_type=resp.headers.get("content-type"),
         )
     except httpx.RequestError as exc:
         logger.error(f"Proxy error to port {target_instance['port']}: {exc}")
@@ -1135,6 +1600,8 @@ async def set_model_proxy(
         settings["proxy_eligible"] = req.proxy_eligible
     if req.max_parallel_requests is not None:
         settings["max_parallel_requests"] = req.max_parallel_requests
+    if req.auto_start is not None:
+        settings["auto_start"] = req.auto_start
     if not settings:
         raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
     if req.backend_id:
@@ -1653,6 +2120,41 @@ def _build_html(
             </div>
         </div>"""
 
+    cliproxy_auth_modal = """
+        <div id="cliproxy-auth-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-3 sm:p-4 overflow-y-auto" role="dialog" aria-modal="true">
+            <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onclick="closeCliproxyAuthModal()"></div>
+            <div class="relative glass w-full max-w-xl max-h-[min(90vh,720px)] flex flex-col rounded-2xl sm:rounded-3xl border border-amber-500/30 shadow-2xl overflow-hidden my-auto">
+                <div class="shrink-0 p-4 sm:p-6 border-b border-slate-800/60 bg-slate-900/40">
+                    <h2 id="cliproxy-auth-title" class="text-base sm:text-lg font-bold text-white">Autenticar plataforma</h2>
+                    <p id="cliproxy-auth-subtitle" class="text-xs text-slate-500 mt-1">Conecte a conta do provedor ao CLIProxyAPI</p>
+                </div>
+                <div class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 sm:p-6 space-y-3">
+                    <div id="cliproxy-auth-status" class="text-sm text-slate-300">Preparando autenticacao...</div>
+                    <div id="cliproxy-auth-device" class="hidden rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 sm:p-4">
+                        <p class="text-ui-label font-black uppercase tracking-widest text-amber-300">Codigo do dispositivo</p>
+                        <p id="cliproxy-auth-device-code" class="mt-2 text-xl sm:text-2xl font-mono font-bold text-white tracking-widest break-all"></p>
+                        <a id="cliproxy-auth-device-url" href="#" target="_blank" rel="noopener noreferrer" class="mt-3 inline-flex text-xs sm:text-sm text-amber-300 hover:text-amber-200 underline break-all"></a>
+                    </div>
+                    <div id="cliproxy-auth-oauth" class="hidden rounded-xl border border-blue-500/30 bg-blue-500/5 p-3 sm:p-4 space-y-2 sm:space-y-3">
+                        <p class="text-ui-label font-black uppercase tracking-widest text-blue-300">1. Abra o link de login</p>
+                        <a id="cliproxy-auth-oauth-url" href="#" target="_blank" rel="noopener noreferrer" class="inline-flex text-xs sm:text-sm text-blue-300 hover:text-blue-200 underline break-all line-clamp-4"></a>
+                        <pre id="cliproxy-auth-instructions" class="max-h-28 overflow-y-auto custom-scroll text-[11px] sm:text-xs text-slate-400 whitespace-pre-wrap font-mono"></pre>
+                        <div id="cliproxy-auth-callback-box" class="hidden space-y-2 pt-2 border-t border-blue-500/20">
+                            <p class="text-ui-label font-black uppercase tracking-widest text-blue-300">2. Cole a URL de callback</p>
+                            <p class="text-[11px] sm:text-xs text-slate-400">Depois do login, copie a URL completa que comeca com <code class="text-slate-300">http://localhost:1455/auth/callback</code>.</p>
+                            <input type="url" id="cliproxy-auth-callback-input" placeholder="http://localhost:1455/auth/callback?code=..." class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-slate-200 outline-none focus:ring-2 focus:ring-blue-500/40">
+                            <button type="button" id="cliproxy-auth-callback-btn" onclick="submitCliproxyAuthCallback()" class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl uppercase">Enviar callback</button>
+                        </div>
+                    </div>
+                    <pre id="cliproxy-auth-log" class="hidden max-h-24 overflow-y-auto custom-scroll text-[11px] text-slate-500 whitespace-pre-wrap font-mono"></pre>
+                </div>
+                <div class="shrink-0 p-4 sm:p-6 border-t border-slate-800/60 bg-slate-900/40 flex gap-3">
+                    <button type="button" onclick="closeCliproxyAuthModal()" class="flex-1 py-2.5 sm:py-3 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-xl uppercase">Fechar</button>
+                    <button type="button" id="cliproxy-auth-cancel-btn" onclick="cancelCliproxyAuth()" class="hidden flex-1 py-2.5 sm:py-3 bg-red-600/20 hover:bg-red-600/30 text-red-300 text-xs font-black rounded-xl uppercase">Cancelar</button>
+                </div>
+            </div>
+        </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="pt-BR" class="dark">
 <head>
@@ -1842,6 +2344,7 @@ def _build_html(
     {login_overlay}
     {vision_import_modal}
     {version_update_modal}
+    {cliproxy_auth_modal}
     <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <!-- SIDEBAR (MENU RETRATIL) -->
@@ -2410,6 +2913,143 @@ def _build_html(
         </div>
     </template>
 
+    <!-- TEMPLATE PARA ABA DE PLATAFORMA CLOUD -->
+    <template id="platform-tab-template">
+        <div class="tab-content platform-tab-content w-full flex-col" data-tab-kind="platform">
+            <div class="tab-layout-row">
+                <div class="tab-config-panel flex-1 p-6 md:p-8 space-y-6 bg-slate-900/10">
+                    <div class="flex items-center justify-between gap-6 flex-wrap pb-6 border-b border-slate-800/60">
+                        <div class="flex items-center gap-5">
+                            <div class="w-14 h-14 rounded-2xl bg-violet-600/10 border border-violet-500/20 flex items-center justify-center shadow-inner">
+                                <i class="fas fa-cloud text-violet-400 text-xl"></i>
+                            </div>
+                            <div>
+                                <h2 class="platform-tab-name text-2xl font-bold text-white tracking-tight leading-none">Plataforma</h2>
+                                <p class="platform-tab-provider text-ui-body-sm text-slate-500 font-mono mt-2 uppercase tracking-tighter"></p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <div class="tab-status-badge px-5 py-2.5 rounded-xl text-ui-body-sm font-black tracking-[0.2em] uppercase glass border-slate-700/50 text-slate-500 shadow-sm transition-all">OFFLINE</div>
+                            <div class="tab-actions flex items-center gap-3 flex-wrap justify-end"></div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm">
+                            <p class="text-ui-body-sm font-black text-violet-400 uppercase tracking-[0.25em]">Integração</p>
+                            <dl class="space-y-3 text-sm">
+                                <div class="flex justify-between gap-4"><dt class="text-slate-500 uppercase text-ui-label font-black">Backend</dt><dd class="platform-info-backend-id text-slate-300 font-mono text-right break-all">—</dd></div>
+                                <div class="flex justify-between gap-4"><dt class="text-slate-500 uppercase text-ui-label font-black">Executável</dt><dd class="platform-info-executable text-slate-400 font-mono text-right text-xs break-all">—</dd></div>
+                                <div class="flex justify-between gap-4"><dt class="text-slate-500 uppercase text-ui-label font-black">CLIProxyAPI</dt><dd class="platform-info-cliproxy text-slate-400 font-mono text-right text-xs break-all">—</dd></div>
+                                <div class="flex justify-between gap-4"><dt class="text-slate-500 uppercase text-ui-label font-black">Sidecar</dt><dd class="platform-info-sidecar text-slate-300 font-mono">—</dd></div>
+                                <div class="flex justify-between gap-4"><dt class="text-slate-500 uppercase text-ui-label font-black">Início</dt><dd class="platform-info-start-time text-slate-400">—</dd></div>
+                            </dl>
+                            <p class="platform-info-error hidden text-ui-label text-rose-400/90 leading-relaxed border-t border-slate-800/50 pt-3"></p>
+                        </div>
+
+                        <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm">
+                            <div class="flex items-center justify-between gap-3">
+                                <p class="text-ui-body-sm font-black text-emerald-400 uppercase tracking-[0.25em]">Autenticação</p>
+                                <button type="button" class="platform-auth-btn px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-300 text-ui-label font-black uppercase tracking-widest hover:bg-amber-500/10 transition-all">
+                                    <i class="fas fa-key mr-1"></i> Gerenciar
+                                </button>
+                            </div>
+                            <p class="platform-auth-summary text-ui-body-sm text-slate-400">—</p>
+                            <ul class="platform-auth-accounts space-y-1.5 text-ui-label font-mono text-slate-500 max-h-32 overflow-y-auto custom-scroll"></ul>
+                            <p class="platform-auth-methods text-ui-label text-slate-600">—</p>
+                        </div>
+                    </div>
+
+                    <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm">
+                        <div class="flex items-center justify-between gap-3">
+                            <p class="text-ui-body-sm font-black text-blue-400 uppercase tracking-[0.25em]">Modelos Disponíveis</p>
+                            <button type="button" class="platform-refresh-models-btn px-3 py-1.5 rounded-lg border border-slate-700 text-slate-400 text-ui-label font-black uppercase tracking-widest hover:bg-slate-800 transition-all">
+                                <i class="fas fa-sync-alt mr-1"></i> Atualizar
+                            </button>
+                        </div>
+                        <div class="platform-models-list space-y-2 min-h-[3rem]">
+                            <p class="text-ui-label text-slate-600 italic">Inicie a integração para listar modelos.</p>
+                        </div>
+                    </div>
+
+                    <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
+                        <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso no Cursor</p>
+                        <p class="text-sm text-slate-400 leading-relaxed">No Cursor BYOK, use alias do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …) ou o ID opaco gerado na listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Nomes com <span class="font-mono">gemini</span>/<span class="font-mono">claude</span> são bloqueados pelo Cursor.</p>
+                        <ul class="platform-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
+                        <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
+                            <label class="space-y-1">
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome no Cursor</span>
+                                <select class="platform-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
+                            </label>
+                            <label class="space-y-1 flex-1 min-w-[12rem]">
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Modelo real</span>
+                                <select class="platform-cursor-target-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-mono w-full"></select>
+                            </label>
+                            <button type="button" class="platform-cursor-save-alias px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase tracking-widest hover:bg-cyan-600/30 transition-all">Salvar alias</button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm">
+                            <p class="text-ui-body-sm font-black text-violet-400/80 uppercase tracking-[0.25em]">Modo Proxy Inteligente</p>
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-ui-label">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <span class="font-black text-violet-400/80 uppercase">Principal</span>
+                                    <input type="checkbox" class="platform-proxy-primary w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600">
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <span class="font-black text-slate-500 uppercase">Proxy</span>
+                                    <input type="checkbox" class="platform-proxy-eligible w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600">
+                                </label>
+                                <label class="flex items-center gap-2">
+                                    <span class="font-black text-slate-500 uppercase">Paralelo</span>
+                                    <input type="number" min="1" max="16" class="platform-proxy-parallel w-12 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-center text-slate-300">
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer ml-auto">
+                                    <span class="font-black text-slate-500 uppercase">Auto-Start</span>
+                                    <input type="checkbox" class="platform-autostart w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600">
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="glass rounded-[2rem] p-6 space-y-3 shadow-sm">
+                            <p class="text-ui-body-sm font-black text-amber-500/80 uppercase tracking-[0.25em]">Limites & Uso</p>
+                            <p class="platform-limits-info text-sm text-slate-400 leading-relaxed">—</p>
+                            <dl class="space-y-2 text-ui-label">
+                                <div class="flex justify-between"><dt class="text-slate-600 uppercase font-black">Req. paralelas (proxy)</dt><dd class="platform-limits-parallel text-slate-400 font-mono">1</dd></div>
+                                <div class="flex justify-between"><dt class="text-slate-600 uppercase font-black">API AutoManager</dt><dd class="text-slate-500">Chave obrigatória</dd></div>
+                            </dl>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-log-panel xl:w-1/3 xl:max-w-[40%] xl:border-l border-t xl:border-t-0 border-slate-800/60 bg-slate-950/40 shadow-2xl relative">
+                    <div class="p-6 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between shrink-0">
+                        <div class="flex items-center gap-3">
+                            <div class="flex gap-1">
+                                <div class="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                                <div class="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                                <div class="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                            </div>
+                            <p class="text-ui-body-sm font-black uppercase tracking-[0.25em] text-slate-500 ml-2">Console de Requisições</p>
+                        </div>
+                        <button class="tab-clear-logs-btn text-slate-600 hover:text-red-400 transition-colors" title="Limpar console">
+                            <i class="fas fa-trash-alt text-ui-body-sm"></i>
+                        </button>
+                    </div>
+                    <div class="tab-log-box p-8 font-mono text-sm text-slate-400 leading-6 custom-scroll whitespace-pre-wrap break-words selection:bg-violet-500/20 bg-slate-950/20"></div>
+                    <div class="p-4 bg-slate-900/60 border-t border-slate-800/80 flex items-center justify-between shrink-0">
+                        <div class="flex items-center gap-3">
+                            <div class="w-2 h-2 rounded-full bg-violet-500/50 animate-pulse"></div>
+                            <span class="tab-log-status text-ui-label font-black text-slate-600 uppercase tracking-widest">Aguardando instância</span>
+                        </div>
+                        <span class="tab-log-size text-ui-label font-mono text-slate-700">0 KB</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
     <script>
         window.fixedIp = "{local_ip}";
         window.__constants = {{
@@ -2564,6 +3204,31 @@ def _auto_start_default_model() -> None:
             logger.error(f"Auto-start error for {model_path}: {e}")
 
 
+def _auto_start_platforms() -> None:
+    """Start platform integrations that are marked for Auto-Start."""
+    platform_configs = config_manager.get_platform_configs()
+    backend_ids = [
+        item["backend_id"]
+        for item in platform_manager.catalog()
+        if platform_configs.get(item["backend_id"], {}).get("auto_start")
+    ]
+    if not backend_ids:
+        return
+
+    logger.info("Platform auto-start requested for: %s", ", ".join(backend_ids))
+    for backend_id in backend_ids:
+        try:
+            state = platform_manager.start_backend(backend_id, cliproxy_sidecar)
+            logger.info(
+                "Platform auto-start: %s status=%s port=%s",
+                backend_id,
+                state.get("status"),
+                state.get("sidecar_port"),
+            )
+        except Exception as exc:
+            logger.error("Platform auto-start error for %s: %s", backend_id, exc)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start OOM watchdog, download runner, and optionally auto-start default model."""
@@ -2575,6 +3240,11 @@ async def startup_event():
         target=_auto_start_default_model,
         daemon=True,
         name="auto-start",
+    ).start()
+    threading.Thread(
+        target=_auto_start_platforms,
+        daemon=True,
+        name="platform-auto-start",
     ).start()
 
 

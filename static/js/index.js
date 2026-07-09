@@ -1,26 +1,29 @@
-import { state } from './state.js?v=4.2.3';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.3';
-import { cancelAutoBalance } from './gpu.js?v=4.2.3';
+import { state } from './state.js?v=4.2.12';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.12';
+import { cancelAutoBalance } from './gpu.js?v=4.2.12';
 import {
     syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
-} from './gpu.js?v=4.2.3';
+} from './gpu.js?v=4.2.12';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, copyApiToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload, refreshApiToken,
-} from './metrics.js?v=4.2.3';
+} from './metrics.js?v=4.2.12';
 import {
-    initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
+    initDashboard, selectModel, selectModelFromEvent, selectPlatform, selectPlatformFromEvent,
+    applyModelConfig, setDefaultModel,
     startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-} from './models.js?v=4.2.3';
-import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.3';
+    startCliproxyAuth, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
+    setPlatformAutoStart,
+} from './models.js?v=4.2.12';
+import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.12';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyReassignSession,
-} from './proxy.js?v=4.2.3';
+} from './proxy.js?v=4.2.12';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -41,11 +44,18 @@ win.stopModel = stopModel;
 win.startModel = startModel;
 win.startPlatform = startPlatform;
 win.stopPlatform = stopPlatform;
+win.startCliproxyAuth = startCliproxyAuth;
+win.closeCliproxyAuthModal = closeCliproxyAuthModal;
+win.cancelCliproxyAuth = cancelCliproxyAuth;
+win.submitCliproxyAuthCallback = submitCliproxyAuthCallback;
 win.renameModel = renameModel;
 win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
+win.setPlatformAutoStart = setPlatformAutoStart;
 win.selectModel = selectModel;
 win.selectModelFromEvent = selectModelFromEvent;
+win.selectPlatform = selectPlatform;
+win.selectPlatformFromEvent = selectPlatformFromEvent;
 win.closeTab = closeTab;
 win.applyModelConfig = applyModelConfig;
 win.renewToken = renewToken;
