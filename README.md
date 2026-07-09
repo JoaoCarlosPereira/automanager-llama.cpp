@@ -17,6 +17,7 @@
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [Architecture](#architecture)
+- [Hybrid platform integrations](#hybrid-platform-integrations)
 - [API Reference](#api-reference)
 - [Hardware Requirements](#hardware-requirements)
 - [Installation](#installation)
@@ -58,6 +59,7 @@
 | **Status lifecycle** | OFFLINE → STARTING → ONLINE → (REALOCANDO) → STOPPING; UI dims metrics when offline | Stable |
 | **Log streaming** | SSE console tail of `llama-server` output | Stable |
 | **Session + API key auth** | Cookie sessions and Bearer token for API clients | Stable |
+| **Hybrid platform models** | Detect Codex, Claude Code, and Google Antigravity CLI tools and expose them through the same dashboard/API flow | MVP |
 | **Quick-Install** | Idempotent `installer/setup.sh` (venv, systemd, health check) | Stable |
 | **Modular codebase** | Domain logic in focused modules; `llama_manager.py` is the composition root (routes + UI) | Stable |
 
@@ -103,11 +105,34 @@ Automanager is a **control plane** (FastAPI on port **8000**) that manages a sin
 | `gpu_manager.py` | GPU detection, tensor split, `CUDA_VISIBLE_DEVICES` |
 | `process_manager.py` | `llama-server` subprocess, OOM watchdog |
 | `model_manager.py` | Model scan, rename/delete, URL downloads |
+| `platform_manager.py` | Startup detection and CLIProxyAPI sidecar lifecycle for platform integrations |
+| `proxy_router.py` | Smart proxy backend selection, sticky sessions, and local/platform routing |
 | `log_manager.py` | Rotating logs under `logs/`, SSE streaming |
 | `schemas.py` | Pydantic request/response models |
 | `paths.py` | Install path resolution (`paths.json`) |
 | `installer/setup.sh` | Quick-Install: deps, venv, systemd, health check |
 | `installer/uninstall.sh` | Remove systemd service and venv; `--purge` removes config/logs |
+
+---
+
+## Hybrid platform integrations
+
+AutoManager can show supported subscription-backed CLI tools beside local
+`.gguf` models. The MVP supports Codex, Claude Code, and Google Antigravity.
+
+- Detection runs once when AutoManager starts. Restart AutoManager after you
+  install, remove, or move one of the supported tools.
+- AutoManager does not collect provider credentials, API keys, or platform
+  logins. It uses the authentication state that already exists in the
+  installed CLI tools.
+- Starting a platform card starts a shared local CLIProxyAPI sidecar. Active
+  platform integrations appear in `/status`, and their real sidecar model IDs
+  pass through `/v1/models`.
+- Platform backends are excluded from the smart proxy until you explicitly
+  enable proxy participation for that backend. The proxy primary can be a
+  local `primary_model_path` or a platform `primary_backend_id`.
+- If a supported CLI is detected but CLIProxyAPI is missing, the card stays
+  visible with a not-ready reason instead of disappearing.
 
 ---
 
@@ -118,15 +143,21 @@ Base URL: `http://<host>:8000`. Most endpoints require a valid **session cookie*
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Dashboard UI (HTML) |
-| `GET` | `/status` | `llama-server` running state and loaded model |
+| `GET` | `/status` | Local and platform runtime state |
 | `GET` | `/metrics` | CPU, RAM, GPU utilization / temp / power / VRAM |
-| `GET` | `/models` | List `.gguf` models under `MODELS_DIR` |
+| `GET` | `/models` | List `.gguf` models and platform integration cards |
 | `GET` | `/downloads` | Active download progress |
 | `POST` | `/downloads` | Start download with `{ "url": "...", "filename": "optional" }` |
 | `GET` | `/logs` | SSE stream of server log output |
 | `GET` | `/config` | Current configuration (password hash omitted) |
 | `POST` | `/start` | Start server: `{ "path", "gpu_weights", "context_size", "mmproj_path?", "split_mode?" }` |
 | `POST` | `/stop` | Stop running `llama-server` |
+| `POST` | `/platforms/{backend_id}/start` | Start a platform integration and the shared sidecar |
+| `POST` | `/platforms/{backend_id}/stop` | Stop a platform integration; stops the sidecar when no platform remains active |
+| `POST` | `/models/proxy` | Update proxy eligibility for a local `model_path` or platform `backend_id` |
+| `POST` | `/proxy/config` | Update smart proxy settings, including `primary_model_path` or `primary_backend_id` |
+| `GET` | `/v1/models` | OpenAI-compatible model list from local servers and active platform sidecar |
+| `*` | `/v1/{path}` | OpenAI-compatible forwarding to local servers or the platform sidecar |
 | `POST` | `/set_default` | Set default model: `{ "path": string \| null }` |
 | `POST` | `/rename` | Rename model file: `{ "path", "new_name" }` |
 | `POST` | `/delete` | Delete model file: `{ "path" }` |
