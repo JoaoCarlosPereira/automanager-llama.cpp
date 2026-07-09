@@ -12,7 +12,7 @@ import {
 } from './metrics.js?v=4.2.3';
 import {
     initDashboard, selectModel, selectModelFromEvent, applyModelConfig, setDefaultModel,
-    startModel, stopModel, renameModel, deleteModel, downloadModel, updateModels,
+    startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
 } from './models.js?v=4.2.3';
@@ -39,6 +39,8 @@ win.getContextSize = getContextSize;
 win.setContextSize = setContextSize;
 win.stopModel = stopModel;
 win.startModel = startModel;
+win.startPlatform = startPlatform;
+win.stopPlatform = stopPlatform;
 win.renameModel = renameModel;
 win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
