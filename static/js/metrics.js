@@ -19,6 +19,7 @@ export async function updateStatus() {
         updateProxyPanel();
 
         state.activeInstances = data.instances || [];
+        state.platforms = data.platforms || state.platforms || [];
         const runningInstances = state.activeInstances.filter(i => i.status === 'running');
         const recovery = data.recovery;
         const autoBalancing = !!(recovery?.active && recovery?.auto_balance);
