@@ -115,13 +115,34 @@ class TestStatusEndpoint:
     """Tests for the /status endpoint."""
 
     def test_status_success(self, test_client):
-        with patch.object(process_manager, 'get_status', return_value={"instances": [], "recovery": {}}):
-            with patch.object(auth_manager, 'check_auth', return_value=True):
-                resp = test_client.get("/status", cookies={"session_token": "valid-token"})
-                assert resp.status_code == 200
-                data = resp.json()
-                assert "instances" in data
-                assert "recovery" in data
+        local_instance = {"port": 8085, "model": "main.gguf", "model_path": "/models/main.gguf"}
+        platform_state = {
+            "backend_id": "platform:codex",
+            "backend_type": "platform",
+            "active": True,
+            "status": "running",
+            "sidecar_port": 9100,
+        }
+        platform_instance = {
+            "port": 9100,
+            "model": "Codex",
+            "backend_id": "platform:codex",
+            "backend_type": "platform",
+        }
+        with patch.object(process_manager, 'get_status', return_value={"instances": [local_instance], "recovery": {}}):
+            with patch.object(llama_manager.platform_manager, 'runtime_states', return_value=[platform_state]):
+                with patch.object(llama_manager.platform_manager, 'active_instances', return_value=[platform_instance]):
+                    with patch.object(llama_manager.cliproxy_sidecar, 'status', return_value={"status": "running", "port": 9100}):
+                        with patch.object(auth_manager, 'check_auth', return_value=True):
+                            resp = test_client.get("/status", cookies={"session_token": "valid-token"})
+                            assert resp.status_code == 200
+                            data = resp.json()
+                            assert "instances" in data
+                            assert "recovery" in data
+                            assert data["local_instances"][0]["backend_type"] == "local"
+                            assert data["platforms"] == [platform_state]
+                            assert data["sidecar"]["port"] == 9100
+                            assert [item["port"] for item in data["instances"]] == [8085, 9100]
 
     def test_status_unauthenticated(self, test_client):
         with patch.object(auth_manager, 'check_auth', return_value=False):
@@ -168,12 +189,23 @@ class TestModelsEndpoint:
     """Tests for the /models endpoint."""
 
     def test_models_success(self, test_client):
+        platforms = [
+            {"backend_id": "platform:codex", "display_name": "Codex"},
+            {"backend_id": "platform:claude-code", "display_name": "Claude Code"},
+            {"backend_id": "platform:google-antigravity", "display_name": "Google Antigravity"},
+        ]
         with patch.object(model_scanner, 'scan', return_value={"models": [], "projectors": [], "storage": {}}):
-            with patch.object(auth_manager, 'check_auth', return_value=True):
-                resp = test_client.get("/models", cookies={"session_token": "valid-token"})
-                assert resp.status_code == 200
-                data = resp.json()
-                assert "models" in data
+            with patch.object(llama_manager.platform_manager, 'catalog', return_value=platforms):
+                with patch.object(auth_manager, 'check_auth', return_value=True):
+                    resp = test_client.get("/models", cookies={"session_token": "valid-token"})
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert "models" in data
+                    assert [item["backend_id"] for item in data["platforms"]] == [
+                        "platform:codex",
+                        "platform:claude-code",
+                        "platform:google-antigravity",
+                    ]
 
     def test_models_unauthenticated(self, test_client):
         with patch.object(auth_manager, 'check_auth', return_value=False):
@@ -300,6 +332,58 @@ class TestStopEndpoint:
         with patch.object(auth_manager, 'check_auth', return_value=False):
             resp = test_client.post("/stop")
             assert resp.status_code == 401
+
+
+class TestPlatformEndpoints:
+    """Tests for the /platforms/{backend_id}/start and /stop endpoints."""
+
+    def test_platform_start_requires_auth(self, test_client):
+        with patch.object(auth_manager, 'check_auth', return_value=False):
+            resp = test_client.post("/platforms/platform:codex/start")
+            assert resp.status_code == 401
+
+    def test_platform_start_success_contract(self, test_client, monkeypatch):
+        platform = MagicMock()
+        platform.start_backend.return_value = {
+            "backend_id": "platform:codex",
+            "active": True,
+            "status": "running",
+            "sidecar_port": 9100,
+        }
+        sidecar = MagicMock()
+        sidecar.status.return_value = {"status": "running", "port": 9100}
+        monkeypatch.setattr(llama_manager, "platform_manager", platform)
+        monkeypatch.setattr(llama_manager, "cliproxy_sidecar", sidecar)
+        with patch.object(auth_manager, 'check_auth', return_value=True):
+            resp = test_client.post("/platforms/platform:codex/start")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["platform"]["backend_id"] == "platform:codex"
+        assert payload["platform"]["status"] == "running"
+        assert payload["sidecar"]["port"] == 9100
+        platform.start_backend.assert_called_once_with("platform:codex", sidecar)
+
+    def test_platform_stop_inactive_returns_stable_json(self, test_client, monkeypatch):
+        platform = MagicMock()
+        platform.stop_backend.return_value = {
+            "backend_id": "platform:codex",
+            "active": False,
+            "status": "stopped",
+            "sidecar_port": None,
+        }
+        sidecar = MagicMock()
+        sidecar.status.return_value = {"status": "stopped", "port": None}
+        monkeypatch.setattr(llama_manager, "platform_manager", platform)
+        monkeypatch.setattr(llama_manager, "cliproxy_sidecar", sidecar)
+        with patch.object(auth_manager, 'check_auth', return_value=True):
+            resp = test_client.post("/platforms/platform:codex/stop")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["platform"]["active"] is False
+        assert payload["platform"]["status"] == "stopped"
+        assert payload["sidecar"]["status"] == "stopped"
 
 
 class TestSetDefaultEndpoint:
