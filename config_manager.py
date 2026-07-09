@@ -50,8 +50,20 @@ DEFAULT_THINKING_ENABLED = True
 DEFAULT_SMART_PROXY = {
     "enabled": False,
     "primary_model_path": None,
+    "primary_backend_id": None,
     "ttl_minutes": DEFAULT_PROXY_TTL_MINUTES,
     "max_wait_seconds": DEFAULT_PROXY_MAX_WAIT_SECONDS,
+}
+
+DEFAULT_PLATFORM_BACKEND_IDS = (
+    "platform:codex",
+    "platform:claude-code",
+    "platform:google-antigravity",
+)
+
+DEFAULT_PLATFORM_CONFIG = {
+    "proxy_eligible": False,
+    "max_parallel_requests": DEFAULT_MAX_PARALLEL_REQUESTS,
 }
 
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
@@ -143,6 +155,32 @@ def lookup_model_config(model_configs: dict, model_path: str) -> dict:
     return {}
 
 
+def default_platform_configs() -> Dict[str, dict]:
+    return {
+        backend_id: dict(DEFAULT_PLATFORM_CONFIG)
+        for backend_id in DEFAULT_PLATFORM_BACKEND_IDS
+    }
+
+
+def normalize_backend_id(backend_id: Optional[str]) -> str:
+    if not backend_id:
+        return ""
+    return str(backend_id).strip()
+
+
+def lookup_platform_config(platform_configs: dict, backend_id: str) -> dict:
+    backend_id = normalize_backend_id(backend_id)
+    if not backend_id:
+        return {}
+    defaults = default_platform_configs().get(
+        backend_id, dict(DEFAULT_PLATFORM_CONFIG)
+    )
+    stored = platform_configs.get(backend_id)
+    if not isinstance(stored, dict):
+        stored = {}
+    return {**defaults, **stored}
+
+
 class ConfigManager:
     """Thread-safe JSON config manager with atomic writes."""
 
@@ -192,6 +230,55 @@ class ConfigManager:
     def get_model_settings(self, model_path: str) -> dict:
         config = self.load()
         return lookup_model_config(config.get("model_configs", {}), model_path)
+
+    def get_platform_configs(self) -> dict:
+        config = self.load()
+        stored = config.get("platform_configs")
+        if not isinstance(stored, dict):
+            stored = {}
+        merged = default_platform_configs()
+        for backend_id, settings in stored.items():
+            norm = normalize_backend_id(backend_id)
+            if not norm or not isinstance(settings, dict):
+                continue
+            merged[norm] = lookup_platform_config(stored, norm)
+        return merged
+
+    def get_platform_settings(self, backend_id: str) -> dict:
+        config = self.load()
+        stored = config.get("platform_configs")
+        if not isinstance(stored, dict):
+            stored = {}
+        return lookup_platform_config(stored, backend_id)
+
+    def update_platform_settings(self, backend_id: str, settings: dict) -> dict:
+        backend_id = normalize_backend_id(backend_id)
+        if not backend_id:
+            raise ValueError("backend_id is required")
+        config = self.load()
+        platform_configs = config.get("platform_configs")
+        if not isinstance(platform_configs, dict):
+            platform_configs = {}
+        prev = lookup_platform_config(platform_configs, backend_id)
+        merged = {**prev, **(settings or {})}
+        max_parallel = merged.get("max_parallel_requests")
+        if not isinstance(max_parallel, int) or max_parallel < 1:
+            max_parallel = DEFAULT_MAX_PARALLEL_REQUESTS
+        entry = {
+            **{
+                k: v
+                for k, v in merged.items()
+                if k not in {"proxy_eligible", "max_parallel_requests"}
+            },
+            "proxy_eligible": bool(
+                merged.get("proxy_eligible", DEFAULT_PLATFORM_CONFIG["proxy_eligible"])
+            ),
+            "max_parallel_requests": max_parallel,
+        }
+        platform_configs[backend_id] = entry
+        config["platform_configs"] = platform_configs
+        self.save(config)
+        return entry
 
     def update_model_settings(self, model_path: str, settings: dict) -> None:
         config = self.load()
@@ -294,11 +381,20 @@ class ConfigManager:
         stored = config.get("smart_proxy")
         if not isinstance(stored, dict):
             stored = {}
-        merged = {**DEFAULT_SMART_PROXY, **stored, **(partial or {})}
+        partial = partial or {}
+        primary_model_updated = "primary_model_path" in partial
+        primary_backend_updated = "primary_backend_id" in partial
+        merged = {**DEFAULT_SMART_PROXY, **stored, **partial}
         primary = merged.get("primary_model_path")
         merged["primary_model_path"] = (
             normalize_model_path(primary) if primary else None
         )
+        primary_backend_id = normalize_backend_id(merged.get("primary_backend_id"))
+        merged["primary_backend_id"] = primary_backend_id or None
+        if primary_model_updated and merged["primary_model_path"]:
+            merged["primary_backend_id"] = None
+        if primary_backend_updated and not primary_backend_id:
+            merged["primary_backend_id"] = None
         for key in ("ttl_minutes", "max_wait_seconds"):
             value = merged.get(key)
             if not isinstance(value, int) or value < 1:
