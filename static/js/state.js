@@ -8,6 +8,7 @@ export const state = {
     currentSelectedModel: null,
     currentRunningModelPath: null,
     activeInstances: [],
+    platforms: [],
     currentActivePort: 8085,
     manualGpuOverride: false,
     autoBalancePending: false,
@@ -23,6 +24,7 @@ export const state = {
     currentTabId: null,
     initialTabsSynced: false,
     lastModelsList: [],
+    lastPlatformList: [],
     lastConfig: {},
     modelLogs: {}, // {modelPath: 'log text...'}
 };
