@@ -120,6 +120,198 @@ def _filter_proxy_headers(headers: Dict[str, str]) -> Dict[str, str]:
     }
 
 
+_PROXY_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
+_PROXY_MAX_ATTEMPTS = 3
+
+
+def _proxy_retry_delay(attempt: int) -> float:
+    return min(0.25 * (2 ** attempt), 2.0)
+
+
+def _is_retryable_upstream_status(status_code: int) -> bool:
+    return status_code in _PROXY_RETRYABLE_STATUSES
+
+
+async def _proxy_post_with_retry(
+    url: str,
+    *,
+    content: bytes,
+    headers: Dict[str, str],
+    backend_label: str = "",
+) -> httpx.Response:
+    """Reenvia POST ao backend com backoff em falhas transitórias."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(_PROXY_MAX_ATTEMPTS):
+        try:
+            resp = await client.post(url, content=content, headers=headers, timeout=None)
+            if (
+                _is_retryable_upstream_status(resp.status_code)
+                and attempt < _PROXY_MAX_ATTEMPTS - 1
+            ):
+                logger.warning(
+                    "[proxy] %s HTTP %s — retry %d/%d",
+                    backend_label or url,
+                    resp.status_code,
+                    attempt + 1,
+                    _PROXY_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(_proxy_retry_delay(attempt))
+                continue
+            return resp
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt >= _PROXY_MAX_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "[proxy] %s indisponivel (%s) — retry %d/%d",
+                backend_label or url,
+                exc,
+                attempt + 1,
+                _PROXY_MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(_proxy_retry_delay(attempt))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("proxy post retry exhausted")
+
+
+async def _proxy_open_stream_with_retry(
+    url: str,
+    *,
+    content: bytes,
+    headers: Dict[str, str],
+    backend_label: str = "",
+) -> httpx.Response:
+    """Abre stream SSE no backend; retenta antes de entregar bytes ao cliente."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(_PROXY_MAX_ATTEMPTS):
+        try:
+            upstream = await client.send(
+                client.build_request(
+                    "POST", url, content=content, headers=headers, timeout=None
+                ),
+                stream=True,
+            )
+            if (
+                _is_retryable_upstream_status(upstream.status_code)
+                and attempt < _PROXY_MAX_ATTEMPTS - 1
+            ):
+                logger.warning(
+                    "[proxy] %s stream HTTP %s — retry %d/%d",
+                    backend_label or url,
+                    upstream.status_code,
+                    attempt + 1,
+                    _PROXY_MAX_ATTEMPTS,
+                )
+                await upstream.aread()
+                await upstream.aclose()
+                await asyncio.sleep(_proxy_retry_delay(attempt))
+                continue
+            return upstream
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt >= _PROXY_MAX_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "[proxy] %s stream indisponivel (%s) — retry %d/%d",
+                backend_label or url,
+                exc,
+                attempt + 1,
+                _PROXY_MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(_proxy_retry_delay(attempt))
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("proxy stream retry exhausted")
+
+
+def _sse_stream_complete(body: bytes) -> bool:
+    """True quando o corpo SSE parece completo (OpenAI-compat)."""
+    if not body:
+        return False
+    return b"data: [DONE]" in body or body.rstrip().endswith(b"[DONE]")
+
+
+async def _collect_upstream_stream_with_retry(
+    url: str,
+    *,
+    content: bytes,
+    headers: Dict[str, str],
+    backend_label: str = "",
+) -> Tuple[int, List[bytes], Dict[str, str]]:
+    """Bufferiza o stream inteiro no AutoManager; retenta se falhar antes de [DONE]."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(_PROXY_MAX_ATTEMPTS):
+        upstream: Optional[httpx.Response] = None
+        try:
+            upstream = await client.send(
+                client.build_request(
+                    "POST", url, content=content, headers=headers, timeout=None
+                ),
+                stream=True,
+            )
+            upstream_headers = dict(upstream.headers)
+            if (
+                _is_retryable_upstream_status(upstream.status_code)
+                and attempt < _PROXY_MAX_ATTEMPTS - 1
+            ):
+                logger.warning(
+                    "[proxy] %s buffered stream HTTP %s — retry %d/%d",
+                    backend_label or url,
+                    upstream.status_code,
+                    attempt + 1,
+                    _PROXY_MAX_ATTEMPTS,
+                )
+                await upstream.aread()
+                await upstream.aclose()
+                await asyncio.sleep(_proxy_retry_delay(attempt))
+                continue
+
+            chunks: List[bytes] = []
+            async for piece in upstream.aiter_bytes():
+                chunks.append(piece)
+            body = b"".join(chunks)
+            status = upstream.status_code
+            await upstream.aclose()
+            upstream = None
+
+            if (
+                status == 200
+                and not _sse_stream_complete(body)
+                and attempt < _PROXY_MAX_ATTEMPTS - 1
+            ):
+                logger.warning(
+                    "[proxy] %s buffered stream incompleto (%d bytes) — retry %d/%d",
+                    backend_label or url,
+                    len(body),
+                    attempt + 1,
+                    _PROXY_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(_proxy_retry_delay(attempt))
+                continue
+            return status, chunks, upstream_headers
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if upstream is not None:
+                await upstream.aclose()
+            if attempt >= _PROXY_MAX_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "[proxy] %s buffered stream indisponivel (%s) — retry %d/%d",
+                backend_label or url,
+                exc,
+                attempt + 1,
+                _PROXY_MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(_proxy_retry_delay(attempt))
+        finally:
+            if upstream is not None:
+                await upstream.aclose()
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("proxy buffered stream retry exhausted")
+
+
 def _inject_ui_base_tag(html: str, port: int) -> str:
     """Rewrite llama-server index HTML for reverse-proxy under /ui/{port}/."""
     base_tag = f'<base href="/ui/{port}/">'
@@ -1462,14 +1654,49 @@ async def openai_proxy(
     if headers_need_rebuild:
         headers.pop("content-length", None)
 
+    backend_label = (
+        f"platform:{target_instance.get('provider') or target_instance.get('port')}"
+        if target_instance.get("backend_type") == "platform"
+        else f"local:{target_instance.get('port')}"
+    )
+
     try:
         if request.method == "POST":
             is_stream = bool(data.get("stream"))
             if is_stream:
-                async def stream_generator():
-                    async with client.stream(
-                        "POST", target_url, content=body, headers=headers, timeout=None
-                    ) as response:
+                if target_instance.get("backend_type") == "platform":
+                    status, chunks, upstream_headers = (
+                        await _collect_upstream_stream_with_retry(
+                            target_url,
+                            content=body,
+                            headers=headers,
+                            backend_label=backend_label,
+                        )
+                    )
+
+                    async def buffered_stream_generator(parts=chunks):
+                        for part in parts:
+                            yield part
+
+                    response_headers = _filter_proxy_headers(upstream_headers)
+                    response_headers.pop("content-length", None)
+                    return StreamingResponse(
+                        buffered_stream_generator(),
+                        status_code=status,
+                        media_type=upstream_headers.get("content-type")
+                        or "text/event-stream",
+                        headers=response_headers,
+                    )
+
+                upstream = await _proxy_open_stream_with_retry(
+                    target_url,
+                    content=body,
+                    headers=headers,
+                    backend_label=backend_label,
+                )
+
+                async def stream_generator(response=upstream):
+                    try:
                         byte_iter = response.aiter_bytes()
                         if client_facing_model:
                             async for chunk in rewrite_sse_stream(
@@ -1479,16 +1706,27 @@ async def openai_proxy(
                         else:
                             async for chunk in byte_iter:
                                 yield chunk
+                    finally:
+                        await response.aclose()
 
+                response_headers = _filter_proxy_headers(dict(upstream.headers))
+                response_headers.pop("content-length", None)
                 return StreamingResponse(
-                    stream_generator(), media_type="text/event-stream"
+                    stream_generator(),
+                    status_code=upstream.status_code,
+                    media_type=upstream.headers.get("content-type")
+                    or "text/event-stream",
+                    headers=response_headers,
                 )
 
-            resp = await client.post(
-                target_url, content=body, headers=headers, timeout=None
+            resp = await _proxy_post_with_retry(
+                target_url,
+                content=body,
+                headers=headers,
+                backend_label=backend_label,
             )
             content = resp.content
-            if client_facing_model:
+            if client_facing_model and target_instance.get("backend_type") != "platform":
                 content, _ = rewrite_json_model(content, client_facing_model)
             response_headers = _filter_proxy_headers(dict(resp.headers))
             response_headers.pop("content-length", None)
@@ -1508,7 +1746,7 @@ async def openai_proxy(
             )
 
         content = await resp.aread()
-        if client_facing_model:
+        if client_facing_model and target_instance.get("backend_type") != "platform":
             content, _ = rewrite_json_model(content, client_facing_model)
         response_headers = _filter_proxy_headers(dict(resp.headers))
         response_headers.pop("content-length", None)

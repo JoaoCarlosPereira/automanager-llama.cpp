@@ -114,7 +114,7 @@ def test_chat_resolves_opaque_platform_listing(mock_post, mock_get, mock_status,
     assert response.status_code == 200
     sent = json.loads(mock_post.call_args.kwargs["content"])
     assert sent["model"] == "gemini-3.1-pro-low"
-    assert response.json()["model"] == GEMINI_LISTING
+    assert response.json()["model"] == "gemini-3.1-pro-low"
 
 
 @patch("llama_manager._hybrid_status")
@@ -142,7 +142,7 @@ def test_chat_resolves_alias_before_forward(mock_post, mock_get, mock_status, al
     assert response.status_code == 200
     sent = json.loads(mock_post.call_args.kwargs["content"])
     assert sent["model"] == "gemini-3.1-pro-low"
-    assert response.json()["model"] == "gpt-4o"
+    assert response.json()["model"] == "gemini-3.1-pro-low"
 
 
 @patch("llama_manager._hybrid_status")

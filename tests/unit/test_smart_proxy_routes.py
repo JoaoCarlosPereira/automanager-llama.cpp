@@ -702,7 +702,7 @@ class TestHybridV1Availability:
 
         assert response.status_code == 200
         assert "9100" in mock_post.call_args.args[0]
-        assert response.json()["model"] == codex_listing
+        assert response.json()["model"] == "codex-pro"
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_sidecar_models_failure_does_not_break_local_listing(
