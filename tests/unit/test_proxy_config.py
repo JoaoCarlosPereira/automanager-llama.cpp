@@ -8,7 +8,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from config_manager import DEFAULT_SMART_PROXY, ConfigManager, normalize_model_path
+from config_manager import (
+    DEFAULT_PLATFORM_CONFIG,
+    DEFAULT_SMART_PROXY,
+    ConfigManager,
+    normalize_model_path,
+)
 from schemas import (
     DEFAULT_MAX_PARALLEL_REQUESTS,
     DEFAULT_PROXY_ELIGIBLE,
@@ -23,6 +28,7 @@ class TestSmartProxySettings:
         assert settings == {
             "enabled": False,
             "primary_model_path": None,
+            "primary_backend_id": None,
             "ttl_minutes": 180,
             "max_wait_seconds": 30,
         }
@@ -55,6 +61,30 @@ class TestSmartProxySettings:
             {"primary_model_path": None}
         )
         assert merged["primary_model_path"] is None
+
+    def test_primary_backend_id_preserves_primary_model_path(
+        self, tmp_config_manager: ConfigManager
+    ):
+        tmp_config_manager.update_smart_proxy_settings(
+            {"primary_model_path": "models/a.gguf"}
+        )
+        merged = tmp_config_manager.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        assert merged["primary_backend_id"] == "platform:codex"
+        assert merged["primary_model_path"] == normalize_model_path("models/a.gguf")
+
+    def test_setting_primary_model_path_clears_primary_backend_id(
+        self, tmp_config_manager: ConfigManager
+    ):
+        tmp_config_manager.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        merged = tmp_config_manager.update_smart_proxy_settings(
+            {"primary_model_path": "models/a.gguf"}
+        )
+        assert merged["primary_backend_id"] is None
+        assert merged["primary_model_path"] == normalize_model_path("models/a.gguf")
 
     def test_invalid_ints_fall_back_to_defaults(
         self, tmp_config_manager: ConfigManager
@@ -110,6 +140,36 @@ class TestPerModelProxyFlags:
         assert settings["proxy_eligible"] is True
 
 
+class TestPlatformProxyFlags:
+    def test_defaults_for_empty_platform_configs(
+        self, tmp_config_manager: ConfigManager
+    ):
+        configs = tmp_config_manager.get_platform_configs()
+        assert configs["platform:codex"] == DEFAULT_PLATFORM_CONFIG
+        assert configs["platform:claude-code"] == DEFAULT_PLATFORM_CONFIG
+        assert configs["platform:google-antigravity"] == DEFAULT_PLATFORM_CONFIG
+
+    def test_update_platform_settings_uses_backend_id_without_model_configs(
+        self, tmp_config_manager: ConfigManager
+    ):
+        settings = tmp_config_manager.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True, "max_parallel_requests": 3}
+        )
+        assert settings["proxy_eligible"] is True
+        assert settings["max_parallel_requests"] == 3
+        config = tmp_config_manager.get_config()
+        assert "platform:codex" in config["platform_configs"]
+        assert "platform:codex" not in config.get("model_configs", {})
+
+    def test_update_platform_settings_invalid_parallel_uses_default(
+        self, tmp_config_manager: ConfigManager
+    ):
+        settings = tmp_config_manager.update_platform_settings(
+            "platform:codex", {"max_parallel_requests": 0}
+        )
+        assert settings["max_parallel_requests"] == DEFAULT_MAX_PARALLEL_REQUESTS
+
+
 class TestProxySchemas:
     def test_proxy_config_request_rejects_zero_ttl(self):
         with pytest.raises(ValidationError):
@@ -126,3 +186,18 @@ class TestProxySchemas:
     def test_partial_fields_exclude_unset(self):
         req = ProxyConfigRequest(enabled=True)
         assert req.model_dump(exclude_unset=True) == {"enabled": True}
+
+    def test_proxy_config_accepts_primary_backend_id(self):
+        req = ProxyConfigRequest(primary_backend_id="platform:codex")
+        assert req.model_dump(exclude_unset=True) == {
+            "primary_backend_id": "platform:codex"
+        }
+
+    def test_set_model_proxy_accepts_backend_id(self):
+        req = SetModelProxyRequest(
+            backend_id="platform:codex", proxy_eligible=True
+        )
+        assert req.model_dump(exclude_unset=True) == {
+            "backend_id": "platform:codex",
+            "proxy_eligible": True,
+        }
