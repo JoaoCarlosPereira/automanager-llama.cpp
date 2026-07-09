@@ -239,11 +239,19 @@ def test_status_endpoint_uses_process_manager_mock(monkeypatch, authenticated_cl
         "recovery": {"active": False, "failed": False, "message": ""},
     }
     monkeypatch.setattr(llama_manager, "process_manager", process_manager)
+    monkeypatch.setattr(llama_manager.platform_manager, "runtime_states", lambda: [])
+    monkeypatch.setattr(llama_manager.platform_manager, "active_instances", lambda: [])
+    monkeypatch.setattr(llama_manager.cliproxy_sidecar, "status", lambda: {"status": "stopped"})
 
     response = authenticated_client.get("/status")
 
     assert response.status_code == 200
-    assert response.json() == process_manager.get_status.return_value
+    payload = response.json()
+    assert payload["running"] is True
+    assert payload["pid"] == 1234
+    assert payload["model"] == "model.gguf"
+    assert payload["platforms"] == []
+    assert payload["instances"] == []
     process_manager.get_status.assert_called_once_with()
 
 
@@ -282,11 +290,15 @@ def test_models_endpoint_uses_model_scanner_mock(monkeypatch, authenticated_clie
         "projectors": [],
     }
     monkeypatch.setattr(llama_manager, "model_scanner", model_scanner)
+    monkeypatch.setattr(llama_manager.platform_manager, "catalog", lambda: [])
 
     response = authenticated_client.get("/models")
 
     assert response.status_code == 200
-    assert response.json() == model_scanner.scan.return_value
+    payload = response.json()
+    assert payload["models"] == model_scanner.scan.return_value["models"]
+    assert payload["projectors"] == []
+    assert payload["platforms"] == []
     model_scanner.scan.assert_called_once_with()
 
 
@@ -309,6 +321,7 @@ def test_set_models_dir_updates_scanner_and_returns_models(
     download_mgr = MagicMock()
     monkeypatch.setattr(llama_manager, "model_scanner", model_scanner)
     monkeypatch.setattr(llama_manager, "download_mgr", download_mgr)
+    monkeypatch.setattr(llama_manager.platform_manager, "catalog", lambda: [])
 
     from paths import InstallPaths
 
@@ -331,7 +344,10 @@ def test_set_models_dir_updates_scanner_and_returns_models(
     )
 
     assert response.status_code == 200
-    assert response.json() == scan_payload
+    payload = response.json()
+    assert payload["models"] == scan_payload["models"]
+    assert payload["storage"] == scan_payload["storage"]
+    assert payload["platforms"] == []
     assert model_scanner.models_dir == str(new_models_dir)
     assert download_mgr.models_dir == str(new_models_dir)
     model_scanner.scan.assert_called_once_with()
