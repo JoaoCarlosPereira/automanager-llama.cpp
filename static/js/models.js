@@ -28,6 +28,7 @@ import {
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
 let deferredModelListUpdate = null;
+const platformActions = new Set();
 
 const MMproj_SELECT_ATTRS =
     'onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" '
@@ -134,6 +135,44 @@ function escapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#x27;');
+}
+
+function jsString(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+}
+
+function platformDomId(backendId) {
+    return `platform-${String(backendId || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function platformDisplayState(platform) {
+    const backendId = platform.backend_id;
+    const runtime = (state.platforms || []).find(p => p.backend_id === backendId) || {};
+    const activeInstance = (state.activeInstances || []).find(i => i.backend_id === backendId);
+    const merged = { ...platform, ...runtime };
+    if (activeInstance?.status === 'running' || merged.active) {
+        merged.status = 'running';
+        merged.active = true;
+        merged.sidecar_port = merged.sidecar_port || activeInstance?.port;
+    }
+    return merged;
+}
+
+const PLATFORM_STATUS_LABELS = {
+    running: 'RODANDO',
+    detected: 'DISPONIVEL',
+    stopped: 'PARADO',
+    not_ready: 'INDISPONIVEL',
+    missing: 'NAO DETECTADO',
+};
+
+function platformStatusClass(status) {
+    if (status === 'running') return 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10';
+    if (status === 'detected' || status === 'stopped') return 'text-blue-300 border-blue-500/30 bg-blue-500/10';
+    if (status === 'not_ready') return 'text-amber-300 border-amber-500/30 bg-amber-500/10';
+    return 'text-slate-500 border-slate-700/50 bg-slate-800/50';
 }
 
 function formatContextLabel(contextSize) {
@@ -915,6 +954,34 @@ function isMmprojSelectFocused() {
     return document.activeElement?.matches?.('.model-mmproj-select, .proxy-max-parallel');
 }
 
+function patchPlatformListItems(platforms, cfg) {
+    for (const raw of platforms || []) {
+        const platform = platformDisplayState(raw);
+        const backendId = platform.backend_id;
+        const el = document.getElementById(platformDomId(backendId));
+        if (!el) continue;
+        const isRunning = platform.status === 'running';
+        el.classList.toggle('border-emerald-500/50', isRunning);
+        el.classList.toggle('bg-emerald-500/5', isRunning);
+        el.classList.toggle('border-slate-700/50', !isRunning);
+        el.classList.toggle('bg-slate-800/40', !isRunning);
+
+        const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
+        const primaryCb = el.querySelector('.proxy-primary-checkbox');
+        if (primaryCb && document.activeElement !== primaryCb) {
+            primaryCb.checked = (cfg.smart_proxy || {}).primary_backend_id === backendId;
+        }
+        const eligibleCb = el.querySelector('.proxy-eligible-checkbox');
+        if (eligibleCb && document.activeElement !== eligibleCb) {
+            eligibleCb.checked = pCfg.proxy_eligible === true;
+        }
+        const parallelInput = el.querySelector('.proxy-max-parallel');
+        if (parallelInput && document.activeElement !== parallelInput) {
+            parallelInput.value = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
+        }
+    }
+}
+
 function patchModelListItems(models, cfg) {
     for (const model of models || []) {
         const mJs = model.path.replace(/\\/g, '/');
@@ -958,10 +1025,66 @@ function patchModelListItems(models, cfg) {
             parallelInput.value = mCfg.max_parallel_requests || 1;
         }
     }
+    patchPlatformListItems(state.lastPlatformList || [], cfg);
 }
 
-function buildModelListHtml(models, cfg) {
-    return models.map(m => {
+function buildPlatformCardHtml(rawPlatform, cfg) {
+    const platform = platformDisplayState(rawPlatform);
+    const backendId = platform.backend_id;
+    const safeBackendId = jsString(backendId);
+    const status = platform.status || (platform.detected ? 'detected' : 'missing');
+    const isRunning = status === 'running';
+    const isBusy = platformActions.has(backendId);
+    const canStart = !isBusy && !isRunning && platform.detected && status !== 'not_ready' && status !== 'missing';
+    const canStop = !isBusy && isRunning;
+    const statusClass = platformStatusClass(status);
+    const statusLabel = PLATFORM_STATUS_LABELS[status] || String(status || '').toUpperCase();
+    const reason = platform.last_error || platform.reason || (
+        platform.detected ? '' : 'Aplicativo nao encontrado nesta maquina.'
+    );
+    const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
+    const isProxyPrimary = (cfg.smart_proxy || {}).primary_backend_id === backendId;
+    const isProxyEligible = pCfg.proxy_eligible === true;
+    const proxyMaxParallel = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
+    const runningClass = isRunning ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
+    const actionHtml = isRunning
+        ? `<button type="button" ${canStop ? '' : 'disabled'} onclick="event.stopPropagation(); stopPlatform('${safeBackendId}')" title="Parar integração" aria-label="Parar integração" class="w-8 h-8 flex items-center justify-center rounded bg-red-600/10 text-red-400 hover:bg-red-600/20 disabled:opacity-40 disabled:pointer-events-none"><i class="fas fa-stop text-ui-label"></i></button>`
+        : `<button type="button" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation(); startPlatform('${safeBackendId}')" title="Iniciar integração" aria-label="Iniciar integração" class="w-8 h-8 flex items-center justify-center rounded bg-blue-600/10 text-blue-300 hover:bg-blue-600/20 disabled:opacity-40 disabled:pointer-events-none"><i class="fas fa-bolt text-ui-label"></i></button>`;
+
+    return `
+            <div id="${platformDomId(backendId)}" class="model-item-container platform-card group p-3 rounded-xl border transition-all ${runningClass}"
+                 data-backend-id="${escapeHtml(backendId)}" data-backend-type="platform">
+                <div class="flex items-start justify-between gap-2 overflow-hidden">
+                    <div class="flex-1 min-w-0">
+                        <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(platform.display_name || platform.name || backendId)}</p>
+                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(platform.provider || 'platform')}</p>
+                    </div>
+                    ${isRunning ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
+                </div>
+                <div class="flex items-center justify-between gap-2 mt-3">
+                    <span class="px-2 py-1 rounded border text-ui-label font-black uppercase tracking-widest ${statusClass}">${escapeHtml(statusLabel)}</span>
+                    <div class="flex items-center gap-1">${isBusy ? '<i class="fas fa-sync animate-spin text-blue-300 text-ui-label"></i>' : ''}${actionHtml}</div>
+                </div>
+                ${reason ? `<p class="mt-2 text-ui-label text-slate-500 leading-snug">${escapeHtml(reason)}</p>` : ''}
+                <div class="proxy-model-controls flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 pt-2 border-t border-slate-700/30 min-w-0" onclick="event.stopPropagation()">
+                    <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Backend principal exposto pela API no Modo Proxy Inteligente">
+                        <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
+                        <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-backend-id="${escapeHtml(backendId)}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, null, '${safeBackendId}')">
+                    </label>
+                    <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Usar como backend no proxy inteligente">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
+                        <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, null, '${safeBackendId}')">
+                    </label>
+                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
+                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, null, '${safeBackendId}')">
+                    </label>
+                </div>
+            </div>`;
+}
+
+function buildModelListHtml(models, cfg, platforms = []) {
+    const localHtml = models.map(m => {
         const m_js = m.path.replace(/\\/g, '/');
         if (m.last_config && !tabHasPendingProposal(m_js)) {
             mergeModelConfigFromServer(m_js, m.last_config);
@@ -1018,10 +1141,12 @@ function buildModelListHtml(models, cfg) {
                 </div>
             </div>`;
     }).join('');
+    const platformHtml = (platforms || []).map(p => buildPlatformCardHtml(p, cfg)).join('');
+    return localHtml + platformHtml;
 }
 
-async function renderModelList(container, models, cfg) {
-    container.innerHTML = buildModelListHtml(models, cfg);
+async function renderModelList(container, models, cfg, platforms = []) {
+    container.innerHTML = buildModelListHtml(models, cfg, platforms);
     await ensureMmprojSelectionsForModels(models);
 }
 
@@ -1338,7 +1463,10 @@ export async function updateModels() {
         const data = await res.json();
         const cfg = await cfgRes.json();
         state.lastModelsList = data.models;
+        state.lastPlatformList = data.platforms || [];
+        state.platforms = data.platforms || state.platforms || [];
         state.lastConfig = cfg;
+        window.platformConfigs = cfg.platform_configs || {};
 
         if (cfg.model_configs) {
             for (const [rawPath, settings] of Object.entries(cfg.model_configs)) {
@@ -1355,7 +1483,7 @@ export async function updateModels() {
         const container = document.getElementById('model-list-container');
         if (!container) return;
 
-        document.getElementById('model-count').innerText = data.models.length;
+        document.getElementById('model-count').innerText = (data.models || []).length + (data.platforms || []).length;
         document.getElementById('repo-storage').innerText = formatRepoStorageLabel(data.storage);
         
         const dirInput = document.getElementById('models-dir-input');
@@ -1363,7 +1491,7 @@ export async function updateModels() {
             dirInput.value = data.storage.path;
         }
 
-        const renderList = () => renderModelList(container, data.models, cfg);
+        const renderList = () => renderModelList(container, data.models, cfg, data.platforms || []);
 
         if (isMmprojSelectFocused()) {
             deferredModelListUpdate = renderList;
@@ -1375,6 +1503,44 @@ export async function updateModels() {
     } catch (e) {
         console.error('updateModels error:', e);
     }
+}
+
+async function platformAction(backendId, action) {
+    if (!backendId || platformActions.has(backendId)) return;
+    platformActions.add(backendId);
+    await updateModels();
+    try {
+        const res = await apiFetch(`/platforms/${encodeURIComponent(backendId)}/${action}`, {
+            method: 'POST',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'platform');
+        showToast(
+            action === 'start' ? 'Integração iniciada' : 'Integração parada',
+            'success',
+        );
+        await window.updateStatus?.();
+        await updateModels();
+    } catch (e) {
+        await window.updateStatus?.();
+        showToast(
+            action === 'start'
+                ? 'Falha ao iniciar integração'
+                : 'Falha ao parar integração',
+            'error',
+        );
+    } finally {
+        platformActions.delete(backendId);
+        await updateModels();
+    }
+}
+
+export async function startPlatform(backendId) {
+    await platformAction(backendId, 'start');
+}
+
+export async function stopPlatform(backendId) {
+    await platformAction(backendId, 'stop');
 }
 
 export async function renameModel(path) {
