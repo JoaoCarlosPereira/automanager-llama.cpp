@@ -137,6 +137,7 @@ class ProxyConfigRequest(BaseModel):
     """Atualização parcial da chave global smart_proxy."""
     enabled: Optional[bool] = None
     primary_model_path: Optional[str] = None
+    primary_backend_id: Optional[str] = None
     ttl_minutes: Optional[int] = Field(default=None, ge=1)
     max_wait_seconds: Optional[int] = Field(default=None, ge=1)
 
@@ -145,7 +146,8 @@ class SetModelProxyRequest(BaseModel):
     """Flags de participação no proxy inteligente, por modelo."""
     model_config = ConfigDict(protected_namespaces=())
 
-    model_path: str
+    model_path: Optional[str] = None
+    backend_id: Optional[str] = None
     proxy_eligible: Optional[bool] = None
     max_parallel_requests: Optional[int] = Field(default=None, ge=1)
 
