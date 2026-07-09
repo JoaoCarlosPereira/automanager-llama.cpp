@@ -28,8 +28,28 @@ export function proxyModeEnabled() {
 function syncPrimaryHint(smartProxy) {
     const hint = document.getElementById('proxy-primary-hint');
     if (!hint) return;
-    const needsPrimary = proxyModeEnabled() && !(smartProxy && smartProxy.primary_model_path);
+    const hasPrimary = smartProxy && (
+        smartProxy.primary_model_path || smartProxy.primary_backend_id
+    );
+    const needsPrimary = proxyModeEnabled() && !hasPrimary;
     hint.classList.toggle('hidden', !needsPrimary);
+}
+
+function updateBackendConfigCache(path, backendId, values) {
+    if (backendId) {
+        window.platformConfigs = window.platformConfigs || {};
+        window.platformConfigs[backendId] = {
+            ...(window.platformConfigs[backendId] || {}),
+            ...values,
+        };
+        return;
+    }
+    if (path && window.modelConfigs[path]) {
+        window.modelConfigs[path] = {
+            ...window.modelConfigs[path],
+            ...values,
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,13 +80,15 @@ export async function proxyToggleEnabled(checkbox) {
     }
 }
 
-export async function setProxyPrimary(checkbox, path) {
-    const value = checkbox.checked ? path : null;
+export async function setProxyPrimary(checkbox, path, backendId = null) {
+    const payload = backendId
+        ? { primary_backend_id: checkbox.checked ? backendId : null }
+        : { primary_model_path: checkbox.checked ? path : null };
     try {
         const res = await apiFetch('/proxy/config', {
             method: 'POST',
             headers: jsonHeaders(),
-            body: JSON.stringify({ primary_model_path: value }),
+            body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('primary');
         const data = await res.json();
@@ -76,8 +98,8 @@ export async function setProxyPrimary(checkbox, path) {
         });
         showToast(
             checkbox.checked
-                ? 'Modelo definido como principal do proxy'
-                : 'Modelo principal removido',
+                ? 'Backend definido como principal do proxy'
+                : 'Backend principal removido',
             'success',
         );
         syncPrimaryHint(data.smart_proxy);
@@ -88,17 +110,18 @@ export async function setProxyPrimary(checkbox, path) {
     }
 }
 
-export async function setProxyEligible(checkbox, path) {
+export async function setProxyEligible(checkbox, path, backendId = null) {
+    const payload = backendId
+        ? { backend_id: backendId, proxy_eligible: checkbox.checked }
+        : { model_path: path, proxy_eligible: checkbox.checked };
     try {
         const res = await apiFetch('/models/proxy', {
             method: 'POST',
             headers: jsonHeaders(),
-            body: JSON.stringify({ model_path: path, proxy_eligible: checkbox.checked }),
+            body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('eligible');
-        if (window.modelConfigs[path]) {
-            window.modelConfigs[path].proxy_eligible = checkbox.checked;
-        }
+        updateBackendConfigCache(path, backendId, { proxy_eligible: checkbox.checked });
         showToast('Participação no proxy atualizada', 'success');
         updateProxyPanel(true);
     } catch (err) {
@@ -107,22 +130,23 @@ export async function setProxyEligible(checkbox, path) {
     }
 }
 
-export async function setProxyMaxParallel(input, path) {
+export async function setProxyMaxParallel(input, path, backendId = null) {
     const value = parseInt(input.value, 10);
     if (!Number.isFinite(value) || value < 1) {
         input.value = 1;
         return;
     }
     try {
+        const payload = backendId
+            ? { backend_id: backendId, max_parallel_requests: value }
+            : { model_path: path, max_parallel_requests: value };
         const res = await apiFetch('/models/proxy', {
             method: 'POST',
             headers: jsonHeaders(),
-            body: JSON.stringify({ model_path: path, max_parallel_requests: value }),
+            body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error('parallel');
-        if (window.modelConfigs[path]) {
-            window.modelConfigs[path].max_parallel_requests = value;
-        }
+        updateBackendConfigCache(path, backendId, { max_parallel_requests: value });
         showToast('Limite de paralelismo salvo', 'success');
     } catch (err) {
         showToast('Falha ao salvar limite de paralelismo', 'error');
@@ -172,15 +196,18 @@ function renderOff() {
 
 function backendCard(backend) {
     const style = STATE_STYLES[backend.state] || STATE_STYLES.offline;
+    const isPlatform = backend.backend_type === 'platform';
+    const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
+    const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
     const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
     return `
-    <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}">
+    <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}">
         <div class="flex items-center justify-between gap-2">
             <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
             <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[backend.state] || backend.state)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${role} · ${esc(backend.gpu)}</span>
+            <span>${role} · ${detail}</span>
             <span class="font-mono">porta ${esc(backend.port)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
