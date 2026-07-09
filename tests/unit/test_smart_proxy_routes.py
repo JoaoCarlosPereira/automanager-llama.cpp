@@ -117,21 +117,26 @@ class TestSmartRouting:
     def test_primary_model_routed_with_internal_rewrite(
         self, mock_post, smart_env
     ):
-        mock_post.return_value = _mock_response(
-            {"id": "cmpl-1", "model": "aux0.gguf"}
-        )
-        response = client.post(
-            "/v1/chat/completions", json=chat_body(tag="sql-reviewer")
-        )
-        assert response.status_code == 200
-        url = mock_post.call_args.args[0]
-        assert "8086" in url  # secundário least-busy (empate -> menor porta aux)
-        sent = json.loads(mock_post.call_args.kwargs["content"])
-        assert sent["model"] == "aux0.gguf"  # model interno no encaminhamento
-        # Transparência: resposta externa mostra o principal
-        assert response.json()["model"] == "main.gguf"
-        assert response.headers["x-automanager-backend"] == "8086"
-        assert response.headers["x-automanager-backend-model"] == "aux0.gguf"
+        import asyncio
+        asyncio.run(smart_env.router.acquire(8085))  # primary ocupado -> overflow
+        try:
+            mock_post.return_value = _mock_response(
+                {"id": "cmpl-1", "model": "aux0.gguf"}
+            )
+            response = client.post(
+                "/v1/chat/completions", json=chat_body(tag="sql-reviewer")
+            )
+            assert response.status_code == 200
+            url = mock_post.call_args.args[0]
+            assert "8086" in url  # secundário least-busy (empate -> menor porta aux)
+            sent = json.loads(mock_post.call_args.kwargs["content"])
+            assert sent["model"] == "aux0.gguf"  # model interno no encaminhamento
+            # Transparência: resposta externa mostra o principal
+            assert response.json()["model"] == "main.gguf"
+            assert response.headers["x-automanager-backend"] == "8086"
+            assert response.headers["x-automanager-backend-model"] == "aux0.gguf"
+        finally:
+            asyncio.run(smart_env.router.release(8085))
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_unknown_extra_fields_preserved(self, mock_post, smart_env):
@@ -249,24 +254,29 @@ def _sse_upstream(chunks):
 class TestSmartStreaming:
     @patch("llama_manager.client.send", new_callable=AsyncMock)
     def test_stream_rewrites_model_and_keeps_done(self, mock_send, smart_env):
-        chunks = [
-            b'data: {"model":"aux0.gguf","choices":[{"delta":{"content":"ol"}}]}\n\n',
-            b'data: {"model":"au', b'x0.gguf","usage":{"total_tokens":9}}\n\n',
-            b"data: [DONE]\n\n",
-        ]
-        mock_send.return_value = _sse_upstream(chunks)
-        response = client.post(
-            "/v1/chat/completions", json=chat_body(tag="sql-reviewer", stream=True)
-        )
-        assert response.status_code == 200
-        body = response.content
-        assert b"aux0.gguf" not in body
-        assert body.count(b'"model": "main.gguf"') == 2
-        assert b"data: [DONE]" in body
-        assert response.headers["x-automanager-backend"] in ("8086", "8087")
-        # usage do evento final alimenta tokens_processed da sessão
-        sessions = smart_env.router._sessions
-        assert list(sessions.values())[0].tokens_processed == 9
+        import asyncio
+        asyncio.run(smart_env.router.acquire(8085))  # primary ocupado -> overflow
+        try:
+            chunks = [
+                b'data: {"model":"aux0.gguf","choices":[{"delta":{"content":"ol"}}]}\n\n',
+                b'data: {"model":"au', b'x0.gguf","usage":{"total_tokens":9}}\n\n',
+                b"data: [DONE]\n\n",
+            ]
+            mock_send.return_value = _sse_upstream(chunks)
+            response = client.post(
+                "/v1/chat/completions", json=chat_body(tag="sql-reviewer", stream=True)
+            )
+            assert response.status_code == 200
+            body = response.content
+            assert b"aux0.gguf" not in body
+            assert body.count(b'"model": "main.gguf"') == 2
+            assert b"data: [DONE]" in body
+            assert response.headers["x-automanager-backend"] in ("8086", "8087")
+            # usage do evento final alimenta tokens_processed da sessão
+            sessions = smart_env.router._sessions
+            assert list(sessions.values())[0].tokens_processed == 9
+        finally:
+            asyncio.run(smart_env.router.release(8085))
 
     @patch("llama_manager.client.send", new_callable=AsyncMock)
     def test_stream_to_primary_passes_bytes_raw(self, mock_send, smart_env):
@@ -401,10 +411,10 @@ class TestAdminEndpoints:
         assert payload["external_model"] == "main.gguf"
         assert payload["detected_tag"] == "sql-reviewer"
         assert payload["affinity_key"].startswith("agent:sql-reviewer:")
-        assert payload["selected_backend"] in (8086, 8087)
-        assert payload["internal_model"] in ("aux0.gguf", "aux1.gguf")
+        assert payload["selected_backend"] == 8085
+        assert payload["internal_model"] == "main.gguf"
         assert payload["sticky_hit"] is False
-        assert "reason" in payload
+        assert payload["reason"] == "subagent_main_preference"
         # dry_run: nenhuma sessão criada, nenhum contador alterado
         assert client.get("/proxy/sessions").json() == []
         assert all(

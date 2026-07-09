@@ -75,36 +75,43 @@ class TestPrdScenario:
                     assert assignments[key] == port, (
                         f"{key} trocou de backend na rodada {round_num}"
                     )
-        # main no principal; subagentes espalhados pelos 3 backends
+        # main no principal; subagentes também preferem o principal quando livre
         assert assignments["main"] == 8085
-        assert assignments["delphi-auditor"] == 8086
-        assert assignments["sql-reviewer"] == 8087
-        # header de telemetria coerente com o modelo interno
-        assert set(assignments.values()) <= {8085, 8086, 8087}
+        assert assignments["delphi-auditor"] == 8085
+        assert assignments["sql-reviewer"] == 8085
+        assert assignments["test-writer"] == 8085
+        assert set(assignments.values()) == {8085}
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_backend_down_reassigns_with_log(self, mock_post, smart_env, caplog):
         _echo_backend(mock_post)
-        client.post("/v1/chat/completions", json=chat_body(tag="sql-reviewer"))
-        sessions = smart_env.router._sessions
-        old_port = list(sessions.values())[0].backend_port
-        # Backend da sessão sai do ar (removido do status)
-        smart_env.holder["instances"] = [
-            inst for inst in smart_env.holder["instances"]
-            if inst["port"] != old_port
-        ]
-        with caplog.at_level(logging.INFO, logger="automanager"):
-            response = client.post(
-                "/v1/chat/completions", json=chat_body(tag="sql-reviewer")
-            )
-        assert response.status_code == 200
-        assert response.json()["model"] == "main.gguf"
-        new_port = int(response.headers["x-automanager-backend"])
-        assert new_port != old_port
-        log_text = caplog.text
-        assert f"[proxy] backend {old_port} unavailable" in log_text
-        assert "reason=backend_down" in log_text
-        assert f"old_backend={old_port}" in log_text
+        # Ocupa o primary para forçar o subagente ao secundário
+        import asyncio
+        asyncio.run(smart_env.router.acquire(8085))
+        try:
+            client.post("/v1/chat/completions", json=chat_body(tag="sql-reviewer"))
+            sessions = smart_env.router._sessions
+            old_port = list(sessions.values())[0].backend_port
+            assert old_port != 8085
+            # Backend da sessão sai do ar (removido do status)
+            smart_env.holder["instances"] = [
+                inst for inst in smart_env.holder["instances"]
+                if inst["port"] != old_port
+            ]
+            with caplog.at_level(logging.INFO, logger="automanager"):
+                response = client.post(
+                    "/v1/chat/completions", json=chat_body(tag="sql-reviewer")
+                )
+            assert response.status_code == 200
+            assert response.json()["model"] == "main.gguf"
+            new_port = int(response.headers["x-automanager-backend"])
+            assert new_port != old_port
+            log_text = caplog.text
+            assert f"[proxy] backend {old_port} unavailable" in log_text
+            assert "reason=backend_down" in log_text
+            assert f"old_backend={old_port}" in log_text
+        finally:
+            asyncio.run(smart_env.router.release(8085))
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_disabled_mode_full_legacy_regression(self, mock_post, smart_env):
@@ -133,7 +140,7 @@ class TestProxyLogs:
         for field in (
             "external_model=main.gguf", "internal_model=", "backend=", "gpu=",
             "affinity_key=agent:sql-reviewer:", "sticky_hit=False",
-            "reason=least_busy", "stream=False", "prompt_tokens_estimated=",
+            "reason=subagent_main_preference", "stream=False", "prompt_tokens_estimated=",
         ):
             assert field in line, f"campo ausente no log de rota: {field}"
 

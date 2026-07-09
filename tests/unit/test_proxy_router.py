@@ -275,11 +275,19 @@ class TestSelection:
         assert decision.backend_port == 8085
 
     @pytest.mark.asyncio
-    async def test_subagent_goes_least_busy_tie_lowest_port(self, router):
+    async def test_subagent_prefers_primary_when_available(self, router):
+        decision = await resolve(router, body=body_with(tag="sql-reviewer"))
+        await router.release(decision.backend_port)
+        assert decision.backend_port == 8085
+        assert decision.reason == "subagent_main_preference"
+        assert decision.rewrite is False
+
+    @pytest.mark.asyncio
+    async def test_subagent_overflows_when_primary_busy(self, router):
         d_main = await resolve(router, body=body_with())  # ocupa 8085
         decision = await resolve(router, body=body_with(tag="sql-reviewer"))
         assert decision.backend_port == 8086  # empate 8086/8087 -> menor porta
-        assert decision.reason == "least_busy"
+        assert decision.reason == "subagent_least_busy"
         assert decision.rewrite is True
         await router.release(d_main.backend_port)
         await router.release(decision.backend_port)
@@ -329,9 +337,12 @@ class TestSelection:
 
     @pytest.mark.asyncio
     async def test_reassign_once_when_backend_down(self, router, status_holder):
+        d_main = await resolve(router, body=body_with())  # ocupa primary
         decision = await resolve(router, body=body_with(tag="a1"))
+        await router.release(d_main.backend_port)
         await router.release(decision.backend_port)
         dead_port = decision.backend_port
+        assert dead_port != 8085
         status_holder["instances"] = [
             inst for inst in DEFAULT_INSTANCES if inst["port"] != dead_port
         ]

@@ -555,8 +555,8 @@ class ProxyRouter:
         self, candidates: List[Dict[str, Any]], primary_port: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """Menos ocupado por in-flight; empates: menos sessões sticky
-        atribuídas (espalha subagentes entre GPUs), secundário antes do
-        principal (PRD F6) e menor porta."""
+        atribuídas e modelo principal em primeiro lugar (prioridade absoluta),
+        menor porta."""
         if not candidates:
             return None
         session_counts: Dict[int, int] = {}
@@ -569,7 +569,7 @@ class ProxyRouter:
             key=lambda i: (
                 self.in_flight(i["port"]),
                 session_counts.get(i["port"], 0),
-                1 if i["port"] == primary_port else 0,
+                0 if i["port"] == primary_port else 1,
                 i["port"],
             ),
         )
@@ -880,16 +880,30 @@ class ProxyRouter:
                 )
             return _commit(chosen, False, "least_busy", None), None
 
-        # Subagente: least-busy entre todos os elegíveis (inclui principal)
+        # Subagente: tenta o modelo principal primeiro (prioridade absoluta);
+        # só se o primary estiver ocupado, escolhe o menos ocupado entre
+        # secundários (PRD F6 — main-first para conversas principais e subagentes).
+        if primary_port not in self._disabled_ports:
+            _, max_parallel = self._model_flags(
+                model_configs, primary.get("model_path") or ""
+            )
+            primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+            if primary_ctx_ok:
+                if dry_run:
+                    return _decision(primary, False, "subagent_main_preference"), None
+                if self.in_flight(primary_port) < max_parallel:
+                    return _commit(primary, False, "subagent_main_preference", None), None
+
+        # Primary ocupado ou desabilitado — least-busy entre secundários
         candidates = self._candidates(
             instances, model_configs, primary_port, needed_ctx,
-            ignore_capacity=dry_run,
+            ignore_capacity=dry_run, exclude_ports={primary_port},
         )
         chosen = self._pick_least_busy(candidates, primary_port)
         if chosen is None:
             any_eligible = self._candidates(
                 instances, model_configs, primary_port, needed_ctx,
-                ignore_capacity=True,
+                ignore_capacity=True, exclude_ports={primary_port},
             )
             if not any_eligible:
                 raise ProxyError(
@@ -897,7 +911,7 @@ class ProxyRouter:
                     code="no_backend",
                 )
             return None, "Todos os backends elegiveis ocupados"
-        return _commit(chosen, False, "least_busy", None), None
+        return _commit(chosen, False, "subagent_least_busy", None), None
 
     # ------------------------------------------------------------------
     # Reassign administrativo
