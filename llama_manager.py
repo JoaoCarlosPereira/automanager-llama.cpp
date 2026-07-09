@@ -38,6 +38,11 @@ from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager, _is_projector_filename
+from platform_manager import (
+    CLIProxySidecarManager,
+    PlatformIntegrationError,
+    PlatformIntegrationManager,
+)
 from version_manager import check_for_updates
 from schemas import (
     BATCH_SIZE_PRESETS,
@@ -166,9 +171,11 @@ process_manager.token_mgr = token_manager
 auth_manager = AuthManager(config_manager, token_manager)
 
 model_scanner = ModelScanner(config_manager, process_manager)
+platform_manager = PlatformIntegrationManager(config_manager)
+cliproxy_sidecar = CLIProxySidecarManager(platform_manager)
 download_mgr = DownloadManager()
 proxy_router = ProxyRouter(
-    get_status=process_manager.get_status,
+    get_status=lambda: _hybrid_status(),
     config_manager=config_manager,
     sessions_path=os.path.join(
         os.path.dirname(CONFIG_PATH) or ".", "proxy_sessions.json"
@@ -193,6 +200,35 @@ CONTEXT_K_MULTIPLIER = 1024
 def _invalidate_models_cache():
     """Helper to force model list refresh on next scan."""
     model_scanner._last_scan_time = 0
+
+
+def _local_instance_view(instance: Dict[str, Any]) -> Dict[str, Any]:
+    view = dict(instance)
+    view.setdefault("backend_type", "local")
+    port = view.get("port")
+    if port is not None:
+        view.setdefault("backend_id", f"local:{port}")
+    return view
+
+
+def _hybrid_status() -> Dict[str, Any]:
+    status = dict(process_manager.get_status() or {})
+    local_instances = [
+        _local_instance_view(inst) for inst in status.get("instances", []) or []
+    ]
+    platform_states = platform_manager.runtime_states()
+    platform_instances = platform_manager.active_instances()
+    status["local_instances"] = local_instances
+    status["platforms"] = platform_states
+    status["sidecar"] = cliproxy_sidecar.status()
+    status["instances"] = local_instances + platform_instances
+    return status
+
+
+def _model_catalog_response() -> Dict[str, Any]:
+    result = dict(model_scanner.scan() or {})
+    result["platforms"] = platform_manager.catalog()
+    return result
 
 
 @app.post("/api/auth/login")
@@ -242,7 +278,7 @@ async def change_password(req: Dict[str, str], authenticated: bool = Depends(req
 async def get_status(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return process_manager.get_status()
+    return _hybrid_status()
 
 
 @app.get("/llama-bins")
@@ -263,8 +299,7 @@ async def get_metrics(authenticated: bool = Depends(require_auth)):
 async def list_models(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    # scan() already returns {"models": [...], "projectors": [...], "storage": {...}}
-    return model_scanner.scan()
+    return _model_catalog_response()
 
 
 @app.post("/models/dir")
@@ -282,7 +317,7 @@ async def set_models_dir(req: Dict[str, str], authenticated: bool = Depends(requ
     model_scanner.models_dir = paths.models_dir
     download_mgr.models_dir = paths.models_dir
     _invalidate_models_cache()
-    return model_scanner.scan()
+    return _model_catalog_response()
 
 
 @app.post("/start")
@@ -378,6 +413,46 @@ async def stop_model(port: Optional[int] = None, authenticated: bool = Depends(r
     # não congelar /metrics, /logs e demais requisições concorrentes.
     await asyncio.to_thread(process_manager.stop, port)
     return {"message": "Parado"}
+
+
+@app.post("/platforms/{backend_id}/start")
+async def start_platform(
+    backend_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        state = await asyncio.to_thread(
+            platform_manager.start_backend, backend_id, cliproxy_sidecar
+        )
+    except PlatformIntegrationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    _invalidate_models_cache()
+    return {
+        "message": "Integracao iniciada",
+        "platform": state,
+        "sidecar": cliproxy_sidecar.status(),
+    }
+
+
+@app.post("/platforms/{backend_id}/stop")
+async def stop_platform(
+    backend_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        state = await asyncio.to_thread(
+            platform_manager.stop_backend, backend_id, cliproxy_sidecar
+        )
+    except PlatformIntegrationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    _invalidate_models_cache()
+    return {
+        "message": "Integracao parada",
+        "platform": state,
+        "sidecar": cliproxy_sidecar.status(),
+    }
 
 
 @app.post("/auto-balance/cancel")
@@ -609,7 +684,10 @@ async def _aggregate_models_response(
     """Agrega o /v1/models de todas as instancias llama-server em execucao."""
 
     async def fetch_models(inst: Dict[str, Any]) -> List[Dict[str, Any]]:
-        url = f"http://127.0.0.1:{inst['port']}/v1/models"
+        port = inst.get("port")
+        if not port:
+            return []
+        url = f"http://127.0.0.1:{port}/v1/models"
         try:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
@@ -617,7 +695,7 @@ async def _aggregate_models_response(
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
             logger.warning(
                 "Falha ao listar modelos da instancia na porta %s: %s",
-                inst.get("port"), exc,
+                port, exc,
             )
             return []
 
@@ -635,9 +713,19 @@ async def _aggregate_models_response(
 
 
 def _find_primary_instance(
-    instances: List[Dict[str, Any]], primary_model_path: Optional[str]
+    instances: List[Dict[str, Any]], proxy_settings: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     """Instância online do modelo principal (menor porta em caso de réplicas)."""
+    primary_backend_id = proxy_settings.get("primary_backend_id")
+    if primary_backend_id:
+        matches = [
+            inst for inst in instances
+            if inst.get("backend_id") == primary_backend_id
+        ]
+        if not matches:
+            return None
+        return min(matches, key=lambda i: i["port"])
+    primary_model_path = proxy_settings.get("primary_model_path")
     if not primary_model_path:
         return None
     norm = normalize_model_path(primary_model_path)
@@ -652,10 +740,30 @@ def _find_primary_instance(
 
 def _is_primary_model_request(
     requested_model: str,
-    primary_model_path: Optional[str],
+    proxy_settings: Dict[str, Any],
     primary_instance: Optional[Dict[str, Any]],
+    instances: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """True quando o modelo pedido é o principal exposto (nome ou path)."""
+    primary_backend_id = proxy_settings.get("primary_backend_id")
+    if primary_backend_id:
+        candidates = {primary_backend_id}
+        if primary_instance:
+            candidates.add(primary_instance.get("model") or "")
+            candidates.add(primary_instance.get("backend_id") or "")
+            candidates.add(primary_instance.get("provider") or "")
+        if requested_model in candidates:
+            return True
+        local_matches = [
+            inst for inst in (instances or [])
+            if inst.get("backend_type", "local") != "platform"
+            and (
+                inst.get("model") == requested_model
+                or inst.get("model_path") == requested_model
+            )
+        ]
+        return not local_matches
+    primary_model_path = proxy_settings.get("primary_model_path")
     if not primary_model_path:
         return False
     candidates = {primary_model_path, os.path.basename(primary_model_path)}
@@ -671,9 +779,7 @@ async def _primary_only_models_response(
     headers: Dict[str, str],
 ) -> JSONResponse:
     """Com o modo proxy ativo, /v1/models expõe somente o principal (ADR-003)."""
-    primary = _find_primary_instance(
-        instances, proxy_settings.get("primary_model_path")
-    )
+    primary = _find_primary_instance(instances, proxy_settings)
     if primary is None:
         logger.warning(
             "[proxy] modo ativo sem modelo principal online; /v1/models vazio"
@@ -737,6 +843,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
         telemetry = {
             "x-automanager-backend": str(decision.backend_port),
             "x-automanager-backend-model": decision.internal_model,
+            "x-automanager-backend-id": decision.backend_id,
+            "x-automanager-backend-type": decision.backend_type,
         }
 
         try:
@@ -860,7 +968,7 @@ async def openai_proxy(request: Request, path: str):
         except json.JSONDecodeError:
             data = {}
 
-    instances = process_manager.get_status().get("instances", [])
+    instances = _hybrid_status().get("instances", [])
     if not instances:
         raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
 
@@ -879,12 +987,9 @@ async def openai_proxy(request: Request, path: str):
         return await _aggregate_models_response(instances, list_headers)
 
     if proxy_enabled and request.method == "POST" and requested_model:
-        primary_instance = _find_primary_instance(
-            instances, proxy_settings.get("primary_model_path")
-        )
+        primary_instance = _find_primary_instance(instances, proxy_settings)
         if _is_primary_model_request(
-            requested_model, proxy_settings.get("primary_model_path"),
-            primary_instance,
+            requested_model, proxy_settings, primary_instance, instances,
         ):
             return await _smart_proxy_forward(request, path, data)
 
@@ -898,6 +1003,14 @@ async def openai_proxy(request: Request, path: str):
             ),
             None,
         )
+        if not target_instance:
+            target_instance = next(
+                (
+                    inst for inst in instances
+                    if inst.get("backend_type") == "platform"
+                ),
+                None,
+            )
         if not target_instance:
             raise HTTPException(
                 status_code=404,
@@ -968,6 +1081,17 @@ def _known_model_path(path: str) -> bool:
     return any(normalize_model_path(key) == norm for key in model_configs)
 
 
+def _known_backend_id(backend_id: str) -> bool:
+    if not backend_id:
+        return False
+    if platform_manager.get(backend_id) is not None:
+        return True
+    return any(
+        inst.get("backend_id") == backend_id
+        for inst in _hybrid_status().get("instances", [])
+    )
+
+
 @app.post("/proxy/config")
 async def set_proxy_config(
     req: ProxyConfigRequest, authenticated: bool = Depends(require_auth)
@@ -976,15 +1100,22 @@ async def set_proxy_config(
         raise HTTPException(status_code=401)
     partial = req.model_dump(exclude_unset=True)
     primary = partial.get("primary_model_path")
+    primary_backend_id = partial.get("primary_backend_id")
     if primary and not _known_model_path(primary):
         raise HTTPException(
             status_code=400,
             detail=f"Modelo principal desconhecido: {primary}",
         )
+    if primary_backend_id and not _known_backend_id(primary_backend_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Backend principal desconhecido: {primary_backend_id}",
+        )
     merged = config_manager.update_smart_proxy_settings(partial)
     logger.info(
-        "[proxy] config updated enabled=%s primary=%s",
+        "[proxy] config updated enabled=%s primary=%s primary_backend=%s",
         merged["enabled"], merged["primary_model_path"],
+        merged.get("primary_backend_id"),
     )
     return {"message": "Configuracao salva", "smart_proxy": merged}
 
@@ -995,6 +1126,10 @@ async def set_model_proxy(
 ):
     if not authenticated:
         raise HTTPException(status_code=401)
+    if not req.model_path and not req.backend_id:
+        raise HTTPException(
+            status_code=400, detail="Informe model_path ou backend_id"
+        )
     settings: Dict[str, Any] = {}
     if req.proxy_eligible is not None:
         settings["proxy_eligible"] = req.proxy_eligible
@@ -1002,7 +1137,10 @@ async def set_model_proxy(
         settings["max_parallel_requests"] = req.max_parallel_requests
     if not settings:
         raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
-    config_manager.update_model_settings(req.model_path, settings)
+    if req.backend_id:
+        config_manager.update_platform_settings(req.backend_id, settings)
+    else:
+        config_manager.update_model_settings(req.model_path, settings)
     return {"message": "Configuracao salva"}
 
 
@@ -1017,6 +1155,7 @@ async def proxy_status(authenticated: bool = Depends(require_auth)):
     return {
         "enabled": settings["enabled"],
         "primary_model_path": settings["primary_model_path"],
+        "primary_backend_id": settings.get("primary_backend_id"),
         "exposed_model": primary["model"] if primary else None,
         "primary": primary,
         "backends": backends,
@@ -1060,6 +1199,9 @@ def _session_view(session, backends_by_port: Dict[int, Dict[str, Any]]) -> dict:
         "backend_port": session.backend_port,
         "external_model": session.external_model,
         "internal_model": session.internal_model,
+        "backend_id": getattr(session, "backend_id", None) or backend.get("backend_id"),
+        "backend_type": getattr(session, "backend_type", None) or backend.get("backend_type"),
+        "provider": getattr(session, "provider", None) or backend.get("provider"),
         "detected_tag": session.detected_tag,
         "created_at": session.created_at,
         "last_used_at": session.last_used_at,
@@ -1142,6 +1284,9 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         "detected_tag": decision.detected_tag,
         "affinity_key": decision.affinity_key,
         "selected_backend": decision.backend_port,
+        "backend_id": decision.backend_id,
+        "backend_type": decision.backend_type,
+        "provider": decision.provider,
         "internal_model": decision.internal_model,
         "gpu": decision.gpu,
         "reason": decision.reason,
