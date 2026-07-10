@@ -1051,14 +1051,23 @@ async def set_llama_bin(req: SetLlamaBinRequest, authenticated: bool = Depends(r
 async def system_shutdown(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    logger.info("Shutdown solicitado via API")
+    logger.info("Desligamento do servidor host solicitado via API")
     shutdown_event.set()
-    # Kill the process shortly after returning response
-    def _kill():
+    
+    def _shutdown_host():
         time.sleep(1)
-        os.kill(os.getpid(), signal.SIGTERM)
-    threading.Thread(target=_kill).start()
-    return {"message": "Sistema encerrando..."}
+        try:
+            # Encerra o llama-server gerenciado antes do SO
+            process_manager.stop()
+            # Chama o shutdown do sistema operacional
+            subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
+        except Exception as e:
+            logger.error(f"Erro ao tentar desligar o sistema host: {e}")
+            # Fallback de seguranca caso o sudo falhe
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_shutdown_host).start()
+    return {"message": "Servidor desligando..."}
 
 
 @app.post("/system/update")
@@ -1100,7 +1109,8 @@ async def _aggregate_models_response(
     instances: List[Dict[str, Any]], headers: Dict[str, str]
 ) -> JSONResponse:
     """Agrega o /v1/models de todas as instancias llama-server em execucao."""
-    clear_platform_listing_registry()
+    # Nao limpar o registry no inicio: POST concorrentes dependem do mapa
+    # listing->sidecar durante o refresh assincrono.
 
     async def fetch_models(inst: Dict[str, Any]) -> List[Dict[str, Any]]:
         port = inst.get("port")
@@ -1454,6 +1464,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")
     is_stream = bool(data.get("stream"))
+    route_headers = _filter_proxy_headers(dict(request.headers))
+    route_headers.pop("host", None)
+    instances = _hybrid_status().get("instances", [])
+    await _ensure_platform_listing_registry(instances, route_headers)
 
     try:
         decision = await proxy_router.resolve(

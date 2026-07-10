@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import logging
 import os
 import platform
 import re
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 from paths import INSTALL_ROOT
+
+logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -302,7 +305,12 @@ def resolve_platform_listing_model(
             if mapped:
                 return mapped
     if is_platform_listing_id(model_name, local_model_ids):
-        return model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+        mapped = lookup_platform_bare_id(model_name)
+        if mapped:
+            return mapped
+        logger.warning(
+            "Listing de plataforma sem mapeamento no registry: %s", model_name
+        )
     return model_name
 
 

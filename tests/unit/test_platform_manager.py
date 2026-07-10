@@ -85,6 +85,13 @@ class TestPlatformModelListing:
         register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
         assert resolve_platform_listing_model("antigravity-31prolow.gguf") == "gemini-3.1-pro-low"
 
+    def test_resolve_proagent_listing(self):
+        register_platform_model_listings("gemini-pro-agent", "antigravity")
+        assert resolve_platform_listing_model("antigravity-proagent.gguf") == "gemini-pro-agent"
+
+    def test_resolve_without_registry_keeps_listing_id(self):
+        assert resolve_platform_listing_model("antigravity-proagent.gguf") == "antigravity-proagent.gguf"
+
     def test_resolve_openai_prefix_legacy_codex_listing(self):
         register_platform_model_listings("gpt-5.4-mini", "codex")
         assert lookup_platform_bare_id("openai-54mini.gguf") == "gpt-5.4-mini"

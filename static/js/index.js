@@ -1,5 +1,5 @@
 import { state } from './state.js?v=4.2.12';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.12';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.18';
 import { cancelAutoBalance } from './gpu.js?v=4.2.12';
 import {
     syncContextSizeCustomVisibility,

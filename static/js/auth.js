@@ -270,11 +270,11 @@ export function showPrompt(msg, initialValue = '', { confirmLabel = 'Salvar', ca
 }
 
 export async function handleShutdown() {
-    if (!await showConfirm('Desligar o sistema? O servidor será desligado imediatamente.', { confirmLabel: 'Desligar' })) return;
+    if (!await showConfirm('Desligar o host? A máquina física/virtual que hospeda o AutoManager será desligada imediatamente.', { confirmLabel: 'Desligar' })) return;
     try {
         const res = await apiFetch('/system/shutdown', {method: 'POST'});
         if (res.ok) {
-            showToast('Comando de desligamento enviado. O sistema será desligado em breve.', 'info');
+            showToast('Comando de desligamento enviado. A máquina será desligada em breve.', 'info');
         } else {
             const err = await res.json();
             showToast('Erro ao desligar: ' + (err.detail || 'Erro desconhecido'), 'error');
