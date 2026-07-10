@@ -65,6 +65,7 @@ DEFAULT_PLATFORM_CONFIG = {
     "proxy_eligible": False,
     "max_parallel_requests": DEFAULT_MAX_PARALLEL_REQUESTS,
     "auto_start": False,
+    "default_model": None,
 }
 
 # Nomes aceitos pelo Cursor em BYOK (validação server-side do editor).
@@ -274,11 +275,21 @@ class ConfigManager:
         max_parallel = merged.get("max_parallel_requests")
         if not isinstance(max_parallel, int) or max_parallel < 1:
             max_parallel = DEFAULT_MAX_PARALLEL_REQUESTS
+        default_model = merged.get("default_model")
+        if isinstance(default_model, str):
+            default_model = default_model.strip() or None
+        elif default_model is not None:
+            default_model = None
         entry = {
             **{
                 k: v
                 for k, v in merged.items()
-                if k not in {"proxy_eligible", "max_parallel_requests", "auto_start"}
+                if k not in {
+                    "proxy_eligible",
+                    "max_parallel_requests",
+                    "auto_start",
+                    "default_model",
+                }
             },
             "proxy_eligible": bool(
                 merged.get("proxy_eligible", DEFAULT_PLATFORM_CONFIG["proxy_eligible"])
@@ -287,6 +298,7 @@ class ConfigManager:
             "auto_start": bool(
                 merged.get("auto_start", DEFAULT_PLATFORM_CONFIG["auto_start"])
             ),
+            "default_model": default_model,
         }
         platform_configs[backend_id] = entry
         config["platform_configs"] = platform_configs

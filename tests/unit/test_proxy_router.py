@@ -44,19 +44,26 @@ def make_instance(port, model_path, ctx=65536, slots=1, gpu_name="NVIDIA RTX 309
     }
 
 
-def make_platform_instance(port=9100, backend_id="platform:codex"):
+def make_platform_instance(
+    port=9100,
+    backend_id="platform:codex",
+    model="Codex",
+    provider="codex",
+):
     return {
         "port": port,
         "status": "running",
-        "model": "Codex",
+        "model": model,
         "model_path": None,
         "backend_id": backend_id,
         "backend_type": "platform",
-        "provider": "codex",
+        "provider": provider,
         "config": {
             "backend_id": backend_id,
             "backend_type": "platform",
-            "provider": "codex",
+            "provider": provider,
+            "proxy_eligible": True,
+            "max_parallel_requests": 1,
         },
     }
 
@@ -421,6 +428,119 @@ class TestSelection:
             if b["backend_id"] == "platform:codex"
         )
         assert enabled["state"] == "online"
+
+    @pytest.mark.asyncio
+    async def test_shared_sidecar_port_tracks_in_flight_per_backend_id(
+        self, router, proxy_config, status_holder
+    ):
+        """Duas integrações no mesmo sidecar não devem compartilhar contador ocupado."""
+        shared_port = 8317
+        codex = make_platform_instance(
+            port=shared_port, backend_id="platform:codex"
+        )
+        antigravity = make_platform_instance(
+            port=shared_port,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+            provider="antigravity",
+        )
+        status_holder["instances"] = [codex, antigravity]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity", {"proxy_eligible": True}
+        )
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:google-antigravity"}
+        )
+        decision = await resolve(
+            router, body=body_with(model="antigravity-proagent.gguf")
+        )
+        by_id = {b["backend_id"]: b for b in router.backends_snapshot()}
+        assert decision.backend_id == "platform:google-antigravity"
+        assert by_id["platform:google-antigravity"]["in_flight"] == 1
+        assert by_id["platform:google-antigravity"]["state"] == "busy"
+        assert by_id["platform:codex"]["in_flight"] == 0
+        assert by_id["platform:codex"]["state"] == "online"
+        await router.release(decision.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_platform_primary_overflow_prefers_local_over_shared_sidecar(
+        self, router, proxy_config, status_holder
+    ):
+        """Transbordo do principal plataforma deve preferir GPUs locais, não outra
+        integração no mesmo sidecar (mesma porta)."""
+        shared_port = 8317
+        antigravity = make_platform_instance(
+            port=shared_port, backend_id="platform:google-antigravity",
+            provider="antigravity",
+        )
+        codex = make_platform_instance(
+            port=shared_port, backend_id="platform:codex", provider="codex",
+        )
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_instance(8086, AUX0_PATH),
+            antigravity,
+            codex,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:google-antigravity"}
+        )
+        d_main = await resolve(
+            router, body=body_with(model="antigravity-proagent.gguf")
+        )
+        overflow = await resolve(
+            router, body=body_with(tag="a1", model="antigravity-proagent.gguf")
+        )
+        assert d_main.backend_id == "platform:google-antigravity"
+        assert overflow.backend_type == "local"
+        assert overflow.reason == "subagent_least_busy"
+        await router.release(d_main.backend_id)
+        await router.release(overflow.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_platform_secondary_uses_default_model(
+        self, router, proxy_config, status_holder
+    ):
+        """Plataforma secundária encaminha para o default_model configurado."""
+        codex = make_platform_instance(backend_id="platform:codex")
+        status_holder["instances"] = [make_instance(8085, MAIN_PATH), codex]
+        proxy_config.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-54mini.gguf"},
+        )
+        d_main = await resolve(router, body=body_with())
+        overflow = await resolve(router, body=body_with(tag="a1"))
+        assert overflow.backend_id == "platform:codex"
+        assert overflow.internal_model == "codex-54mini.gguf"
+        await router.release(d_main.backend_id)
+        await router.release(overflow.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_platform_secondary_without_default_falls_back(
+        self, router, proxy_config, status_holder
+    ):
+        """Sem default_model, a plataforma secundária mantém o external_model."""
+        codex = make_platform_instance(backend_id="platform:codex")
+        status_holder["instances"] = [make_instance(8085, MAIN_PATH), codex]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        d_main = await resolve(router, body=body_with())
+        overflow = await resolve(router, body=body_with(tag="a1"))
+        assert overflow.backend_id == "platform:codex"
+        assert overflow.internal_model == "main.gguf"
+        await router.release(d_main.backend_id)
+        await router.release(overflow.backend_id)
 
     @pytest.mark.asyncio
     async def test_disabled_backend_never_gets_new_sessions(self, router):

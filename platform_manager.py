@@ -177,6 +177,14 @@ def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
     register_platform_listing(primary, bare)
     legacy = f"{bare}{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
     register_platform_listing(legacy, bare)
+    prov_slug = _provider_slug(provider)
+    if prov_slug == "codex":
+        opaque = primary[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+        if opaque.startswith("codex-"):
+            openai_listing = (
+                f"openai-{opaque[len('codex-'):]}{PLATFORM_MODEL_LISTING_SUFFIX}"
+            )
+            register_platform_listing(openai_listing, bare)
     return primary
 
 
@@ -254,6 +262,24 @@ def platform_client_facing_model(
     return platform_model_listing_id(original, provider)
 
 
+def platform_listing_provider_prefix(model_name: str) -> Optional[str]:
+    """Prefixo do slug opaco (codex-, antigravity-, openai- legado)."""
+    if not model_name.endswith(PLATFORM_MODEL_LISTING_SUFFIX):
+        return None
+    slug = model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+    if "-" not in slug:
+        return None
+    prefix = slug.split("-", 1)[0]
+    if prefix == "openai":
+        return "codex"
+    return prefix
+
+
+def platform_provider_for_listing(model_name: str) -> Optional[str]:
+    """Provider da integração para um ID opaco de listagem."""
+    return platform_listing_provider_prefix(model_name)
+
+
 def resolve_platform_listing_model(
     model_name: str, local_model_ids: Optional[set[str]] = None
 ) -> str:
@@ -268,6 +294,13 @@ def resolve_platform_listing_model(
     custom_suffix = f"{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
     if model_name.endswith(custom_suffix):
         return model_name[: -len(custom_suffix)]
+    if model_name.endswith(PLATFORM_MODEL_LISTING_SUFFIX):
+        slug = model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
+        if slug.startswith("openai-"):
+            alt = f"codex-{slug[len('openai-'):]}{PLATFORM_MODEL_LISTING_SUFFIX}"
+            mapped = lookup_platform_bare_id(alt)
+            if mapped:
+                return mapped
     if is_platform_listing_id(model_name, local_model_ids):
         return model_name[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
     return model_name

@@ -127,9 +127,16 @@ modelos locais `.gguf`. O MVP suporta Codex, Claude Code e Google Antigravity.
 - Iniciar um card de plataforma inicia um sidecar local compartilhado do
   CLIProxyAPI. Integrações ativas aparecem em `/status`, e os IDs reais de
   modelo retornados pelo sidecar passam por `/v1/models`.
-- Backends de plataforma ficam fora do proxy inteligente até você habilitar a
-  participação daquele backend. O principal do proxy pode ser um
-  `primary_model_path` local ou um `primary_backend_id` de plataforma.
+- O AutoManager possui um **Modo Proxy Inteligente**. Quando ativo, você define
+  um modelo "principal" (local ou plataforma). Clientes solicitando o modelo principal
+  são roteados para ele. Requisições concorrentes (ou que sigam a estratégia
+  de balanceamento) são roteadas dinamicamente para modelos secundários "elegíveis"
+  (locais ou de plataforma).
+- Você pode configurar um **Modelo Padrão (Proxy)** para cada plataforma. Quando o
+  backend de uma plataforma atua como secundário (atendendo uma requisição que era
+  para o modelo principal), ele usa automaticamente esse modelo padrão para atender o pedido.
+- É possível criar apelidos usando a função de **Alias** na UI, contornando regras
+  restritas de validação de nome de modelo exigidas por clientes (como o Cursor).
 - Se uma CLI suportada for detectada, mas o CLIProxyAPI estiver ausente, o card
   continua visível com o motivo de indisponibilidade.
 

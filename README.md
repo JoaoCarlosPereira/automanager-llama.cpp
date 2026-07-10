@@ -128,9 +128,17 @@ AutoManager can show supported subscription-backed CLI tools beside local
 - Starting a platform card starts a shared local CLIProxyAPI sidecar. Active
   platform integrations appear in `/status`, and their real sidecar model IDs
   pass through `/v1/models`.
-- Platform backends are excluded from the smart proxy until you explicitly
-  enable proxy participation for that backend. The proxy primary can be a
-  local `primary_model_path` or a platform `primary_backend_id`.
+- AutoManager includes a **Smart Proxy Mode**. When enabled, you set a "primary"
+  model (local or platform). Clients requesting the primary model are routed
+  to it. Concurrent requests (or requests matching a specific load-balancing strategy)
+  are dynamically routed to other "proxy-eligible" secondary models (local
+  or platform).
+- You can configure a **Default Proxy Model** for each platform integration.
+  When a platform backend acts as a secondary backend for the proxy (answering
+  a request originally intended for the primary model), it will automatically
+  use this default model ID to fulfill the request.
+- You can also map custom names to any model using the UI's **Alias** feature,
+  bypassing strict client-side model name validation.
 - If a supported CLI is detected but CLIProxyAPI is missing, the card stays
   visible with a not-ready reason instead of disappearing.
 

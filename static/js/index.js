@@ -18,7 +18,7 @@ import {
     onMmprojChange, closeTab, startSmartCalibration,
     startCliproxyAuth, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart,
-} from './models.js?v=4.2.12';
+} from './models.js?v=4.2.18';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.12';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,

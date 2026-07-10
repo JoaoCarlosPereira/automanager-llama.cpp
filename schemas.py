@@ -151,6 +151,7 @@ class SetModelProxyRequest(BaseModel):
     proxy_eligible: Optional[bool] = None
     max_parallel_requests: Optional[int] = Field(default=None, ge=1)
     auto_start: Optional[bool] = None
+    default_model: Optional[str] = None
 
 
 class RenameRequest(BaseModel):

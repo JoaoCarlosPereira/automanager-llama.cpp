@@ -501,6 +501,9 @@ function bindPlatformTabListeners(tabId, backendId) {
     tab.querySelector('.platform-autostart')?.addEventListener('change', (e) => {
         setPlatformAutoStart(e.target, backendId);
     });
+    tab.querySelector('.platform-proxy-default-model')?.addEventListener('change', (e) => {
+        setPlatformDefaultModel(e.target, backendId);
+    });
 
     const clearLogsBtn = tab.querySelector('.tab-clear-logs-btn');
     if (clearLogsBtn) {
@@ -537,18 +540,41 @@ function renderPlatformModelsList(tab, models) {
             <div class="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-slate-950/50 border border-slate-800/60">
                 <div class="min-w-0">
                     <span class="text-sm font-mono text-slate-200 truncate block">${escapeHtml(id)}</span>
-                    <span class="text-ui-label text-cyan-400/80 font-mono truncate block">Cursor: ${escapeHtml(cursorId)}</span>
+                    <span class="text-ui-label text-cyan-400/80 font-mono truncate block">Alias: ${escapeHtml(cursorId)}</span>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                     <span class="text-ui-label text-slate-600 uppercase">${owned}</span>
-                    <button type="button" class="platform-cursor-quick-alias px-2 py-1 rounded-lg border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase hover:bg-cyan-500/10" data-model-id="${escapeHtml(id)}" title="Criar alias para o Cursor">Cursor</button>
+                    <button type="button" class="platform-copy-alias px-2 py-1 rounded-lg border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase hover:bg-cyan-500/10" data-copy-alias="${escapeHtml(cursorId)}" title="Copiar alias">Copiar</button>
                 </div>
             </div>`;
     }).join('');
-    list.querySelectorAll('.platform-cursor-quick-alias').forEach((btn) => {
-        btn.addEventListener('click', () => quickCursorAlias(btn.dataset.modelId, tab));
+    list.querySelectorAll('.platform-copy-alias').forEach((btn) => {
+        btn.addEventListener('click', () => copyPlatformAlias(btn.dataset.copyAlias));
     });
     syncPlatformCursorSelectors(tab, models);
+}
+
+function populatePlatformDefaultModelSelect(tab, models, currentValue) {
+    const select = tab.querySelector('.platform-proxy-default-model');
+    if (!select) return;
+    const options = ['<option value="">— Nenhum (não encaminhar) —</option>'];
+    (models || []).forEach((model) => {
+        const value = model.cursor_id || model.id;
+        if (!value) return;
+        const label = model.id || model.name || value;
+        options.push(
+            `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`
+        );
+    });
+    if (currentValue && !(models || []).some(m => (m.cursor_id || m.id) === currentValue)) {
+        options.push(
+            `<option value="${escapeHtml(currentValue)}">${escapeHtml(currentValue)}</option>`
+        );
+    }
+    if (document.activeElement === select) return;
+    select.innerHTML = options.join('');
+    select.value = currentValue || '';
+    select.dataset.prevValue = currentValue || '';
 }
 
 async function fetchModelAliasState() {
@@ -617,24 +643,26 @@ async function saveModelAlias(alias, target, tab) {
     }
 }
 
-async function quickCursorAlias(targetModel, tab) {
-    if (!targetModel) return;
-    const aliasState = await fetchModelAliasState();
-    const used = new Set(Object.keys(aliasState.aliases || {}));
-    const names = aliasState.cursor_compatible_names?.length
-        ? aliasState.cursor_compatible_names
-        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4'];
-    const existing = Object.entries(aliasState.aliases || {}).find(([, t]) => t === targetModel);
-    if (existing) {
-        showToast(`Já mapeado: use "${existing[0]}" no Cursor.`, 'success');
-        return;
+async function copyPlatformAlias(alias) {
+    if (!alias) return;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(alias);
+        } else {
+            const input = document.createElement('textarea');
+            input.value = alias;
+            input.setAttribute('readonly', '');
+            input.style.position = 'absolute';
+            input.style.left = '-9999px';
+            document.body.appendChild(input);
+            input.select();
+            document.execCommand('copy');
+            document.body.removeChild(input);
+        }
+        showToast(`Alias "${alias}" copiado.`, 'success');
+    } catch {
+        showToast('Falha ao copiar alias.', 'error');
     }
-    const alias = names.find(n => !used.has(n)) || names[0];
-    await saveModelAlias(alias, targetModel, tab);
-    const aliasSelect = tab?.querySelector('.platform-cursor-alias-select');
-    const targetSelect = tab?.querySelector('.platform-cursor-target-select');
-    if (aliasSelect) aliasSelect.value = alias;
-    if (targetSelect) targetSelect.value = targetModel;
 }
 
 async function refreshPlatformCursorSection(tab) {
@@ -720,6 +748,7 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
             cursor_id: cursorIds[index] || m.id,
         }));
         renderPlatformModelsList(tab, models);
+        populatePlatformDefaultModelSelect(tab, models, pCfg.default_model || '');
     }
 
     refreshPlatformTabStatus(tabId, platform, port);
@@ -1932,6 +1961,38 @@ export async function setPlatformAutoStart(checkbox, backendId) {
     } catch (e) {
         checkbox.checked = !checkbox.checked;
         showToast(e.message || "Erro ao salvar Auto-Start.", 'error');
+    }
+}
+
+export async function setPlatformDefaultModel(select, backendId) {
+    const value = select.value || '';
+    const previous = select.dataset.prevValue || '';
+    try {
+        const res = await apiFetch('/models/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                backend_id: backendId,
+                default_model: value,
+            }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar modelo padrão');
+        }
+        select.dataset.prevValue = value;
+        window.platformConfigs = window.platformConfigs || {};
+        window.platformConfigs[backendId] = {
+            ...(window.platformConfigs[backendId] || {}),
+            default_model: value || null,
+        };
+        showToast(
+            value ? 'Modelo padrão do proxy salvo' : 'Modelo padrão removido',
+            'success'
+        );
+    } catch (e) {
+        select.value = previous;
+        showToast(e.message || 'Erro ao salvar modelo padrão.', 'error');
     }
 }
 

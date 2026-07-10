@@ -53,6 +53,7 @@ from platform_manager import (
     platform_listing_registry_populated,
     platform_model_listing_entry,
     platform_model_listing_id,
+    platform_provider_for_listing,
     register_platform_model_listings,
     resolve_platform_listing_model,
     should_skip_platform_model_listing,
@@ -92,7 +93,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.16"  # IDs opacos plataforma (Cursor BYOK)
+_DASHBOARD_JS_V = "4.2.17"  # Alias/Copiar na aba plataforma
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -697,9 +698,11 @@ async def get_platform_detail(
         filtered = filter_models_for_provider(
             all_models, payload.get("provider") or ""
         )
+        provider = payload.get("provider") or ""
         payload["available_models"] = filtered
         payload["cursor_model_ids"] = [
-            platform_model_listing_entry(m)["id"] for m in filtered
+            platform_model_listing_entry(m, provider=provider)["id"]
+            for m in filtered
         ]
     else:
         payload["available_models"] = []
@@ -1239,6 +1242,17 @@ def _find_target_instance(
             None,
         )
         if not target:
+            listing_provider = platform_provider_for_listing(requested_model)
+            if listing_provider:
+                target = next(
+                    (
+                        inst for inst in instances
+                        if inst.get("backend_type") == "platform"
+                        and str(inst.get("provider") or "") == listing_provider
+                    ),
+                    None,
+                )
+        if not target:
             target = next(
                 (
                     inst for inst in instances
@@ -1320,9 +1334,15 @@ def _instance_matches_model(
     if inst.get("backend_type") != "platform":
         return False
     local_ids = _local_model_ids(instances)
+    provider = str(inst.get("provider") or "")
     bare = resolve_platform_listing_model(requested_model, local_ids)
-    listing = platform_model_listing_id(bare)
-    return requested_model in {bare, listing}
+    listing = platform_model_listing_id(bare, provider)
+    if requested_model in {bare, listing}:
+        return True
+    if lookup_platform_bare_id(requested_model):
+        return True
+    listing_provider = platform_provider_for_listing(requested_model)
+    return listing_provider == provider if listing_provider else False
 
 
 def _find_primary_instance(
@@ -1375,6 +1395,16 @@ def _is_primary_model_request(
                 or inst.get("model_path") == requested_model
             )
         ]
+        if local_matches:
+            return False
+        if primary_instance and primary_instance.get("backend_type") == "platform":
+            primary_provider = str(primary_instance.get("provider") or "")
+            listing_provider = platform_provider_for_listing(requested_model)
+            if listing_provider == primary_provider:
+                return True
+            if listing_provider or lookup_platform_bare_id(requested_model):
+                return False
+            return False
         return not local_matches
     primary_model_path = proxy_settings.get("primary_model_path")
     if not primary_model_path:
@@ -1446,28 +1476,82 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             decision.sticky_hit, decision.reason, is_stream,
             decision.prompt_tokens_estimated,
         )
+        instances = _hybrid_status().get("instances", [])
+        decision_instance = next(
+            (
+                inst for inst in instances
+                if inst.get("backend_id") == decision.backend_id
+            ),
+            None,
+        )
+        if decision_instance is None:
+            decision_instance = next(
+                (
+                    inst for inst in instances
+                    if inst.get("port") == decision.backend_port
+                ),
+                {"backend_type": decision.backend_type},
+            )
+        forward_model = _forward_model_for_backend(
+            decision.internal_model,
+            decision_instance,
+            instances,
+        )
         forward_body = json.dumps(
-            {**data, "model": decision.internal_model}, ensure_ascii=False
+            {**data, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("content-length", None)
         target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
+        backend_label = (
+            f"platform:{decision.provider or decision.backend_port}"
+            if decision.backend_type == "platform"
+            else f"local:{decision.backend_port}"
+        )
         telemetry = {
             "x-automanager-backend": str(decision.backend_port),
-            "x-automanager-backend-model": decision.internal_model,
+            "x-automanager-backend-model": forward_model,
             "x-automanager-backend-id": decision.backend_id,
             "x-automanager-backend-type": decision.backend_type,
         }
 
         try:
             if is_stream:
-                upstream = await client.send(
-                    client.build_request(
-                        "POST", target_url, content=forward_body,
-                        headers=headers, timeout=None,
-                    ),
-                    stream=True,
+                if decision.backend_type == "platform":
+                    status, chunks, upstream_headers = (
+                        await _collect_upstream_stream_with_retry(
+                            target_url,
+                            content=forward_body,
+                            headers=headers,
+                            backend_label=backend_label,
+                        )
+                    )
+                    await proxy_router.release(
+                        decision.backend_id,
+                        affinity_key=decision.affinity_key,
+                    )
+
+                    async def buffered_stream_generator(parts=chunks):
+                        for part in parts:
+                            yield part
+
+                    response_headers = _filter_proxy_headers(upstream_headers)
+                    response_headers.update(telemetry)
+                    response_headers.pop("content-length", None)
+                    return StreamingResponse(
+                        buffered_stream_generator(),
+                        status_code=status,
+                        media_type=upstream_headers.get("content-type")
+                        or "text/event-stream",
+                        headers=response_headers,
+                    )
+
+                upstream = await _proxy_open_stream_with_retry(
+                    target_url,
+                    content=forward_body,
+                    headers=headers,
+                    backend_label=backend_label,
                 )
 
                 async def stream_generator(response=upstream, dec=decision):
@@ -1487,7 +1571,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     finally:
                         await response.aclose()
                         await proxy_router.release(
-                            dec.backend_port,
+                            dec.backend_id,
                             affinity_key=dec.affinity_key,
                             usage=usage_holder.get("usage"),
                         )
@@ -1503,8 +1587,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
 
             usage: Optional[Dict[str, Any]] = None
             try:
-                resp = await client.post(
-                    target_url, content=forward_body, headers=headers, timeout=None
+                resp = await _proxy_post_with_retry(
+                    target_url,
+                    content=forward_body,
+                    headers=headers,
+                    backend_label=backend_label,
                 )
                 content = resp.content
                 if decision.rewrite:
@@ -1523,7 +1610,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 )
             finally:
                 await proxy_router.release(
-                    decision.backend_port,
+                    decision.backend_id,
                     affinity_key=decision.affinity_key,
                     usage=usage,
                 )
@@ -1534,7 +1621,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             if is_stream:
                 # Slot ainda reservado (o gerador não chegou a rodar)
                 await proxy_router.release(
-                    decision.backend_port, affinity_key=decision.affinity_key
+                    decision.backend_id, affinity_key=decision.affinity_key
                 )
             if attempts >= 1:
                 return JSONResponse(
@@ -1557,7 +1644,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     ).payload(),
                     status_code=502,
                 )
-            await proxy_router.acquire(new_decision.backend_port)
+            await proxy_router.acquire(new_decision.backend_id)
             new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
             decision = new_decision
 
@@ -1840,6 +1927,13 @@ async def set_model_proxy(
         settings["max_parallel_requests"] = req.max_parallel_requests
     if req.auto_start is not None:
         settings["auto_start"] = req.auto_start
+    if req.default_model is not None:
+        if not req.backend_id:
+            raise HTTPException(
+                status_code=400,
+                detail="default_model so e valido para plataformas (backend_id)",
+            )
+        settings["default_model"] = req.default_model
     if not settings:
         raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
     if req.backend_id:
@@ -3247,6 +3341,13 @@ def _build_html(
                                     <span class="font-black text-slate-500 uppercase">Auto-Start</span>
                                     <input type="checkbox" class="platform-autostart w-4 h-4 bg-slate-900 border-slate-700 rounded text-blue-600">
                                 </label>
+                            </div>
+                            <div class="pt-3 border-t border-slate-800/60 space-y-1.5">
+                                <label class="block text-ui-label font-black text-slate-500 uppercase tracking-wider">Modelo padrão (proxy secundário)</label>
+                                <select class="platform-proxy-default-model w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-300 text-ui-label">
+                                    <option value="">— Nenhum (não encaminhar) —</option>
+                                </select>
+                                <p class="text-xs text-slate-600 leading-snug">Usado quando esta plataforma não é a principal: requisições encaminhadas ao proxy são atendidas por este modelo.</p>
                             </div>
                         </div>
 

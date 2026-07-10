@@ -261,12 +261,18 @@ class TestSmartRouting:
         self, mock_post, smart_env
     ):
         ok = _mock_response({"id": "x", "model": "m"})
-        mock_post.side_effect = [httpx.ConnectError("refused"), ok]
+        mock_post.side_effect = [
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            ok,
+        ]
         response = client.post("/v1/chat/completions", json=chat_body(tag="a1"))
         assert response.status_code == 200
         urls = [c.args[0] for c in mock_post.call_args_list]
-        assert len(urls) == 2
-        assert urls[0] != urls[1]
+        assert len(urls) == 4
+        assert urls[0] == urls[1] == urls[2]
+        assert urls[2] != urls[3]
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_request_error_twice_returns_502_openai_format(
@@ -728,10 +734,12 @@ class TestHybridV1Availability:
         assert response.status_code == 200
         assert [item["id"] for item in response.json()["data"]] == ["main.gguf"]
 
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_smart_proxy_platform_primary_forwards_to_sidecar(
-        self, mock_post, smart_env
+        self, mock_post, mock_get, smart_env
     ):
+        llama_manager.clear_platform_listing_registry()
         smart_env.holder["instances"] = [make_platform_instance()]
         smart_env.cfg.update_platform_settings(
             "platform:codex", {"proxy_eligible": True}
@@ -739,10 +747,12 @@ class TestHybridV1Availability:
         smart_env.cfg.update_smart_proxy_settings(
             {"enabled": True, "primary_backend_id": "platform:codex"}
         )
+        mock_get.return_value = _models_response(["codex-pro"])
         mock_post.return_value = _mock_response({"id": "chatcmpl-1", "model": "codex-pro"})
+        codex_listing = platform_model_listing_id("codex-pro", "codex")
 
         response = client.post(
-            "/v1/chat/completions", json=chat_body(model="codex-pro")
+            "/v1/chat/completions", json=chat_body(model=codex_listing)
         )
 
         assert response.status_code == 200

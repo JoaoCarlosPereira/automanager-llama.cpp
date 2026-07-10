@@ -21,9 +21,14 @@ GEMINI_LISTING = platform_model_listing_id("gemini-3.1-pro-low", "antigravity")
 
 
 @pytest.fixture(autouse=True)
-def override_auth():
+def override_auth(monkeypatch):
     app.dependency_overrides[llama_manager.require_api_token] = lambda: True
     app.dependency_overrides[auth_manager.check_auth] = lambda: True
+    monkeypatch.setattr(
+        llama_manager.config_manager,
+        "get_smart_proxy_settings",
+        lambda: {"enabled": False},
+    )
     yield
     app.dependency_overrides.clear()
 
