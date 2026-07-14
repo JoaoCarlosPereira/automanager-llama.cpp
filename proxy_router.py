@@ -673,7 +673,9 @@ class ProxyRouter:
     ) -> Optional[Dict[str, Any]]:
         """Menos ocupado por in-flight; empates: menos sessões sticky
         atribuídas, preferência por backend principal (por id, não porta),
-        depois instâncias locais (GPUs dedicadas) e menor porta."""
+        depois evita o mesmo sidecar do principal (outra integração na
+        mesma porta tende a sofrer a mesma contenção), depois instâncias de
+        plataforma (poupa GPU local dedicada) e menor porta."""
         if not candidates:
             return None
         session_counts: Dict[str, int] = {}
@@ -689,7 +691,8 @@ class ProxyRouter:
                     primary_backend_id
                     and self._backend_id(i) == primary_backend_id
                 ) else 1,
-                0 if self._backend_type(i) == "local" else 1,
+                1 if (primary_port is not None and i["port"] == primary_port) else 0,
+                0 if self._backend_type(i) == "platform" else 1,
                 i["port"],
             ),
         )
@@ -933,6 +936,40 @@ class ProxyRouter:
         existing = self._sessions.get(affinity_key)
 
         if existing is not None:
+            on_primary = (
+                existing.backend_id == primary_backend_id
+                if existing.backend_id else existing.backend_port == primary_port
+            )
+            if not on_primary and primary_port not in self._disabled_ports:
+                # Principal liberou: sessao sticky volta pra ele em vez de
+                # continuar presa ao secundario onde foi parar (PRD F6 —
+                # principal tem prioridade sempre que estiver livre).
+                primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+                if primary_ctx_ok:
+                    _, primary_max = self._backend_flags(config, primary)
+                    if self.in_flight_for(primary) < primary_max:
+                        if dry_run:
+                            return _decision(
+                                primary, False, "sticky_return_primary"
+                            ), None
+                        logger.info(
+                            "[proxy] sticky session returning to primary "
+                            "affinity_key=%s old_backend=%s",
+                            affinity_key, existing.backend_port,
+                        )
+                        existing.backend_port = primary["port"]
+                        existing.backend_model_path = primary.get("model_path") or ""
+                        existing.internal_model = self._internal_model(
+                            primary, existing.external_model, True
+                        )
+                        existing.backend_id = primary_backend_id
+                        existing.backend_type = self._backend_type(primary)
+                        existing.provider = primary.get("provider")
+                        self._save_sessions()
+                        return _commit(
+                            primary, False, "sticky_return_primary", existing
+                        ), None
+
             inst = None
             if existing.backend_id:
                 inst = by_backend_id.get(existing.backend_id)
@@ -1101,8 +1138,17 @@ class ProxyRouter:
     # Reassign administrativo
     # ------------------------------------------------------------------
 
-    async def reassign(self, affinity_key: str) -> Optional[RouteDecision]:
-        """Força a sessão a migrar para o melhor backend disponível."""
+    async def reassign(
+        self, affinity_key: str, *, exclude_current: bool = False
+    ) -> Optional[RouteDecision]:
+        """Força a sessão a migrar para o melhor backend disponível.
+
+        `exclude_current=True` é usado pelo retry automático em cima de uma
+        falha de conexao (o backend atual acabou de provar que nao responde,
+        entao nao pode ser reescolhido). O botao administrativo de
+        reatribuir usa o padrao (False): o principal tem prioridade mesmo
+        que a sessao ja esteja nele.
+        """
         async with self._lock:
             session = self._sessions.get(affinity_key)
             if session is None:
@@ -1114,18 +1160,34 @@ class ProxyRouter:
                 raise ProxyError(503, "Modelo principal do proxy nao esta online",
                                  code="primary_offline")
             config = self._config.get_config()
-            exclude = (
-                {session.backend_id}
-                if session.backend_id and len(instances) > 1
+            primary_backend_id = self._backend_id(primary)
+            excluded_backend_id = (
+                session.backend_id
+                if exclude_current and session.backend_id and len(instances) > 1
                 else None
             )
-            candidates = self._candidates(
-                instances, config, primary["port"], 0,
-                ignore_capacity=True, exclude_backend_ids=exclude,
-            )
-            chosen = self._pick_least_busy(
-                candidates, primary["port"], self._backend_id(primary)
-            )
+
+            # Principal tem prioridade absoluta: se estiver livre e nao for o
+            # backend que acabou de falhar, reatribui pra ele antes de
+            # considerar qualquer secundario.
+            chosen = None
+            if (
+                primary["port"] not in self._disabled_ports
+                and primary_backend_id != excluded_backend_id
+            ):
+                _, primary_max = self._backend_flags(config, primary)
+                if self.in_flight_for(primary) < primary_max:
+                    chosen = primary
+
+            if chosen is None:
+                exclude = {excluded_backend_id} if excluded_backend_id else None
+                candidates = self._candidates(
+                    instances, config, primary["port"], 0,
+                    ignore_capacity=True, exclude_backend_ids=exclude,
+                )
+                chosen = self._pick_least_busy(
+                    candidates, primary["port"], primary_backend_id
+                )
             if chosen is None:
                 raise ProxyError(503, "Nenhum backend disponivel para reassign",
                                  code="no_backend")

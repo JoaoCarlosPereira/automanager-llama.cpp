@@ -464,14 +464,19 @@ class TestAdminEndpoints:
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_session_reassign_moves_backend(self, mock_post, smart_env):
+        """Reatribuir sempre prioriza o principal — a sessao criada com o
+        principal desabilitado deve voltar pra ele assim que reabilitado."""
         mock_post.return_value = _mock_response({"id": "x", "model": "m"})
+        client.post("/proxy/backends/8085/disable")
         client.post("/v1/chat/completions", json=chat_body(tag="mover"))
         session = client.get("/proxy/sessions").json()[0]
+        assert session["backend_port"] != 8085
+        client.post("/proxy/backends/8085/enable")
         response = client.post(
             f"/proxy/sessions/{session['affinity_key']}/reassign"
         )
         assert response.status_code == 200
-        assert response.json()["backend_port"] != session["backend_port"]
+        assert response.json()["backend_port"] == 8085
         assert (
             client.post("/proxy/sessions/nao-existe/reassign").status_code == 404
         )

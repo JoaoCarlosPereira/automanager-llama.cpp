@@ -555,17 +555,33 @@ class TestSelection:
     async def test_reassign_once_when_backend_down(self, router, status_holder):
         d_main = await resolve(router, body=body_with())  # ocupa primary
         decision = await resolve(router, body=body_with(tag="a1"))
-        await router.release(d_main.backend_port)
         await router.release(decision.backend_port)
         dead_port = decision.backend_port
         assert dead_port != 8085
         status_holder["instances"] = [
             inst for inst in DEFAULT_INSTANCES if inst["port"] != dead_port
         ]
+        # Principal continua ocupado (d_main nao foi liberado): forca o
+        # caminho de deteccao de backend caido em vez da volta ao principal.
         again = await resolve(router, body=body_with(tag="a1"))
         await router.release(again.backend_port)
+        await router.release(d_main.backend_port)
         assert again.reason == "reassign_backend_down"
         assert again.backend_port != dead_port
+
+    @pytest.mark.asyncio
+    async def test_sticky_session_returns_to_primary_when_free(self, router):
+        """Sessao sticky presa num secundario volta pro principal assim que
+        ele libera, em vez de continuar la enquanto durar o TTL."""
+        d_main = await resolve(router, body=body_with())  # ocupa principal
+        decision = await resolve(router, body=body_with(tag="a1"))
+        assert decision.backend_port != 8085
+        await router.release(d_main.backend_port)  # principal libera
+        await router.release(decision.backend_port)
+        again = await resolve(router, body=body_with(tag="a1"))
+        assert again.reason == "sticky_return_primary"
+        assert again.backend_port == 8085
+        await router.release(again.backend_port)
 
     @pytest.mark.asyncio
     async def test_concurrent_same_hash_branches_across_backends(self, router):
@@ -698,13 +714,19 @@ class TestSelection:
 
     @pytest.mark.asyncio
     async def test_admin_reassign_moves_session(self, router):
+        """Reatribuir sempre prioriza o principal, mesmo que a sessao ja
+        esteja fixada num secundario por o principal ter estado ocupado."""
+        d_main = await resolve(router, body=body_with())  # ocupa o principal
         decision = await resolve(router, body=body_with(tag="a1"))
+        assert decision.backend_port != 8085
+        await router.release(d_main.backend_port)  # principal libera
         await router.release(decision.backend_port)
         new_decision = await router.reassign(decision.affinity_key)
         assert new_decision is not None
-        assert new_decision.backend_port != decision.backend_port
+        assert new_decision.backend_port == 8085
         assert new_decision.reason == "reassign_admin"
         assert await router.reassign("nao-existe") is None
+        await router.release(new_decision.backend_port)
 
     @pytest.mark.asyncio
     async def test_release_accumulates_usage_tokens(self, router):

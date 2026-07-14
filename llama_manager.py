@@ -1647,7 +1647,9 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 )
             attempts += 1
             try:
-                new_decision = await proxy_router.reassign(decision.affinity_key)
+                new_decision = await proxy_router.reassign(
+                    decision.affinity_key, exclude_current=True
+                )
             except ProxyError as pe:
                 return JSONResponse(pe.payload(), status_code=pe.status_code)
             if new_decision is None:
