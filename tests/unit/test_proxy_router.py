@@ -278,6 +278,24 @@ class TestStickySessions:
         assert await router.clear_sessions(d.affinity_key) == 1
         assert await router.clear_sessions() == 0
 
+    @pytest.mark.asyncio
+    async def test_expire_idle_returns_removed_count(self, router, clock):
+        d = await resolve(router, body=body_with(tag="a1"))
+        await router.release(d.backend_port)
+        assert await router.expire_idle() == 0
+        clock.advance(minutes=181)
+        assert await router.expire_idle() == 1
+        assert await router.sessions() == []
+
+    @pytest.mark.asyncio
+    async def test_clear_all_sessions(self, router):
+        d1 = await resolve(router, body=body_with(tag="a1"))
+        d2 = await resolve(router, body=body_with(tag="a2"))
+        await router.release(d1.backend_port)
+        await router.release(d2.backend_port)
+        assert await router.clear_sessions() == 2
+        assert await router.sessions() == []
+
 
 # ---------------------------------------------------------------------------
 # Seleção de backend (task 03)
@@ -727,6 +745,62 @@ class TestSelection:
         assert new_decision.reason == "reassign_admin"
         assert await router.reassign("nao-existe") is None
         await router.release(new_decision.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_failover_prefers_next_platform_over_local(
+        self, router, proxy_config, status_holder
+    ):
+        """Com o principal plataforma falhando, o failover vai para a próxima
+        plataforma disponível; locais só entram sem plataforma disponível."""
+        shared_port = 8317
+        codex = make_platform_instance(
+            port=shared_port, backend_id="platform:codex", provider="codex",
+        )
+        antigravity = make_platform_instance(
+            port=shared_port,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+            provider="antigravity",
+        )
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_instance(8086, AUX0_PATH),
+            codex,
+            antigravity,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity",
+            {"proxy_eligible": True, "default_model": "antigravity-31prolow.gguf"},
+        )
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        decision = await resolve(router, body=body_with(model="codex-56sol.gguf"))
+        assert decision.backend_id == "platform:codex"
+        await router.release(decision.backend_id)
+
+        hop1 = await router.reassign(
+            decision.affinity_key,
+            exclude_backend_ids={"platform:codex"},
+            reason="reassign_upstream_error",
+        )
+        assert hop1 is not None
+        assert hop1.backend_id == "platform:google-antigravity"
+        assert hop1.backend_type == "platform"
+        assert hop1.internal_model == "antigravity-31prolow.gguf"
+
+        hop2 = await router.reassign(
+            decision.affinity_key,
+            exclude_backend_ids={
+                "platform:codex", "platform:google-antigravity",
+            },
+            reason="reassign_upstream_error",
+        )
+        assert hop2 is not None
+        assert hop2.backend_type == "local"
 
     @pytest.mark.asyncio
     async def test_release_accumulates_usage_tokens(self, router):

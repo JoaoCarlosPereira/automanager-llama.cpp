@@ -20,7 +20,9 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from paths import INSTALL_ROOT
 
-logger = logging.getLogger(__name__)
+# Filho de "automanager" para herdar os handlers do manager.log —
+# getLogger(__name__) deixava warnings deste módulo invisíveis.
+logger = logging.getLogger("automanager.platform")
 
 _IS_WINDOWS = platform.system() == "Windows"
 

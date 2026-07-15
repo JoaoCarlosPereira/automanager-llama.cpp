@@ -98,52 +98,6 @@ def test_platform_chat_returns_502_after_retries_exhausted(mock_post, mock_get, 
 @patch("llama_manager._hybrid_status")
 @patch("llama_manager.client.get", new_callable=AsyncMock)
 @patch("llama_manager.client.send", new_callable=AsyncMock)
-def test_platform_stream_buffers_and_retries_incomplete_body(
-    mock_send, mock_get, mock_status, mock_sleep
-):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-
-    incomplete = MagicMock(spec=httpx.Response)
-    incomplete.status_code = 200
-    incomplete.headers = httpx.Headers({"Content-Type": "text/event-stream"})
-
-    async def aiter_incomplete():
-        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
-
-    incomplete.aiter_bytes = aiter_incomplete
-    incomplete.aclose = AsyncMock()
-
-    complete = MagicMock(spec=httpx.Response)
-    complete.status_code = 200
-    complete.headers = httpx.Headers({"Content-Type": "text/event-stream"})
-
-    async def aiter_complete():
-        yield b'data: {"model":"x","choices":[]}\n\ndata: [DONE]\n\n'
-
-    complete.aiter_bytes = aiter_complete
-    complete.aclose = AsyncMock()
-    mock_send.side_effect = [incomplete, complete]
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": GEMINI_LISTING,
-            "stream": True,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert mock_send.call_count == 2
-    assert mock_sleep.await_count == 1
-    assert b"data: [DONE]" in response.content
-
-
-@patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.send", new_callable=AsyncMock)
 def test_platform_stream_retries_http_502_before_client(mock_send, mock_get, mock_status, mock_sleep):
     mock_status.return_value = {"instances": [PLATFORM_INST]}
     mock_get.return_value = _models_resp()
@@ -177,6 +131,43 @@ def test_platform_stream_retries_http_502_before_client(mock_send, mock_get, moc
     assert response.status_code == 200
     assert mock_send.call_count == 2
     assert mock_sleep.await_count == 1
+
+
+@patch("llama_manager._hybrid_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+@patch("llama_manager.client.send", new_callable=AsyncMock)
+def test_platform_stream_does_not_retry_after_bytes_started(
+    mock_send, mock_get, mock_status
+):
+    """Falhas após início do SSE não disparam novo request (já houve bytes ao cliente)."""
+    mock_status.return_value = {"instances": [PLATFORM_INST]}
+    mock_get.return_value = _models_resp()
+
+    upstream = MagicMock(spec=httpx.Response)
+    upstream.status_code = 200
+    upstream.headers = httpx.Headers({"Content-Type": "text/event-stream"})
+
+    async def aiter_incomplete():
+        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        # Stream corta sem [DONE] — sem retry pós-abertura.
+
+    upstream.aiter_bytes = aiter_incomplete
+    upstream.aclose = AsyncMock()
+    mock_send.return_value = upstream
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": GEMINI_LISTING,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert mock_send.call_count == 1
+    assert b"partial" in response.content
+    assert b"data: [DONE]" not in response.content
 
 
 @patch("llama_manager._hybrid_status")

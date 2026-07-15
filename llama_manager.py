@@ -48,6 +48,7 @@ from platform_manager import (
     PlatformIntegrationManager,
     clear_platform_listing_registry,
     filter_models_for_provider,
+    is_platform_listing_id,
     lookup_platform_bare_id,
     platform_client_facing_model,
     platform_listing_registry_populated,
@@ -123,6 +124,8 @@ def _filter_proxy_headers(headers: Dict[str, str]) -> Dict[str, str]:
 
 _PROXY_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 _PROXY_MAX_ATTEMPTS = 3
+# Hops de failover entre backends distintos (após retries no mesmo).
+_PROXY_MAX_FAILOVER_HOPS = 5
 
 
 def _proxy_retry_delay(attempt: int) -> float:
@@ -224,93 +227,6 @@ async def _proxy_open_stream_with_retry(
     if last_exc:
         raise last_exc
     raise RuntimeError("proxy stream retry exhausted")
-
-
-def _sse_stream_complete(body: bytes) -> bool:
-    """True quando o corpo SSE parece completo (OpenAI-compat)."""
-    if not body:
-        return False
-    return b"data: [DONE]" in body or body.rstrip().endswith(b"[DONE]")
-
-
-async def _collect_upstream_stream_with_retry(
-    url: str,
-    *,
-    content: bytes,
-    headers: Dict[str, str],
-    backend_label: str = "",
-) -> Tuple[int, List[bytes], Dict[str, str]]:
-    """Bufferiza o stream inteiro no AutoManager; retenta se falhar antes de [DONE]."""
-    last_exc: Optional[Exception] = None
-    for attempt in range(_PROXY_MAX_ATTEMPTS):
-        upstream: Optional[httpx.Response] = None
-        try:
-            upstream = await client.send(
-                client.build_request(
-                    "POST", url, content=content, headers=headers, timeout=None
-                ),
-                stream=True,
-            )
-            upstream_headers = dict(upstream.headers)
-            if (
-                _is_retryable_upstream_status(upstream.status_code)
-                and attempt < _PROXY_MAX_ATTEMPTS - 1
-            ):
-                logger.warning(
-                    "[proxy] %s buffered stream HTTP %s — retry %d/%d",
-                    backend_label or url,
-                    upstream.status_code,
-                    attempt + 1,
-                    _PROXY_MAX_ATTEMPTS,
-                )
-                await upstream.aread()
-                await upstream.aclose()
-                await asyncio.sleep(_proxy_retry_delay(attempt))
-                continue
-
-            chunks: List[bytes] = []
-            async for piece in upstream.aiter_bytes():
-                chunks.append(piece)
-            body = b"".join(chunks)
-            status = upstream.status_code
-            await upstream.aclose()
-            upstream = None
-
-            if (
-                status == 200
-                and not _sse_stream_complete(body)
-                and attempt < _PROXY_MAX_ATTEMPTS - 1
-            ):
-                logger.warning(
-                    "[proxy] %s buffered stream incompleto (%d bytes) — retry %d/%d",
-                    backend_label or url,
-                    len(body),
-                    attempt + 1,
-                    _PROXY_MAX_ATTEMPTS,
-                )
-                await asyncio.sleep(_proxy_retry_delay(attempt))
-                continue
-            return status, chunks, upstream_headers
-        except httpx.RequestError as exc:
-            last_exc = exc
-            if upstream is not None:
-                await upstream.aclose()
-            if attempt >= _PROXY_MAX_ATTEMPTS - 1:
-                raise
-            logger.warning(
-                "[proxy] %s buffered stream indisponivel (%s) — retry %d/%d",
-                backend_label or url,
-                exc,
-                attempt + 1,
-                _PROXY_MAX_ATTEMPTS,
-            )
-            await asyncio.sleep(_proxy_retry_delay(attempt))
-        finally:
-            if upstream is not None:
-                await upstream.aclose()
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("proxy buffered stream retry exhausted")
 
 
 def _inject_ui_base_tag(html: str, port: int) -> str:
@@ -1208,10 +1124,17 @@ def _find_model_in_v1_list(
 
 
 async def _ensure_platform_listing_registry(
-    instances: List[Dict[str, Any]], headers: Optional[Dict[str, str]] = None
+    instances: List[Dict[str, Any]],
+    headers: Optional[Dict[str, str]] = None,
+    force: bool = False,
 ) -> None:
-    """Garante mapa listing->sidecar antes de rotear chat (sem depender de GET /v1/models)."""
-    if platform_listing_registry_populated():
+    """Garante mapa listing->sidecar antes de rotear chat (sem depender de GET /v1/models).
+
+    `force=True` reconstrói mesmo com registry populado — usado quando um
+    alias opaco não resolve (ex.: registry montado com catálogo incompleto
+    do sidecar logo após o boot, antes do refresh remoto de modelos).
+    """
+    if platform_listing_registry_populated() and not force:
         return
     hdrs = headers or {}
     for inst in instances:
@@ -1233,7 +1156,7 @@ async def _ensure_platform_listing_registry(
                     continue
                 register_platform_model_listings(root, provider)
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
-            logger.debug(
+            logger.warning(
                 "Falha ao montar registry de modelos plataforma na porta %s: %s",
                 port, exc,
             )
@@ -1332,6 +1255,36 @@ def _forward_model_for_backend(
     if target_instance.get("backend_type") != "platform":
         return model_name
     return resolve_platform_listing_model(model_name, _local_model_ids(instances))
+
+
+async def _resolve_forward_model(
+    model_name: str,
+    target_instance: Dict[str, Any],
+    instances: List[Dict[str, Any]],
+    headers: Optional[Dict[str, str]] = None,
+) -> str:
+    """Resolve o alias para o modelo real do sidecar, com auto-recuperação.
+
+    Se o alias opaco (ex.: codex-56sol.gguf) não tiver mapeamento no
+    registry — snapshot incompleto do catálogo do sidecar —, reconstrói o
+    registry e resolve de novo, em vez de encaminhar o alias cru (que o
+    sidecar rejeita com 502 unknown provider).
+    """
+    forward = _forward_model_for_backend(model_name, target_instance, instances)
+    if (
+        target_instance.get("backend_type") == "platform"
+        and model_name
+        and forward == model_name
+        and is_platform_listing_id(model_name, _local_model_ids(instances))
+    ):
+        logger.warning(
+            "[proxy] alias de plataforma sem mapeamento no registry (%s) — "
+            "reconstruindo a partir do sidecar",
+            model_name,
+        )
+        await _ensure_platform_listing_registry(instances, headers, force=True)
+        forward = _forward_model_for_backend(model_name, target_instance, instances)
+    return forward
 
 
 def _instance_matches_model(
@@ -1479,7 +1432,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
     except ProxyError as exc:
         return JSONResponse(exc.payload(), status_code=exc.status_code)
 
-    attempts = 0
+    failed_backend_ids: set = set()
+    failover_hops = 0
     while True:
         logger.info(
             "[proxy] route external_model=%s internal_model=%s backend=%s gpu=%s "
@@ -1506,10 +1460,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 ),
                 {"backend_type": decision.backend_type},
             )
-        forward_model = _forward_model_for_backend(
+        forward_model = await _resolve_forward_model(
             decision.internal_model,
             decision_instance,
             instances,
+            route_headers,
         )
         forward_body = json.dumps(
             {**data, "model": forward_model}, ensure_ascii=False
@@ -1529,44 +1484,67 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             "x-automanager-backend-id": decision.backend_id,
             "x-automanager-backend-type": decision.backend_type,
         }
+        current_id = decision.backend_id or f"port:{decision.backend_port}"
+
+        async def _failover(cause: str):
+            nonlocal decision, failover_hops
+            failed_backend_ids.add(current_id)
+            failover_hops += 1
+            if failover_hops > _PROXY_MAX_FAILOVER_HOPS:
+                return JSONResponse(
+                    ProxyError(
+                        502, "Erro ao conectar na instancia do modelo",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            logger.warning(
+                "[proxy] backend %s failed (%s) — failover hop %d excluding=%s",
+                decision.backend_port, cause, failover_hops,
+                sorted(failed_backend_ids),
+            )
+            try:
+                new_decision = await proxy_router.reassign(
+                    decision.affinity_key,
+                    exclude_backend_ids=failed_backend_ids,
+                    reason="reassign_upstream_error",
+                )
+            except ProxyError as pe:
+                return JSONResponse(pe.payload(), status_code=pe.status_code)
+            if new_decision is None:
+                return JSONResponse(
+                    ProxyError(
+                        502, "Erro ao conectar na instancia do modelo",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            await proxy_router.acquire(new_decision.backend_id)
+            new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
+            decision = new_decision
+            return None
 
         try:
             if is_stream:
-                if decision.backend_type == "platform":
-                    status, chunks, upstream_headers = (
-                        await _collect_upstream_stream_with_retry(
-                            target_url,
-                            content=forward_body,
-                            headers=headers,
-                            backend_label=backend_label,
-                        )
-                    )
-                    await proxy_router.release(
-                        decision.backend_id,
-                        affinity_key=decision.affinity_key,
-                    )
-
-                    async def buffered_stream_generator(parts=chunks):
-                        for part in parts:
-                            yield part
-
-                    response_headers = _filter_proxy_headers(upstream_headers)
-                    response_headers.update(telemetry)
-                    response_headers.pop("content-length", None)
-                    return StreamingResponse(
-                        buffered_stream_generator(),
-                        status_code=status,
-                        media_type=upstream_headers.get("content-type")
-                        or "text/event-stream",
-                        headers=response_headers,
-                    )
-
+                # Plataforma e local: SSE ponta a ponta. Retry só na abertura
+                # (antes de entregar bytes ao cliente).
                 upstream = await _proxy_open_stream_with_retry(
                     target_url,
                     content=forward_body,
                     headers=headers,
                     backend_label=backend_label,
                 )
+                if _is_retryable_upstream_status(upstream.status_code):
+                    status = upstream.status_code
+                    await upstream.aread()
+                    await upstream.aclose()
+                    await proxy_router.release(
+                        decision.backend_id, affinity_key=decision.affinity_key
+                    )
+                    err = await _failover(f"HTTP {status}")
+                    if err is not None:
+                        return err
+                    continue
 
                 async def stream_generator(response=upstream, dec=decision):
                     usage_holder: Dict[str, Any] = {}
@@ -1600,6 +1578,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 )
 
             usage: Optional[Dict[str, Any]] = None
+            failover_cause: Optional[str] = None
             try:
                 resp = await _proxy_post_with_retry(
                     target_url,
@@ -1607,27 +1586,35 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     headers=headers,
                     backend_label=backend_label,
                 )
-                content = resp.content
-                if decision.rewrite:
-                    content, usage = rewrite_json_model(
-                        content, decision.external_model
-                    )
+                if _is_retryable_upstream_status(resp.status_code):
+                    failover_cause = f"HTTP {resp.status_code}"
                 else:
-                    _, usage = rewrite_json_model(content, decision.external_model)
-                response_headers = _filter_proxy_headers(dict(resp.headers))
-                response_headers.update(telemetry)
-                return Response(
-                    content=content,
-                    status_code=resp.status_code,
-                    headers=response_headers,
-                    media_type=resp.headers.get("content-type"),
-                )
+                    content = resp.content
+                    if decision.rewrite:
+                        content, usage = rewrite_json_model(
+                            content, decision.external_model
+                        )
+                    else:
+                        _, usage = rewrite_json_model(content, decision.external_model)
+                    response_headers = _filter_proxy_headers(dict(resp.headers))
+                    response_headers.update(telemetry)
+                    return Response(
+                        content=content,
+                        status_code=resp.status_code,
+                        headers=response_headers,
+                        media_type=resp.headers.get("content-type"),
+                    )
             finally:
                 await proxy_router.release(
                     decision.backend_id,
                     affinity_key=decision.affinity_key,
                     usage=usage,
                 )
+            if failover_cause:
+                err = await _failover(failover_cause)
+                if err is not None:
+                    return err
+                continue
         except httpx.RequestError as exc:
             logger.warning(
                 "[proxy] backend %s unavailable: %s", decision.backend_port, exc
@@ -1637,32 +1624,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 await proxy_router.release(
                     decision.backend_id, affinity_key=decision.affinity_key
                 )
-            if attempts >= 1:
-                return JSONResponse(
-                    ProxyError(
-                        502, "Erro ao conectar na instancia do modelo",
-                        code="backend_unreachable",
-                    ).payload(),
-                    status_code=502,
-                )
-            attempts += 1
-            try:
-                new_decision = await proxy_router.reassign(
-                    decision.affinity_key, exclude_current=True
-                )
-            except ProxyError as pe:
-                return JSONResponse(pe.payload(), status_code=pe.status_code)
-            if new_decision is None:
-                return JSONResponse(
-                    ProxyError(
-                        502, "Erro ao conectar na instancia do modelo",
-                        code="backend_unreachable",
-                    ).payload(),
-                    status_code=502,
-                )
-            await proxy_router.acquire(new_decision.backend_id)
-            new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
-            decision = new_decision
+            err = await _failover(str(exc))
+            if err is not None:
+                return err
+            continue
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
@@ -1737,15 +1702,12 @@ async def openai_proxy(
             return await _smart_proxy_forward(request, path, data)
 
     target_instance = _find_target_instance(instances, requested_model)
-    forward_model = _forward_model_for_backend(
-        str(requested_model or ""), target_instance, instances
+    forward_model = await _resolve_forward_model(
+        str(requested_model or ""), target_instance, instances, route_headers
     )
     if requested_model and forward_model != requested_model:
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        headers_need_rebuild = True
-    else:
-        headers_need_rebuild = external_model_name is not None
 
     client_facing_model = _platform_response_model_name(
         client_requested_model, target_instance, instances
@@ -1754,8 +1716,9 @@ async def openai_proxy(
     target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
     headers = dict(request.headers)
     headers.pop("host", None)
-    if headers_need_rebuild:
-        headers.pop("content-length", None)
+    # O corpo pode ter sido re-serializado (alias/forward_model); o
+    # content-length original do cliente fica inválido — httpx recalcula.
+    headers.pop("content-length", None)
 
     backend_label = (
         f"platform:{target_instance.get('provider') or target_instance.get('port')}"
@@ -1767,30 +1730,7 @@ async def openai_proxy(
         if request.method == "POST":
             is_stream = bool(data.get("stream"))
             if is_stream:
-                if target_instance.get("backend_type") == "platform":
-                    status, chunks, upstream_headers = (
-                        await _collect_upstream_stream_with_retry(
-                            target_url,
-                            content=body,
-                            headers=headers,
-                            backend_label=backend_label,
-                        )
-                    )
-
-                    async def buffered_stream_generator(parts=chunks):
-                        for part in parts:
-                            yield part
-
-                    response_headers = _filter_proxy_headers(upstream_headers)
-                    response_headers.pop("content-length", None)
-                    return StreamingResponse(
-                        buffered_stream_generator(),
-                        status_code=status,
-                        media_type=upstream_headers.get("content-type")
-                        or "text/event-stream",
-                        headers=response_headers,
-                    )
-
+                # Plataforma e local: SSE ponta a ponta. Retry só na abertura.
                 upstream = await _proxy_open_stream_with_retry(
                     target_url,
                     content=body,
@@ -2858,9 +2798,15 @@ def _build_html(
                     <div id="proxy-panel-body" class="space-y-4 hidden">
                         <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
                         <div>
-                            <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest mb-2">
-                                Sessões ativas (sticky) <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
-                            </p>
+                            <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                                <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest">
+                                    Sessões ativas (sticky) <span id="proxy-sessions-count" class="font-mono text-slate-400"></span>
+                                    <span id="proxy-sessions-ttl-hint" class="ml-2 font-normal normal-case tracking-normal text-slate-600"></span>
+                                </p>
+                                <button type="button" id="proxy-sessions-clear-btn" onclick="proxyClearAllSessions()" class="px-3 py-1.5 rounded-lg bg-slate-800/80 text-ui-label font-bold uppercase tracking-widest text-slate-400 hover:text-red-300 hover:bg-red-950/40 border border-slate-700/60 hover:border-red-800/50 transition-all disabled:opacity-40 disabled:pointer-events-none">
+                                    <i class="fas fa-broom mr-1.5"></i>Limpar sessões
+                                </button>
+                            </div>
                             <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
                         </div>
                     </div>
@@ -3584,6 +3530,26 @@ def _auto_start_platforms() -> None:
             logger.error("Platform auto-start error for %s: %s", backend_id, exc)
 
 
+_PROXY_SESSION_JANITOR_INTERVAL_SEC = 60
+
+
+async def _proxy_session_janitor() -> None:
+    """Remove sticky sessions ociosas além do TTL, mesmo sem tráfego / poll da UI."""
+    while not shutdown_event.is_set():
+        try:
+            removed = await proxy_router.expire_idle()
+            if removed:
+                logger.info(
+                    "[proxy] auto-clean removed %d idle sticky session(s)", removed
+                )
+        except Exception:
+            logger.exception("[proxy] auto-clean failed")
+        for _ in range(_PROXY_SESSION_JANITOR_INTERVAL_SEC):
+            if shutdown_event.is_set():
+                return
+            await asyncio.sleep(1)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start OOM watchdog, download runner, and optionally auto-start default model."""
@@ -3601,6 +3567,7 @@ async def startup_event():
         daemon=True,
         name="platform-auto-start",
     ).start()
+    asyncio.create_task(_proxy_session_janitor(), name="proxy-session-janitor")
 
 
 @app.on_event("shutdown")

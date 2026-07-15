@@ -7,7 +7,7 @@ import {
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.2.3';
 import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.18';
-import { updateProxyPanel } from './proxy.js?v=4.2.3';
+import { updateProxyPanel } from './proxy.js?v=4.2.14';
 
 export async function updateStatus() {
     try {

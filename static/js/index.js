@@ -22,8 +22,8 @@ import {
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.12';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
-    updateProxyPanel, proxyDeleteSession, proxyReassignSession,
-} from './proxy.js?v=4.2.12';
+    updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
+} from './proxy.js?v=4.2.14';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -88,6 +88,7 @@ win.setProxyEligible = setProxyEligible;
 win.setProxyMaxParallel = setProxyMaxParallel;
 win.updateProxyPanel = updateProxyPanel;
 win.proxyDeleteSession = proxyDeleteSession;
+win.proxyClearAllSessions = proxyClearAllSessions;
 win.proxyReassignSession = proxyReassignSession;
 win.runSmartCalibration = (btn) => {
     const tab = btn?.closest('.tab-content');

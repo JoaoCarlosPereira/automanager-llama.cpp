@@ -268,6 +268,15 @@ function render(status, sessions) {
     }
     const countEl = document.getElementById('proxy-sessions-count');
     if (countEl) countEl.innerText = `(${sessions.length})`;
+    const ttlHint = document.getElementById('proxy-sessions-ttl-hint');
+    if (ttlHint) {
+        const ttl = Number(status.ttl_minutes) || 0;
+        ttlHint.innerText = ttl
+            ? `· auto-clean após ${ttl} min ociosas`
+            : '';
+    }
+    const clearBtn = document.getElementById('proxy-sessions-clear-btn');
+    if (clearBtn) clearBtn.disabled = sessions.length === 0;
     const sessionsEl = document.getElementById('proxy-sessions-list');
     if (sessionsEl) {
         sessionsEl.innerHTML = sessions.map(sessionRow).join('')
@@ -289,6 +298,25 @@ export async function proxyDeleteSession(affinityKey) {
         updateProxyPanel(true);
     } else {
         showToast('Falha ao remover sessão', 'error');
+    }
+}
+
+export async function proxyClearAllSessions() {
+    const ok = await showConfirm(
+        'Limpar todas as sessões sticky? As próximas requisições serão roteadas do zero.',
+    );
+    if (!ok) return;
+    const res = await apiFetch('/proxy/sessions', { method: 'DELETE' });
+    if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const n = typeof data.removed === 'number' ? data.removed : 0;
+        showToast(
+            n ? `${n} sessão(ões) removida(s)` : 'Nenhuma sessão para limpar',
+            'success',
+        );
+        updateProxyPanel(true);
+    } else {
+        showToast('Falha ao limpar sessões', 'error');
     }
 }
 

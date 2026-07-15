@@ -397,6 +397,13 @@ class ProxyRouter:
             self._expire_locked()
             return list(self._sessions.values())
 
+    async def expire_idle(self) -> int:
+        """Remove sessões ociosas além do TTL; retorna quantas foram apagadas."""
+        async with self._lock:
+            before = len(self._sessions)
+            self._expire_locked()
+            return before - len(self._sessions)
+
     async def clear_sessions(self, affinity_key: Optional[str] = None) -> int:
         async with self._lock:
             if affinity_key is None:
@@ -610,7 +617,9 @@ class ProxyRouter:
                 state = "disabled"
             elif not eligible and (backend_type == "platform" or not is_primary):
                 state = "not_eligible"
-            elif in_flight >= max_parallel:
+            elif in_flight > 0:
+                # Qualquer requisição ativa = OCUPADO na UI (roteamento
+                # continua usando max_parallel em _candidates).
                 state = "busy"
             else:
                 state = "online"
@@ -1139,15 +1148,16 @@ class ProxyRouter:
     # ------------------------------------------------------------------
 
     async def reassign(
-        self, affinity_key: str, *, exclude_current: bool = False
+        self, affinity_key: str, *, exclude_current: bool = False,
+        exclude_backend_ids: Optional[set] = None,
+        reason: str = "reassign_admin",
     ) -> Optional[RouteDecision]:
         """Força a sessão a migrar para o melhor backend disponível.
 
-        `exclude_current=True` é usado pelo retry automático em cima de uma
-        falha de conexao (o backend atual acabou de provar que nao responde,
-        entao nao pode ser reescolhido). O botao administrativo de
-        reatribuir usa o padrao (False): o principal tem prioridade mesmo
-        que a sessao ja esteja nele.
+        `exclude_current=True` / `exclude_backend_ids` evita reescolher backends
+        que acabaram de falhar (conexão ou HTTP 429/502/503/504). O botão
+        administrativo usa o padrao: o principal tem prioridade mesmo que a
+        sessão ja esteja nele.
         """
         async with self._lock:
             session = self._sessions.get(affinity_key)
@@ -1161,11 +1171,9 @@ class ProxyRouter:
                                  code="primary_offline")
             config = self._config.get_config()
             primary_backend_id = self._backend_id(primary)
-            excluded_backend_id = (
-                session.backend_id
-                if exclude_current and session.backend_id and len(instances) > 1
-                else None
-            )
+            excluded: set = set(exclude_backend_ids or ())
+            if exclude_current and session.backend_id and len(instances) > 1:
+                excluded.add(session.backend_id)
 
             # Principal tem prioridade absoluta: se estiver livre e nao for o
             # backend que acabou de falhar, reatribui pra ele antes de
@@ -1173,20 +1181,28 @@ class ProxyRouter:
             chosen = None
             if (
                 primary["port"] not in self._disabled_ports
-                and primary_backend_id != excluded_backend_id
+                and primary_backend_id not in excluded
             ):
                 _, primary_max = self._backend_flags(config, primary)
                 if self.in_flight_for(primary) < primary_max:
                     chosen = primary
 
             if chosen is None:
-                exclude = {excluded_backend_id} if excluded_backend_id else None
                 candidates = self._candidates(
                     instances, config, primary["port"], 0,
-                    ignore_capacity=True, exclude_backend_ids=exclude,
+                    ignore_capacity=True,
+                    exclude_backend_ids=excluded or None,
                 )
+                # Plataformas primeiro: com o principal indisponível, a
+                # próxima integração de plataforma assume; backends locais
+                # só entram quando nenhuma plataforma está disponível.
+                platform_candidates = [
+                    inst for inst in candidates
+                    if self._backend_type(inst) == "platform"
+                ]
                 chosen = self._pick_least_busy(
-                    candidates, primary["port"], primary_backend_id
+                    platform_candidates or candidates,
+                    primary["port"], primary_backend_id,
                 )
             if chosen is None:
                 raise ProxyError(503, "Nenhum backend disponivel para reassign",
@@ -1207,8 +1223,8 @@ class ProxyRouter:
             self._save_sessions()
             logger.warning(
                 "[proxy] reassigned affinity_key=%s old_backend=%s "
-                "new_backend=%s reason=admin",
-                affinity_key, old_port, chosen["port"],
+                "new_backend=%s reason=%s",
+                affinity_key, old_port, chosen["port"], reason,
             )
             return RouteDecision(
                 backend_port=chosen["port"],
@@ -1219,7 +1235,7 @@ class ProxyRouter:
                 affinity_key=affinity_key,
                 detected_tag=session.detected_tag,
                 sticky_hit=False,
-                reason="reassign_admin",
+                reason=reason,
                 rewrite=(
                     chosen["port"] != primary["port"]
                     and self._backend_type(chosen) != "platform"

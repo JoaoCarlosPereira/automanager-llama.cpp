@@ -296,6 +296,9 @@ def test_html_contains_proxy_monitor_panel(html):
     assert 'id="proxy-backends-list"' in html
     assert 'id="proxy-sessions-list"' in html
     assert 'id="proxy-sessions-count"' in html
+    assert 'id="proxy-sessions-clear-btn"' in html
+    assert 'id="proxy-sessions-ttl-hint"' in html
+    assert "proxyClearAllSessions()" in html
 
 
 def test_html_proxy_toggle_checked_state_follows_config(client, mock_index_deps):

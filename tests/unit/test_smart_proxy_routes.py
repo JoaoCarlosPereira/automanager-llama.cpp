@@ -101,9 +101,9 @@ def smart_env(tmp_path, monkeypatch):
     return SimpleNamespace(cfg=cfg, router=router, holder=holder)
 
 
-def _mock_response(payload: dict, port: int = 0):
+def _mock_response(payload: dict, port: int = 0, status: int = 200):
     resp = MagicMock(spec=httpx.Response)
-    resp.status_code = 200
+    resp.status_code = status
     resp.headers = httpx.Headers({"Content-Type": "application/json"})
     content = json.dumps(payload).encode()
     resp.content = content
@@ -275,13 +275,57 @@ class TestSmartRouting:
         assert urls[2] != urls[3]
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_request_error_twice_returns_502_openai_format(
+    def test_request_error_all_backends_exhausted(
         self, mock_post, smart_env
     ):
         mock_post.side_effect = httpx.ConnectError("refused")
         response = client.post("/v1/chat/completions", json=chat_body(tag="a1"))
-        assert response.status_code == 502
-        assert response.json()["error"]["code"] == "backend_unreachable"
+        assert response.status_code in (502, 503)
+        assert response.json()["error"]["code"] in (
+            "backend_unreachable", "no_backend",
+        )
+        assert all(
+            smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087)
+        )
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_http_429_failovers_to_another_backend(
+        self, mock_post, mock_sleep, smart_env
+    ):
+        limited = _mock_response({"error": "rate_limit"}, status=429)
+        ok = _mock_response({"id": "x", "model": "m"})
+        # 3 retries no mesmo backend + 1 sucesso no failover
+        mock_post.side_effect = [limited, limited, limited, ok]
+        response = client.post("/v1/chat/completions", json=chat_body(tag="a1"))
+        assert response.status_code == 200
+        urls = [c.args[0] for c in mock_post.call_args_list]
+        assert len(urls) == 4
+        assert urls[0] == urls[1] == urls[2]
+        assert urls[3] != urls[0]
+        session = client.get("/proxy/sessions").json()[0]
+        assert f":{session['backend_port']}/" in urls[3]
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.send", new_callable=AsyncMock)
+    def test_stream_http_502_failovers_before_client(
+        self, mock_send, mock_sleep, smart_env
+    ):
+        err = MagicMock(spec=httpx.Response)
+        err.status_code = 502
+        err.headers = httpx.Headers({})
+        err.aread = AsyncMock(return_value=b"")
+        err.aclose = AsyncMock()
+        ok = _sse_upstream([b'data: {"model":"m"}\n\ndata: [DONE]\n\n'])
+        # 3 aberturas no primario + 1 sucesso no failover
+        mock_send.side_effect = [err, err, err, ok]
+        response = client.post(
+            "/v1/chat/completions",
+            json=chat_body(tag="a1", stream=True),
+        )
+        assert response.status_code == 200
+        assert mock_send.call_count == 4
+        assert b"data: [DONE]" in response.content
         assert all(
             smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087)
         )
@@ -460,6 +504,17 @@ class TestAdminEndpoints:
         key = sessions[0]["affinity_key"]
         assert client.delete("/proxy/sessions/inexistente").status_code == 404
         assert client.delete(f"/proxy/sessions/{key}").status_code == 200
+        assert client.get("/proxy/sessions").json() == []
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_sessions_clear_all(self, mock_post, smart_env):
+        mock_post.return_value = _mock_response({"id": "x", "model": "m"})
+        client.post("/v1/chat/completions", json=chat_body(tag="a1"))
+        client.post("/v1/chat/completions", json=chat_body(tag="a2"))
+        assert len(client.get("/proxy/sessions").json()) == 2
+        resp = client.delete("/proxy/sessions")
+        assert resp.status_code == 200
+        assert resp.json()["removed"] == 2
         assert client.get("/proxy/sessions").json() == []
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
@@ -764,6 +819,41 @@ class TestHybridV1Availability:
         assert "9100" in mock_post.call_args.args[0]
         sent = json.loads(mock_post.call_args.kwargs["content"])
         assert sent["model"] == "codex-pro"
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_smart_proxy_rebuilds_stale_registry_on_alias_miss(
+        self, mock_post, mock_get, smart_env
+    ):
+        """Registry montado com catálogo incompleto do sidecar (ex.: boot sem
+        rede) não pode encaminhar o alias cru: reconstrói e resolve o modelo real."""
+        llama_manager.clear_platform_listing_registry()
+        # Snapshot velho: só um modelo não relacionado ficou registrado.
+        llama_manager.register_platform_model_listings("gpt-5.4-mini", "codex")
+        smart_env.holder["instances"] = [make_platform_instance()]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        # Catálogo atual do sidecar já tem o modelo que faltava.
+        mock_get.return_value = _models_response(["gpt-5.4-mini", "gpt-5.6-sol"])
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-1", "model": "gpt-5.6-sol"}
+        )
+        sol_listing = platform_model_listing_id("gpt-5.6-sol", "codex")
+        assert sol_listing == "codex-56sol.gguf"
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(model=sol_listing)
+        )
+
+        assert response.status_code == 200
+        assert "9100" in mock_post.call_args.args[0]
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert sent["model"] == "gpt-5.6-sol"
+        mock_get.assert_called()
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_platform_chat_requires_api_token(
