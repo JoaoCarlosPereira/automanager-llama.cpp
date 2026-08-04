@@ -377,14 +377,16 @@ class TestSelection:
             make_platform_instance(),
         ]
         d_main = await resolve(router, body=body_with())
-        with pytest.raises(ProxyError) as exc_info:
-            await resolve(router, body=body_with(tag="a1"))
-        assert exc_info.value.code == "no_backend"
+        # Plataforma inelegível não recebe tráfego; o principal cresce.
+        expanded = await resolve(router, body=body_with(tag="a1"))
+        assert expanded.backend_port == 8085
+        assert expanded.reason == "dynamic_capacity"
+        await router.release(expanded.backend_port)
 
         proxy_config.update_platform_settings(
             "platform:codex", {"proxy_eligible": True}
         )
-        decision = await resolve(router, body=body_with(tag="a1"))
+        decision = await resolve(router, body=body_with(tag="a2"))
         assert decision.backend_port == 9100
         assert decision.backend_id == "platform:codex"
         assert decision.backend_type == "platform"
@@ -634,14 +636,15 @@ class TestSelection:
         await router.release(d2_again.backend_port)
 
     @pytest.mark.asyncio
-    async def test_tagged_sessions_never_branch(self, router, status_holder):
-        """Afinidade explícita (tag) mantém sticky estrito: espera, não ramifica."""
+    async def test_tagged_sessions_expand_sticky_backend(self, router, status_holder):
+        """Afinidade explícita cresce no próprio backend sem fila ou 503."""
         d1 = await resolve(router, body=body_with(tag="rock"))
-        with pytest.raises(ProxyError):
-            # Mesmo com backends livres, a sessão da tag espera o próprio
-            # backend (timeout de 1s do fixture) em vez de ramificar
-            await resolve(router, body=body_with(tag="rock"))
+        d2 = await resolve(router, body=body_with(tag="rock"))
+        assert d2.backend_port == d1.backend_port
+        assert d2.reason == "sticky_dynamic_capacity"
+        assert router.in_flight(d1.backend_port) == 2
         await router.release(d1.backend_port)
+        await router.release(d2.backend_port)
 
     @pytest.mark.asyncio
     async def test_untagged_new_session_overflows_when_primary_busy(
@@ -657,17 +660,37 @@ class TestSelection:
         await router.release(second.backend_port)
 
     @pytest.mark.asyncio
-    async def test_busy_primary_times_out_with_openai_error(
+    async def test_single_primary_grows_instead_of_timing_out(
         self, router, status_holder
     ):
-        # Somente o principal online: sem secundário para transbordar
+        # Somente o principal online: capacidade base cresce sob pressão.
         status_holder["instances"] = [make_instance(8085, MAIN_PATH)]
         first = await resolve(router, body=body_with())  # ocupa primary (max=1)
-        with pytest.raises(ProxyError) as exc_info:
-            await resolve(router, body=body_with(user="outra conversa"))
-        assert exc_info.value.status_code == 503
-        assert "error" in exc_info.value.payload()
+        second = await resolve(router, body=body_with(user="outra conversa"))
+        assert second.backend_port == 8085
+        assert second.reason == "dynamic_capacity"
+        assert router.in_flight(8085) == 2
+        snapshot = router.backends_snapshot()[0]
+        assert snapshot["max_parallel"] == 1
+        assert snapshot["effective_parallel"] == 2
+        assert snapshot["capacity_mode"] == "dynamic"
         await router.release(first.backend_port)
+        await router.release(second.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_dynamic_capacity_balances_and_prioritizes_primary(self, router):
+        """Após preencher a base, cresce pela carga relativa; empate vai ao principal."""
+        decisions = []
+        for index in range(6):
+            decisions.append(await resolve(
+                router, body=body_with(user=f"conversa dinamica {index}")
+            ))
+        assert [d.backend_port for d in decisions] == [
+            8085, 8086, 8087, 8085, 8086, 8087,
+        ]
+        assert decisions[3].reason == "dynamic_capacity"
+        for decision in decisions:
+            await router.release(decision.backend_id)
 
     @pytest.mark.asyncio
     async def test_slot_freed_during_wait_is_used(self, router, status_holder):

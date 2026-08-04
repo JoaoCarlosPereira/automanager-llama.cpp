@@ -635,6 +635,11 @@ class ProxyRouter:
                 "state": state,
                 "in_flight": in_flight,
                 "max_parallel": max_parallel,
+                # O limite configurado é a capacidade inicial. Sob pressão o
+                # roteador admite mais trabalho; exponha a capacidade efetiva
+                # para a UI não mostrar um contador enganoso (ex.: 3/1).
+                "effective_parallel": max(max_parallel, in_flight),
+                "capacity_mode": "dynamic",
                 "ctx_per_slot": self._ctx_per_slot(inst),
             })
         return snapshot
@@ -705,6 +710,35 @@ class ProxyRouter:
                 i["port"],
             ),
         )
+
+    def _pick_for_dynamic_growth(
+        self,
+        candidates: List[Dict[str, Any]],
+        config: dict,
+        primary_backend_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Escolhe onde abrir capacidade adicional quando todos estão cheios.
+
+        ``max_parallel_requests`` é a capacidade inicial (soft limit), não um
+        teto. A carga relativa preserva a proporção configurada entre backends;
+        em empate o principal, normalmente o modelo mais forte, recebe
+        prioridade. Depois vêm os secundários menos carregados.
+        """
+        if not candidates:
+            return None
+
+        def load_key(instance: Dict[str, Any]) -> tuple:
+            _, initial_capacity = self._backend_flags(config, instance)
+            in_flight = self.in_flight_for(instance)
+            return (
+                in_flight / max(1, initial_capacity),
+                0 if self._backend_id(instance) == primary_backend_id else 1,
+                in_flight,
+                0 if self._backend_type(instance) == "platform" else 1,
+                instance["port"],
+            )
+
+        return min(candidates, key=load_key)
 
     def _register_session_locked(
         self,
@@ -1019,9 +1053,11 @@ class ProxyRouter:
                         )
                         if branched is not None:
                             return branched, None
-                    return None, (
-                        f"Backend {inst['port']} ocupado para sessao sticky"
-                    )
+                    # Afinidade explícita permanece no mesmo backend, mas sua
+                    # capacidade cresce em vez de enfileirar/retornar 503.
+                    return _commit(
+                        inst, True, "sticky_dynamic_capacity", existing
+                    ), None
                 return _commit(inst, True, "sticky", existing), None
             # Backend caiu/desabilitado: reatribui UMA vez (PRD F7)
             old_port = existing.backend_port
@@ -1042,7 +1078,9 @@ class ProxyRouter:
                         503, "Nenhum backend com contexto suficiente disponivel",
                         code="no_backend",
                     )
-                return None, "Aguardando slot para reatribuir sessao"
+                new_inst = self._pick_for_dynamic_growth(
+                    fallback, config, primary_backend_id
+                )
             logger.warning("[proxy] backend %s unavailable", old_port)
             if not dry_run:
                 existing.backend_port = new_inst["port"]
@@ -1091,7 +1129,21 @@ class ProxyRouter:
                         return _commit(
                             chosen, False, "primary_busy_overflow", None
                         ), None
-                    return None, "Backend principal ocupado"
+                    expandable = self._candidates(
+                        instances, config, primary_port, needed_ctx,
+                        ignore_capacity=True,
+                    )
+                    chosen = self._pick_for_dynamic_growth(
+                        expandable, config, primary_backend_id
+                    )
+                    if chosen is not None:
+                        return _commit(
+                            chosen, False, "dynamic_capacity", None
+                        ), None
+                    raise ProxyError(
+                        503, "Nenhum backend com contexto suficiente disponivel",
+                        code="no_backend",
+                    )
             # Principal desabilitado ou sem contexto: least-busy nos demais
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
@@ -1133,14 +1185,21 @@ class ProxyRouter:
             any_eligible = self._candidates(
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=True,
-                exclude_backend_ids={primary_backend_id},
             )
             if not any_eligible:
                 raise ProxyError(
                     503, "Nenhum backend com contexto suficiente disponivel",
                     code="no_backend",
                 )
-            return None, "Todos os backends elegiveis ocupados"
+            chosen = self._pick_for_dynamic_growth(
+                any_eligible, config, primary_backend_id
+            )
+            if chosen is None:
+                raise ProxyError(
+                    503, "Nenhum backend com contexto suficiente disponivel",
+                    code="no_backend",
+                )
+            return _commit(chosen, False, "dynamic_capacity", None), None
         return _commit(chosen, False, "subagent_least_busy", None), None
 
     # ------------------------------------------------------------------
@@ -1200,9 +1259,9 @@ class ProxyRouter:
                     inst for inst in candidates
                     if self._backend_type(inst) == "platform"
                 ]
-                chosen = self._pick_least_busy(
+                chosen = self._pick_for_dynamic_growth(
                     platform_candidates or candidates,
-                    primary["port"], primary_backend_id,
+                    config, primary_backend_id,
                 )
             if chosen is None:
                 raise ProxyError(503, "Nenhum backend disponivel para reassign",

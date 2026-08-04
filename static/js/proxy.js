@@ -147,7 +147,7 @@ export async function setProxyMaxParallel(input, path, backendId = null) {
         });
         if (!res.ok) throw new Error('parallel');
         updateBackendConfigCache(path, backendId, { max_parallel_requests: value });
-        showToast('Limite de paralelismo salvo', 'success');
+        showToast('Capacidade inicial de paralelismo salva', 'success');
     } catch (err) {
         showToast('Falha ao salvar limite de paralelismo', 'error');
     }
@@ -211,7 +211,7 @@ function backendCard(backend) {
             <span class="font-mono">porta ${esc(backend.port)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${esc(backend.in_flight)}/${esc(backend.max_parallel)} requisição(ões) ativa(s)</span>
+            <span>${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)} requisição(ões) ativa(s) · base ${esc(backend.max_parallel)}</span>
             <span class="font-mono">ctx/slot ${esc(backend.ctx_per_slot)}</span>
         </div>
     </div>`;

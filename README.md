@@ -133,6 +133,10 @@ AutoManager can show supported subscription-backed CLI tools beside local
   to it. Concurrent requests (or requests matching a specific load-balancing strategy)
   are dynamically routed to other "proxy-eligible" secondary models (local
   or platform).
+- Per-model parallelism is an **initial capacity**, not a hard ceiling. The
+  proxy prioritizes the primary, overflows to less-loaded secondaries, and
+  expands capacity dynamically when every backend reaches its baseline instead
+  of rejecting requests only because that limit was reached.
 - You can configure a **Default Proxy Model** for each platform integration.
   When a platform backend acts as a secondary backend for the proxy (answering
   a request originally intended for the primary model), it will automatically

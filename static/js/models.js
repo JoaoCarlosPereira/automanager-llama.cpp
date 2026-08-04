@@ -1586,7 +1586,7 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                         <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
                         <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, null, '${safeBackendId}')">
                     </label>
-                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
+                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
                         <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, null, '${safeBackendId}')">
                     </label>
@@ -1645,7 +1645,7 @@ function buildModelListHtml(models, cfg, platforms = []) {
                         <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
                         <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}')">
                     </label>
-                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
+                    <label class="flex items-center gap-1 shrink-0 ml-auto" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
                         <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, '${safePath}')">
                     </label>

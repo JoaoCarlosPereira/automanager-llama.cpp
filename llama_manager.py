@@ -2259,7 +2259,7 @@ async def index(request: Request):
                     <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
                     <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600 cursor-pointer" {is_proxy_eligible} onclick="event.stopPropagation(); setProxyEligible(this, '{m_js_js}')">
                 </label>
-                <label class="flex items-center gap-1 shrink-0 ml-auto" title="Máximo de requisições paralelas roteadas para este backend">
+                <label class="flex items-center gap-1 shrink-0 ml-auto" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                     <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
                     <input type="number" min="1" max="16" value="{proxy_max_parallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onclick="event.stopPropagation()" onchange="setProxyMaxParallel(this, '{m_js_js}')">
                 </label>
@@ -3295,7 +3295,7 @@ def _build_html(
                                     <span class="font-black text-slate-500 uppercase">Proxy</span>
                                     <input type="checkbox" class="platform-proxy-eligible w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600">
                                 </label>
-                                <label class="flex items-center gap-2">
+                                <label class="flex items-center gap-2" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                                     <span class="font-black text-slate-500 uppercase">Paralelo</span>
                                     <input type="number" min="1" max="16" class="platform-proxy-parallel w-12 px-1 py-0.5 bg-slate-900 border border-slate-700 rounded text-center text-slate-300">
                                 </label>

@@ -132,6 +132,10 @@ modelos locais `.gguf`. O MVP suporta Codex, Claude Code e Google Antigravity.
   são roteados para ele. Requisições concorrentes (ou que sigam a estratégia
   de balanceamento) são roteadas dinamicamente para modelos secundários "elegíveis"
   (locais ou de plataforma).
+- O paralelismo configurado por modelo é uma **capacidade inicial**, não um teto
+  rígido. O proxy prioriza o principal, transborda para secundários menos
+  carregados e amplia dinamicamente a capacidade quando todos atingem sua base,
+  sem rejeitar requisições apenas pela saturação desse limite.
 - Você pode configurar um **Modelo Padrão (Proxy)** para cada plataforma. Quando o
   backend de uma plataforma atua como secundário (atendendo uma requisição que era
   para o modelo principal), ele usa automaticamente esse modelo padrão para atender o pedido.
