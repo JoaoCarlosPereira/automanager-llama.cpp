@@ -10,6 +10,8 @@ import re
 import glob
 import logging
 import html
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from urllib.parse import unquote
 import uvicorn
 import httpx
@@ -33,6 +35,7 @@ from config_manager import (
 from proxy_router import (
     ProxyError,
     ProxyRouter,
+    TOKEN_ESTIMATE_MARGIN,
     rewrite_json_model,
     rewrite_sse_stream,
 )
@@ -57,6 +60,7 @@ from platform_manager import (
     platform_provider_for_listing,
     register_platform_model_listings,
     resolve_platform_listing_model,
+    merge_platform_model_metadata,
     should_skip_platform_model_listing,
 )
 from version_manager import check_for_updates
@@ -126,14 +130,103 @@ _PROXY_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 _PROXY_MAX_ATTEMPTS = 3
 # Hops de failover entre backends distintos (após retries no mesmo).
 _PROXY_MAX_FAILOVER_HOPS = 5
+_PROXY_BACKEND_COOLDOWN_SECONDS = 60
+_PROXY_RATE_LIMIT_COOLDOWN_SECONDS = 300
 
 
 def _proxy_retry_delay(attempt: int) -> float:
     return min(0.25 * (2 ** attempt), 2.0)
 
 
+def _proxy_retry_after(response: httpx.Response, attempt: int) -> float:
+    """Use Retry-After when an upstream provider supplies it.
+
+    Provider rate limits often include a cooldown. Retrying immediately was
+    multiplying the 429/503 bursts seen in production. Cap the value so one
+    malformed or excessively long provider response cannot hold a request
+    forever.
+    """
+    fallback = _proxy_retry_delay(attempt)
+    try:
+        raw = str(response.headers.get("retry-after", "")).strip()
+    except Exception:
+        return fallback
+    if not raw:
+        return fallback
+    try:
+        return min(max(float(raw), 0.0), 30.0)
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            seconds = (target - datetime.now(timezone.utc)).total_seconds()
+            return min(max(seconds, 0.0), 30.0)
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+
+
+def _proxy_failure_cooldown(
+    status_code: Optional[int] = None,
+    response: Optional[httpx.Response] = None,
+) -> float:
+    """Circuit-breaker cooldown after retries on one backend are exhausted."""
+    base = (
+        _PROXY_RATE_LIMIT_COOLDOWN_SECONDS
+        if status_code == 429
+        else _PROXY_BACKEND_COOLDOWN_SECONDS
+    )
+    if response is None:
+        return float(base)
+    try:
+        raw = str(response.headers.get("retry-after", "")).strip()
+    except Exception:
+        return float(base)
+    if not raw:
+        return float(base)
+    try:
+        retry_after = float(raw)
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            retry_after = (target - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return float(base)
+    return max(float(base), min(max(retry_after, 0.0), 3600.0))
+
+
 def _is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in _PROXY_RETRYABLE_STATUSES
+
+
+def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
+    """Return the effective context per slot for a local backend."""
+    if instance.get("backend_type") == "platform":
+        return None
+    config = instance.get("config") or {}
+    try:
+        context_size = int(config.get("context_size") or DEFAULT_CONTEXT_SIZE)
+        slots = max(1, int(config.get("parallel_slots") or DEFAULT_PARALLEL_SLOTS))
+    except (TypeError, ValueError):
+        return None
+    return context_size // slots
+
+
+def _context_too_large_response(
+    estimated_tokens: int,
+    context_limit: int,
+) -> JSONResponse:
+    message = (
+        "O contexto desta conversa excede o limite do modelo "
+        f"(estimado: {estimated_tokens} tokens; limite seguro: {context_limit}). "
+        "Reduza o historico, anexos ou ferramentas da conversa e tente novamente."
+    )
+    return JSONResponse(
+        ProxyError(413, message, code="context_too_large").payload(),
+        status_code=413,
+    )
 
 
 async def _proxy_post_with_retry(
@@ -159,7 +252,7 @@ async def _proxy_post_with_retry(
                     attempt + 1,
                     _PROXY_MAX_ATTEMPTS,
                 )
-                await asyncio.sleep(_proxy_retry_delay(attempt))
+                await asyncio.sleep(_proxy_retry_after(resp, attempt))
                 continue
             return resp
         except httpx.RequestError as exc:
@@ -209,7 +302,7 @@ async def _proxy_open_stream_with_retry(
                 )
                 await upstream.aread()
                 await upstream.aclose()
-                await asyncio.sleep(_proxy_retry_delay(attempt))
+                await asyncio.sleep(_proxy_retry_after(upstream, attempt))
                 continue
             return upstream
         except httpx.RequestError as exc:
@@ -286,6 +379,165 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Shared HTTP client for proxying
 client = httpx.AsyncClient()
 
+_PLATFORM_MODEL_CATALOG_URL = (
+    "https://raw.githubusercontent.com/router-for-me/models/refs/heads/main/models.json"
+)
+_platform_model_catalog_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+_platform_model_catalog_loaded_at = 0.0
+_platform_model_catalog_lock = asyncio.Lock()
+
+
+def _catalog_provider(group: str) -> Optional[str]:
+    group = str(group or "").lower()
+    if group.startswith("codex"):
+        return "codex"
+    if group.startswith("antigravity"):
+        return "antigravity"
+    if group in {"gemini", "vertex"}:
+        # Antigravity exposes Gemini models with owned_by=antigravity, while
+        # the catalog stores their limits in the Gemini/Vertex sections.
+        return "antigravity"
+    if group.startswith("claude"):
+        return "claude"
+    return None
+
+
+async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Load the same per-model limits used by CLIProxyAPI.
+
+    The sidecar's /v1/models response intentionally omits these fields. Keep
+    a short in-memory cache so a models refresh does not depend on a network
+    request every time; if the catalog is unavailable, preserve the last
+    successful snapshot and let unknown models report context as 0.
+    """
+    global _platform_model_catalog_cache, _platform_model_catalog_loaded_at
+    now = time.monotonic()
+    if _platform_model_catalog_cache and now - _platform_model_catalog_loaded_at < 600:
+        return _platform_model_catalog_cache
+    async with _platform_model_catalog_lock:
+        now = time.monotonic()
+        if _platform_model_catalog_cache and now - _platform_model_catalog_loaded_at < 600:
+            return _platform_model_catalog_cache
+        try:
+            resp = await client.get(_PLATFORM_MODEL_CATALOG_URL, timeout=5.0)
+            resp.raise_for_status()
+            payload = resp.json()
+            catalog: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            if isinstance(payload, dict):
+                for group, models in payload.items():
+                    provider = _catalog_provider(str(group))
+                    if not provider or not isinstance(models, list):
+                        continue
+                    provider_catalog = catalog.setdefault(provider, {})
+                    for model in models:
+                        if isinstance(model, dict) and model.get("id"):
+                            model_id = str(model["id"])
+                            previous = provider_catalog.get(model_id)
+                            if isinstance(previous, dict):
+                                # The catalog can list the same Gemini model
+                                # once under Google (with limits) and again
+                                # under Antigravity (without limits). Preserve
+                                # the richer metadata instead of overwriting it.
+                                merged = dict(previous)
+                                merged.update({
+                                    key: value
+                                    for key, value in model.items()
+                                    if value is not None
+                                })
+                                for key in (
+                                    "context_length",
+                                    "inputTokenLimit",
+                                    "outputTokenLimit",
+                                    "max_completion_tokens",
+                                ):
+                                    if previous.get(key) is not None:
+                                        merged[key] = previous[key]
+                                provider_catalog[model_id] = merged
+                            else:
+                                provider_catalog[model_id] = model
+            if catalog:
+                _platform_model_catalog_cache = catalog
+                _platform_model_catalog_loaded_at = time.monotonic()
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError, TypeError) as exc:
+            logger.warning("Falha ao carregar limites dos modelos plataforma: %s", exc)
+    return _platform_model_catalog_cache
+
+
+def _platform_model_context_limit(
+    instance: Dict[str, Any], model_name: str
+) -> Optional[int]:
+    """Return the catalog context limit for one concrete platform model."""
+    provider = str(instance.get("provider") or "").strip().lower()
+    bare_model = resolve_platform_listing_model(str(model_name or ""))
+    provider_catalog = _platform_model_catalog_cache.get(provider)
+    if not isinstance(provider_catalog, dict):
+        return None
+    metadata = provider_catalog.get(bare_model)
+    if not isinstance(metadata, dict):
+        requested_provider = platform_provider_for_listing(str(model_name or ""))
+        return 0 if requested_provider and requested_provider != provider else None
+    source_meta = metadata.get("meta")
+    if not isinstance(source_meta, dict):
+        source_meta = {}
+    raw_limit = (
+        metadata.get("context_length")
+        or metadata.get("inputTokenLimit")
+        or source_meta.get("n_ctx")
+        or source_meta.get("context_length")
+    )
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return None
+    return limit if limit > 0 else None
+
+
+def _requested_primary_instance(
+    instances: List[Dict[str, Any]], requested_model: str
+) -> Optional[Dict[str, Any]]:
+    """Resolve uma correspondencia real para o principal desta requisicao."""
+    requested_norm = normalize_model_path(requested_model)
+    local_match = next(
+        (
+            instance for instance in instances
+            if instance.get("status") == "running"
+            and instance.get("backend_type") != "platform"
+            and (
+                instance.get("model") == requested_model
+                or instance.get("model_path") == requested_model
+                or normalize_model_path(instance.get("model_path") or "")
+                == requested_norm
+            )
+        ),
+        None,
+    )
+    if local_match is not None:
+        return local_match
+    provider = platform_provider_for_listing(requested_model)
+    if provider:
+        return next(
+            (
+                instance for instance in instances
+                if instance.get("status") == "running"
+                and instance.get("backend_type") == "platform"
+                and str(instance.get("provider") or "") == provider
+            ),
+            None,
+        )
+    return next(
+        (
+            instance for instance in instances
+            if instance.get("status") == "running"
+            and instance.get("backend_type") == "platform"
+            and requested_model in {
+                instance.get("model"),
+                instance.get("backend_id"),
+                instance.get("provider"),
+            }
+        ),
+        None,
+    )
+
 config_manager = ConfigManager()
 log_manager = LogManager()
 gpu_manager = GPUManager()
@@ -307,6 +559,8 @@ proxy_router = ProxyRouter(
     sessions_path=os.path.join(
         os.path.dirname(CONFIG_PATH) or ".", "proxy_sessions.json"
     ),
+    context_limit_resolver=_platform_model_context_limit,
+    requested_primary_resolver=_requested_primary_instance,
 )
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
@@ -615,10 +869,14 @@ async def get_platform_detail(
             all_models, payload.get("provider") or ""
         )
         provider = payload.get("provider") or ""
-        payload["available_models"] = filtered
+        platform_catalog = await _fetch_platform_model_catalog()
+        payload["available_models"] = [
+            merge_platform_model_metadata(model, provider, platform_catalog)
+            for model in filtered
+        ]
         payload["cursor_model_ids"] = [
             platform_model_listing_entry(m, provider=provider)["id"]
-            for m in filtered
+            for m in payload["available_models"]
         ]
     else:
         payload["available_models"] = []
@@ -1027,6 +1285,7 @@ async def _aggregate_models_response(
     """Agrega o /v1/models de todas as instancias llama-server em execucao."""
     # Nao limpar o registry no inicio: POST concorrentes dependem do mapa
     # listing->sidecar durante o refresh assincrono.
+    platform_catalog = await _fetch_platform_model_catalog()
 
     async def fetch_models(inst: Dict[str, Any]) -> List[Dict[str, Any]]:
         port = inst.get("port")
@@ -1040,8 +1299,12 @@ async def _aggregate_models_response(
             if inst.get("backend_type") == "platform":
                 local_ids = _local_model_ids(instances)
                 provider = str(inst.get("provider") or "")
+                models = filter_models_for_provider(models, provider)
                 models = [
-                    platform_model_listing_entry(m, provider=provider)
+                    platform_model_listing_entry(
+                        merge_platform_model_metadata(m, provider, platform_catalog),
+                        provider=provider,
+                    )
                     for m in models
                     if not should_skip_platform_model_listing(
                         str(m.get("id") or ""), local_ids
@@ -1368,7 +1631,15 @@ def _is_primary_model_request(
             if listing_provider or lookup_platform_bare_id(requested_model):
                 return False
             return False
-        return not local_matches
+        # Com o principal de plataforma offline, só trate como modelo dele um
+        # listing que carregue o prefixo do provedor configurado. Um nome
+        # desconhecido deve seguir o fluxo normal e retornar 404.
+        configured_provider = primary_backend_id.split(":", 1)[-1]
+        configured_provider = {
+            "google-antigravity": "antigravity",
+            "claude-code": "claude",
+        }.get(configured_provider, configured_provider)
+        return platform_provider_for_listing(requested_model) == configured_provider
     primary_model_path = proxy_settings.get("primary_model_path")
     if not primary_model_path:
         return False
@@ -1421,6 +1692,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
     route_headers.pop("host", None)
     instances = _hybrid_status().get("instances", [])
     await _ensure_platform_listing_registry(instances, route_headers)
+    # O roteador usa estes limites por modelo para escolher o backend. Isso e
+    # separado da resposta /v1/models: Luna continua anunciando 372k, enquanto
+    # Antigravity (1M) so entra como redundancia para contextos maiores.
+    await _fetch_platform_model_catalog()
 
     try:
         decision = await proxy_router.resolve(
@@ -1430,6 +1705,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             user_agent=user_agent,
         )
     except ProxyError as exc:
+        logger.warning(
+            "[proxy] route rejected code=%s status=%s message=%s",
+            exc.code, exc.status_code, exc.message,
+        )
         return JSONResponse(exc.payload(), status_code=exc.status_code)
 
     failed_backend_ids: set = set()
@@ -1486,7 +1765,12 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
         }
         current_id = decision.backend_id or f"port:{decision.backend_port}"
 
-        async def _failover(cause: str):
+        async def _failover(
+            cause: str,
+            *,
+            status_code: Optional[int] = None,
+            response: Optional[httpx.Response] = None,
+        ):
             nonlocal decision, failover_hops
             failed_backend_ids.add(current_id)
             failover_hops += 1
@@ -1502,6 +1786,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 "[proxy] backend %s failed (%s) — failover hop %d excluding=%s",
                 decision.backend_port, cause, failover_hops,
                 sorted(failed_backend_ids),
+            )
+            await proxy_router.mark_backend_unavailable(
+                current_id,
+                _proxy_failure_cooldown(status_code, response),
+                reason=cause,
             )
             try:
                 new_decision = await proxy_router.reassign(
@@ -1536,12 +1825,17 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 )
                 if _is_retryable_upstream_status(upstream.status_code):
                     status = upstream.status_code
+                    failed_response = upstream
                     await upstream.aread()
                     await upstream.aclose()
                     await proxy_router.release(
                         decision.backend_id, affinity_key=decision.affinity_key
                     )
-                    err = await _failover(f"HTTP {status}")
+                    err = await _failover(
+                        f"HTTP {status}",
+                        status_code=status,
+                        response=failed_response,
+                    )
                     if err is not None:
                         return err
                     continue
@@ -1611,7 +1905,12 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     usage=usage,
                 )
             if failover_cause:
-                err = await _failover(failover_cause)
+                status = int(failover_cause.rsplit(" ", 1)[-1])
+                err = await _failover(
+                    failover_cause,
+                    status_code=status,
+                    response=resp,
+                )
                 if err is not None:
                     return err
                 continue
@@ -1695,9 +1994,15 @@ async def openai_proxy(
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     if proxy_enabled and request.method == "POST" and requested_model:
-        primary_instance = _find_primary_instance(instances, proxy_settings)
-        if _is_primary_model_request(
-            requested_model, proxy_settings, primary_instance, instances,
+        # Principal dinamico: o modelo explicitamente invocado pelo cliente
+        # define a primeira escolha. A configuracao global continua servindo
+        # para chamadas sem um modelo reconhecivel e para a visao administrativa.
+        configured_primary = _find_primary_instance(instances, proxy_settings)
+        if (
+            _requested_primary_instance(instances, str(requested_model)) is not None
+            or _is_primary_model_request(
+                str(requested_model), proxy_settings, configured_primary, instances
+            )
         ):
             return await _smart_proxy_forward(request, path, data)
 
@@ -1712,6 +2017,20 @@ async def openai_proxy(
     client_facing_model = _platform_response_model_name(
         client_requested_model, target_instance, instances
     )
+
+    if request.method == "POST" and path_norm == "chat/completions":
+        context_limit = _local_context_limit(target_instance)
+        if context_limit is not None:
+            estimated_tokens = ProxyRouter.estimate_prompt_tokens(data)
+            needed_context = int(estimated_tokens * TOKEN_ESTIMATE_MARGIN)
+            if needed_context > context_limit:
+                logger.warning(
+                    "[proxy] direct request rejected: context_too_large "
+                    "backend=%s estimated_tokens=%s needed_context=%s max_context=%s",
+                    target_instance.get("port"), estimated_tokens,
+                    needed_context, context_limit,
+                )
+                return _context_too_large_response(estimated_tokens, context_limit)
 
     target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
     headers = dict(request.headers)
@@ -2785,14 +3104,11 @@ def _build_html(
             <!-- PROXY INTELIGENTE (PRD F9) -->
             <section id="proxy-panel" class="px-6 md:px-8 py-4 bg-slate-950/20 border-b border-slate-800/30 shrink-0">
                 <div class="glass p-5 rounded-2xl border-l-2 border-violet-600 space-y-4">
-                    <div class="flex items-center justify-between flex-wrap gap-3">
+                    <div class="flex items-center flex-wrap gap-3">
                         <div class="flex items-center gap-3">
                             <i class="fas fa-route text-violet-400"></i>
                             <p class="text-ui-body-sm font-black text-slate-400 uppercase tracking-widest">Proxy Inteligente</p>
                             <span id="proxy-mode-badge" class="px-3 py-1 rounded-full text-ui-label font-black tracking-widest uppercase glass border-slate-700/50 text-slate-500">INATIVO</span>
-                        </div>
-                        <div class="text-ui-label text-slate-500 uppercase tracking-widest">
-                            Modelo exposto: <span id="proxy-exposed-model" class="text-slate-200 font-bold normal-case tracking-normal">—</span>
                         </div>
                     </div>
                     <div id="proxy-panel-body" class="space-y-4 hidden">

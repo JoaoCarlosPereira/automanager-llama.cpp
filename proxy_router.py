@@ -42,6 +42,13 @@ PERSIST_EVERY_N_REQUESTS = 20
 BUSY_POLL_SECONDS = 0.25
 # Limite de ramificações de uma sessão hash: (afinidade fraca) sob concorrência.
 MAX_HASH_BRANCHES = 8
+# Tempo padrao em que um backend que falhou fica fora do roteamento. O chamador
+# pode fornecer um intervalo maior (por exemplo, para limite de assinatura).
+DEFAULT_BACKEND_COOLDOWN_SECONDS = 60
+# Limite sentinela usado apenas internamente quando o provedor nao publicou a
+# capacidade do modelo. Nesse caso e mais seguro tentar o upstream do que
+# rejeitar localmente um contexto que ele talvez suporte.
+UNKNOWN_PLATFORM_CONTEXT_LIMIT = (1 << 63) - 1
 
 MAIN_TAG = "main"
 
@@ -210,15 +217,24 @@ class ProxyRouter:
         config_manager,
         sessions_path,
         now: Optional[Callable[[], datetime]] = None,
+        context_limit_resolver: Optional[
+            Callable[[Dict[str, Any], str], Optional[int]]
+        ] = None,
+        requested_primary_resolver: Optional[
+            Callable[[List[Dict[str, Any]], str], Optional[Dict[str, Any]]]
+        ] = None,
     ) -> None:
         self._get_status = get_status
         self._config = config_manager
         self._sessions_path = Path(sessions_path)
         self._now = now or _utcnow
+        self._context_limit_resolver = context_limit_resolver
+        self._requested_primary_resolver = requested_primary_resolver
         self._lock = asyncio.Lock()
         self._sessions: Dict[str, StickySession] = {}
         self._in_flight: Dict[str, int] = {}
         self._disabled_ports: set = set()
+        self._unavailable_until: Dict[str, datetime] = {}
         self._unsaved_uses = 0
         self._load_sessions()
 
@@ -468,6 +484,9 @@ class ProxyRouter:
     def set_backend_enabled(self, port: int, enabled: bool) -> None:
         if enabled:
             self._disabled_ports.discard(port)
+            for instance in self._running_instances():
+                if instance.get("port") == port:
+                    self._unavailable_until.pop(self._backend_id(instance), None)
         else:
             self._disabled_ports.add(port)
         logger.info(
@@ -477,6 +496,44 @@ class ProxyRouter:
 
     def is_backend_disabled(self, port: int) -> bool:
         return port in self._disabled_ports
+
+    def _backend_cooldown_until(
+        self, backend_id: str
+    ) -> Optional[datetime]:
+        until = self._unavailable_until.get(backend_id)
+        if until is not None and until <= self._now():
+            self._unavailable_until.pop(backend_id, None)
+            return None
+        return until
+
+    def _backend_available(self, instance: Dict[str, Any]) -> bool:
+        if instance.get("port") in self._disabled_ports:
+            return False
+        return self._backend_cooldown_until(self._backend_id(instance)) is None
+
+    async def mark_backend_unavailable(
+        self,
+        backend_id: str,
+        cooldown_seconds: float = DEFAULT_BACKEND_COOLDOWN_SECONDS,
+        *,
+        reason: str = "upstream_error",
+    ) -> datetime:
+        """Abre o circuito de um backend sem afetar integrações na mesma porta."""
+        normalized = normalize_backend_id(backend_id)
+        if not normalized:
+            raise ValueError("backend_id obrigatorio")
+        seconds = max(1.0, float(cooldown_seconds))
+        async with self._lock:
+            until = self._now() + timedelta(seconds=seconds)
+            previous = self._backend_cooldown_until(normalized)
+            if previous is not None and previous > until:
+                until = previous
+            self._unavailable_until[normalized] = until
+        logger.warning(
+            "[proxy] backend_id=%s in cooldown until=%s reason=%s",
+            normalized, _iso(until), reason,
+        )
+        return until
 
     def _running_instances(self) -> List[Dict[str, Any]]:
         status = self._get_status() or {}
@@ -557,9 +614,32 @@ class ProxyRouter:
             return external_model or instance.get("model") or ""
         return instance.get("model") or ""
 
-    @staticmethod
-    def _ctx_per_slot(instance: Dict[str, Any]) -> int:
+    def _ctx_per_slot(
+        self, instance: Dict[str, Any], model_name: str = ""
+    ) -> int:
         config = instance.get("config") or {}
+        if (
+            self._backend_type(instance) == "platform"
+            and self._context_limit_resolver is not None
+            and model_name
+        ):
+            try:
+                platform_limit = self._context_limit_resolver(
+                    instance, model_name
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[proxy] failed to resolve context limit backend=%s model=%s: %s",
+                    self._backend_id(instance), model_name, exc,
+                )
+            else:
+                if isinstance(platform_limit, int) and platform_limit > 0:
+                    return platform_limit
+                if platform_limit == 0:
+                    # O catalogo do provedor existe, mas este modelo concreto
+                    # nao pertence a ele: backend incompativel, nao "desconhecido".
+                    return 0
+                return UNKNOWN_PLATFORM_CONTEXT_LIMIT
         ctx = config.get("context_size") or DEFAULT_CONTEXT_SIZE
         slots = config.get("parallel_slots") or DEFAULT_PARALLEL_SLOTS
         return int(ctx) // max(1, int(slots))
@@ -589,6 +669,29 @@ class ProxyRouter:
         # Duas instâncias do mesmo model_path: resolve para a de menor porta (ADR-005)
         return min(matches, key=lambda i: i["port"])
 
+    def _find_requested_primary(
+        self, instances: List[Dict[str, Any]], requested_model: str
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve o principal dinamico indicado pelo campo ``model``."""
+        if not requested_model:
+            return None
+        if self._requested_primary_resolver is not None:
+            resolved = self._requested_primary_resolver(instances, requested_model)
+            if resolved is not None:
+                return resolved
+        requested_norm = normalize_model_path(requested_model)
+        matches = [
+            instance for instance in instances
+            if instance.get("model") == requested_model
+            or instance.get("model_path") == requested_model
+            or (
+                self._backend_type(instance) != "platform"
+                and normalize_model_path(instance.get("model_path") or "")
+                == requested_norm
+            )
+        ]
+        return min(matches, key=lambda item: item["port"]) if matches else None
+
     def backends_snapshot(self) -> List[Dict[str, Any]]:
         """Visão administrativa dos backends (estados PRD F3)."""
         settings = self._settings()
@@ -613,8 +716,11 @@ class ProxyRouter:
                     and normalize_model_path(model_path or "") == primary_norm
                 )
             in_flight = self.in_flight_for(inst)
+            cooldown_until = self._backend_cooldown_until(backend_id)
             if port in self._disabled_ports:
                 state = "disabled"
+            elif cooldown_until is not None:
+                state = "cooldown"
             elif not eligible and (backend_type == "platform" or not is_primary):
                 state = "not_eligible"
             elif in_flight > 0:
@@ -641,6 +747,9 @@ class ProxyRouter:
                 "effective_parallel": max(max_parallel, in_flight),
                 "capacity_mode": "dynamic",
                 "ctx_per_slot": self._ctx_per_slot(inst),
+                "cooldown_until": (
+                    _iso(cooldown_until) if cooldown_until is not None else None
+                ),
             })
         return snapshot
 
@@ -657,6 +766,8 @@ class ProxyRouter:
         ignore_capacity: bool,
         exclude_ports: Optional[set] = None,
         exclude_backend_ids: Optional[set] = None,
+        external_model: str = "",
+        configured_primary_backend_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Backends elegíveis para NOVA sessão (PRD F6)."""
         result = []
@@ -667,12 +778,22 @@ class ProxyRouter:
                 continue
             if exclude_ports and port in exclude_ports:
                 continue
-            if port in self._disabled_ports:
+            if not self._backend_available(inst):
                 continue
             eligible, max_parallel = self._backend_flags(config, inst)
-            if not eligible and port != primary_port:
+            is_primary = (
+                backend_id == configured_primary_backend_id
+                if configured_primary_backend_id
+                else port == primary_port
+            )
+            if not eligible and not is_primary:
                 continue
-            if needed_ctx > self._ctx_per_slot(inst):
+            internal_model = self._internal_model(
+                inst,
+                external_model,
+                is_primary,
+            )
+            if needed_ctx > self._ctx_per_slot(inst, internal_model):
                 continue
             if not ignore_capacity and self.in_flight_for(inst) >= max_parallel:
                 continue
@@ -784,6 +905,8 @@ class ProxyRouter:
         primary_port: int,
         primary_backend_id: str,
         needed_ctx: int,
+        external_model: str,
+        configured_primary_backend_id: str,
         _decision,
         _commit,
     ) -> Optional[RouteDecision]:
@@ -809,8 +932,15 @@ class ProxyRouter:
                     )
                 if b_inst is None:
                     b_inst = by_port.get(branch.backend_port)
-                if b_inst is None or b_inst["port"] in self._disabled_ports:
+                if b_inst is None or not self._backend_available(b_inst):
                     continue  # ramo órfão: deixa o TTL limpar
+                b_internal_model = self._internal_model(
+                    b_inst,
+                    external_model,
+                    self._backend_id(b_inst) == configured_primary_backend_id,
+                )
+                if needed_ctx > self._ctx_per_slot(b_inst, b_internal_model):
+                    continue
                 _, b_max = self._backend_flags(config, b_inst)
                 if self.in_flight_for(b_inst) < b_max:
                     return _commit(
@@ -820,6 +950,8 @@ class ProxyRouter:
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=False,
+                external_model=external_model,
+                configured_primary_backend_id=configured_primary_backend_id,
             )
             chosen = self._pick_least_busy(
                 candidates, primary_port, primary_backend_id
@@ -897,32 +1029,123 @@ class ProxyRouter:
         est_tokens = self.estimate_prompt_tokens(body)
 
         instances = self._running_instances()
-        primary = self._find_primary(instances, settings)
-        if primary is None:
-            raise ProxyError(
-                503,
-                "Modelo principal do proxy nao esta online. Defina/inicie a "
-                "instancia principal no Automanager.",
-                code="primary_offline",
+        config = self._config.get_config()
+        requested_model = str(body.get("model") or "")
+        requested_primary = self._find_requested_primary(instances, requested_model)
+        configured_primary = self._find_primary(instances, settings)
+        configured_backend_id = normalize_backend_id(
+            settings.get("primary_backend_id")
+        )
+        if not configured_backend_id and settings.get("primary_model_path"):
+            configured_backend_id = (
+                f"local:{normalize_model_path(settings['primary_model_path'])}"
             )
+
+        # O modelo explicitamente invocado passa a ser o principal apenas
+        # desta requisicao. A configuracao fixa e o fallback quando ``model``
+        # nao identifica uma instancia online.
+        primary = requested_primary or configured_primary
+        dynamic_primary = requested_primary is not None
+        if dynamic_primary:
+            configured_backend_id = self._backend_id(primary)
+
+        if configured_primary is not None and not dynamic_primary:
+            primary_eligible, _ = self._backend_flags(config, configured_primary)
+            if (
+                self._backend_type(configured_primary) == "platform"
+                and not primary_eligible
+            ):
+                raise ProxyError(
+                    503,
+                    "Backend de plataforma principal nao esta habilitado para o proxy.",
+                    code="backend_not_eligible",
+                )
+
+        configured_primary_is_platform = configured_backend_id.startswith("platform:")
+        if dynamic_primary:
+            external_model = requested_model or primary.get("model") or ""
+        elif configured_primary_is_platform and requested_model:
+            external_model = requested_model
+        elif configured_primary is not None:
+            external_model = configured_primary.get("model") or requested_model
+        elif settings.get("primary_model_path"):
+            external_model = Path(settings["primary_model_path"]).name
+        else:
+            external_model = requested_model
+
+        configured_primary_active = (
+            primary is not None and self._backend_available(primary)
+        )
+        if not configured_primary_active:
+            fallback = self._candidates(
+                instances,
+                config,
+                None,
+                needed_ctx,
+                ignore_capacity=dry_run,
+                exclude_backend_ids=(
+                    {configured_backend_id} if configured_backend_id else None
+                ),
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
+            )
+            platform_fallback = [
+                instance for instance in fallback
+                if self._backend_type(instance) == "platform"
+            ]
+            primary = self._pick_least_busy(
+                platform_fallback or fallback,
+                primary_backend_id=configured_backend_id or None,
+            )
+            if primary is None:
+                raise ProxyError(
+                    503,
+                    "Backend principal indisponivel e nenhum redundante esta online.",
+                    code="no_backend",
+                )
+
         primary_port = primary["port"]
         primary_backend_id = self._backend_id(primary)
 
         def _is_primary_backend(instance: Dict[str, Any]) -> bool:
-            return self._backend_id(instance) == primary_backend_id
+            return bool(
+                configured_primary_active
+                and self._backend_id(instance) == configured_backend_id
+            )
 
-        requested_model = str(body.get("model") or "")
-        if self._backend_type(primary) == "platform" and requested_model:
-            external_model = requested_model
-        else:
+        if not external_model:
             external_model = primary.get("model") or ""
-        config = self._config.get_config()
-        primary_eligible, _ = self._backend_flags(config, primary)
-        if self._backend_type(primary) == "platform" and not primary_eligible:
+
+        def _context_limit(instance: Dict[str, Any]) -> int:
+            return self._ctx_per_slot(
+                instance,
+                self._internal_model(
+                    instance, external_model, _is_primary_backend(instance)
+                ),
+            )
+
+        # Faz a validacao uma unica vez, usando o modelo concreto que cada
+        # backend executaria. O limite do Antigravity pode habilitar failover
+        # para ele, mas nunca altera o limite do Luna no catalogo publico.
+        eligible_context_limits = []
+        for instance in instances:
+            if not self._backend_available(instance):
+                continue
+            eligible, _ = self._backend_flags(config, instance)
+            if not eligible and self._backend_id(instance) != configured_backend_id:
+                continue
+            eligible_context_limits.append(_context_limit(instance))
+        if (
+            eligible_context_limits
+            and needed_ctx > max(eligible_context_limits)
+        ):
+            max_context = max(eligible_context_limits)
             raise ProxyError(
-                503,
-                "Backend de plataforma principal nao esta habilitado para o proxy.",
-                code="backend_not_eligible",
+                413,
+                "O contexto desta conversa excede o limite dos modelos "
+                f"disponiveis (estimado: {est_tokens} tokens; "
+                f"limite seguro: {max_context}).",
+                code="context_too_large",
             )
 
         def _decision(
@@ -940,7 +1163,7 @@ class ProxyRouter:
                 sticky_hit=sticky_hit,
                 reason=reason,
                 rewrite=(
-                    instance["port"] != primary_port
+                    not _is_primary_backend(instance)
                     and self._backend_type(instance) != "platform"
                 ),
                 prompt_tokens_estimated=est_tokens,
@@ -979,15 +1202,63 @@ class ProxyRouter:
         existing = self._sessions.get(affinity_key)
 
         if existing is not None:
+            # Uma sessão persistida não pode atravessar famílias/provedores.
+            # Isso evita reutilizar estado criado pelo bug antigo que misturava
+            # Codex e Antigravity no mesmo sidecar (ou uma sessão de plataforma
+            # quando o principal atual é local).
+            stored_inst = None
+            if existing.backend_id:
+                stored_inst = by_backend_id.get(existing.backend_id)
+            if stored_inst is None:
+                stored_inst = by_port.get(existing.backend_port)
+            session_type = self._backend_type(stored_inst) if stored_inst else (
+                existing.backend_type or "local"
+            )
+            session_provider = (
+                stored_inst.get("provider")
+                if stored_inst is not None
+                else existing.provider
+            )
+            primary_type = self._backend_type(primary)
+            incompatible_session = (
+                (session_type == "platform") != (primary_type == "platform")
+                or (
+                    session_type == "platform"
+                    and session_provider != primary.get("provider")
+                )
+            )
+            # Durante failover, mantenha a sessão no secundário enquanto o
+            # principal estiver em cooldown. A incompatibilidade só invalida
+            # sessões antigas quando o principal configurado está utilizável.
+            if (
+                incompatible_session
+                and self._backend_available(primary)
+                and needed_ctx <= _context_limit(primary)
+            ):
+                logger.warning(
+                    "[proxy] dropping incompatible sticky session "
+                    "affinity_key=%s session=%s/%s primary=%s/%s",
+                    affinity_key,
+                    session_type,
+                    session_provider,
+                    primary_type,
+                    primary.get("provider"),
+                )
+                if not dry_run:
+                    self._sessions.pop(affinity_key, None)
+                    self._save_sessions()
+                existing = None
+
+        if existing is not None:
             on_primary = (
                 existing.backend_id == primary_backend_id
                 if existing.backend_id else existing.backend_port == primary_port
             )
-            if not on_primary and primary_port not in self._disabled_ports:
+            if not on_primary and self._backend_available(primary):
                 # Principal liberou: sessao sticky volta pra ele em vez de
                 # continuar presa ao secundario onde foi parar (PRD F6 —
                 # principal tem prioridade sempre que estiver livre).
-                primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+                primary_ctx_ok = needed_ctx <= _context_limit(primary)
                 if primary_ctx_ok:
                     _, primary_max = self._backend_flags(config, primary)
                     if self.in_flight_for(primary) < primary_max:
@@ -1014,6 +1285,7 @@ class ProxyRouter:
                         ), None
 
             inst = None
+            context_mismatch = False
             if existing.backend_id:
                 inst = by_backend_id.get(existing.backend_id)
             if inst is None:
@@ -1033,7 +1305,16 @@ class ProxyRouter:
             if inst is not None:
                 existing.backend_port = inst["port"]
                 existing.backend_id = self._backend_id(inst)
-            if inst is not None and inst["port"] in self._disabled_ports:
+            if inst is not None and not self._backend_available(inst):
+                inst = None
+            if inst is not None and needed_ctx > _context_limit(inst):
+                context_mismatch = True
+                logger.info(
+                    "[proxy] sticky backend context insufficient "
+                    "affinity_key=%s backend=%s needed=%s limit=%s",
+                    affinity_key, self._backend_id(inst), needed_ctx,
+                    _context_limit(inst),
+                )
                 inst = None
             if inst is not None:
                 _, max_parallel = self._backend_flags(config, inst)
@@ -1049,6 +1330,7 @@ class ProxyRouter:
                         branched = self._hash_branch_locked(
                             affinity_key, by_port, instances, config,
                             primary_port, primary_backend_id, needed_ctx,
+                            external_model, configured_backend_id,
                             _decision, _commit,
                         )
                         if branched is not None:
@@ -1064,6 +1346,8 @@ class ProxyRouter:
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=dry_run,
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
             )
             new_inst = self._pick_least_busy(
                 candidates, primary_port, primary_backend_id
@@ -1072,6 +1356,8 @@ class ProxyRouter:
                 fallback = self._candidates(
                     instances, config, primary_port, needed_ctx,
                     ignore_capacity=True,
+                    external_model=external_model,
+                    configured_primary_backend_id=configured_backend_id,
                 )
                 if not fallback:
                     raise ProxyError(
@@ -1081,7 +1367,12 @@ class ProxyRouter:
                 new_inst = self._pick_for_dynamic_growth(
                     fallback, config, primary_backend_id
                 )
-            logger.warning("[proxy] backend %s unavailable", old_port)
+            reassign_reason = (
+                "reassign_context_limit"
+                if context_mismatch else "reassign_backend_down"
+            )
+            if not context_mismatch:
+                logger.warning("[proxy] backend %s unavailable", old_port)
             if not dry_run:
                 existing.backend_port = new_inst["port"]
                 existing.backend_model_path = new_inst.get("model_path") or ""
@@ -1095,10 +1386,11 @@ class ProxyRouter:
                 self._save_sessions()
                 logger.warning(
                     "[proxy] reassigned affinity_key=%s old_backend=%s "
-                    "new_backend=%s reason=backend_down",
+                    "new_backend=%s reason=%s",
                     affinity_key, old_port, new_inst["port"],
+                    "context_limit" if context_mismatch else "backend_down",
                 )
-            return _commit(new_inst, False, "reassign_backend_down", existing), None
+            return _commit(new_inst, False, reassign_reason, existing), None
 
         # ---------------- Nova sessão ----------------
         is_main = tag is None or tag == MAIN_TAG
@@ -1107,9 +1399,9 @@ class ProxyRouter:
 
         if is_main:
             # Conversa principal prefere o principal (PRD F6)
-            if primary_port not in self._disabled_ports:
+            if self._backend_available(primary):
                 _, max_parallel = self._backend_flags(config, primary)
-                primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+                primary_ctx_ok = needed_ctx <= _context_limit(primary)
                 if primary_ctx_ok:
                     if dry_run:
                         return _decision(primary, False, "main_preference"), None
@@ -1121,6 +1413,8 @@ class ProxyRouter:
                         instances, config, primary_port, needed_ctx,
                         ignore_capacity=False,
                         exclude_backend_ids={primary_backend_id},
+                        external_model=external_model,
+                        configured_primary_backend_id=configured_backend_id,
                     )
                     chosen = self._pick_least_busy(
                         overflow, primary_port, primary_backend_id
@@ -1132,6 +1426,8 @@ class ProxyRouter:
                     expandable = self._candidates(
                         instances, config, primary_port, needed_ctx,
                         ignore_capacity=True,
+                        external_model=external_model,
+                        configured_primary_backend_id=configured_backend_id,
                     )
                     chosen = self._pick_for_dynamic_growth(
                         expandable, config, primary_backend_id
@@ -1149,6 +1445,8 @@ class ProxyRouter:
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=dry_run,
                 exclude_backend_ids={primary_backend_id},
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
             )
             chosen = self._pick_least_busy(
                 candidates, primary_port, primary_backend_id
@@ -1163,9 +1461,9 @@ class ProxyRouter:
         # Subagente: tenta o modelo principal primeiro (prioridade absoluta);
         # só se o primary estiver ocupado, escolhe o menos ocupado entre
         # secundários (PRD F6 — main-first para conversas principais e subagentes).
-        if primary_port not in self._disabled_ports:
+        if self._backend_available(primary):
             _, max_parallel = self._backend_flags(config, primary)
-            primary_ctx_ok = needed_ctx <= self._ctx_per_slot(primary)
+            primary_ctx_ok = needed_ctx <= _context_limit(primary)
             if primary_ctx_ok:
                 if dry_run:
                     return _decision(primary, False, "subagent_main_preference"), None
@@ -1177,6 +1475,8 @@ class ProxyRouter:
             instances, config, primary_port, needed_ctx,
             ignore_capacity=dry_run,
             exclude_backend_ids={primary_backend_id},
+            external_model=external_model,
+            configured_primary_backend_id=configured_backend_id,
         )
         chosen = self._pick_least_busy(
             candidates, primary_port, primary_backend_id
@@ -1185,6 +1485,8 @@ class ProxyRouter:
             any_eligible = self._candidates(
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=True,
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
             )
             if not any_eligible:
                 raise ProxyError(
@@ -1225,11 +1527,16 @@ class ProxyRouter:
             settings = self._settings()
             instances = self._running_instances()
             primary = self._find_primary(instances, settings)
-            if primary is None:
-                raise ProxyError(503, "Modelo principal do proxy nao esta online",
-                                 code="primary_offline")
             config = self._config.get_config()
-            primary_backend_id = self._backend_id(primary)
+            primary_backend_id = (
+                self._backend_id(primary)
+                if primary is not None
+                else normalize_backend_id(settings.get("primary_backend_id"))
+            )
+            if not primary_backend_id and settings.get("primary_model_path"):
+                primary_backend_id = (
+                    f"local:{normalize_model_path(settings['primary_model_path'])}"
+                )
             excluded: set = set(exclude_backend_ids or ())
             if exclude_current and session.backend_id and len(instances) > 1:
                 excluded.add(session.backend_id)
@@ -1239,7 +1546,8 @@ class ProxyRouter:
             # considerar qualquer secundario.
             chosen = None
             if (
-                primary["port"] not in self._disabled_ports
+                primary is not None
+                and self._backend_available(primary)
                 and primary_backend_id not in excluded
             ):
                 _, primary_max = self._backend_flags(config, primary)
@@ -1248,7 +1556,7 @@ class ProxyRouter:
 
             if chosen is None:
                 candidates = self._candidates(
-                    instances, config, primary["port"], 0,
+                    instances, config, primary["port"] if primary else None, 0,
                     ignore_capacity=True,
                     exclude_backend_ids=excluded or None,
                 )
@@ -1268,7 +1576,8 @@ class ProxyRouter:
                                  code="no_backend")
             old_port = session.backend_port
             chosen_is_primary = (
-                self._backend_id(chosen) == self._backend_id(primary)
+                primary is not None
+                and self._backend_id(chosen) == self._backend_id(primary)
             )
             session.backend_port = chosen["port"]
             session.backend_model_path = chosen.get("model_path") or ""
@@ -1296,7 +1605,7 @@ class ProxyRouter:
                 sticky_hit=False,
                 reason=reason,
                 rewrite=(
-                    chosen["port"] != primary["port"]
+                    not chosen_is_primary
                     and self._backend_type(chosen) != "platform"
                 ),
                 gpu=gpu_label(chosen),

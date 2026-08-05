@@ -160,6 +160,7 @@ export async function setProxyMaxParallel(input, path, backendId = null) {
 const STATE_STYLES = {
     online: 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10',
     busy: 'text-amber-400 border-amber-500/40 bg-amber-500/10',
+    cooldown: 'text-orange-400 border-orange-500/40 bg-orange-500/10',
     disabled: 'text-rose-400 border-rose-500/40 bg-rose-500/10',
     not_eligible: 'text-slate-500 border-slate-700/50 bg-slate-800/40',
     offline: 'text-slate-500 border-slate-700/50 bg-slate-800/40',
@@ -169,6 +170,7 @@ const STATE_STYLES = {
 const STATE_LABELS = {
     online: 'ONLINE',
     busy: 'OCUPADO',
+    cooldown: 'EM RECUPERAÇÃO',
     disabled: 'DESATIVADO',
     not_eligible: 'FORA DO PROXY',
     offline: 'OFFLINE',
@@ -190,8 +192,6 @@ function renderOff() {
     renderModeBadge(false);
     const body = document.getElementById('proxy-panel-body');
     if (body) body.classList.add('hidden');
-    const exposed = document.getElementById('proxy-exposed-model');
-    if (exposed) exposed.innerText = '—';
 }
 
 function backendCard(backend) {
@@ -258,8 +258,6 @@ function render(status, sessions) {
     syncPrimaryHint(status);
     const body = document.getElementById('proxy-panel-body');
     if (body) body.classList.toggle('hidden', !status.enabled);
-    const exposed = document.getElementById('proxy-exposed-model');
-    if (exposed) exposed.innerText = status.exposed_model || '(principal offline)';
 
     const backendsEl = document.getElementById('proxy-backends-list');
     if (backendsEl) {

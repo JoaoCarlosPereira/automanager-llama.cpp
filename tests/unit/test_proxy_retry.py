@@ -97,6 +97,30 @@ def test_platform_chat_returns_502_after_retries_exhausted(mock_post, mock_get, 
 @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
 @patch("llama_manager._hybrid_status")
 @patch("llama_manager.client.get", new_callable=AsyncMock)
+@patch("llama_manager.client.post", new_callable=AsyncMock)
+def test_retry_respects_retry_after_header(
+    mock_post, mock_get, mock_status, mock_sleep
+):
+    mock_status.return_value = {"instances": [PLATFORM_INST]}
+    mock_get.return_value = _models_resp()
+    limited = MagicMock(spec=httpx.Response)
+    limited.status_code = 429
+    limited.headers = httpx.Headers({"Retry-After": "7"})
+    limited.content = b'{"error":"rate_limit"}'
+    mock_post.side_effect = [limited, _chat_resp()]
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": GEMINI_LISTING, "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    mock_sleep.assert_awaited_once_with(7.0)
+
+
+@patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+@patch("llama_manager._hybrid_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
 @patch("llama_manager.client.send", new_callable=AsyncMock)
 def test_platform_stream_retries_http_502_before_client(mock_send, mock_get, mock_status, mock_sleep):
     mock_status.return_value = {"instances": [PLATFORM_INST]}

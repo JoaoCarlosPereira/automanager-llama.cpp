@@ -102,6 +102,47 @@ CURSOR_BLOCKED_MODEL_TOKENS = (
 _PLATFORM_LISTING_REGISTRY: Dict[str, str] = {}
 
 
+def merge_platform_model_metadata(
+    model: Dict,
+    provider: str,
+    catalog: Optional[Dict[str, Dict[str, Dict]]] = None,
+) -> Dict:
+    """Enrich a sidecar model with the provider catalog metadata.
+
+    CLIProxyAPI's ``/v1/models`` endpoint omits context limits.  Its model
+    catalog is therefore passed in by the manager and merged here, keeping
+    the provider's model id and runtime fields authoritative.
+    """
+    if not catalog:
+        return dict(model)
+    provider_models = catalog.get((provider or "").strip().lower(), {})
+    model_id = str(model.get("id") or "")
+    catalog_model = provider_models.get(model_id)
+    if not isinstance(catalog_model, dict):
+        return dict(model)
+    merged = dict(catalog_model)
+    merged.update(model)
+    for key in (
+        "context_length",
+        "inputTokenLimit",
+        "outputTokenLimit",
+        "max_completion_tokens",
+    ):
+        if key not in model and key in catalog_model:
+            merged[key] = catalog_model[key]
+    if "context_length" not in model:
+        context_length = catalog_model.get("context_length")
+        if context_length is None:
+            context_length = catalog_model.get("inputTokenLimit")
+        if context_length is not None:
+            merged["context_length"] = context_length
+    if "max_completion_tokens" not in model:
+        output_limit = catalog_model.get("outputTokenLimit")
+        if output_limit is not None:
+            merged["max_completion_tokens"] = output_limit
+    return merged
+
+
 def clear_platform_listing_registry() -> None:
     _PLATFORM_LISTING_REGISTRY.clear()
 
@@ -218,15 +259,27 @@ def platform_model_listing_entry(model: Dict, provider: str = "") -> Dict:
     listing_id = register_platform_model_listings(root_id, prov)
     source_meta = model.get("meta") if isinstance(model.get("meta"), dict) else {}
     # Mesmo shape que llama-server — clientes como Cursor comparam estas chaves.
+    context_length = (
+        source_meta.get("n_ctx")
+        or source_meta.get("context_length")
+        or model.get("context_length")
+        or model.get("inputTokenLimit")
+    )
+    try:
+        context_length = int(context_length) if context_length is not None else 0
+    except (TypeError, ValueError):
+        context_length = 0
     meta = {
         "vocab_type": int(source_meta.get("vocab_type", 0)),
         "n_vocab": int(source_meta.get("n_vocab", 0)),
-        "n_ctx": int(source_meta.get("n_ctx") or source_meta.get("context_length") or 1_048_576),
+        "n_ctx": context_length,
         "n_ctx_train": int(
             source_meta.get("n_ctx_train")
             or source_meta.get("n_ctx")
             or source_meta.get("context_length")
-            or 1_048_576
+            or model.get("context_length")
+            or model.get("inputTokenLimit")
+            or 0
         ),
         "n_embd": int(source_meta.get("n_embd", 0)),
         "n_params": int(source_meta.get("n_params", 0)),
@@ -346,6 +399,17 @@ def filter_models_for_provider(
     if not owners:
         return list(models)
     allowed = {owner.lower() for owner in owners}
+    # Alguns gateways compatíveis omitem ``owned_by`` (ou devolvem um valor
+    # genérico). Sem uma indicação de provedor, preserve o catálogo em vez de
+    # esconder modelos válidos; quando há owners conhecidos, filtre de forma
+    # estrita para não duplicar o catálogo no sidecar compartilhado.
+    known_owners = {
+        str(model.get("owned_by") or "").lower()
+        for model in models
+        if isinstance(model, dict)
+    }
+    if not known_owners.intersection(allowed):
+        return list(models)
     return [
         model
         for model in models

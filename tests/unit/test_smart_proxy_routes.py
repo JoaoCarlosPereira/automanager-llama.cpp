@@ -92,6 +92,8 @@ def smart_env(tmp_path, monkeypatch):
         get_status=lambda: holder,
         config_manager=cfg,
         sessions_path=tmp_path / "proxy_sessions.json",
+        context_limit_resolver=llama_manager._platform_model_context_limit,
+        requested_primary_resolver=llama_manager._requested_primary_instance,
     )
     monkeypatch.setattr(llama_manager, "config_manager", cfg)
     monkeypatch.setattr(llama_manager, "proxy_router", router)
@@ -182,7 +184,9 @@ class TestSmartRouting:
         assert sent["extra_body"] == {"custom": 1}
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_secondary_by_real_name_bypasses_proxy(self, mock_post, smart_env):
+    def test_requested_local_model_becomes_dynamic_primary(
+        self, mock_post, smart_env
+    ):
         mock_post.return_value = _mock_response({"id": "x", "model": "aux0.gguf"})
         response = client.post(
             "/v1/chat/completions", json=chat_body(model="aux0.gguf")
@@ -190,10 +194,13 @@ class TestSmartRouting:
         assert response.status_code == 200
         url = mock_post.call_args.args[0]
         assert "8086" in url
-        # Sem sticky e sem reescrita: model interno permanece na resposta
+        # O modelo invocado vira principal, sem reescrita do nome externo.
         assert response.json()["model"] == "aux0.gguf"
-        assert "x-automanager-backend" not in response.headers
-        assert smart_env.router._sessions == {}
+        assert response.headers["x-automanager-backend"] == "8086"
+        assert response.headers["x-automanager-backend-id"] == (
+            "local:/path/to/aux0.gguf"
+        )
+        assert next(iter(smart_env.router._sessions.values())).backend_port == 8086
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_sticky_across_requests_through_handler(self, mock_post, smart_env):
@@ -240,11 +247,16 @@ class TestSmartRouting:
         response = client.get("/v1/models")
         assert response.status_code == 503
 
-    def test_error_when_primary_offline_on_chat(self, smart_env):
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_primary_offline_fails_over_on_chat(self, mock_post, smart_env):
         smart_env.holder["instances"] = [make_instance(8086, AUX0_PATH)]
+        mock_post.return_value = _mock_response(
+            {"id": "x", "model": "aux0.gguf"}
+        )
         response = client.post("/v1/chat/completions", json=chat_body())
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "primary_offline"
+        assert response.status_code == 200
+        assert "8086" in mock_post.call_args.args[0]
+        assert response.json()["model"] == "main.gguf"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_in_flight_returns_to_zero_after_success_and_error(
@@ -579,13 +591,17 @@ class TestAdminEndpoints:
         assert payload["backend_type"] == "platform"
         assert payload["internal_model"] == "codex-pro"
 
-    def test_primary_switch_affects_new_sessions_only(self, smart_env):
+    def test_requested_model_overrides_configured_primary(self, smart_env):
         first = client.post("/proxy/resolve", json=chat_body()).json()
         assert first["selected_backend"] == 8085
         client.post("/proxy/config", json={"primary_model_path": AUX1_PATH})
         second = client.post("/proxy/resolve", json=chat_body()).json()
-        assert second["selected_backend"] == 8087
-        assert second["external_model"] == "aux1.gguf"
+        assert second["selected_backend"] == 8085
+        dynamic = client.post(
+            "/proxy/resolve", json=chat_body(model="aux1.gguf")
+        ).json()
+        assert dynamic["selected_backend"] == 8087
+        assert dynamic["external_model"] == "aux1.gguf"
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +740,66 @@ class TestHybridV1Availability:
         assert ids == ["main.gguf", platform_model_listing_id("codex-pro", "codex")]
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
+    def test_v1_models_reports_context_for_each_requested_model(
+        self, mock_get, smart_env, monkeypatch
+    ):
+        codex = make_platform_instance(
+            port=8317, backend_id="platform:codex", model="Codex"
+        )
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+        )
+        antigravity["provider"] = "antigravity"
+        antigravity["config"].update({
+            "backend_id": "platform:google-antigravity",
+            "provider": "antigravity",
+        })
+        smart_env.holder["instances"] = [codex, antigravity]
+        monkeypatch.setattr(
+            llama_manager,
+            "_platform_model_catalog_cache",
+            {
+                "codex": {
+                    "gpt-5.6-luna": {
+                        "id": "gpt-5.6-luna",
+                        "context_length": 372_000,
+                        "max_completion_tokens": 128_000,
+                    }
+                },
+                "antigravity": {
+                    "gemini-3.1-pro-low": {
+                        "id": "gemini-3.1-pro-low",
+                        "inputTokenLimit": 1_048_576,
+                        "outputTokenLimit": 65_535,
+                    }
+                },
+            },
+        )
+        monkeypatch.setattr(
+            llama_manager, "_platform_model_catalog_loaded_at", 10**18
+        )
+        mock_get.return_value = _models_response(
+            ["gpt-5.6-luna", "gemini-3.1-pro-low"]
+        )
+
+        response = client.get("/v1/models")
+        assert response.status_code == 200
+        by_id = {item["id"]: item for item in response.json()["data"]}
+        luna = by_id["codex-56luna.gguf"]
+        antigravity_model = by_id["antigravity-31prolow.gguf"]
+        assert luna["context_length"] == 372_000
+        assert luna["meta"]["n_ctx"] == 372_000
+        assert antigravity_model["context_length"] == 1_048_576
+        assert antigravity_model["meta"]["n_ctx"] == 1_048_576
+
+        detail = client.get("/v1/models/codex-56luna.gguf")
+        assert detail.status_code == 200
+        assert detail.json()["context_length"] == 372_000
+        assert detail.json()["meta"]["n_ctx"] == 372_000
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_v1_models_dedupes_local_and_sidecar_ids(
         self, mock_get, smart_env, monkeypatch
     ):
@@ -819,6 +895,90 @@ class TestHybridV1Availability:
         assert "9100" in mock_post.call_args.args[0]
         sent = json.loads(mock_post.call_args.kwargs["content"])
         assert sent["model"] == "codex-pro"
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_platform_rate_limit_fails_over_to_configured_provider_default(
+        self, mock_post, mock_get, smart_env
+    ):
+        """429 no Codex abre o circuito e migra para o modelo padrão Antigravity."""
+        llama_manager.clear_platform_listing_registry()
+        codex = make_platform_instance(
+            port=8317, backend_id="platform:codex", model="Codex"
+        )
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+        )
+        antigravity["provider"] = "antigravity"
+        antigravity["config"].update({
+            "backend_id": "platform:google-antigravity",
+            "provider": "antigravity",
+        })
+        smart_env.holder["instances"] = [codex, antigravity]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_platform_settings(
+            "platform:google-antigravity",
+            {
+                "proxy_eligible": True,
+                "default_model": "antigravity-default",
+            },
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        mock_get.return_value = _models_response(
+            ["codex-pro", "antigravity-default"]
+        )
+        limited = _mock_response({"error": "rate_limit"}, status=429)
+        ok = _mock_response({"id": "chatcmpl-1", "model": "antigravity-default"})
+        mock_post.side_effect = [limited, limited, limited, ok, ok]
+
+        response = client.post(
+            "/v1/chat/completions",
+            json=chat_body(model=platform_model_listing_id("codex-pro", "codex")),
+        )
+
+        assert response.status_code == 200
+        assert mock_post.call_count == llama_manager._PROXY_MAX_ATTEMPTS + 1
+        sent_models = [
+            json.loads(call.kwargs["content"])["model"]
+            for call in mock_post.call_args_list
+        ]
+        assert sent_models[:3] == ["codex-pro"] * 3
+        assert sent_models[3] == "antigravity-default"
+        assert response.headers["x-automanager-backend-id"] == (
+            "platform:google-antigravity"
+        )
+        codex = next(
+            backend for backend in smart_env.router.backends_snapshot()
+            if backend["backend_id"] == "platform:codex"
+        )
+        assert codex["state"] == "cooldown"
+
+        # Uma nova requisição evita o Codex enquanto o circuito estiver aberto.
+        second = client.post(
+            "/v1/chat/completions",
+            json=chat_body(model=platform_model_listing_id("codex-pro", "codex")),
+        )
+        assert second.status_code == 200
+        assert mock_post.call_count == llama_manager._PROXY_MAX_ATTEMPTS + 2
+        assert json.loads(mock_post.call_args.kwargs["content"])["model"] == (
+            "antigravity-default"
+        )
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_oversized_context_is_rejected_before_backend(self, mock_post, smart_env):
+        body = chat_body(user="x" * (70_000 * 4))
+
+        response = client.post("/v1/chat/completions", json=body)
+
+        assert response.status_code == 413
+        assert response.json()["error"]["code"] == "context_too_large"
+        mock_post.assert_not_called()
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)

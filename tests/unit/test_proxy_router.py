@@ -11,6 +11,7 @@ from proxy_router import (
     ProxyError,
     ProxyRouter,
     RouteDecision,
+    StickySession,
     rewrite_json_model,
     rewrite_sse_stream,
 )
@@ -209,6 +210,45 @@ class TestAffinityExtraction:
 # ---------------------------------------------------------------------------
 
 class TestStickySessions:
+    @pytest.mark.asyncio
+    async def test_incompatible_persisted_platform_session_is_dropped(
+        self, router, proxy_config, status_holder, clock
+    ):
+        """Sessão antiga de plataforma não pode contaminar o principal local."""
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            provider="antigravity",
+            model="Google Antigravity",
+        )
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            antigravity,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity", {"proxy_eligible": True}
+        )
+        body = body_with(model="main.gguf")
+        affinity_key, _ = router.extract_affinity({}, body, "127.0.0.1", "")
+        router._sessions[affinity_key] = StickySession(
+            affinity_key=affinity_key,
+            backend_port=8317,
+            backend_model_path="",
+            external_model="main.gguf",
+            internal_model="Google Antigravity",
+            detected_tag=None,
+            created_at=clock().isoformat(),
+            last_used_at=clock().isoformat(),
+            backend_id="platform:google-antigravity",
+            backend_type="platform",
+            provider="antigravity",
+        )
+
+        decision = await resolve(router, body=body)
+
+        assert decision.backend_port == 8085
+        assert decision.reason == "main_preference"
+
     @pytest.mark.asyncio
     async def test_ttl_expires_by_inactivity(self, router, clock):
         decision = await resolve(router, body=body_with(tag="a1"))
@@ -414,6 +454,94 @@ class TestSelection:
         assert decision.backend_type == "platform"
         assert decision.rewrite is False
         await router.release(decision.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_dynamic_primary_and_failover_use_each_models_context_limit(
+        self, router, proxy_config, status_holder, monkeypatch
+    ):
+        codex = make_platform_instance(
+            port=8317, backend_id="platform:codex", provider="codex"
+        )
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+            provider="antigravity",
+        )
+        status_holder["instances"] = [codex, antigravity]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity",
+            {
+                "proxy_eligible": True,
+                "default_model": "antigravity-31prolow.gguf",
+            },
+        )
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        router._requested_primary_resolver = (
+            lambda instances, model: next(
+                item for item in instances
+                if item["provider"] == (
+                    "antigravity" if model.startswith("antigravity-") else "codex"
+                )
+            )
+        )
+        limits = {
+            ("codex", "codex-56luna.gguf"): 372_000,
+            ("antigravity", "antigravity-31prolow.gguf"): 1_048_576,
+        }
+        router._context_limit_resolver = (
+            lambda instance, model: limits.get((instance["provider"], model), 0)
+        )
+        monkeypatch.setattr(
+            router, "estimate_prompt_tokens", lambda body: body["estimated_tokens"]
+        )
+        headers = {"X-Automanager-Session-Id": "cursor-context"}
+
+        luna = await resolve(
+            router,
+            headers=headers,
+            body={"model": "codex-56luna.gguf", "estimated_tokens": 300_000},
+        )
+        assert luna.backend_id == "platform:codex"
+        await router.release(luna.backend_id)
+
+        overflow = await resolve(
+            router,
+            headers=headers,
+            body={"model": "codex-56luna.gguf", "estimated_tokens": 400_000},
+        )
+        assert overflow.backend_id == "platform:google-antigravity"
+        assert overflow.internal_model == "antigravity-31prolow.gguf"
+        assert overflow.reason == "reassign_context_limit"
+        await router.release(overflow.backend_id)
+
+        antigravity_primary = await resolve(
+            router,
+            headers={"X-Automanager-Session-Id": "antigravity-context"},
+            body={
+                "model": "antigravity-31prolow.gguf",
+                "estimated_tokens": 900_000,
+            },
+        )
+        assert antigravity_primary.backend_id == "platform:google-antigravity"
+        await router.release(antigravity_primary.backend_id)
+
+        with pytest.raises(ProxyError) as exc_info:
+            await resolve(
+                router,
+                headers={"X-Automanager-Session-Id": "too-large"},
+                body={
+                    "model": "antigravity-31prolow.gguf",
+                    "estimated_tokens": 1_000_000,
+                },
+            )
+        assert exc_info.value.status_code == 413
+        assert exc_info.value.code == "context_too_large"
 
     @pytest.mark.asyncio
     async def test_platform_primary_must_be_proxy_eligible(
@@ -715,13 +843,41 @@ class TestSelection:
         assert router.in_flight(decision.backend_port) == 0
 
     @pytest.mark.asyncio
-    async def test_no_primary_online_raises_clear_error(
+    async def test_no_primary_online_uses_redundant_backend(
         self, router, status_holder
     ):
         status_holder["instances"] = [make_instance(8086, AUX0_PATH)]
-        with pytest.raises(ProxyError) as exc_info:
-            await resolve(router, body=body_with())
-        assert exc_info.value.code == "primary_offline"
+        decision = await resolve(router, body=body_with())
+        assert decision.backend_port == 8086
+        assert decision.internal_model == "aux0.gguf"
+        assert decision.external_model == "main.gguf"
+        assert decision.rewrite is True
+        await router.release(decision.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_backend_cooldown_skips_failed_primary_until_expiry(
+        self, router, status_holder, clock
+    ):
+        primary_id = next(
+            backend for backend in router.backends_snapshot()
+            if backend["port"] == 8085
+        )["backend_id"]
+        await router.mark_backend_unavailable(
+            primary_id, 300, reason="HTTP 429"
+        )
+
+        failover = await resolve(router, body=body_with())
+        assert failover.backend_port != 8085
+        assert next(
+            backend for backend in router.backends_snapshot()
+            if backend["port"] == 8085
+        )["state"] == "cooldown"
+        await router.release(failover.backend_id)
+
+        clock.advance(seconds=301)
+        recovered = await resolve(router, body=body_with(user="nova conversa"))
+        assert recovered.backend_port == 8085
+        await router.release(recovered.backend_id)
 
     @pytest.mark.asyncio
     async def test_max_parallel_respected_per_backend(

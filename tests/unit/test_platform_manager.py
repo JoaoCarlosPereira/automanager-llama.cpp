@@ -11,6 +11,7 @@ from platform_manager import (
     default_executable_resolver,
     filter_models_for_provider,
     lookup_platform_bare_id,
+    merge_platform_model_metadata,
     platform_client_facing_model,
     platform_model_listing_entry,
     platform_model_listing_id,
@@ -62,6 +63,23 @@ class TestFilterModelsForProvider:
 
 
 class TestPlatformModelListing:
+    def test_catalog_context_is_copied_to_sidecar_model(self):
+        model = merge_platform_model_metadata(
+            {"id": "gemini-3.1-pro-low", "owned_by": "antigravity"},
+            "antigravity",
+            {
+                "antigravity": {
+                    "gemini-3.1-pro-low": {
+                        "id": "gemini-3.1-pro-low",
+                        "inputTokenLimit": 1_048_576,
+                        "outputTokenLimit": 65_536,
+                    }
+                }
+            },
+        )
+        assert model["context_length"] == 1_048_576
+        assert model["max_completion_tokens"] == 65_536
+
     def test_listing_id_uses_opaque_slug_for_blocked_names(self):
         assert (
             platform_model_listing_id("gemini-3.1-pro-low", "antigravity")
@@ -73,13 +91,17 @@ class TestPlatformModelListing:
 
     def test_listing_entry_includes_metadata(self):
         entry = platform_model_listing_entry(
-            {"id": "gemini-3.1-pro-low", "owned_by": "antigravity"},
+            {
+                "id": "gemini-3.1-pro-low",
+                "owned_by": "antigravity",
+                "context_length": 1_048_576,
+            },
             provider="antigravity",
         )
         assert entry["id"] == "antigravity-31prolow.gguf"
         assert entry["owned_by"] == "llamacpp"
         assert entry["meta"]["root_model"] == "gemini-3.1-pro-low"
-        assert entry["meta"]["n_ctx"] > 0
+        assert entry["meta"]["n_ctx"] == 1_048_576
 
     def test_resolve_uses_registry(self):
         register_platform_model_listings("gemini-3.1-pro-low", "antigravity")

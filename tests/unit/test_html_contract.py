@@ -292,7 +292,8 @@ def test_html_contains_proxy_monitor_panel(html):
     """Card de monitoramento 'Proxy Inteligente' no dashboard (task 08)."""
     assert 'id="proxy-panel"' in html
     assert 'id="proxy-mode-badge"' in html
-    assert 'id="proxy-exposed-model"' in html
+    assert 'id="proxy-exposed-model"' not in html
+    assert "Modelo exposto:" not in html
     assert 'id="proxy-backends-list"' in html
     assert 'id="proxy-sessions-list"' in html
     assert 'id="proxy-sessions-count"' in html
