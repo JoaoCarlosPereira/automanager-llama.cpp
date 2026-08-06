@@ -249,8 +249,9 @@ def test_normalize_model_path_maps_windows_drive_on_linux():
     import config_manager as cm
     def _fake_abspath(p):
         return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
-    mock_os = MagicMock(spec=os, name='posix_os', abspath=_fake_abspath)
+    mock_os = MagicMock(spec=os, name='posix_os')
     mock_os.name = 'posix'
+    mock_os.path.abspath = _fake_abspath
     with patch.object(cm, 'os', mock_os):
         result = cm.normalize_model_path("Z:/media/docker/models/model.gguf")
         assert result == "/media/docker/models/model.gguf"
@@ -283,8 +284,9 @@ def test_config_migrates_windows_paths_and_invalid_defaults(tmp_path):
     import config_manager as cm
     def _fake_abspath(p):
         return p if os.path.isabs(p) else os.path.join(os.getcwd(), p)
-    mock_os = MagicMock(spec=os, name="posix_os", abspath=_fake_abspath)
+    mock_os = MagicMock(spec=os, name="posix_os")
     mock_os.name = "posix"
+    mock_os.path.abspath = _fake_abspath
     mock_os.path.exists = exists_side_effect
     mock_os.path.normpath = os.path.normpath
     mock_os.path.isabs = os.path.isabs

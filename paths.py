@@ -14,6 +14,7 @@ DEFAULT_PATH_ENTRIES: Dict[str, str] = {
     "models_dir": "data/models",
     "config_file": "data/automanager_config.json",
     "logs_dir": "logs",
+    "audit_logs_dir": "logs/audit",
 }
 
 
@@ -27,6 +28,7 @@ class InstallPaths:
     models_dir: str
     config_file: str
     logs_dir: str
+    audit_logs_dir: str
 
     @property
     def manager_log(self) -> str:
@@ -35,6 +37,10 @@ class InstallPaths:
     @property
     def server_log(self) -> str:
         return os.path.join(self.logs_dir, "server.log")
+
+    @property
+    def audit_log_path(self) -> str:
+        return os.path.join(self.audit_logs_dir, "audit.jsonl")
 
 
 def _resolve_path(install_root: str, value: str) -> str:
@@ -68,11 +74,13 @@ def get_paths(
 ) -> InstallPaths:
     root = install_root or INSTALL_ROOT
     entries = _load_entries(paths_file or PATHS_FILE, root)
+    audit_dir = _resolve_path(root, entries.get("audit_logs_dir", "logs/audit"))
     return InstallPaths(
         install_root=root,
         models_dir=_resolve_path(root, entries["models_dir"]),
         config_file=_resolve_path(root, entries["config_file"]),
         logs_dir=_resolve_path(root, entries["logs_dir"]),
+        audit_logs_dir=audit_dir,
     )
 
 
@@ -84,6 +92,7 @@ def ensure_directories(
     for directory in (
         paths.models_dir,
         paths.logs_dir,
+        paths.audit_logs_dir,
         os.path.dirname(paths.config_file),
     ):
         if directory:
@@ -121,13 +130,15 @@ def update_models_dir(
 
 
 def reload_module_paths() -> InstallPaths:
-    global _paths, MODELS_DIR, CONFIG_PATH, LOGS_DIR, MANAGER_LOG_PATH, SERVER_LOG_PATH
+    global _paths, MODELS_DIR, CONFIG_PATH, LOGS_DIR, AUDIT_LOGS_DIR, MANAGER_LOG_PATH, SERVER_LOG_PATH, AUDIT_LOG_PATH
     _paths = get_paths()
     MODELS_DIR = _paths.models_dir
     CONFIG_PATH = _paths.config_file
     LOGS_DIR = _paths.logs_dir
+    AUDIT_LOGS_DIR = _paths.audit_logs_dir
     MANAGER_LOG_PATH = _paths.manager_log
     SERVER_LOG_PATH = _paths.server_log
+    AUDIT_LOG_PATH = _paths.audit_log_path
     return _paths
 
 
@@ -136,5 +147,7 @@ _paths = get_paths()
 MODELS_DIR = _paths.models_dir
 CONFIG_PATH = _paths.config_file
 LOGS_DIR = _paths.logs_dir
+AUDIT_LOGS_DIR = _paths.audit_logs_dir
 MANAGER_LOG_PATH = _paths.manager_log
 SERVER_LOG_PATH = _paths.server_log
+AUDIT_LOG_PATH = _paths.audit_log_path

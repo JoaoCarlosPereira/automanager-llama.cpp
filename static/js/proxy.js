@@ -375,3 +375,185 @@ export async function updateProxyPanel(force = false) {
         updating = false;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Controles do Context Optimizer (task 14)
+// ---------------------------------------------------------------------------
+
+export async function toggleOptimizerEnabled(checkbox) {
+    try {
+        const res = await apiFetch('/proxy/config', {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+                context_optimizer: { enabled: checkbox.checked },
+            }),
+        });
+        if (!res.ok) throw new Error('optimizer');
+        const data = await res.json();
+        const co = data.smart_proxy?.context_optimizer || {};
+        const enabledEl = document.getElementById('optimizer-enabled-status');
+        if (enabledEl) enabledEl.innerText = checkbox.checked ? 'Ativado' : 'Desativado';
+        showToast(
+            checkbox.checked ? 'Context Optimizer ativado' : 'Context Optimizer desativado',
+            'success',
+        );
+        updateProxyPanel(true);
+    } catch (err) {
+        checkbox.checked = !checkbox.checked;
+        showToast('Falha ao alternar Context Optimizer', 'error');
+    }
+}
+
+export async function toggleOptimizerAudit(checkbox) {
+    try {
+        const res = await apiFetch('/proxy/config', {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+                context_optimizer: { audit_enabled: checkbox.checked },
+            }),
+        });
+        if (!res.ok) throw new Error('audit');
+        showToast(
+            checkbox.checked ? 'Auditoria ativada' : 'Auditoria desativada',
+            'success',
+        );
+        renderAuditLog();
+    } catch (err) {
+        checkbox.checked = !checkbox.checked;
+        showToast('Falha ao alternar auditoria', 'error');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Painel de auditoria do Context Optimizer (task 14)
+// ---------------------------------------------------------------------------
+
+const AUDIT_STYLES = {
+    safe: 'text-emerald-400',
+    fail_open: 'text-amber-400',
+    moderate: 'text-blue-400',
+    aggressive: 'text-orange-400',
+};
+
+function renderAuditRow(row) {
+    const style = AUDIT_STYLES[row.strategy] || 'text-slate-400';
+    const savings = row.savings_tokens > 0 ? `−${row.savings_tokens} tokens (${Math.round((row.savings_tokens / row.original_cost) * 100)}%)` : '0%';
+    return `
+    <div class="audit-row flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-900/40 border border-slate-800/60" data-audit-ts="${row.ts}">
+        <div class="min-w-0">
+            <p class="text-ui-body-sm font-bold text-slate-200">${esc(row.strategy || 'unknown')} · orig ${row.original_cost} tokens → opt ${row.optimized_cost} tokens · ${savings}</p>
+            <p class="text-ui-label text-slate-500 font-mono truncate">
+                ${row.transformations_applied?.join(', ') || '—'} · ${row.duration_ms.toFixed(1)}ms · ${row.validation_passed ? '✓' : '✗'}
+            </p>
+        </div>
+    </div>`;
+}
+
+async function renderAuditLog() {
+    const listEl = document.getElementById('audit-log-list');
+    const paginationEl = document.getElementById('audit-log-pagination');
+    const pageInput = document.getElementById('audit-log-page');
+    const totalEl = document.getElementById('audit-log-total');
+    const pagesEl = document.getElementById('audit-log-pages');
+
+    if (!listEl) return;
+
+    const page = parseInt(pageInput?.value || '1', 10) || 1;
+
+    try {
+        const res = await apiFetch(`/proxy/context-optimizer/audit?page=${page}&per_page=20`);
+        if (!res.ok) {
+            if (listEl) listEl.innerHTML = '<p class="text-ui-label text-rose-400">Falha ao carregar auditoria</p>';
+            return;
+        }
+        const data = await res.json();
+        if (listEl) {
+            listEl.innerHTML = (data.items || []).map(renderAuditRow).join('')
+                || '<p class="text-ui-label text-slate-600">Nenhum registro de auditoria.</p>';
+        }
+        if (totalEl) totalEl.innerText = `${data.total || 0}`;
+        if (pagesEl) pagesEl.innerText = `${data.pages || 1}`;
+        if (pageInput) {
+            pageInput.max = data.pages || 1;
+            pageInput.value = data.page || 1;
+        }
+        if (paginationEl) {
+            const prevDisabled = data.page <= 1 ? 'disabled' : '';
+            const nextDisabled = data.page >= (data.pages || 1) ? 'disabled' : '';
+            paginationEl.innerHTML = `
+                <button type="button" class="audit-btn-prev px-2 py-1 rounded bg-slate-800 text-slate-400 hover:text-white transition-all ${prevDisabled}" ${prevDisabled}>← Anterior</button>
+                <span class="text-ui-label text-slate-500 mx-2">Página ${data.page || 1} de ${data.pages || 1}</span>
+                <button type="button" class="audit-btn-next px-2 py-1 rounded bg-slate-800 text-slate-400 hover:text-white transition-all ${nextDisabled}" ${nextDisabled}>Próxima →</button>
+            `;
+            paginationEl.querySelector('.audit-btn-prev')?.addEventListener('click', () => {
+                const p = pageInput ? parseInt(pageInput.value, 10) - 1 : 1;
+                pageInput.value = Math.max(1, p);
+                renderAuditLog();
+            });
+            paginationEl.querySelector('.audit-btn-next')?.addEventListener('click', () => {
+                const p = pageInput ? parseInt(pageInput.value, 10) + 1 : 1;
+                pageInput.value = p;
+                renderAuditLog();
+            });
+        }
+    } catch (err) {
+        if (listEl) listEl.innerHTML = '<p class="text-ui-label text-rose-400">Erro ao carregar auditoria</p>';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Painel de preview de otimização (resolve preview) (task 14)
+// ---------------------------------------------------------------------------
+
+export async function resolveWithPreview() {
+    const payloadInput = document.getElementById('resolve-payload-input');
+    const resultEl = document.getElementById('resolve-result');
+
+    if (!resultEl) return;
+
+    let data;
+    try {
+        data = payloadInput ? JSON.parse(payloadInput.value || '{}') : {};
+    } catch {
+        resultEl.innerHTML = '<p class="text-rose-400">JSON inválido no payload</p>';
+        return;
+    }
+
+    resultEl.innerHTML = '<p class="text-slate-400">Resolvendo...</p>';
+
+    try {
+        const res = await apiFetch('/proxy/resolve', {
+            method: 'POST',
+            headers: jsonHeaders(),
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            resultEl.innerHTML = `<p class="text-rose-400">Erro ${res.status}: ${JSON.stringify(errData.detail || errData)}</p>`;
+            return;
+        }
+        const result = await res.json();
+
+        let html = '<div class="space-y-2">';
+        html += `<p class="text-ui-body-sm text-slate-300">Backend: <strong>${esc(result.selected_backend || '?')}</strong> (${esc(result.backend_type || '?')})</p>`;
+        html += `<p class="text-ui-body-sm text-slate-300">Modelo: <strong>${esc(result.internal_model || '?')}</strong></p>`;
+        html += `<p class="text-ui-body-sm text-slate-300">Tag detectada: <strong>${esc(result.detected_tag || '?')}</strong></p>`;
+
+        if (result.optimization_preview) {
+            const p = result.optimization_preview;
+            const savings = p.savings_tokens > 0 ? `<span class="text-emerald-400">−${p.savings_tokens} tokens (${Math.round((p.savings_tokens / p.original_cost) * 100)}%)</span>` : '0%';
+            html += `<div class="p-2 rounded bg-emerald-900/20 border border-emerald-700/40 mt-2">`;
+            html += `<p class="text-emerald-300 font-bold text-ui-label">Otimização Safe</p>`;
+            html += `<p class="text-ui-label text-slate-400">${p.strategy} · ${p.original_cost} → ${p.optimized_cost} tokens · ${savings} · ${p.duration_ms.toFixed(1)}ms</p>`;
+            html += `<p class="text-ui-label text-slate-500">Transformações: ${(p.transformations_applied || []).join(', ') || '—'}</p>`;
+            html += `</div>`;
+        }
+
+        html += '</div>';
+        resultEl.innerHTML = html;
+    } catch (err) {
+        resultEl.innerHTML = '<p class="text-rose-400">Falha ao resolver</p>';
+    }
+}

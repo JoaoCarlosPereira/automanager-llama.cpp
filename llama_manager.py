@@ -36,9 +36,20 @@ from config_manager import (
 from proxy_router import (
     ProxyError,
     ProxyRouter,
+    StaleRoutePlan,
     TOKEN_ESTIMATE_MARGIN,
     rewrite_json_model,
     rewrite_sse_stream,
+)
+from context_optimizer import (
+    AuditRecorder,
+    ConservativeEstimator,
+    ContextOptimizer,
+    ContextTooLargeError,
+    calculate_target_budget,
+    derive_required_capabilities,
+    derive_target_capabilities,
+    resolve_model_limits,
 )
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
@@ -96,7 +107,7 @@ from schemas import (
     TURBOQUANT_CACHE_V_PRESETS,
 )
 from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_server_ctx_size
-from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
+from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reload_module_paths
 
 # Version tracking
 _DASHBOARD_JS_V = "4.2.18"  # Ranking de velocidade do proxy no startup
@@ -563,6 +574,8 @@ proxy_router = ProxyRouter(
     context_limit_resolver=_platform_model_context_limit,
     requested_primary_resolver=_requested_primary_instance,
 )
+audit_recorder = AuditRecorder(log_dir=get_paths().audit_logs_dir)
+context_optimizer = ContextOptimizer(config_manager=config_manager, audit_recorder=audit_recorder)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -622,6 +635,40 @@ def _hybrid_status() -> Dict[str, Any]:
     status["platforms"] = platform_states
     status["sidecar"] = cliproxy_sidecar.status()
     status["instances"] = local_instances + platform_instances
+
+    # Context Optimizer & Tokenizers metadata
+    sp = config_manager.get_smart_proxy_settings()
+    co = sp.get("context_optimizer", {})
+    tokenizers_cfg = co.get("tokenizers", {})
+    models_map = tokenizers_cfg.get("models", {}) if isinstance(tokenizers_cfg, dict) else {}
+    families_map = tokenizers_cfg.get("families", {}) if isinstance(tokenizers_cfg, dict) else {}
+    status["tokenizers"] = {
+        "enabled": co.get("enabled", True),
+        "audit_enabled": co.get("audit_enabled", True),
+        "models_count": len(models_map),
+        "families_count": len(families_map),
+        "total_mappings": len(models_map) + len(families_map),
+    }
+
+    # Aggregated metrics
+    metrics = gpu_manager.get_metrics()
+    audit_total = 0
+    try:
+        audit_total = context_optimizer.query_audit_logs().get("total", 0)
+    except Exception:
+        pass
+    status["metrics"] = {
+        "cpu_percent": metrics.get("cpu_percent"),
+        "memory_percent": metrics.get("memory_percent"),
+        "gpu_count": len(metrics.get("gpus", [])),
+        "gpu_utilization": metrics.get("gpu_utilization"),
+        "total_vram": metrics.get("total_vram", 0),
+        "used_vram": metrics.get("used_vram", 0),
+        "tokenizer_estimates": len(
+            getattr(context_optimizer.tokenizer_registry, "_cache", {})
+        ),
+        "optimizer_audit_entries": audit_total,
+    }
     return status
 
 
@@ -1157,6 +1204,14 @@ async def get_config(authenticated: bool = Depends(require_auth)):
     config = config_manager.get_config()
     config.pop("admin_password_hash", None)
     return config
+
+
+@app.get("/config/partial")
+@app.get("/admin/config/partial")
+async def get_config_partial(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return config_manager.get_partial_config()
 
 
 @app.get("/model-aliases")
@@ -1698,22 +1753,163 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
     # Antigravity (1M) so entra como redundancia para contextos maiores.
     await _fetch_platform_model_catalog()
 
-    try:
-        decision = await proxy_router.resolve(
-            headers=request.headers,
-            body=data,
-            client_ip=client_ip,
-            user_agent=user_agent,
+    proxy_settings = config_manager.get_smart_proxy_settings()
+    co_settings = proxy_settings.get("context_optimizer", {}) if isinstance(proxy_settings, dict) else {}
+    co_enabled = co_settings.get("enabled", True) if isinstance(co_settings, dict) else True
+
+    optimized_data = data
+    decision = None
+
+    while True:
+        try:
+            plan = await proxy_router.plan_route(
+                headers=request.headers,
+                body=data,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+        except ProxyError as exc:
+            logger.warning(
+                "[proxy] route rejected code=%s status=%s message=%s",
+                exc.code, exc.status_code, exc.message,
+            )
+            return JSONResponse(exc.payload(), status_code=exc.status_code)
+
+        planned_decision = plan.decision
+        instances = _hybrid_status().get("instances", [])
+        decision_instance = next(
+            (
+                inst for inst in instances
+                if inst.get("backend_id") == planned_decision.backend_id
+            ),
+            None,
         )
-    except ProxyError as exc:
-        logger.warning(
-            "[proxy] route rejected code=%s status=%s message=%s",
-            exc.code, exc.status_code, exc.message,
-        )
-        return JSONResponse(exc.payload(), status_code=exc.status_code)
+        if decision_instance is None:
+            decision_instance = next(
+                (
+                    inst for inst in instances
+                    if inst.get("port") == planned_decision.backend_port
+                ),
+                {"backend_type": planned_decision.backend_type},
+            )
+
+        if co_enabled:
+            model_metadata = None
+            if planned_decision.backend_type == "platform":
+                provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
+                bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
+                provider_catalog = _platform_model_catalog_cache.get(provider)
+                if isinstance(provider_catalog, dict):
+                    model_metadata = provider_catalog.get(bare_model)
+
+            try:
+                opt_result = await context_optimizer.optimize(
+                    payload=data,
+                    backend_info=decision_instance,
+                    model_metadata=model_metadata,
+                    stage_limit="safe",
+                )
+                optimized_data = opt_result.safe_payload
+            except ContextTooLargeError as exc:
+                return JSONResponse(exc.payload(), status_code=exc.status_code)
+            except Exception as exc:
+                logger.warning("[proxy] context optimizer internal error: %s — failing open", exc)
+                optimized_data = data
+                opt_result = None
+
+            # Fallback para janela maior se o payload Safe exceder o orçamento do destino planejado
+            limits = resolve_model_limits(decision_instance, model_metadata)
+            if limits.is_known and limits.context_tokens:
+                decision_instance.setdefault("config", {})["context_size"] = limits.context_tokens
+            req_caps = derive_required_capabilities(data)
+            target_caps = derive_target_capabilities(decision_instance, model_metadata)
+            budget = calculate_target_budget(data, limits, target_caps)
+
+            opt_cost = opt_result.audit.optimized_cost if opt_result else ConservativeEstimator.estimate_payload(data)
+
+            if limits.is_known and budget.input_budget is not None and opt_cost > budget.input_budget:
+                def _eval_cand(cand_inst: Dict[str, Any]):
+                    cand_meta = None
+                    if cand_inst.get("backend_type") == "platform":
+                        prov = str(cand_inst.get("provider") or "").strip().lower()
+                        bare = resolve_platform_listing_model(str(cand_inst.get("model") or data.get("model") or ""))
+                        prov_cat = _platform_model_catalog_cache.get(prov)
+                        if isinstance(prov_cat, dict):
+                            cand_meta = prov_cat.get(bare)
+                    return resolve_model_limits(cand_inst, cand_meta), derive_target_capabilities(cand_inst, cand_meta)
+
+                def _fits_cand(cand_inst: Dict[str, Any], cand_ctx: int) -> bool:
+                    cand_limits, cand_caps = _eval_cand(cand_inst)
+                    cand_budget = calculate_target_budget(optimized_data, cand_limits, cand_caps)
+                    return cand_budget.input_budget is not None and opt_cost <= cand_budget.input_budget
+
+                larger_plan = await proxy_router.plan_larger_window(
+                    headers=request.headers,
+                    body=data,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    current_limit=limits.context_tokens or 0,
+                    required_capabilities=req_caps,
+                    candidate_evaluator=_eval_cand,
+                    fits_checker=_fits_cand,
+                )
+
+                if larger_plan is not None:
+                    plan = larger_plan
+                    planned_decision = plan.decision
+                    decision_instance = next(
+                        (inst for inst in instances if inst.get("port") == planned_decision.backend_port or inst.get("backend_id") == planned_decision.backend_id),
+                        decision_instance,
+                    )
+                    if planned_decision.backend_type == "platform":
+                        provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
+                        bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
+                        provider_catalog = _platform_model_catalog_cache.get(provider)
+                        if isinstance(provider_catalog, dict):
+                            model_metadata = provider_catalog.get(bare_model)
+                    limits = resolve_model_limits(decision_instance, model_metadata)
+                    target_caps = derive_target_capabilities(decision_instance, model_metadata)
+                    budget = calculate_target_budget(data, limits, target_caps)
+                    logger.info(
+                        "[proxy] fallback to larger window backend=%s model=%s",
+                        planned_decision.backend_port, planned_decision.internal_model,
+                    )
+
+            # Executa estágios adicionais de redução (Moderate -> Aggressive -> 413) se ainda não couber
+            opt_cost = opt_result.audit.optimized_cost if opt_result else ConservativeEstimator.estimate_payload(data)
+            if limits.is_known and budget.input_budget is not None and opt_cost > budget.input_budget:
+                try:
+                    opt_result = await context_optimizer.optimize(
+                        payload=data,
+                        backend_info=decision_instance,
+                        model_metadata=model_metadata,
+                    )
+                    optimized_data = opt_result.safe_payload
+                except ContextTooLargeError as exc:
+                    return JSONResponse(exc.payload(), status_code=exc.status_code)
+                except Exception as exc:
+                    logger.warning("[proxy] context optimizer internal error on reduction: %s — failing open", exc)
+                    optimized_data = data
+        else:
+            optimized_data = data
+
+        try:
+            decision = await proxy_router.commit_route(plan)
+            break
+        except StaleRoutePlan:
+            logger.info("[proxy] stale route plan, replanning")
+            continue
+        except ProxyError as exc:
+            logger.warning(
+                "[proxy] commit rejected code=%s status=%s message=%s",
+                exc.code, exc.status_code, exc.message,
+            )
+            return JSONResponse(exc.payload(), status_code=exc.status_code)
 
     failed_backend_ids: set = set()
     failover_hops = 0
+    prev_backend_key: str = decision.backend_id or f"port:{decision.backend_port}"
+    transport_failover = False
     while True:
         logger.info(
             "[proxy] route external_model=%s internal_model=%s backend=%s gpu=%s "
@@ -1747,7 +1943,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             route_headers,
         )
         forward_body = json.dumps(
-            {**data, "model": forward_model}, ensure_ascii=False
+            {**optimized_data, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -1772,7 +1968,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             status_code: Optional[int] = None,
             response: Optional[httpx.Response] = None,
         ):
-            nonlocal decision, failover_hops
+            nonlocal decision, failover_hops, optimized_data, forward_body
+            nonlocal prev_backend_key, transport_failover
             failed_backend_ids.add(current_id)
             failover_hops += 1
             if failover_hops > _PROXY_MAX_FAILOVER_HOPS:
@@ -1810,6 +2007,61 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     status_code=502,
                 )
             await proxy_router.acquire(new_decision.backend_id)
+
+            # Reavaliar destino diferente: reotimizar payload para novo budget
+            new_backend_key = new_decision.backend_id or f"port:{new_decision.backend_port}"
+            is_different_backend = new_backend_key != prev_backend_key
+            if is_different_backend:
+                transport_failover = True
+                logger.info(
+                    "[proxy] failover to different backend %s — "
+                    "re-optimizing payload for new target budget",
+                    new_decision.backend_port,
+                )
+                # Reavaliação do contexto otimizador para novo destino
+                new_instance = None
+                for inst in _hybrid_status().get("instances", []):
+                    if (
+                        inst.get("backend_id") == new_decision.backend_id
+                        or inst.get("port") == new_decision.backend_port
+                    ):
+                        new_instance = inst
+                        break
+                if new_instance is not None:
+                    try:
+                        new_opt = await context_optimizer.optimize(
+                            payload=data,
+                            backend_info=new_instance,
+                            model_metadata=model_metadata,
+                            stage_limit="safe",
+                        )
+                        optimized_data = new_opt.safe_payload
+                        logger.info(
+                            "[proxy] failover re-optimization strategy=%s "
+                            "cost=%d",
+                            new_opt.audit.strategy,
+                            new_opt.audit.optimized_cost,
+                        )
+                    except ContextTooLargeError:
+                        await proxy_router.release(
+                            new_decision.backend_id, affinity_key=new_decision.affinity_key
+                        )
+                        return JSONResponse(
+                            ProxyError(
+                                413,
+                                "O contexto excede o limite do novo backend",
+                                code="context_too_large",
+                            ).payload(),
+                            status_code=413,
+                        )
+                    except Exception as opt_err:
+                        logger.warning(
+                            "[proxy] failover re-optimization error: %s — "
+                            "falling back to cached optimized_data",
+                            opt_err,
+                        )
+                prev_backend_key = new_backend_key
+
             new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
             decision = new_decision
             return None
@@ -2353,7 +2605,25 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         )
     except ProxyError as exc:
         return JSONResponse(exc.payload(), status_code=exc.status_code)
-    return {
+
+    opt_preview = None
+    if settings.get("context_optimizer", {}).get("enabled", True) and isinstance(data, dict) and ("messages" in data or "model" in data):
+        try:
+            preview_opt = ContextOptimizer(config_manager=config_manager, audit_recorder=None)
+            decision_inst = next((b for b in proxy_router.backends_snapshot() if b["port"] == decision.backend_port), {})
+            res = await preview_opt.optimize(payload=data, backend_info=decision_inst)
+            opt_preview = {
+                "strategy": res.audit.strategy,
+                "original_cost": res.audit.original_cost,
+                "optimized_cost": res.audit.optimized_cost,
+                "savings_tokens": res.audit.savings_tokens,
+                "transformations_applied": res.audit.transformations_applied,
+                "duration_ms": res.audit.duration_ms,
+            }
+        except Exception:
+            pass
+
+    response_payload = {
         "proxy_enabled": True,
         "external_model": decision.external_model,
         "detected_tag": decision.detected_tag,
@@ -2367,6 +2637,23 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         "reason": decision.reason,
         "sticky_hit": decision.sticky_hit,
     }
+    if opt_preview:
+        response_payload["optimization_preview"] = opt_preview
+    return response_payload
+
+
+@app.get("/proxy/context-optimizer/audit")
+async def proxy_context_optimizer_audit(
+    page: int = 1,
+    per_page: int = 50,
+    strategy: Optional[str] = None,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return context_optimizer.query_audit_logs(
+        page=page, per_page=per_page, strategy_filter=strategy
+    )
 
 
 def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
@@ -3113,6 +3400,23 @@ def _build_html(
                         </div>
                     </div>
                     <div id="proxy-panel-body" class="space-y-4 hidden">
+                        <!-- Context Optimizer Controls -->
+                        <div class="p-3 rounded-xl border border-emerald-700/40 bg-emerald-950/20 space-y-2">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i class="fas fa-microchip text-emerald-400"></i>
+                                <p class="text-ui-label font-black text-slate-300 uppercase tracking-widest">Context Optimizer</p>
+                                <span id="optimizer-enabled-status" class="px-2 py-0.5 rounded-full text-ui-label font-bold text-slate-400 bg-slate-800/60">—</span>
+                            </div>
+                            <label class="flex items-center justify-between gap-2">
+                                <span class="text-ui-label text-slate-300">Ativar otimização de contexto</span>
+                                <input type="checkbox" id="optimizer-enabled-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerEnabled(this)">
+                            </label>
+                            <label class="flex items-center justify-between gap-2">
+                                <span class="text-ui-label text-slate-300">Registrar auditoria</span>
+                                <input type="checkbox" id="optimizer-audit-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerAudit(this)">
+                            </label>
+                        </div>
+
                         <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
                         <div>
                             <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
@@ -3125,6 +3429,33 @@ def _build_html(
                                 </button>
                             </div>
                             <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
+                        </div>
+
+                        <!-- Audit Log Panel -->
+                        <div class="p-3 rounded-xl border border-slate-700/60 bg-slate-900/30 space-y-2">
+                            <div class="flex items-center justify-between gap-2 mb-2">
+                                <div class="flex items-center gap-2">
+                                    <i class="fas fa-clipboard-check text-slate-400"></i>
+                                    <p class="text-ui-label font-black text-slate-400 uppercase tracking-widest">Auditoria</p>
+                                </div>
+                                <span class="text-ui-label text-slate-500"><span id="audit-log-total">0</span> registros · <span id="audit-log-pages">0</span> págs</span>
+                            </div>
+                            <div id="audit-log-list" class="space-y-1.5 max-h-48 overflow-y-auto custom-scroll pr-1"></div>
+                            <div id="audit-log-pagination" class="flex items-center justify-between mt-2"></div>
+                            <input type="hidden" id="audit-log-page" value="1">
+                        </div>
+
+                        <!-- Resolve Preview Panel -->
+                        <div class="p-3 rounded-xl border border-violet-700/40 bg-violet-950/20 space-y-2">
+                            <div class="flex items-center gap-2 mb-2">
+                                <i class="fas fa-search text-violet-400"></i>
+                                <p class="text-ui-label font-black text-slate-300 uppercase tracking-widest">Resolve Preview</p>
+                            </div>
+                            <textarea id="resolve-payload-input" class="w-full h-20 px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-ui-label text-slate-200 font-mono resize-none" placeholder='{{"model":"...","messages":[]}}'></textarea>
+                            <button type="button" onclick="resolveWithPreview()" class="px-3 py-1.5 rounded-lg bg-violet-800/80 text-ui-label font-bold uppercase tracking-widest text-violet-300 hover:text-white hover:bg-violet-900/60 border border-violet-700/60 transition-all">
+                                <i class="fas fa-play mr-1.5"></i>Resolver
+                            </button>
+                            <div id="resolve-result" class="mt-2 text-ui-label text-slate-400"></div>
                         </div>
                     </div>
                 </div>

@@ -1,6 +1,6 @@
 """Shared request/response schemas."""
-from typing import List, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Dict, List, Literal, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field, constr
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
@@ -133,6 +133,28 @@ class SetDefaultRequest(BaseModel):
     add: bool = True
 
 
+class TokenizerReference(BaseModel):
+    """Referência explícita a um tokenizer Hugging Face."""
+    identifier: str = Field(..., min_length=1)
+    revision: Optional[str] = Field(default=None, min_length=1)
+
+
+TokenizerMapping = Union[str, TokenizerReference]
+
+
+class TokenizerMappings(BaseModel):
+    """Mapeamentos explícitos por modelo exato e família."""
+    models: Dict[constr(min_length=1), TokenizerMapping] = Field(default_factory=dict)
+    families: Dict[constr(min_length=1), TokenizerMapping] = Field(default_factory=dict)
+
+
+class ContextOptimizerConfig(BaseModel):
+    """Atualização parcial da configuração administrativa do otimizador."""
+    enabled: Optional[bool] = None
+    audit_enabled: Optional[bool] = None
+    tokenizers: Optional[TokenizerMappings] = None
+
+
 class ProxyConfigRequest(BaseModel):
     """Atualização parcial da chave global smart_proxy."""
     enabled: Optional[bool] = None
@@ -140,6 +162,7 @@ class ProxyConfigRequest(BaseModel):
     primary_backend_id: Optional[str] = None
     ttl_minutes: Optional[int] = Field(default=None, ge=1)
     max_wait_seconds: Optional[int] = Field(default=None, ge=1)
+    context_optimizer: Optional[ContextOptimizerConfig] = None
 
 
 class SetModelProxyRequest(BaseModel):
@@ -197,3 +220,50 @@ class VersionCheckResponse(BaseModel):
     branch: Optional[str] = None
     commits: List[VersionCommit] = Field(default_factory=list)
     error_message: Optional[str] = None
+
+
+class PartialConfigResponse(BaseModel):
+    """Resposta metadata-only da configuração parcial administrativa."""
+    smart_proxy: Optional[dict] = None
+    context_optimizer: Optional[dict] = None
+    tokenizers_mapping_count: int = 0
+    model_configs_count: int = 0
+
+
+class AuditLogItem(BaseModel):
+    """Item de log de auditoria do Context Optimizer (metadata-only)."""
+    strategy: str = ""
+    original_cost: int = 0
+    optimized_cost: int = 0
+    savings_tokens: int = 0
+    transformations_applied: List[str] = Field(default_factory=list)
+    protected_units_preserved: int = 0
+    blocks_removed: int = 0
+    blocks_merged: int = 0
+    blocks_deduplicated: int = 0
+    validation_passed: bool = True
+    validation_errors: List[str] = Field(default_factory=list)
+    duration_ms: float = 0.0
+    ts: float = 0.0
+    model: Optional[str] = None
+
+
+class AuditPaginatedResponse(BaseModel):
+    """Resposta paginada do audit log do Context Optimizer."""
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    items: List[AuditLogItem] = Field(default_factory=list)
+
+
+class StatusMetrics(BaseModel):
+    """Métricas agregadas incluídas no status expandido."""
+    cpu_percent: Optional[float] = None
+    memory_percent: Optional[float] = None
+    gpu_count: int = 0
+    gpu_utilization: Optional[float] = None
+    total_vram: int = 0
+    used_vram: int = 0
+    tokenizer_estimates: int = 0
+    optimizer_audit_entries: int = 0

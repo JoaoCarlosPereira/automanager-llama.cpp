@@ -302,6 +302,11 @@ def test_html_contains_proxy_monitor_panel(html):
     assert 'id="proxy-sessions-clear-btn"' in html
     assert 'id="proxy-sessions-ttl-hint"' in html
     assert "proxyClearAllSessions()" in html
+    assert 'id="optimizer-enabled-toggle"' in html
+    assert 'id="optimizer-audit-toggle"' in html
+    assert 'id="audit-log-list"' in html
+    assert 'id="resolve-payload-input"' in html
+    assert 'resolveWithPreview()' in html
 
 
 def test_html_proxy_toggle_checked_state_follows_config(client, mock_index_deps):

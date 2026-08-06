@@ -10,24 +10,10 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-if [[ ! -f /etc/os-release ]]; then
-  log_error "Unsupported OS. Ubuntu or Debian required."
-  exit 1
-fi
-
-# shellcheck source=/dev/null
-source /etc/os-release
-if [[ "${ID}" != "ubuntu" && "${ID}" != "debian" ]]; then
-  log_error "Unsupported distribution: ${ID}. Expected Ubuntu or Debian."
-  exit 1
-fi
-
 if [[ "${EUID:-0}" -ne 0 ]]; then
   log_error "Run as root: sudo ./installer/setup.sh"
   exit 1
 fi
-
-log_info "Detected: ${ID} ${VERSION_ID:-unknown}"
 
 if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
   PYTHON_VERSION="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
@@ -118,6 +104,7 @@ Restart=on-failure
 RestartSec=5
 Environment=PATH=${VENV_DIR}/bin:/root/.local/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
+Environment=HF_HOME=${PROJECT_DIR}/data/huggingface_cache
 
 [Install]
 WantedBy=multi-user.target

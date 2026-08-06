@@ -12,16 +12,25 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+import uuid
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from config_manager import (
     lookup_model_config,
     lookup_platform_config,
     normalize_backend_id,
     normalize_model_path,
+)
+from context_optimizer import (
+    LimitConfidence,
+    ModelLimits,
+    RequiredCapabilities,
+    derive_required_capabilities,
+    derive_target_capabilities,
+    resolve_model_limits,
 )
 from schemas import (
     DEFAULT_CONTEXT_SIZE,
@@ -104,6 +113,40 @@ class RouteDecision:
     backend_id: str = ""
     backend_type: str = "local"
     provider: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RoutePlan:
+    """Plano de roteamento imutável — sem efeitos colaterais.
+
+    Contém um *commit_token* privado para impedir commit duplicado e
+    validar revalidação sob lock em ``commit_route()``.
+    """
+
+    decision: RouteDecision
+    commit_token: str = field(repr=False)
+    created_at: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.commit_token:
+            raise ValueError("commit_token obrigatorio")
+
+
+class StaleRoutePlan(ProxyError):
+    """Plano expirou ou backend destino nao esta mais disponivel.
+
+    O chamador DEVE replanejar via ``plan_route()``.
+    """
+
+    def __init__(self, plan: RoutePlan) -> None:
+        super().__init__(
+            status_code=503,
+            message=(
+                f"Plano de roteamento expirou (token={plan.commit_token[:8]}). "
+                "Backend destino pode ter mudado — replaneje."
+            ),
+            code="stale_route_plan",
+        )
 
 
 def _utcnow() -> datetime:
@@ -238,6 +281,7 @@ class ProxyRouter:
         self._benchmark_latencies_ms: Dict[str, float] = {}
         self._benchmark_measured_at: Optional[str] = None
         self._unsaved_uses = 0
+        self._committed_tokens: Set[str] = set()
         self._load_sessions()
 
     # ------------------------------------------------------------------
@@ -1031,19 +1075,17 @@ class ProxyRouter:
             return _commit(chosen, False, "hash_branch", None, key=branch_key)
         return None
 
-    async def resolve(
+    async def plan_route(
         self,
         *,
         headers: Mapping[str, str],
         body: dict,
         client_ip: str,
         user_agent: str,
-        dry_run: bool = False,
-    ) -> RouteDecision:
-        """Decide o backend para a requisição ao modelo principal.
+    ) -> RoutePlan:
+        """Planeja o roteamento de forma livre de efeitos colaterais.
 
-        Quando dry_run=False a decisão já reserva o slot (in-flight +1);
-        o chamador DEVE chamar release(port, ...) ao concluir.
+        Não altera sessões sticky, não afeta contadores in_flight nem salva em disco.
         """
         settings = self._settings()
         max_wait = settings.get("max_wait_seconds", 30)
@@ -1057,21 +1099,315 @@ class ProxyRouter:
                     body=body,
                     client_ip=client_ip,
                     user_agent=user_agent,
-                    dry_run=dry_run,
+                    apply_side_effects=False,
+                    ignore_capacity=False,
                 )
                 if decision is not None:
-                    return decision
-            if dry_run:
-                # dry_run nunca espera: sem capacidade é tratado como erro
-                raise ProxyError(503, wait_reason or "Nenhum backend disponivel")
+                    return RoutePlan(
+                        decision=decision,
+                        commit_token=str(uuid.uuid4()),
+                        created_at=_iso(self._now()),
+                    )
             if asyncio.get_event_loop().time() >= deadline:
                 raise ProxyError(
                     503,
-                    wait_reason
-                    or "Todos os backends ocupados; tente novamente",
+                    wait_reason or "Todos os backends ocupados; tente novamente",
                     code="backend_busy",
                 )
             await asyncio.sleep(BUSY_POLL_SECONDS)
+
+    async def plan_larger_window(
+        self,
+        *,
+        headers: Mapping[str, str],
+        body: dict,
+        client_ip: str,
+        user_agent: str,
+        current_limit: int,
+        required_capabilities: Any,
+        candidate_evaluator: Optional[
+            Callable[[Dict[str, Any]], Tuple[ModelLimits, FrozenSet[str]]]
+        ] = None,
+        fits_checker: Optional[
+            Callable[[Dict[str, Any], int], bool]
+        ] = None,
+    ) -> Optional[RoutePlan]:
+        """Planeja um desvio para backend de janela maior livre de efeitos colaterais.
+
+        Procura um candidato elegível com janela estritamente maior que `current_limit`,
+        com limite de contexto conhecido e que possua superset das `required_capabilities`.
+        Não altera sticky sessions, in_flight nem salva em disco.
+        """
+        async with self._lock:
+            self._expire_locked()
+            affinity_key, tag = self.extract_affinity(headers, body, client_ip, user_agent)
+            instances = self._running_instances()
+            config = self._config.get_config()
+            settings = self._settings()
+
+            requested_model = str(body.get("model") or "")
+            requested_primary = self._find_requested_primary(instances, requested_model)
+            configured_primary = self._find_primary(instances, settings)
+            configured_backend_id = normalize_backend_id(
+                settings.get("primary_backend_id")
+            )
+            if not configured_backend_id and settings.get("primary_model_path"):
+                configured_backend_id = (
+                    f"local:{normalize_model_path(settings['primary_model_path'])}"
+                )
+
+            primary = requested_primary or configured_primary
+            primary_backend_id = (
+                self._backend_id(primary) if primary else configured_backend_id
+            )
+
+            configured_primary_is_platform = configured_backend_id.startswith("platform:")
+            if requested_primary is not None:
+                external_model = requested_model or primary.get("model") or ""
+            elif configured_primary_is_platform and requested_model:
+                external_model = requested_model
+            elif configured_primary is not None:
+                external_model = configured_primary.get("model") or requested_model
+            elif settings.get("primary_model_path"):
+                external_model = Path(settings["primary_model_path"]).name
+            else:
+                external_model = requested_model
+
+            if not external_model and primary:
+                external_model = primary.get("model") or ""
+
+            req_set: FrozenSet[str]
+            if hasattr(required_capabilities, "as_set"):
+                req_set = required_capabilities.as_set()
+            elif isinstance(required_capabilities, (set, frozenset)):
+                req_set = frozenset(required_capabilities)
+            else:
+                req_set = derive_required_capabilities(body).as_set()
+
+            candidates_available = []
+            candidates_all_capacity = []
+
+            for inst in instances:
+                if not self._backend_available(inst):
+                    continue
+                eligible, max_parallel = self._backend_flags(config, inst)
+                is_primary = (
+                    configured_primary is not None
+                    and self._backend_id(inst) == configured_backend_id
+                )
+                if not eligible and not is_primary:
+                    continue
+
+                if candidate_evaluator is not None:
+                    limits, caps = candidate_evaluator(inst)
+                else:
+                    limits = resolve_model_limits(inst)
+                    caps = derive_target_capabilities(inst)
+
+                # Requisito 2: Limite conhecido e estritamente maior que a janela atual
+                if not limits.is_known or limits.context_tokens is None or limits.context_tokens <= current_limit:
+                    continue
+
+                # Requisito 3: Superset confirmado de capacidades
+                if not req_set.issubset(caps):
+                    continue
+
+                # Requisito 4: Reavaliação no candidato
+                if fits_checker is not None:
+                    if not fits_checker(inst, limits.context_tokens):
+                        continue
+                else:
+                    needed_ctx = int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
+                    if needed_ctx > limits.context_tokens:
+                        continue
+
+                candidates_all_capacity.append(inst)
+                if self.in_flight_for(inst) < max_parallel:
+                    candidates_available.append(inst)
+
+            if not candidates_all_capacity:
+                return None
+
+            # Requisito 5: Escolha utilizando regras do roteador
+            chosen = self._pick_least_busy(
+                candidates_available or candidates_all_capacity,
+                primary_backend_id=primary_backend_id or None,
+            )
+            if chosen is None:
+                chosen = self._pick_for_dynamic_growth(
+                    candidates_all_capacity, config, primary_backend_id
+                )
+            if chosen is None:
+                return None
+
+            chosen_is_primary = (
+                configured_primary is not None
+                and self._backend_id(chosen) == configured_backend_id
+            )
+
+            decision = RouteDecision(
+                backend_port=chosen["port"],
+                internal_model=self._internal_model(
+                    chosen, external_model, chosen_is_primary
+                ),
+                external_model=external_model,
+                affinity_key=affinity_key,
+                detected_tag=tag,
+                sticky_hit=False,
+                reason="fallback_larger_window",
+                rewrite=(
+                    not chosen_is_primary
+                    and self._backend_type(chosen) != "platform"
+                ),
+                prompt_tokens_estimated=self.estimate_prompt_tokens(body),
+                gpu=gpu_label(chosen),
+                backend_id=self._backend_id(chosen),
+                backend_type=self._backend_type(chosen),
+                provider=chosen.get("provider"),
+            )
+
+            return RoutePlan(
+                decision=decision,
+                commit_token=str(uuid.uuid4()),
+                created_at=_iso(self._now()),
+            )
+
+    async def commit_route(self, plan: RoutePlan) -> RouteDecision:
+        """Efetiva um RoutePlan sob lock após revalidação.
+
+        Rejeita commits duplicados do mesmo plano e valida se o backend
+        destino continua disponível. Em caso de plano obsoleto, levanta StaleRoutePlan.
+        """
+        async with self._lock:
+            if plan.commit_token in self._committed_tokens:
+                raise ProxyError(
+                    400,
+                    f"Plano com token {plan.commit_token[:8]} ja foi commitado.",
+                    code="duplicate_commit",
+                )
+
+            decision = plan.decision
+            instances = self._running_instances()
+            target_inst = None
+            if decision.backend_id:
+                target_inst = next(
+                    (inst for inst in instances if self._backend_id(inst) == decision.backend_id),
+                    None,
+                )
+            if target_inst is None:
+                target_inst = next(
+                    (inst for inst in instances if inst["port"] == decision.backend_port),
+                    None,
+                )
+
+            if target_inst is None or not self._backend_available(target_inst):
+                raise StaleRoutePlan(plan)
+
+            # Revalidar capacidade de contexto do modelo
+            needed_ctx = int(decision.prompt_tokens_estimated * TOKEN_ESTIMATE_MARGIN)
+            settings = self._settings()
+            configured_primary = self._find_primary(instances, settings)
+            configured_backend_id = (
+                self._backend_id(configured_primary) if configured_primary else ""
+            )
+            configured_primary_active = (
+                configured_primary is not None and self._backend_available(configured_primary)
+            )
+            is_primary = bool(
+                configured_primary_active
+                and self._backend_id(target_inst) == configured_backend_id
+            )
+            internal_model = self._internal_model(
+                target_inst, decision.external_model, is_primary
+            )
+            if needed_ctx > self._ctx_per_slot(target_inst, internal_model):
+                raise StaleRoutePlan(plan)
+
+            # Efetivar a sessão sticky
+            existing = self._sessions.get(decision.affinity_key)
+            if existing is None:
+                existing = self._register_session_locked(
+                    decision.affinity_key,
+                    target_inst,
+                    decision.external_model,
+                    decision.detected_tag,
+                    is_primary,
+                )
+                logger.info(
+                    "[proxy] new sticky session affinity_key=%s "
+                    "selected_backend=%s reason=%s",
+                    decision.affinity_key, target_inst["port"], decision.reason,
+                )
+            else:
+                old_port = existing.backend_port
+                existing.backend_port = target_inst["port"]
+                existing.backend_model_path = target_inst.get("model_path") or ""
+                existing.internal_model = internal_model
+                existing.backend_id = self._backend_id(target_inst)
+                existing.backend_type = self._backend_type(target_inst)
+                existing.provider = target_inst.get("provider")
+                self._touch_session_locked(existing)
+                if old_port != target_inst["port"] and decision.reason.startswith("reassign"):
+                    reason_name = (
+                        "backend_down"
+                        if "backend_down" in decision.reason
+                        else ("context_limit" if "context_limit" in decision.reason else decision.reason)
+                    )
+                    logger.warning(
+                        "[proxy] reassigned affinity_key=%s old_backend=%s "
+                        "new_backend=%s reason=%s",
+                        decision.affinity_key, old_port, target_inst["port"], reason_name,
+                    )
+
+            # Incrementar in_flight
+            fk = self._flight_key(target_inst)
+            self._in_flight[fk] = self._in_flight.get(fk, 0) + 1
+
+            self._committed_tokens.add(plan.commit_token)
+
+            return decision
+
+    async def resolve(
+        self,
+        *,
+        headers: Mapping[str, str],
+        body: dict,
+        client_ip: str,
+        user_agent: str,
+        dry_run: bool = False,
+    ) -> RouteDecision:
+        """Decide o backend para a requisição ao modelo principal (wrapper retrocompatível).
+
+        Quando dry_run=False a decisão é commitada e reserva o slot (in-flight +1);
+        o chamador DEVE chamar release(port, ...) ao concluir.
+        """
+        if dry_run:
+            async with self._lock:
+                settings = self._settings()
+                decision, wait_reason = self._resolve_locked(
+                    settings=settings,
+                    headers=headers,
+                    body=body,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    apply_side_effects=False,
+                    ignore_capacity=True,
+                )
+                if decision is not None:
+                    return decision
+                raise ProxyError(503, wait_reason or "Nenhum backend disponivel")
+
+        while True:
+            plan = await self.plan_route(
+                headers=headers,
+                body=body,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+            try:
+                return await self.commit_route(plan)
+            except StaleRoutePlan:
+                continue
 
     def _resolve_locked(
         self,
@@ -1081,7 +1417,8 @@ class ProxyRouter:
         body: dict,
         client_ip: str,
         user_agent: str,
-        dry_run: bool,
+        apply_side_effects: bool = True,
+        ignore_capacity: bool = False,
     ) -> Tuple[Optional[RouteDecision], Optional[str]]:
         """Uma tentativa de decisão sob o lock.
 
@@ -1147,7 +1484,7 @@ class ProxyRouter:
                 config,
                 None,
                 needed_ctx,
-                ignore_capacity=dry_run,
+                ignore_capacity=ignore_capacity,
                 exclude_backend_ids=(
                     {configured_backend_id} if configured_backend_id else None
                 ),
@@ -1246,7 +1583,7 @@ class ProxyRouter:
             key: Optional[str] = None,
         ) -> RouteDecision:
             key = key or affinity_key
-            if not dry_run:
+            if apply_side_effects:
                 if session is None:
                     session = self._register_session_locked(
                         key, instance, external_model, tag,
@@ -1309,7 +1646,7 @@ class ProxyRouter:
                     primary_type,
                     primary.get("provider"),
                 )
-                if not dry_run:
+                if apply_side_effects:
                     self._sessions.pop(affinity_key, None)
                     self._save_sessions()
                 existing = None
@@ -1326,11 +1663,7 @@ class ProxyRouter:
                 primary_ctx_ok = needed_ctx <= _context_limit(primary)
                 if primary_ctx_ok:
                     _, primary_max = self._backend_flags(config, primary)
-                    if self.in_flight_for(primary) < primary_max:
-                        if dry_run:
-                            return _decision(
-                                primary, False, "sticky_return_primary"
-                            ), None
+                    if ignore_capacity or self.in_flight_for(primary) < primary_max:
                         logger.info(
                             "[proxy] sticky session returning to primary "
                             "affinity_key=%s old_backend=%s",
@@ -1344,7 +1677,8 @@ class ProxyRouter:
                         existing.backend_id = primary_backend_id
                         existing.backend_type = self._backend_type(primary)
                         existing.provider = primary.get("provider")
-                        self._save_sessions()
+                        if apply_side_effects:
+                            self._save_sessions()
                         return _commit(
                             primary, False, "sticky_return_primary", existing
                         ), None
@@ -1383,7 +1717,7 @@ class ProxyRouter:
                 inst = None
             if inst is not None:
                 _, max_parallel = self._backend_flags(config, inst)
-                if dry_run:
+                if ignore_capacity:
                     return _decision(inst, True, "sticky"), None
                 if self.in_flight_for(inst) >= max_parallel:
                     # Afinidade fraca (hash:): requisições SIMULTÂNEAS com a
@@ -1410,7 +1744,7 @@ class ProxyRouter:
             old_port = existing.backend_port
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
-                ignore_capacity=dry_run,
+                ignore_capacity=ignore_capacity,
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
             )
@@ -1438,7 +1772,7 @@ class ProxyRouter:
             )
             if not context_mismatch:
                 logger.warning("[proxy] backend %s unavailable", old_port)
-            if not dry_run:
+            if apply_side_effects:
                 existing.backend_port = new_inst["port"]
                 existing.backend_model_path = new_inst.get("model_path") or ""
                 existing.internal_model = self._internal_model(
@@ -1468,9 +1802,7 @@ class ProxyRouter:
                 _, max_parallel = self._backend_flags(config, primary)
                 primary_ctx_ok = needed_ctx <= _context_limit(primary)
                 if primary_ctx_ok:
-                    if dry_run:
-                        return _decision(primary, False, "main_preference"), None
-                    if self.in_flight_for(primary) < max_parallel:
+                    if ignore_capacity or self.in_flight_for(primary) < max_parallel:
                         return _commit(primary, False, "main_preference", None), None
                     # PRD F7: sessão NOVA não espera backend ocupado —
                     # transborda para um secundário elegível livre.
@@ -1508,7 +1840,7 @@ class ProxyRouter:
             # Principal desabilitado ou sem contexto: least-busy nos demais
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
-                ignore_capacity=dry_run,
+                ignore_capacity=ignore_capacity,
                 exclude_backend_ids={primary_backend_id},
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
@@ -1530,15 +1862,13 @@ class ProxyRouter:
             _, max_parallel = self._backend_flags(config, primary)
             primary_ctx_ok = needed_ctx <= _context_limit(primary)
             if primary_ctx_ok:
-                if dry_run:
-                    return _decision(primary, False, "subagent_main_preference"), None
-                if self.in_flight_for(primary) < max_parallel:
+                if ignore_capacity or self.in_flight_for(primary) < max_parallel:
                     return _commit(primary, False, "subagent_main_preference", None), None
 
         # Primary ocupado ou desabilitado — least-busy entre secundários
         candidates = self._candidates(
             instances, config, primary_port, needed_ctx,
-            ignore_capacity=dry_run,
+            ignore_capacity=ignore_capacity,
             exclude_backend_ids={primary_backend_id},
             external_model=external_model,
             configured_primary_backend_id=configured_backend_id,

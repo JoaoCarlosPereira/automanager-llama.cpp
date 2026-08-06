@@ -11,6 +11,7 @@ from typing import Dict, Optional
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
+from typing import Dict, List, Optional, Tuple
 
 from paths import (
     LOGS_DIR,
@@ -22,6 +23,109 @@ MAX_LOG_SIZE = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
 
 logger = logging.getLogger("automanager")
+
+
+class MetricsService:
+    """Métricas thread-safe em memória com histogramas e percentis (p50, p95, p99).
+
+    Armazena valores em listas por-métrica dentro de um dict protegido por
+    ``threading.Lock``.  Suporta consulta paginada que **nunca** vaz payloads.
+    """
+
+    def __init__(self) -> None:
+        self._data: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+
+    def observe(self, metric: str, value: float) -> None:
+        """Registra um ponto de dado na métrica nomeada."""
+        with self._lock:
+            if metric not in self._data:
+                self._data[metric] = []
+            self._data[metric].append(value)
+
+    def _percentile(self, metric: str, p: float) -> Optional[float]:
+        """Retorna o percentil *p* (0-100) para a métrica."""
+        values = self._get_sorted(metric)
+        if not values:
+            return None
+        k = (len(values) - 1) * (p / 100.0)
+        f = int(k)
+        c = f + 1 if f + 1 < len(values) else f
+        d = k - f
+        return values[f] + d * (values[c] - values[f])
+
+    def _get_sorted(self, metric: str) -> List[float]:
+        """Retorna uma lista ordenada (cópia segura)."""
+        values = self._data.get(metric, [])
+        return sorted(values)
+
+    def percentile(self, metric: str, p: float) -> Optional[float]:
+        """Percentil público."""
+        with self._lock:
+            return self._percentile(metric, p)
+
+    def summary(self, metric: str) -> Dict[str, Any]:
+        """Retorna resumo metadata-only da métrica (count, p50, p95, p99, min, max)."""
+        with self._lock:
+            values = self._data.get(metric, [])
+            if not values:
+                return {"metric": metric, "count": 0}
+            s = sorted(values)
+            return {
+                "metric": metric,
+                "count": len(s),
+                "min": s[0],
+                "max": s[-1],
+                "mean": sum(s) / len(s),
+                "p50": self._percentile(metric, 50),
+                "p95": self._percentile(metric, 95),
+                "p99": self._percentile(metric, 99),
+            }
+
+    def all_summaries(self) -> List[Dict[str, Any]]:
+        """Retorna summaries de todas as métricas."""
+        with self._lock:
+            keys = list(self._data.keys())
+        return [self.summary(k) for k in keys]
+
+    def query(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        metric_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Consulta paginada de métricas sem vazar payloads.
+
+        Retorna **apenas** summaries (count, percentis, min, max, mean).
+        """
+        if page < 1:
+            page = 1
+        start = (page - 1) * per_page
+        end = start + per_page
+
+        if metric_filter:
+            items = [self.summary(metric_filter)]
+        else:
+            with self._lock:
+                keys = list(self._data.keys())
+            items = [self.summary(k) for k in keys]
+
+        total = len(items)
+        return {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": max(1, (total + per_page - 1) // per_page),
+            "items": items[start:end],
+        }
+
+    def reset(self, metric: Optional[str] = None) -> None:
+        """Limpa dados de uma métrica ou de todas."""
+        with self._lock:
+            if metric:
+                self._data.pop(metric, None)
+            else:
+                self._data.clear()
 
 
 class LogManager:

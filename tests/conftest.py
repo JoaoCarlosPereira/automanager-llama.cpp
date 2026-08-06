@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -92,3 +93,22 @@ def _disable_rate_limit():
     """Disable slowapi rate limiting globally for all tests."""
     with patch.object(llama_manager.limiter, "enabled", False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _provide_sync_event_loop():
+    """Keep a loop available for legacy synchronous benchmark helpers."""
+    try:
+        asyncio.get_running_loop()
+        created = None
+    except RuntimeError:
+        try:
+            asyncio.get_event_loop()
+            created = None
+        except RuntimeError:
+            created = asyncio.new_event_loop()
+            asyncio.set_event_loop(created)
+    yield
+    if created is not None:
+        created.close()
+        asyncio.set_event_loop(None)

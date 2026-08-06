@@ -11,6 +11,8 @@ from proxy_router import (
     ProxyError,
     ProxyRouter,
     RouteDecision,
+    RoutePlan,
+    StaleRoutePlan,
     StickySession,
     rewrite_json_model,
     rewrite_sse_stream,
@@ -1103,3 +1105,144 @@ class TestSseRewrite:
 
     def test_rewrite_json_model_invalid_body_untouched(self):
         assert rewrite_json_model(b"<html>", "main.gguf") == (b"<html>", None)
+
+
+# ---------------------------------------------------------------------------
+# Separação plan_route / commit_route (Task 7)
+# ---------------------------------------------------------------------------
+
+class TestPlanAndCommit:
+    @pytest.mark.asyncio
+    async def test_plan_route_has_no_side_effects(self, router, tmp_path):
+        body = body_with(tag="test-plan")
+        plan = await router.plan_route(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        assert isinstance(plan, RoutePlan)
+        assert plan.commit_token != ""
+        # 1. plan_route() não altera sessões em memória
+        assert await router.sessions() == []
+        # 2. plan_route() não altera in_flight
+        assert router.in_flight(plan.decision.backend_port) == 0
+        # 3. plan_route() não salva arquivo de sessões
+        sessions_file = tmp_path / "proxy_sessions.json"
+        assert not sessions_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_commit_route_applies_effects(self, router, tmp_path):
+        body = body_with(tag="test-commit")
+        plan = await router.plan_route(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        decision = await router.commit_route(plan)
+        assert isinstance(decision, RouteDecision)
+        assert decision.backend_port == plan.decision.backend_port
+        # Efeitos aplicados: sessão criada e in_flight incrementado
+        assert len(await router.sessions()) == 1
+        assert router.in_flight(decision.backend_port) == 1
+
+        await router.release(decision.backend_port)
+        assert router.in_flight(decision.backend_port) == 0
+
+    @pytest.mark.asyncio
+    async def test_duplicate_commit_rejected(self, router):
+        body = body_with(tag="test-dup")
+        plan = await router.plan_route(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        decision = await router.commit_route(plan)
+        await router.release(decision.backend_port)
+
+        # Segundo commit com o mesmo plano deve falhar
+        with pytest.raises(ProxyError) as exc_info:
+            await router.commit_route(plan)
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.code == "duplicate_commit"
+
+    @pytest.mark.asyncio
+    async def test_stale_plan_when_backend_removed(self, router, status_holder):
+        body = body_with(tag="test-stale")
+        plan = await router.plan_route(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        planned_port = plan.decision.backend_port
+
+        # Remover o backend planejado antes do commit
+        status_holder["instances"] = [
+            inst for inst in status_holder["instances"] if inst["port"] != planned_port
+        ]
+
+        with pytest.raises(StaleRoutePlan) as exc_info:
+            await router.commit_route(plan)
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.code == "stale_route_plan"
+
+    @pytest.mark.asyncio
+    async def test_failure_before_commit_does_not_leak_capacity(self, router):
+        body = body_with(tag="test-leak")
+        plan = await router.plan_route(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        target_port = plan.decision.backend_port
+        # Se ocorrer uma exceção na aplicação antes de commit_route, a capacidade não é vazada
+        assert router.in_flight(target_port) == 0
+        assert await router.sessions() == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_wrapper_uses_plan_and_commit(self, router):
+        body = body_with(tag="test-wrapper")
+        decision = await router.resolve(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+        )
+        assert isinstance(decision, RouteDecision)
+        assert router.in_flight(decision.backend_port) == 1
+        assert len(await router.sessions()) == 1
+
+
+class TestPlanLargerWindow:
+    @pytest.mark.asyncio
+    async def test_plan_larger_window_is_side_effect_free(self, router):
+        body = body_with(tag="test-pf-side-effect")
+        plan = await router.plan_larger_window(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+            current_limit=32000,
+            required_capabilities={"text"},
+        )
+        assert plan is not None
+        assert router.in_flight(plan.decision.backend_port) == 0
+        assert await router.sessions() == []
+
+    @pytest.mark.asyncio
+    async def test_plan_larger_window_returns_none_if_no_larger_candidate(self, router):
+        body = body_with(tag="test-pf-none")
+        plan = await router.plan_larger_window(
+            headers={},
+            body=body,
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+            current_limit=1000000,  # Maior que qualquer backend disponível
+            required_capabilities={"text"},
+        )
+        assert plan is None
+

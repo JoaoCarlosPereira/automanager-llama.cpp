@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 import os
 import time
-from log_manager import LogManager
+from log_manager import LogManager, MetricsService
 
 
 class TestLogManagerInit:
@@ -256,3 +256,66 @@ class TestLogManagerIntegration:
                     if hasattr(h, 'baseFilename') and
                     h.baseFilename == lm._manager_log_path]
         assert len(handlers) > 0
+
+
+class TestMetricsService:
+    """Tests for thread-safe MetricsService with percentiles and pagination."""
+
+    def test_metrics_observe_and_percentiles(self):
+        metrics = MetricsService()
+        for i in range(1, 101):
+            metrics.observe("latency_ms", float(i))
+
+        p50 = metrics.percentile("latency_ms", 50)
+        p95 = metrics.percentile("latency_ms", 95)
+        p99 = metrics.percentile("latency_ms", 99)
+
+        assert p50 == pytest.approx(50.5, 0.5)
+        assert p95 == pytest.approx(95.05, 1.0)
+        assert p99 == pytest.approx(99.01, 1.0)
+
+    def test_metrics_summary(self):
+        metrics = MetricsService()
+        metrics.observe("tokens_saved", 10.0)
+        metrics.observe("tokens_saved", 20.0)
+        metrics.observe("tokens_saved", 30.0)
+
+        summ = metrics.summary("tokens_saved")
+        assert summ["count"] == 3
+        assert summ["min"] == 10.0
+        assert summ["max"] == 30.0
+        assert summ["mean"] == 20.0
+
+    def test_metrics_query_pagination_no_payload_leaks(self):
+        metrics = MetricsService()
+        for m in range(5):
+            for val in range(10):
+                metrics.observe(f"metric_{m}", float(val))
+
+        res = metrics.query(page=1, per_page=2)
+        assert res["page"] == 1
+        assert res["per_page"] == 2
+        assert res["total"] == 5
+        assert res["pages"] == 3
+        assert len(res["items"]) == 2
+
+        # Check structure has no payload data
+        for item in res["items"]:
+            assert "metric" in item
+            assert "count" in item
+            assert "p50" in item
+            assert "p95" in item
+            assert "p99" in item
+
+    def test_metrics_reset(self):
+        metrics = MetricsService()
+        metrics.observe("cpu", 50.0)
+        metrics.observe("ram", 70.0)
+
+        metrics.reset("cpu")
+        assert metrics.summary("cpu")["count"] == 0
+        assert metrics.summary("ram")["count"] == 1
+
+        metrics.reset()
+        assert metrics.summary("ram")["count"] == 0
+

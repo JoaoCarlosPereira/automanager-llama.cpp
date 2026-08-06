@@ -31,6 +31,14 @@ class TestSmartProxySettings:
             "primary_backend_id": None,
             "ttl_minutes": 180,
             "max_wait_seconds": 30,
+            "context_optimizer": {
+                "enabled": True,
+                "audit_enabled": True,
+                "tokenizers": {
+                    "models": {},
+                    "families": {},
+                },
+            },
         }
 
     def test_partial_update_preserves_other_keys(

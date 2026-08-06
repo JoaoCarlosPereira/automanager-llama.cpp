@@ -1,3 +1,14 @@
+"""Testes de retry, failover reativo, preservação de payload e streaming SSE.
+
+Cobre a matriz de testes da Task 12:
+- Retries no mesmo backend reutilizam o mesmo payload validado.
+- Failover para destino diferente reavalia orçamento, tokenizer e capacidades.
+- Erros de transporte (429, 502, 503, 504, conexao) NAO autorizam Moderate/Aggressive.
+- Stream iniciado (apos primeiro byte) nao gera nova chamada upstream.
+- Eventos SSE nao contem relatorios administrativos.
+- in_flight libera em todos os caminhos (sucesso, erro, desconexao).
+"""
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,226 +17,335 @@ import pytest
 from fastapi.testclient import TestClient
 
 import llama_manager
+from config_manager import ConfigManager
+from context_optimizer import ContextTooLargeError
 from llama_manager import app, auth_manager
-from platform_manager import platform_model_listing_id
+from proxy_router import ProxyRouter
 
 client = TestClient(app)
 
-PLATFORM_INST = {
-    "port": 9100,
-    "backend_type": "platform",
-    "model": "Codex",
-    "provider": "antigravity",
-}
-GEMINI_LISTING = platform_model_listing_id("gemini-3.1-pro-low", "antigravity")
+MAIN_PATH = "/path/to/main.gguf"
+AUX0_PATH = "/path/to/aux0.gguf"
+AUX1_PATH = "/path/to/aux1.gguf"
+
+
+def make_instance(
+    port,
+    model_path,
+    ctx=65536,
+    slots=1,
+    gpu_name="NVIDIA RTX 3090",
+    gpu_index=0,
+):
+    return {
+        "port": port,
+        "status": "running",
+        "model": model_path.rsplit("/", 1)[-1],
+        "model_path": model_path,
+        "config": {
+            "context_size": ctx,
+            "parallel_slots": slots,
+            "gpu_weights": [
+                {
+                    "index": gpu_index,
+                    "weight": 1.0,
+                    "name": gpu_name,
+                    "active": True,
+                    "is_main": True,
+                    "device": "gpu",
+                }
+            ],
+        },
+    }
+
+
+def default_instances():
+    return [
+        make_instance(8085, MAIN_PATH, ctx=65536, gpu_name="NVIDIA RTX 3090", gpu_index=0),
+        make_instance(8086, AUX0_PATH, ctx=32768, gpu_name="Tesla P100", gpu_index=1),
+        make_instance(8087, AUX1_PATH, ctx=131072, gpu_name="Tesla P100", gpu_index=2),
+    ]
 
 
 @pytest.fixture(autouse=True)
-def override_auth(monkeypatch):
+def override_auth():
+    app.dependency_overrides[llama_manager.require_auth] = lambda: True
     app.dependency_overrides[llama_manager.require_api_token] = lambda: True
     app.dependency_overrides[auth_manager.check_auth] = lambda: True
-    monkeypatch.setattr(
-        llama_manager.config_manager,
-        "get_smart_proxy_settings",
-        lambda: {"enabled": False},
-    )
     yield
     app.dependency_overrides.clear()
 
 
-def _models_resp():
-    resp = MagicMock(spec=httpx.Response)
-    resp.raise_for_status.return_value = None
-    resp.json.return_value = {
-        "object": "list",
-        "data": [{"id": "gemini-3.1-pro-low", "object": "model", "owned_by": "antigravity"}],
-    }
-    return resp
+@pytest.fixture
+def retry_env(tmp_path, monkeypatch):
+    cfg = ConfigManager(str(tmp_path / "automanager_config.json"))
+    cfg.update_smart_proxy_settings({
+        "enabled": True,
+        "primary_model_path": MAIN_PATH,
+        "max_wait_seconds": 1,
+    })
+    holder = {"instances": default_instances()}
+    router = ProxyRouter(
+        get_status=lambda: holder,
+        config_manager=cfg,
+        sessions_path=tmp_path / "proxy_sessions.json",
+        context_limit_resolver=llama_manager._platform_model_context_limit,
+        requested_primary_resolver=llama_manager._requested_primary_instance,
+    )
+    monkeypatch.setattr(llama_manager, "config_manager", cfg)
+    monkeypatch.setattr(llama_manager, "proxy_router", router)
+    monkeypatch.setattr(
+        llama_manager.process_manager, "get_status", lambda: holder
+    )
+    return type("RetryEnv", (), {"cfg": cfg, "router": router, "holder": holder})()
 
 
-def _chat_resp(model: str = "gemini-3.1-pro-low"):
+def _mock_response(payload: dict, status: int = 200):
     resp = MagicMock(spec=httpx.Response)
-    resp.status_code = 200
+    resp.status_code = status
     resp.headers = httpx.Headers({"Content-Type": "application/json"})
-    resp.content = json.dumps({"id": "x", "model": model}).encode()
+    content = json.dumps(payload).encode()
+    resp.content = content
+    resp.json.return_value = payload
+
+    async def aiter_bytes():
+        yield content
+
+    resp.aiter_bytes = aiter_bytes
     return resp
 
 
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.post", new_callable=AsyncMock)
-def test_platform_chat_retries_transient_502(mock_post, mock_get, mock_status):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-    err = MagicMock(spec=httpx.Response)
-    err.status_code = 502
-    err.headers = httpx.Headers({})
-    err.content = b'{"error":"busy"}'
-    mock_post.side_effect = [err, err, _chat_resp()]
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={"model": GEMINI_LISTING, "messages": [{"role": "user", "content": "hi"}]},
-    )
-
-    assert response.status_code == 200
-    assert mock_post.call_count == 3
-    assert response.json()["model"] == "gemini-3.1-pro-low"
-
-
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.post", new_callable=AsyncMock)
-def test_platform_chat_returns_502_after_retries_exhausted(mock_post, mock_get, mock_status):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-    err = MagicMock(spec=httpx.Response)
-    err.status_code = 502
-    err.headers = httpx.Headers({})
-    err.content = b'{"error":"busy"}'
-    mock_post.return_value = err
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={"model": GEMINI_LISTING, "messages": [{"role": "user", "content": "hi"}]},
-    )
-
-    assert response.status_code == 502
-    assert mock_post.call_count == llama_manager._PROXY_MAX_ATTEMPTS
-
-
-@patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.post", new_callable=AsyncMock)
-def test_retry_respects_retry_after_header(
-    mock_post, mock_get, mock_status, mock_sleep
-):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-    limited = MagicMock(spec=httpx.Response)
-    limited.status_code = 429
-    limited.headers = httpx.Headers({"Retry-After": "7"})
-    limited.content = b'{"error":"rate_limit"}'
-    mock_post.side_effect = [limited, _chat_resp()]
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={"model": GEMINI_LISTING, "messages": [{"role": "user", "content": "hi"}]},
-    )
-
-    assert response.status_code == 200
-    mock_sleep.assert_awaited_once_with(7.0)
-
-
-@patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.send", new_callable=AsyncMock)
-def test_platform_stream_retries_http_502_before_client(mock_send, mock_get, mock_status, mock_sleep):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-
-    err = MagicMock(spec=httpx.Response)
-    err.status_code = 502
-    err.headers = httpx.Headers({})
-    err.aread = AsyncMock(return_value=b"")
-    err.aclose = AsyncMock()
-
-    ok = MagicMock(spec=httpx.Response)
-    ok.status_code = 200
-    ok.headers = httpx.Headers({"Content-Type": "text/event-stream"})
-
-    async def aiter_bytes():
-        yield b'data: {"model":"x"}\n\ndata: [DONE]\n\n'
-
-    ok.aiter_bytes = aiter_bytes
-    ok.aclose = AsyncMock()
-    mock_send.side_effect = [err, ok]
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": GEMINI_LISTING,
-            "stream": True,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert mock_send.call_count == 2
-    assert mock_sleep.await_count == 1
-
-
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.send", new_callable=AsyncMock)
-def test_platform_stream_does_not_retry_after_bytes_started(
-    mock_send, mock_get, mock_status
-):
-    """Falhas após início do SSE não disparam novo request (já houve bytes ao cliente)."""
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-
+def _sse_upstream(chunks, status=200):
     upstream = MagicMock(spec=httpx.Response)
-    upstream.status_code = 200
-    upstream.headers = httpx.Headers({"Content-Type": "text/event-stream"})
-
-    async def aiter_incomplete():
-        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
-        # Stream corta sem [DONE] — sem retry pós-abertura.
-
-    upstream.aiter_bytes = aiter_incomplete
-    upstream.aclose = AsyncMock()
-    mock_send.return_value = upstream
-
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": GEMINI_LISTING,
-            "stream": True,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert mock_send.call_count == 1
-    assert b"partial" in response.content
-    assert b"data: [DONE]" not in response.content
-
-
-@patch("llama_manager._hybrid_status")
-@patch("llama_manager.client.get", new_callable=AsyncMock)
-@patch("llama_manager.client.send", new_callable=AsyncMock)
-def test_platform_stream_replays_raw_chunks_unchanged(mock_send, mock_get, mock_status):
-    mock_status.return_value = {"instances": [PLATFORM_INST]}
-    mock_get.return_value = _models_resp()
-
-    upstream = MagicMock(spec=httpx.Response)
-    upstream.status_code = 200
+    upstream.status_code = status
     upstream.headers = httpx.Headers({"Content-Type": "text/event-stream"})
 
     async def aiter_bytes():
-        yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
-        yield b'data: {"choices":[{"delta":{"content":"b"}}]}\n\n'
-        yield b"data: [DONE]\n\n"
+        for chunk in chunks:
+            yield chunk
 
     upstream.aiter_bytes = aiter_bytes
+    upstream.aread = AsyncMock(return_value=b"".join(chunks))
     upstream.aclose = AsyncMock()
-    mock_send.return_value = upstream
+    return upstream
 
-    response = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": GEMINI_LISTING,
-            "stream": True,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
 
-    assert response.status_code == 200
-    assert response.content == (
-        b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
-        b'data: {"choices":[{"delta":{"content":"b"}}]}\n\n'
-        b"data: [DONE]\n\n"
-    )
+def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
+    system = f"[AGENT:{tag}] Voce ajuda." if tag else "Voce ajuda."
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if stream:
+        body["stream"] = True
+    return body
+
+
+class TestProxyRetryAndFailover:
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_three_retries_same_backend_reuse_same_payload(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """Tres retries no mesmo backend reutilizam exatamente o mesmo payload validado."""
+        resp_503 = _mock_response({"error": "service unavailable"}, status=503)
+        resp_200 = _mock_response({"id": "cmpl-ok", "model": "main.gguf"})
+        mock_post.side_effect = [resp_503, resp_503, resp_200]
+
+        res = client.post("/v1/chat/completions", json=chat_body(tag="t1"))
+        assert res.status_code == 200
+        assert mock_post.call_count == 3
+
+        # As 3 chamadas foram enviadas para o mesmo backend (8085)
+        ports = [call.args[0].split(":")[2].split("/")[0] for call in mock_post.call_args_list]
+        assert ports == ["8085", "8085", "8085"]
+
+        # O payload (content) de todas as 3 chamadas e rigorosamente idêntico
+        contents = [call.kwargs["content"] for call in mock_post.call_args_list]
+        assert contents[0] == contents[1] == contents[2]
+
+        # Liberou in_flight
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_failover_to_different_backend_reevaluates_optimizer(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """Failover para backend com janela/tokenizer diferente spara nova otimização."""
+        resp_503 = _mock_response({"error": "error"}, status=503)
+        resp_200 = _mock_response({"id": "cmpl-ok", "model": "aux1.gguf"})
+
+        # 3 falhas no 8085 + 1 sucesso no failover (8087)
+        mock_post.side_effect = [resp_503, resp_503, resp_503, resp_200]
+
+        res = client.post("/v1/chat/completions", json=chat_body(tag="t1"))
+        assert res.status_code == 200
+        assert mock_post.call_count == 4
+
+        ports = [call.args[0].split(":")[2].split("/")[0] for call in mock_post.call_args_list]
+        assert ports[:3] == ["8085", "8085", "8085"]
+        assert ports[3] != "8085"
+
+        # Contadores in_flight voltam a zero
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_failover_to_smaller_window_returns_413_if_exceeded(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """Failover para janela menor que nao comporta o payload retorna 413 e nao entrega payload excedente."""
+        resp_503 = _mock_response({"error": "error"}, status=503)
+        mock_post.side_effect = [resp_503, resp_503, resp_503]
+
+        # Força o 8086 (32k) a ser o proximo candidato de failover
+        retry_env.holder["instances"] = [
+            make_instance(8085, MAIN_PATH, ctx=65536),
+            make_instance(8086, AUX0_PATH, ctx=1000),  # janela minúscula de 1000 tokens
+        ]
+
+        large_user_text = "excesso " * 1500  # ~1500 tokens, excede 1000 tokens do 8086
+        res = client.post(
+            "/v1/chat/completions",
+            json=chat_body(tag="t1", user=large_user_text),
+        )
+
+        assert res.status_code == 413
+        assert res.json()["error"]["code"] == "context_too_large"
+
+        # Nenhum request foi enviado ao 8086 com payload excedente
+        ports = [call.args[0].split(":")[2].split("/")[0] for call in mock_post.call_args_list]
+        assert "8086" not in ports
+
+        # in_flight de todas as portas zerado
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086))
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_http_429_does_not_authorize_moderate_or_aggressive(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """HTTP 429 nao autoriza estratégias destrutivas Moderate/Aggressive."""
+        resp_429 = _mock_response({"error": "rate_limit"}, status=429)
+        resp_200 = _mock_response({"id": "ok", "model": "aux1.gguf"})
+        mock_post.side_effect = [resp_429, resp_429, resp_429, resp_200]
+
+        with patch("context_optimizer.optimize_request_ir_moderate") as mock_mod, \
+             patch("context_optimizer.optimize_request_ir_aggressive") as mock_agg:
+
+            res = client.post("/v1/chat/completions", json=chat_body(tag="t1"))
+            assert res.status_code == 200
+            # Moderate e Aggressive nao foram chamadas no failover por 429
+            mock_mod.assert_not_called()
+            mock_agg.assert_not_called()
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_connection_error_does_not_trigger_moderate_or_aggressive(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """Erro de conexão upstream nao dispara Moderate ou Aggressive."""
+        ok = _mock_response({"id": "cmpl-ok", "model": "aux1.gguf"})
+        mock_post.side_effect = [
+            httpx.ConnectError("Connection refused"),
+            httpx.ConnectError("Connection refused"),
+            httpx.ConnectError("Connection refused"),
+            ok,
+        ]
+
+        with patch("context_optimizer.optimize_request_ir_moderate") as mock_mod, \
+             patch("context_optimizer.optimize_request_ir_aggressive") as mock_agg:
+
+            res = client.post("/v1/chat/completions", json=chat_body(tag="t1"))
+            assert res.status_code == 200
+            mock_mod.assert_not_called()
+            mock_agg.assert_not_called()
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.send", new_callable=AsyncMock)
+    def test_failure_before_bytes_allows_validated_failover(
+        self, mock_send, mock_sleep, retry_env
+    ):
+        """Falha na abertura de stream (antes dos bytes) permite failover para novo backend."""
+        stream_err = _sse_upstream([b'{"error": "busy"}'], status=503)
+        stream_ok = _sse_upstream([b'data: {"model":"m"}\n\n', b'data: [DONE]\n\n'])
+        mock_send.side_effect = [stream_err, stream_err, stream_err, stream_ok]
+
+        res = client.post("/v1/chat/completions", json=chat_body(tag="t1", stream=True))
+        assert res.status_code == 200
+        assert mock_send.call_count == 4
+        assert b"data: [DONE]" in res.content
+
+    @patch("llama_manager.client.send", new_callable=AsyncMock)
+    def test_started_stream_no_second_upstream_call_on_error(
+        self, mock_send, retry_env
+    ):
+        """Stream iniciado (apos entregar bytes) nao gera segunda chamada upstream se falhar mid-stream."""
+        async def failing_aiter():
+            yield b'data: {"model":"main.gguf","choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            raise httpx.ReadError("Connection lost mid-stream")
+
+        stream_mid_fail = MagicMock(spec=httpx.Response)
+        stream_mid_fail.status_code = 200
+        stream_mid_fail.headers = httpx.Headers({"Content-Type": "text/event-stream"})
+        stream_mid_fail.aiter_bytes = failing_aiter
+        stream_mid_fail.aclose = AsyncMock()
+
+        mock_send.return_value = stream_mid_fail
+
+        with pytest.raises(httpx.ReadError):
+            client.post("/v1/chat/completions", json=chat_body(tag="t1", stream=True))
+
+        # Apenas 1 chamada upstream enviada
+        assert mock_send.call_count == 1
+
+        # Release in_flight executado mesmo com exceção mid-stream
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+    @patch("llama_manager.client.send", new_callable=AsyncMock)
+    def test_no_administrative_reports_in_sse_stream(
+        self, mock_send, retry_env
+    ):
+        """O stream SSE nao contém relatórios administrativos."""
+        chunks = [
+            b'data: {"model":"main.gguf","choices":[{"delta":{"content":"A"}}]}\n\n',
+            b'data: {"model":"main.gguf","choices":[{"delta":{"content":"B"}}]}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        mock_send.return_value = _sse_upstream(chunks)
+
+        res = client.post("/v1/chat/completions", json=chat_body(stream=True))
+        assert res.status_code == 200
+        body_text = res.content.decode("utf-8")
+
+        # Nao contem eventos de auditoria ou metadados de gestao
+        assert "strategy" not in body_text
+        assert "savings_tokens" not in body_text
+        assert "optimization" not in body_text
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_in_flight_released_on_all_paths(
+        self, mock_post, retry_env
+    ):
+        """Valida que in_flight e zerado em sucesso e em falhas HTTP/conexao."""
+        # Caminho 1: Sucesso
+        mock_post.return_value = _mock_response({"id": "ok", "model": "main.gguf"})
+        res1 = client.post("/v1/chat/completions", json=chat_body())
+        assert res1.status_code == 200
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+        # Caminho 2: Erro 500 no backend
+        mock_post.return_value = _mock_response({"error": "internal"}, status=500)
+        res2 = client.post("/v1/chat/completions", json=chat_body())
+        assert res2.status_code == 500
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+        # Caminho 3: Falha total de conexão
+        mock_post.side_effect = httpx.ConnectError("Refused")
+        res3 = client.post("/v1/chat/completions", json=chat_body())
+        assert res3.status_code in (502, 503)
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))

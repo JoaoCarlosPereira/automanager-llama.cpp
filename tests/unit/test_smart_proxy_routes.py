@@ -424,6 +424,9 @@ ADMIN_ROUTES = [
     ("DELETE", "/proxy/sessions/algum", None),
     ("POST", "/proxy/sessions/algum/reassign", None),
     ("POST", "/proxy/resolve", {"model": "x", "messages": []}),
+    ("GET", "/config/partial", None),
+    ("GET", "/admin/config/partial", None),
+    ("GET", "/proxy/context-optimizer/audit", None),
 ]
 
 
@@ -572,6 +575,54 @@ class TestAdminEndpoints:
         smart_env.cfg.update_smart_proxy_settings({"enabled": False})
         response = client.post("/proxy/resolve", json=chat_body())
         assert response.json() == {"proxy_enabled": False}
+
+    def test_partial_config_and_audit_endpoints(self, smart_env):
+        res1 = client.get("/config/partial")
+        assert res1.status_code == 200
+        p1 = res1.json()
+        assert "smart_proxy" in p1
+        assert "context_optimizer" in p1
+        assert "tokenizers_mapping_count" in p1
+        assert "model_configs_count" in p1
+
+        res2 = client.get("/admin/config/partial")
+        assert res2.status_code == 200
+        assert res2.json() == p1
+
+        audit_res = client.get("/proxy/context-optimizer/audit?page=1&per_page=10")
+        assert audit_res.status_code == 200
+        audit_payload = audit_res.json()
+        assert "page" in audit_payload
+        assert "per_page" in audit_payload
+        assert "total" in audit_payload
+        assert "items" in audit_payload
+
+    def test_status_includes_tokenizers_and_metrics(self, smart_env):
+        res = client.get("/status")
+        assert res.status_code == 200
+        payload = res.json()
+        assert "tokenizers" in payload
+        assert "metrics" in payload
+        assert "total_mappings" in payload["tokenizers"]
+        assert "gpu_count" in payload["metrics"]
+        assert "optimizer_audit_entries" in payload["metrics"]
+
+    def test_resolve_includes_optimization_preview(self, smart_env):
+        body = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "Olá, teste resolve preview!"}
+            ]
+        }
+        res = client.post("/proxy/resolve", json=body)
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["proxy_enabled"] is True
+        assert "optimization_preview" in payload
+        opt = payload["optimization_preview"]
+        assert "strategy" in opt
+        assert "original_cost" in opt
+        assert "optimized_cost" in opt
 
     def test_resolve_returns_sidecar_backend_for_platform_primary(self, smart_env):
         smart_env.holder["instances"] = [make_platform_instance()]
@@ -1117,3 +1168,174 @@ class TestStartupSpeedRanking:
         ])
 
         assert sol != luna
+
+# ---------------------------------------------------------------------------
+# Task 08 — integração plan -> optimize -> commit -> forward
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Task 08 — integração plan -> optimize -> commit -> forward
+# ---------------------------------------------------------------------------
+
+class TestTask08ContextOptimizerIntegration:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_optimization_runs_before_httpx_post(self, mock_post, smart_env):
+        """Otimização termina antes da primeira chamada httpx."""
+        mock_post.return_value = _mock_response({"id": "opt-1", "model": "main.gguf"})
+        body = {
+            "model": "main.gguf",
+            "messages": [
+                {"role": "system", "content": "Instruções do sistema."},
+                {"role": "assistant", "content": ""},  # bloco vazio removível pelo Safe
+                {"role": "user", "content": "  Olá,   mundo!  "},  # protegido e preservado
+            ],
+        }
+        response = client.post("/v1/chat/completions", json=body)
+        assert response.status_code == 200
+        mock_post.assert_called_once()
+        sent_body = json.loads(mock_post.call_args.kwargs["content"])
+        # Verifica se o payload enviado ao httpx foi otimizado (bloco vazio removido)
+        assert len(sent_body["messages"]) == 2
+        assert sent_body["messages"][1]["content"] == "  Olá,   mundo!  "
+
+    @patch("llama_manager.proxy_router.commit_route", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_failure_before_commit_leaves_no_side_effects(
+        self, mock_post, mock_commit, smart_env
+    ):
+        """Falha anterior ao commit não cria sticky nem reserva capacidade."""
+        mock_commit.side_effect = llama_manager.ProxyError(500, "Falha simulada no commit")
+        response = client.post("/v1/chat/completions", json=chat_body(tag="temp-tag"))
+        assert response.status_code == 500
+        assert smart_env.router._sessions == {}
+        assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+        mock_post.assert_not_called()
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_opaque_payload_counted_and_forwarded_intact(self, mock_post, smart_env):
+        """Payload opaco é contabilizado e encaminhado sem alteração lógica."""
+        mock_post.return_value = _mock_response({"id": "cmpl-opaque", "choices": []})
+        opaque_body = {"prompt": "  Era   uma   vez...  ", "max_tokens": 100, "top_k": 40}
+        response = client.post("/v1/chat/completions", json=opaque_body)
+        assert response.status_code == 200
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert sent["prompt"] == "  Era   uma   vez...  "
+        assert sent["max_tokens"] == 100
+        assert sent["top_k"] == 40
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_disabled_optimizer_bypasses_optimization(self, mock_post, smart_env):
+        """Otimizador desabilitado preserva fluxo sem alteração do payload."""
+        smart_env.cfg.update_smart_proxy_settings({
+            "enabled": True,
+            "context_optimizer": {"enabled": False},
+        })
+        mock_post.return_value = _mock_response({"id": "opt-disabled", "model": "main.gguf"})
+        body = {
+            "model": "main.gguf",
+            "messages": [
+                {"role": "system", "content": "S"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "  Espaços   manter  "},
+            ],
+        }
+        response = client.post("/v1/chat/completions", json=body)
+        assert response.status_code == 200
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert len(sent["messages"]) == 3
+        assert sent["messages"][2]["content"] == "  Espaços   manter  "
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_missing_optimizer_key_defaults_to_enabled(self, mock_post, smart_env):
+        """Chave ausente ativa o otimizador com Smart Proxy ativo."""
+        cfg = smart_env.cfg.get_config()
+        cfg["smart_proxy"].pop("context_optimizer", None)
+        smart_env.cfg.save(cfg)
+
+        mock_post.return_value = _mock_response({"id": "opt-default", "model": "main.gguf"})
+        body = {
+            "model": "main.gguf",
+            "messages": [
+                {"role": "system", "content": "S"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "  Espaços   limpar  "},
+            ],
+        }
+        response = client.post("/v1/chat/completions", json=body)
+        assert response.status_code == 200
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert len(sent["messages"]) == 2
+        assert sent["messages"][1]["content"] == "  Espaços   limpar  "
+
+    @patch("llama_manager.context_optimizer.optimize", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_internal_error_fails_open_without_leaking_content(
+        self, mock_post, mock_optimize, smart_env
+    ):
+        """Erro interno com limite desconhecido faz fail-open sem expor conteúdo."""
+        # Simula um erro no otimizador
+        mock_optimize.side_effect = RuntimeError("Erro interno simulado")
+        mock_post.return_value = _mock_response({"id": "failopen", "model": "main.gguf"})
+
+        payload = {
+            "model": "main.gguf",
+            "messages": [
+                {"role": "user", "content": "Texto confidencial 12345"},
+            ],
+        }
+        response = client.post("/v1/chat/completions", json=payload)
+        assert response.status_code == 200
+        sent = json.loads(mock_post.call_args.kwargs["content"])
+        assert sent["messages"][0]["content"] == "Texto confidencial 12345"
+
+    @patch.object(llama_manager.context_optimizer, "optimize", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_smart_proxy_larger_window_fallback(
+        self, mock_post, mock_optimize, smart_env
+    ):
+        """Valida se requisição grande no endpoint HTTP redireciona para janela maior (8086)."""
+        # Mock do otimizador: payload Safe não cabe no orçamento do principal (62720)
+        mock_opt_result = MagicMock()
+        mock_opt_result.safe_payload = {"model": "main.gguf", "messages": [{"role": "user", "content": "x" * 200000}]}
+        mock_opt_result.audit.optimized_cost = 70000
+        mock_opt_result.audit.strategy = "safe"
+        mock_opt_result.audits = []
+        mock_optimize.return_value = mock_opt_result
+
+        smart_env.holder["instances"][1]["config"]["context_size"] = 131072
+        mock_post.return_value = _mock_response({"id": "fallback-win", "model": "aux0.gguf"})
+        payload = {
+            "model": "main.gguf",
+            "messages": [{"role": "user", "content": "x" * 200000}],
+        }
+        response = client.post("/v1/chat/completions", json=payload)
+        assert response.status_code == 200
+        url = mock_post.call_args.args[0]
+        assert "8086" in url
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_smart_proxy_returns_413_context_too_large_without_upstream_or_side_effects(
+        self, mock_post, smart_env
+    ):
+        """Testa se requisição cujo conjunto mínimo excede o limite de contexto retorna 413 sem chamar upstream nem alterar sessões."""
+        for inst in smart_env.holder["instances"]:
+            inst["config"]["context_size"] = 1000
+
+        body = {
+            "model": "main.gguf",
+            "messages": [
+                {"role": "system", "content": "Sistema " * 1000},
+                {"role": "user", "content": "Pergunta " * 1000},
+            ],
+        }
+
+        response = client.post("/v1/chat/completions", json=body)
+
+        assert response.status_code == 413
+        err = response.json()["error"]
+        assert err["code"] == "context_too_large"
+        assert "type" in err
+
+        mock_post.assert_not_called()
+        assert smart_env.router._sessions == {}
+        assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+

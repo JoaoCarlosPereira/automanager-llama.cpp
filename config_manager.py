@@ -6,6 +6,7 @@ import logging
 import hashlib
 import secrets
 import threading
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -47,12 +48,22 @@ from schemas import (
 
 DEFAULT_THINKING_ENABLED = True
 
+DEFAULT_CONTEXT_OPTIMIZER = {
+    "enabled": True,
+    "audit_enabled": True,
+    "tokenizers": {
+        "models": {},
+        "families": {},
+    },
+}
+
 DEFAULT_SMART_PROXY = {
     "enabled": False,
     "primary_model_path": None,
     "primary_backend_id": None,
     "ttl_minutes": DEFAULT_PROXY_TTL_MINUTES,
     "max_wait_seconds": DEFAULT_PROXY_MAX_WAIT_SECONDS,
+    "context_optimizer": DEFAULT_CONTEXT_OPTIMIZER,
 }
 
 DEFAULT_PLATFORM_BACKEND_IDS = (
@@ -393,15 +404,58 @@ class ConfigManager:
         self.save(config)
 
     def get_smart_proxy_settings(self) -> dict:
-        """Chave global smart_proxy mesclada sobre os defaults."""
+        """Chave global smart_proxy mesclada sobre defaults sem materializá-los."""
         config = self.load()
         stored = config.get("smart_proxy")
         if not isinstance(stored, dict):
             stored = {}
-        return {**DEFAULT_SMART_PROXY, **stored}
+        return self._merge_smart_proxy_defaults(stored)
+
+    def get_partial_config(self) -> dict:
+        """Expe visão parcial administrativa sem expor senhas ou tokens."""
+        config = self.load()
+        smart_proxy = self.get_smart_proxy_settings()
+        context_optimizer = smart_proxy.get("context_optimizer", {})
+        tokenizers = context_optimizer.get("tokenizers", {})
+        models_map = tokenizers.get("models", {}) if isinstance(tokenizers, dict) else {}
+        families_map = tokenizers.get("families", {}) if isinstance(tokenizers, dict) else {}
+        model_configs = config.get("model_configs", {}) if isinstance(config, dict) else {}
+        return {
+            "smart_proxy": smart_proxy,
+            "context_optimizer": context_optimizer,
+            "tokenizers_mapping_count": len(models_map) + len(families_map),
+            "model_configs_count": len(model_configs),
+        }
+
+    @staticmethod
+    def _merge_context_optimizer_defaults(stored: object) -> dict:
+        stored = stored if isinstance(stored, dict) else {}
+        defaults = deepcopy(DEFAULT_CONTEXT_OPTIMIZER)
+        defaults.update({key: value for key, value in stored.items() if key != "tokenizers"})
+        for key in ("enabled", "audit_enabled"):
+            if key in stored:
+                defaults[key] = bool(stored[key])
+        tokenizers = stored.get("tokenizers")
+        if isinstance(tokenizers, dict):
+            defaults["tokenizers"] = {
+                **defaults["tokenizers"],
+                **tokenizers,
+            }
+            for key in ("models", "families"):
+                if not isinstance(defaults["tokenizers"].get(key), dict):
+                    defaults["tokenizers"][key] = {}
+        return defaults
+
+    @classmethod
+    def _merge_smart_proxy_defaults(cls, stored: dict) -> dict:
+        merged = {**DEFAULT_SMART_PROXY, **stored}
+        merged["context_optimizer"] = cls._merge_context_optimizer_defaults(
+            stored.get("context_optimizer")
+        )
+        return merged
 
     def update_smart_proxy_settings(self, partial: dict) -> dict:
-        """Merge parcial sobre a chave global smart_proxy (setter dedicado)."""
+        """Atualiza smart_proxy preservando campos desconhecidos e defaults legados."""
         config = self.load()
         stored = config.get("smart_proxy")
         if not isinstance(stored, dict):
@@ -409,7 +463,28 @@ class ConfigManager:
         partial = partial or {}
         primary_model_updated = "primary_model_path" in partial
         primary_backend_updated = "primary_backend_id" in partial
-        merged = {**DEFAULT_SMART_PROXY, **stored, **partial}
+        merged = {**stored, **partial}
+        context_partial = partial.get("context_optimizer")
+        if isinstance(context_partial, dict):
+            existing_context = stored.get("context_optimizer")
+            merged["context_optimizer"] = {
+                **(existing_context if isinstance(existing_context, dict) else {}),
+                **context_partial,
+            }
+            if isinstance(context_partial.get("tokenizers"), dict):
+                existing_tokenizers = (
+                    existing_context.get("tokenizers", {})
+                    if isinstance(existing_context, dict)
+                    else {}
+                )
+                merged["context_optimizer"]["tokenizers"] = {
+                    **(existing_tokenizers if isinstance(existing_tokenizers, dict) else {}),
+                    **context_partial["tokenizers"],
+                }
+        merged = {**self._merge_smart_proxy_defaults(merged), **merged}
+        merged["context_optimizer"] = self._merge_context_optimizer_defaults(
+            merged.get("context_optimizer")
+        )
         primary = merged.get("primary_model_path")
         merged["primary_model_path"] = (
             normalize_model_path(primary) if primary else None
