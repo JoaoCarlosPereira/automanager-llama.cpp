@@ -200,6 +200,14 @@ function backendCard(backend) {
     const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
     const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
     const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
+    const latency = Number(backend.startup_latency_ms);
+    const measured = Number.isFinite(latency) && latency > 0;
+    const latencyLabel = measured
+        ? `${latency >= 1000 ? `${(latency / 1000).toFixed(2)} s` : `${Math.round(latency)} ms`}`
+        : 'medição pendente';
+    const priorityLabel = backend.role === 'primary'
+        ? 'Prioridade principal'
+        : (backend.speed_rank ? `Prioridade #${backend.speed_rank}` : 'Sem ranking');
     return `
     <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}">
         <div class="flex items-center justify-between gap-2">
@@ -213,6 +221,10 @@ function backendCard(backend) {
         <div class="flex items-center justify-between text-ui-label text-slate-500">
             <span>${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)} requisição(ões) ativa(s) · base ${esc(backend.max_parallel)}</span>
             <span class="font-mono">ctx/slot ${esc(backend.ctx_per_slot)}</span>
+        </div>
+        <div class="flex items-center justify-between text-ui-label text-slate-500">
+            <span>${esc(priorityLabel)}</span>
+            <span class="font-mono">startup ${esc(latencyLabel)}</span>
         </div>
     </div>`;
 }

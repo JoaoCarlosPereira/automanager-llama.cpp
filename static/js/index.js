@@ -23,7 +23,7 @@ import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.12';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
-} from './proxy.js?v=4.2.14';
+} from './proxy.js?v=4.2.18';
 
 window.modelConfigs = window.modelConfigs || {};
 

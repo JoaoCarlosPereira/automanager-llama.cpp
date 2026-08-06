@@ -375,6 +375,39 @@ class TestSelection:
         await router.release(decision.backend_port)
 
     @pytest.mark.asyncio
+    async def test_measured_speed_orders_backends_after_primary(self, router):
+        router.set_benchmark_results({
+            f"local:{normalize_model_path(MAIN_PATH)}": 900.0,
+            f"local:{normalize_model_path(AUX0_PATH)}": 700.0,
+            f"local:{normalize_model_path(AUX1_PATH)}": 120.0,
+        }, measured_at="2026-08-06T12:00:00+00:00")
+
+        primary = await resolve(router, body=body_with())
+        overflow = await resolve(router, body=body_with(tag="fastest"))
+
+        assert primary.backend_port == 8085
+        assert overflow.backend_port == 8087
+        assert overflow.reason == "subagent_least_busy"
+        await router.release(primary.backend_port)
+        await router.release(overflow.backend_port)
+
+    def test_snapshot_is_sorted_by_measured_speed_after_primary(self, router):
+        router.set_benchmark_results({
+            f"local:{normalize_model_path(MAIN_PATH)}": 900.0,
+            f"local:{normalize_model_path(AUX0_PATH)}": 700.0,
+            f"local:{normalize_model_path(AUX1_PATH)}": 120.0,
+        }, measured_at="2026-08-06T12:00:00+00:00")
+
+        snapshot = router.backends_snapshot()
+
+        assert [backend["port"] for backend in snapshot] == [8085, 8087, 8086]
+        assert [backend["speed_rank"] for backend in snapshot] == [0, 1, 2]
+        assert snapshot[1]["startup_latency_ms"] == 120.0
+        assert snapshot[1]["benchmark_measured_at"] == (
+            "2026-08-06T12:00:00+00:00"
+        )
+
+    @pytest.mark.asyncio
     async def test_sticky_hit_ignores_load(self, router):
         d1 = await resolve(router, body=body_with(tag="sql-reviewer"))
         await router.release(d1.backend_port)

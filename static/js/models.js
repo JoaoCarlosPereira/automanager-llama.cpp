@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.14';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.18';
 import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
 import { checkForUpdates } from './version.js?v=4.2.3';
 

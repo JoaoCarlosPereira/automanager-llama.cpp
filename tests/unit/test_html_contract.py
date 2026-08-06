@@ -286,6 +286,8 @@ def test_static_proxy_controls_send_backend_id_payloads():
     assert "primary_backend_id" in js
     assert "backend_id: backendId" in js
     assert "updateBackendConfigCache(path, backendId" in js
+    assert "startup_latency_ms" in js
+    assert "Prioridade #" in js
 
 
 def test_html_contains_proxy_monitor_panel(html):

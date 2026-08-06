@@ -10,6 +10,7 @@ import re
 import glob
 import logging
 import html
+import statistics
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from urllib.parse import unquote
@@ -98,7 +99,7 @@ from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_se
 from paths import CONFIG_PATH, INSTALL_ROOT, update_models_dir, reload_module_paths
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.17"  # Alias/Copiar na aba plataforma
+_DASHBOARD_JS_V = "4.2.18"  # Ranking de velocidade do proxy no startup
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -3846,6 +3847,285 @@ def _auto_start_platforms() -> None:
             logger.error("Platform auto-start error for %s: %s", backend_id, exc)
 
 
+_PROXY_BENCHMARK_SCHEMA = 1
+_PROXY_BENCHMARK_SAMPLES = 3
+_PROXY_BENCHMARK_TIMEOUT_SECONDS = 45.0
+_PROXY_BENCHMARK_STARTUP_TIMEOUT_SECONDS = 240
+_PROXY_BENCHMARK_PATH = os.path.join(
+    os.path.dirname(CONFIG_PATH) or ".", "proxy_backend_benchmarks.json"
+)
+
+
+async def _proxy_benchmark_targets(
+    instances: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Resolve o modelo concreto usado para medir cada backend online."""
+    models_by_port: Dict[int, List[Dict[str, Any]]] = {}
+    for instance in instances:
+        if instance.get("backend_type") != "platform":
+            continue
+        port = instance.get("port")
+        if port is not None and port not in models_by_port:
+            models_by_port[port] = await _fetch_sidecar_models(int(port))
+
+    platform_configs = config_manager.get_platform_configs()
+    targets: List[Dict[str, Any]] = []
+    for instance in instances:
+        if instance.get("status") != "running" or instance.get("port") is None:
+            continue
+        backend_type = str(instance.get("backend_type") or "local")
+        backend_id = proxy_router._backend_id(instance)
+        if backend_type == "platform":
+            provider = str(instance.get("provider") or "")
+            available = filter_models_for_provider(
+                models_by_port.get(int(instance["port"]), []), provider
+            )
+            for model in available:
+                root = str(model.get("id") or "")
+                if root:
+                    register_platform_model_listings(root, provider)
+            configured = platform_configs.get(backend_id, {}).get("default_model")
+            model_name = resolve_platform_listing_model(str(configured or ""))
+            if not model_name and available:
+                model_name = str(available[0].get("id") or "")
+            if not model_name:
+                logger.warning(
+                    "[proxy] startup benchmark skipped backend=%s: no model",
+                    backend_id,
+                )
+                continue
+        else:
+            model_name = str(instance.get("model") or "")
+            if not model_name:
+                continue
+        targets.append({
+            "key": proxy_router.benchmark_key(instance),
+            "backend_id": backend_id,
+            "backend_type": backend_type,
+            "provider": instance.get("provider"),
+            "port": int(instance["port"]),
+            "model": model_name,
+            "model_path": instance.get("model_path"),
+        })
+    return targets
+
+
+def _proxy_benchmark_fingerprint(targets: List[Dict[str, Any]]) -> str:
+    """Assina o conjunto de modelos; portas e ordem de inicializacao nao contam."""
+    descriptors: List[Dict[str, Any]] = []
+    for target in targets:
+        descriptor = {
+            "key": target["key"],
+            "backend_type": target["backend_type"],
+            "model": target["model"],
+        }
+        if target["backend_type"] == "local" and target.get("model_path"):
+            try:
+                stat = os.stat(target["model_path"])
+            except OSError:
+                stat = None
+            descriptor["file_size"] = stat.st_size if stat else None
+            descriptor["file_mtime_ns"] = stat.st_mtime_ns if stat else None
+        descriptors.append(descriptor)
+    payload = {
+        "schema": _PROXY_BENCHMARK_SCHEMA,
+        "targets": sorted(descriptors, key=lambda item: item["key"]),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _load_proxy_benchmark_cache(
+    fingerprint: str,
+    path: str = _PROXY_BENCHMARK_PATH,
+) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != _PROXY_BENCHMARK_SCHEMA
+        or payload.get("fingerprint") != fingerprint
+        or not isinstance(payload.get("latencies_ms"), dict)
+    ):
+        return None
+    return payload
+
+
+def _save_proxy_benchmark_cache(
+    payload: Dict[str, Any],
+    path: str = _PROXY_BENCHMARK_PATH,
+) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    temporary = f"{path}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
+async def _measure_proxy_backend_latency(target: Dict[str, Any]) -> float:
+    """Mede tempo ate o primeiro evento SSE com uma resposta minima."""
+    body = {
+        "model": target["model"],
+        "messages": [{
+            "role": "user",
+            "content": "Responda somente OK.",
+        }],
+        "max_tokens": 1,
+        "stream": True,
+    }
+    headers = {"Authorization": f"Bearer {token_manager.get_or_create()}"}
+    timeout = httpx.Timeout(
+        _PROXY_BENCHMARK_TIMEOUT_SECONDS,
+        connect=5.0,
+    )
+    started = time.monotonic()
+    first_event: Optional[float] = None
+    async with client.stream(
+        "POST",
+        f"http://127.0.0.1:{target['port']}/v1/chat/completions",
+        json=body,
+        headers=headers,
+        timeout=timeout,
+    ) as response:
+        response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if first_event is None and chunk.strip():
+                first_event = time.monotonic()
+    if first_event is None:
+        raise RuntimeError("stream terminou sem eventos")
+    return (first_event - started) * 1000.0
+
+
+async def _wait_proxy_benchmark_ready(target: Dict[str, Any]) -> bool:
+    """Aguarda o llama-server terminar de carregar antes de obter amostras."""
+    if target["backend_type"] != "local":
+        return True
+    deadline = time.monotonic() + _PROXY_BENCHMARK_STARTUP_TIMEOUT_SECONDS
+    headers = {"Authorization": f"Bearer {token_manager.get_or_create()}"}
+    while not shutdown_event.is_set() and time.monotonic() < deadline:
+        try:
+            response = await client.get(
+                f"http://127.0.0.1:{target['port']}/health",
+                headers=headers,
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        await asyncio.sleep(1)
+    return False
+
+
+async def _benchmark_proxy_backends(targets: List[Dict[str, Any]]) -> Dict[str, float]:
+    results: Dict[str, float] = {}
+    for target in targets:
+        if not await _wait_proxy_benchmark_ready(target):
+            logger.warning(
+                "[proxy] startup benchmark skipped backend=%s: readiness timeout",
+                target["backend_id"],
+            )
+            continue
+        samples: List[float] = []
+        for sample in range(_PROXY_BENCHMARK_SAMPLES):
+            try:
+                latency = await _measure_proxy_backend_latency(target)
+                samples.append(latency)
+                logger.info(
+                    "[proxy] startup benchmark backend=%s model=%s sample=%s latency=%.0fms",
+                    target["backend_id"], target["model"], sample + 1, latency,
+                )
+            except (httpx.HTTPError, RuntimeError) as exc:
+                logger.warning(
+                    "[proxy] startup benchmark failed backend=%s model=%s sample=%s: %s",
+                    target["backend_id"], target["model"], sample + 1, exc,
+                )
+        if samples:
+            results[target["key"]] = statistics.median(samples)
+    return results
+
+
+def _expected_startup_backends() -> Tuple[set, set]:
+    local_paths = {
+        normalize_model_path(path)
+        for path in config_manager.get_default_models()
+        if path and os.path.exists(path)
+    }
+    platform_configs = config_manager.get_platform_configs()
+    platform_ids = {
+        item["backend_id"]
+        for item in platform_manager.catalog()
+        if platform_configs.get(item["backend_id"], {}).get("auto_start")
+    }
+    return local_paths, platform_ids
+
+
+async def _startup_proxy_speed_ranking() -> None:
+    """Carrega o ranking salvo ou mede novamente quando os modelos mudam."""
+    if not config_manager.get_smart_proxy_settings().get("enabled"):
+        return
+    expected_local, expected_platform = _expected_startup_backends()
+    deadline = time.monotonic() + _PROXY_BENCHMARK_STARTUP_TIMEOUT_SECONDS
+    instances: List[Dict[str, Any]] = []
+    while not shutdown_event.is_set():
+        instances = _hybrid_status().get("instances", [])
+        running_local = {
+            normalize_model_path(item.get("model_path") or "")
+            for item in instances
+            if item.get("status") == "running"
+            and item.get("backend_type") != "platform"
+        }
+        running_platform = {
+            item.get("backend_id")
+            for item in instances
+            if item.get("status") == "running"
+            and item.get("backend_type") == "platform"
+        }
+        if expected_local <= running_local and expected_platform <= running_platform:
+            break
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "[proxy] startup benchmark timed out waiting for all configured models"
+            )
+            break
+        await asyncio.sleep(1)
+    if shutdown_event.is_set():
+        return
+    targets = await _proxy_benchmark_targets(instances)
+    if not targets:
+        return
+    fingerprint = _proxy_benchmark_fingerprint(targets)
+    cached = _load_proxy_benchmark_cache(fingerprint)
+    target_keys = {target["key"] for target in targets}
+    if cached is not None and target_keys <= set(cached["latencies_ms"]):
+        proxy_router.set_benchmark_results(
+            cached["latencies_ms"], measured_at=cached.get("measured_at")
+        )
+        logger.info("[proxy] startup speed ranking restored from cache")
+        return
+    if cached is not None:
+        logger.info("[proxy] cached speed ranking is incomplete; measuring again")
+    logger.info("[proxy] model set changed; measuring startup speed ranking")
+    results = await _benchmark_proxy_backends(targets)
+    measured_at = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "schema": _PROXY_BENCHMARK_SCHEMA,
+        "fingerprint": fingerprint,
+        "measured_at": measured_at,
+        "latencies_ms": results,
+        "models": {target["key"]: target["model"] for target in targets},
+    }
+    try:
+        _save_proxy_benchmark_cache(payload)
+    except OSError as exc:
+        logger.warning("[proxy] failed to persist startup speed ranking: %s", exc)
+    proxy_router.set_benchmark_results(results, measured_at=measured_at)
+
+
 _PROXY_SESSION_JANITOR_INTERVAL_SEC = 60
 
 
@@ -3884,6 +4164,10 @@ async def startup_event():
         name="platform-auto-start",
     ).start()
     asyncio.create_task(_proxy_session_janitor(), name="proxy-session-janitor")
+    asyncio.create_task(
+        _startup_proxy_speed_ranking(),
+        name="proxy-startup-speed-ranking",
+    )
 
 
 @app.on_event("shutdown")

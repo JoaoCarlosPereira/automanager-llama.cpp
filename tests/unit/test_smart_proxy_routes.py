@@ -1036,3 +1036,84 @@ class TestHybridV1Availability:
         mock_post.assert_not_called()
 
         app.dependency_overrides[llama_manager.require_api_token] = lambda: True
+
+
+class TestStartupSpeedRanking:
+    @pytest.mark.asyncio
+    async def test_local_benchmark_waits_until_model_is_ready(self, monkeypatch):
+        unavailable = httpx.Response(
+            503, request=httpx.Request("GET", "http://127.0.0.1:8085/health")
+        )
+        ready = httpx.Response(
+            200, request=httpx.Request("GET", "http://127.0.0.1:8085/health")
+        )
+        get = AsyncMock(side_effect=[unavailable, ready])
+        sleep = AsyncMock()
+        monkeypatch.setattr(llama_manager.client, "get", get)
+        monkeypatch.setattr(llama_manager.asyncio, "sleep", sleep)
+
+        result = await llama_manager._wait_proxy_benchmark_ready({
+            "backend_type": "local",
+            "backend_id": "local:8085",
+            "port": 8085,
+        })
+
+        assert result is True
+        assert get.await_count == 2
+        sleep.assert_awaited_once_with(1)
+
+    def test_cache_is_reused_only_for_same_model_fingerprint(self, tmp_path):
+        model_path = tmp_path / "model.gguf"
+        model_path.write_bytes(b"model-v1")
+        targets = [{
+            "key": f"local:{model_path}",
+            "backend_id": "local:8085",
+            "backend_type": "local",
+            "provider": None,
+            "port": 8085,
+            "model": "model.gguf",
+            "model_path": str(model_path),
+        }]
+        fingerprint = llama_manager._proxy_benchmark_fingerprint(targets)
+        cache_path = tmp_path / "proxy_backend_benchmarks.json"
+        payload = {
+            "schema": llama_manager._PROXY_BENCHMARK_SCHEMA,
+            "fingerprint": fingerprint,
+            "measured_at": "2026-08-06T12:00:00+00:00",
+            "latencies_ms": {f"local:{model_path}": 123.0},
+        }
+
+        llama_manager._save_proxy_benchmark_cache(payload, str(cache_path))
+
+        assert llama_manager._load_proxy_benchmark_cache(
+            fingerprint, str(cache_path)
+        ) == payload
+        assert llama_manager._load_proxy_benchmark_cache(
+            "different", str(cache_path)
+        ) is None
+
+        model_path.write_bytes(b"model-v2-with-different-size")
+        changed = llama_manager._proxy_benchmark_fingerprint(targets)
+        assert changed != fingerprint
+        assert llama_manager._load_proxy_benchmark_cache(
+            changed, str(cache_path)
+        ) is None
+
+    def test_platform_default_model_changes_fingerprint(self):
+        base = {
+            "key": "platform:codex",
+            "backend_id": "platform:codex",
+            "backend_type": "platform",
+            "provider": "codex",
+            "port": 8317,
+            "model_path": None,
+        }
+
+        sol = llama_manager._proxy_benchmark_fingerprint([
+            {**base, "model": "gpt-5.6-sol"}
+        ])
+        luna = llama_manager._proxy_benchmark_fingerprint([
+            {**base, "model": "gpt-5.6-luna"}
+        ])
+
+        assert sol != luna

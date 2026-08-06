@@ -20,6 +20,7 @@ logs/
 .env.*
 paths.json
 data/automanager_config.json
+data/proxy_backend_benchmarks.json
 !data/automanager_config.json.example
 
 # Local model files (large binaries)

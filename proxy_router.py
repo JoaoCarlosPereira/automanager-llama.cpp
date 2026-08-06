@@ -235,6 +235,8 @@ class ProxyRouter:
         self._in_flight: Dict[str, int] = {}
         self._disabled_ports: set = set()
         self._unavailable_until: Dict[str, datetime] = {}
+        self._benchmark_latencies_ms: Dict[str, float] = {}
+        self._benchmark_measured_at: Optional[str] = None
         self._unsaved_uses = 0
         self._load_sessions()
 
@@ -569,6 +571,43 @@ class ProxyRouter:
             return f"local:{normalize_model_path(model_path)}"
         return f"local:{instance.get('port')}"
 
+    def benchmark_key(self, instance: Dict[str, Any]) -> str:
+        """Identidade estavel usada pelo ranking entre reinicializacoes."""
+        if self._backend_type(instance) == "platform":
+            return self._backend_id(instance)
+        model_path = instance.get("model_path") or ""
+        if model_path:
+            return f"local:{normalize_model_path(model_path)}"
+        return self._backend_id(instance)
+
+    def set_benchmark_results(
+        self,
+        latencies_ms: Mapping[str, float],
+        *,
+        measured_at: Optional[str] = None,
+    ) -> None:
+        """Substitui atomicamente o ranking medido no startup."""
+        clean: Dict[str, float] = {}
+        for key, value in latencies_ms.items():
+            try:
+                latency = float(value)
+            except (TypeError, ValueError):
+                continue
+            if key and latency > 0:
+                clean[str(key)] = latency
+        self._benchmark_latencies_ms = clean
+        self._benchmark_measured_at = measured_at or _iso(self._now())
+        logger.info(
+            "[proxy] startup speed ranking loaded backends=%s",
+            ", ".join(
+                f"{key}={value:.0f}ms"
+                for key, value in sorted(clean.items(), key=lambda item: item[1])
+            ) or "none",
+        )
+
+    def _benchmark_latency(self, instance: Dict[str, Any]) -> Optional[float]:
+        return self._benchmark_latencies_ms.get(self.benchmark_key(instance))
+
     def _backend_flags(
         self, config: dict, instance: Dict[str, Any]
     ) -> Tuple[bool, int]:
@@ -729,6 +768,7 @@ class ProxyRouter:
                 state = "busy"
             else:
                 state = "online"
+            latency_ms = self._benchmark_latency(inst)
             snapshot.append({
                 "port": port,
                 "model": inst.get("model"),
@@ -747,10 +787,31 @@ class ProxyRouter:
                 "effective_parallel": max(max_parallel, in_flight),
                 "capacity_mode": "dynamic",
                 "ctx_per_slot": self._ctx_per_slot(inst),
+                "startup_latency_ms": (
+                    round(latency_ms, 1) if latency_ms is not None else None
+                ),
+                "benchmark_measured_at": self._benchmark_measured_at,
                 "cooldown_until": (
                     _iso(cooldown_until) if cooldown_until is not None else None
                 ),
             })
+        snapshot.sort(
+            key=lambda backend: (
+                0 if backend["role"] == "primary" else 1,
+                backend["startup_latency_ms"] is None,
+                backend["startup_latency_ms"] or float("inf"),
+                backend["port"],
+            )
+        )
+        rank = 1
+        for backend in snapshot:
+            if backend["role"] == "primary":
+                backend["speed_rank"] = 0
+            elif backend["startup_latency_ms"] is not None:
+                backend["speed_rank"] = rank
+                rank += 1
+            else:
+                backend["speed_rank"] = None
         return snapshot
 
     # ------------------------------------------------------------------
@@ -820,12 +881,14 @@ class ProxyRouter:
         return min(
             candidates,
             key=lambda i: (
-                self.in_flight_for(i),
-                session_counts.get(self._backend_id(i), 0),
                 0 if (
                     primary_backend_id
                     and self._backend_id(i) == primary_backend_id
                 ) else 1,
+                self._benchmark_latency(i) is None,
+                self._benchmark_latency(i) or float("inf"),
+                self.in_flight_for(i),
+                session_counts.get(self._backend_id(i), 0),
                 1 if (primary_port is not None and i["port"] == primary_port) else 0,
                 0 if self._backend_type(i) == "platform" else 1,
                 i["port"],
@@ -854,6 +917,8 @@ class ProxyRouter:
             return (
                 in_flight / max(1, initial_capacity),
                 0 if self._backend_id(instance) == primary_backend_id else 1,
+                self._benchmark_latency(instance) is None,
+                self._benchmark_latency(instance) or float("inf"),
                 in_flight,
                 0 if self._backend_type(instance) == "platform" else 1,
                 instance["port"],
