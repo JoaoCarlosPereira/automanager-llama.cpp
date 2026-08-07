@@ -142,6 +142,17 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+def custom_tool_body(model="main.gguf", stream=False):
+    body = chat_body(model=model, stream=stream)
+    body["tools"] = [{
+        "type": "custom",
+        "name": "ApplyPatch",
+        "description": "Edit files",
+        "format": {"type": "grammar", "definition": "start: value"},
+    }]
+    return body
+
+
 class TestOllamaCloudPayload:
     def test_translates_max_completion_tokens(self):
         payload = {
@@ -173,6 +184,37 @@ class TestOllamaCloudPayload:
 # ---------------------------------------------------------------------------
 
 class TestSmartRouting:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_rejected_as_client_error_before_backend(
+        self, mock_post, smart_env
+    ):
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+        mock_post.assert_not_awaited()
+        assert all(
+            smart_env.router.in_flight(port) == 0
+            for port in (8085, 8086, 8087)
+        )
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_rejected_when_smart_proxy_is_disabled(
+        self, mock_post, smart_env
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+        mock_post.assert_not_awaited()
+
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_primary_model_routed_with_internal_rewrite(
         self, mock_post, smart_env

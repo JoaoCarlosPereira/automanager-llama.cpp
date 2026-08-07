@@ -236,6 +236,68 @@ def _is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in _PROXY_RETRYABLE_STATUSES
 
 
+def _custom_tool_names(payload: Dict[str, Any]) -> List[str]:
+    """Return Cursor custom-tool names present in an OpenAI request."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("tools"), list):
+        return []
+    names = []
+    for tool in payload["tools"]:
+        if not isinstance(tool, dict) or str(tool.get("type") or "").lower() != "custom":
+            continue
+        name = str(tool.get("name") or "custom").strip()
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _unsupported_custom_tools_response(payload: Dict[str, Any]) -> JSONResponse:
+    """Build an OpenAI-compatible client error for unsupported custom tools."""
+    names = _custom_tool_names(payload)
+    rendered_names = ", ".join(names[:3]) or "custom"
+    if len(names) > 3:
+        rendered_names += ", ..."
+    return JSONResponse(
+        {
+            "error": {
+                "message": (
+                    "O backend selecionado nao suporta ferramentas do tipo "
+                    f"custom ({rendered_names})."
+                ),
+                "type": "invalid_request_error",
+                "param": "tools",
+                "code": "unsupported_tool_type",
+            }
+        },
+        status_code=400,
+    )
+
+
+def _local_backend_rejects_custom_tools(
+    payload: Dict[str, Any], backend_info: Optional[Dict[str, Any]]
+) -> bool:
+    """llama-server currently accepts function tools, but not Cursor custom tools."""
+    if not isinstance(backend_info, dict):
+        return False
+    backend_type = str(backend_info.get("backend_type") or "local").lower()
+    return backend_type != "platform" and bool(_custom_tool_names(payload))
+
+
+async def _is_upstream_custom_tool_parse_error(response: httpx.Response) -> bool:
+    """Recognize llama-server's legacy 500 for an unsupported custom tool."""
+    if response.status_code != 500:
+        return False
+    try:
+        try:
+            content = response.content
+        except Exception:
+            # Streaming responses do not expose content until aread().
+            content = await response.aread()
+        text = content.decode("utf-8", errors="replace").lower()
+    except Exception:
+        return False
+    return "failed to parse tools" in text and "unsupported tool type" in text
+
+
 def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
     """Return the effective context per slot for a local backend."""
     if instance.get("backend_type") == "platform":
@@ -2133,6 +2195,13 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 {"backend_type": planned_decision.backend_type},
             )
 
+        if _local_backend_rejects_custom_tools(data, decision_instance):
+            logger.warning(
+                "[proxy] rejecting unsupported custom tools before backend=%s",
+                planned_decision.backend_port,
+            )
+            return _unsupported_custom_tools_response(data)
+
         if co_enabled:
             model_metadata = None
             if planned_decision.backend_type == "platform":
@@ -2494,6 +2563,16 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         return err
                     continue
 
+                if await _is_upstream_custom_tool_parse_error(upstream):
+                    await upstream.aclose()
+                    await proxy_router.release(
+                        decision.backend_id, affinity_key=decision.affinity_key
+                    )
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
+
                 async def stream_generator(response=upstream, dec=decision):
                     usage_holder: Dict[str, Any] = {}
                     try:
@@ -2549,6 +2628,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 elif _is_retryable_upstream_status(resp.status_code):
                     failover_cause = f"HTTP {resp.status_code}"
                     failover_status = resp.status_code
+                elif await _is_upstream_custom_tool_parse_error(resp):
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
                 else:
                     content = resp.content
                     if decision.rewrite:
@@ -2696,6 +2780,13 @@ async def openai_proxy(
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
+    if _local_backend_rejects_custom_tools(data, target_instance):
+        logger.warning(
+            "[proxy] rejecting unsupported custom tools before backend=%s",
+            target_instance.get("port"),
+        )
+        return _unsupported_custom_tools_response(data)
+
     client_facing_model = _platform_response_model_name(
         client_requested_model, target_instance, instances
     )
@@ -2739,6 +2830,13 @@ async def openai_proxy(
                     backend_label=backend_label,
                 )
 
+                if await _is_upstream_custom_tool_parse_error(upstream):
+                    await upstream.aclose()
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
+
                 async def stream_generator(response=upstream):
                     try:
                         byte_iter = response.aiter_bytes()
@@ -2769,6 +2867,11 @@ async def openai_proxy(
                 headers=headers,
                 backend_label=backend_label,
             )
+            if await _is_upstream_custom_tool_parse_error(resp):
+                logger.warning(
+                    "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                )
+                return _unsupported_custom_tools_response(data)
             content = resp.content
             if client_facing_model and target_instance.get("backend_type") != "platform":
                 content, _ = rewrite_json_model(content, client_facing_model)
