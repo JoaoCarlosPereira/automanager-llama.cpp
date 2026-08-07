@@ -79,6 +79,7 @@ from platform_ollama_cloud import (
     OllamaCloudAccount,
     OllamaCloudAccountManager,
     OllamaCloudCatalog,
+    OllamaCloudProvider,
 )
 from version_manager import check_for_updates
 from schemas import (
@@ -116,7 +117,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.18"  # Ranking de velocidade do proxy no startup
+_DASHBOARD_JS_V = "4.2.19"  # Ranking de velocidade do proxy no startup
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -150,6 +151,21 @@ _PROXY_MAX_ATTEMPTS = 3
 _PROXY_MAX_FAILOVER_HOPS = 5
 _PROXY_BACKEND_COOLDOWN_SECONDS = 60
 _PROXY_RATE_LIMIT_COOLDOWN_SECONDS = 300
+
+
+def _ollama_subscription_denied(response: httpx.Response) -> bool:
+    if response.status_code != 403:
+        return False
+    try:
+        payload = response.json()
+    except Exception:
+        text = response.text
+    else:
+        text = json.dumps(payload, ensure_ascii=False)
+    lowered = str(text or "").lower()
+    return "subscription" in lowered and (
+        "requires" in lowered or "upgrade" in lowered
+    )
 
 
 def _proxy_retry_delay(attempt: int) -> float:
@@ -567,7 +583,15 @@ process_manager.token_mgr = token_manager
 auth_manager = AuthManager(config_manager, token_manager)
 
 model_scanner = ModelScanner(config_manager, process_manager)
-platform_manager = PlatformIntegrationManager(config_manager)
+
+# Ollama Cloud — direct HTTP platform without a local CLI or sidecar.
+_ollama_cloud_catalog = OllamaCloudCatalog()
+ollama_cloud_manager = OllamaCloudAccountManager(config_manager, _ollama_cloud_catalog)
+platform_manager = PlatformIntegrationManager(
+    config_manager,
+    ollama_cloud_account_manager=ollama_cloud_manager,
+    ollama_cloud_catalog=_ollama_cloud_catalog,
+)
 cliproxy_sidecar = CLIProxySidecarManager(platform_manager, log_manager=log_manager)
 cliproxy_auth_manager = CLIProxyAuthManager(platform_manager)
 download_mgr = DownloadManager()
@@ -579,13 +603,11 @@ proxy_router = ProxyRouter(
     ),
     context_limit_resolver=_platform_model_context_limit,
     requested_primary_resolver=_requested_primary_instance,
+    ollama_cloud_account_manager=ollama_cloud_manager,
 )
 audit_recorder = AuditRecorder(log_dir=get_paths().audit_logs_dir)
 context_optimizer = ContextOptimizer(config_manager=config_manager, audit_recorder=audit_recorder)
 
-# Ollama Cloud — account management and catalog
-_ollama_cloud_catalog = OllamaCloudCatalog()
-ollama_cloud_manager = OllamaCloudAccountManager(config_manager, _ollama_cloud_catalog)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -682,6 +704,17 @@ def _hybrid_status() -> Dict[str, Any]:
     return status
 
 
+def _ollama_cloud_auth_status() -> Dict[str, Any]:
+    accounts = ollama_cloud_manager.get_accounts()
+    return {
+        "provider": "ollama-cloud",
+        "authenticated": bool(accounts),
+        "accounts": [account.label or account.id for account in accounts],
+        "default_method": "api-key",
+        "available_methods": ["api-key"],
+    }
+
+
 def _model_catalog_response() -> Dict[str, Any]:
     result = dict(model_scanner.scan() or {})
     auth_status = cliproxy_auth_manager.list_status()
@@ -689,7 +722,11 @@ def _model_catalog_response() -> Dict[str, Any]:
     for item in platform_manager.catalog():
         entry = dict(item)
         provider = entry.get("provider")
-        entry["cliproxy_auth"] = auth_status.get(provider or "", {})
+        entry["cliproxy_auth"] = (
+            _ollama_cloud_auth_status()
+            if provider == "ollama-cloud"
+            else auth_status.get(provider or "", {})
+        )
         platforms.append(entry)
     result["platforms"] = platforms
     return result
@@ -900,9 +937,11 @@ def _platform_detail_payload(backend_id: str) -> Dict[str, Any]:
     runtime = platform_manager.runtime_state(backend_id) or {}
     provider = item.get("provider") or ""
     auth_status = cliproxy_auth_manager.list_status().get(provider, {})
+    if provider == "ollama-cloud":
+        auth_status = _ollama_cloud_auth_status()
     platform_configs = config_manager.get_platform_configs()
     p_cfg = platform_configs.get(backend_id, {})
-    sidecar = cliproxy_sidecar.status()
+    sidecar = {} if provider == "ollama-cloud" else cliproxy_sidecar.status()
     return {
         **item,
         **runtime,
@@ -920,13 +959,47 @@ async def get_platform_detail(
     if not authenticated:
         raise HTTPException(status_code=401)
     payload = _platform_detail_payload(backend_id)
+    provider = payload.get("provider") or ""
     sidecar_port = payload.get("sidecar", {}).get("port")
-    if payload.get("status") == "running" and sidecar_port:
+    if provider == "ollama-cloud" and payload.get("cliproxy_auth", {}).get("authenticated"):
+        cloud_models: List[Dict[str, Any]] = []
+        cloud_accounts = ollama_cloud_manager.get_accounts()
+        for account in cloud_accounts:
+            cloud_provider = OllamaCloudProvider(account)
+            try:
+                cloud_models = await cloud_provider.list_models()
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao listar modelos Ollama Cloud account=%s: %s",
+                    account.id,
+                    exc,
+                )
+            finally:
+                await cloud_provider.close()
+        account_ids = {account.id for account in cloud_accounts}
+        denied = config_manager.get_ollama_cloud_model_denials()
+        cloud_models = [
+            model for model in cloud_models
+            if not account_ids
+            or not account_ids.issubset(
+                set(denied.get(str(model.get("id") or ""), []))
+            )
+        ]
+        platform_catalog = await _fetch_platform_model_catalog()
+        payload["available_models"] = [
+            merge_platform_model_metadata(model, provider, platform_catalog)
+            for model in cloud_models
+        ]
+        payload["cursor_model_ids"] = [
+            platform_model_listing_entry(model, provider=provider)["id"]
+            for model in payload["available_models"]
+        ]
+    elif payload.get("status") == "running" and sidecar_port:
         all_models = await _fetch_sidecar_models(sidecar_port)
         filtered = filter_models_for_provider(
-            all_models, payload.get("provider") or ""
+            all_models, provider
         )
-        provider = payload.get("provider") or ""
         platform_catalog = await _fetch_platform_model_catalog()
         payload["available_models"] = [
             merge_platform_model_metadata(model, provider, platform_catalog)
@@ -2086,7 +2159,32 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("content-length", None)
-        target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
+        cloud_account = None
+        if decision.provider == "ollama-cloud":
+            account_id = str(decision.backend_id or "").rsplit(":", 1)[-1]
+            cloud_account = next(
+                (
+                    account for account in ollama_cloud_manager.get_accounts()
+                    if account.id == account_id
+                ),
+                None,
+            )
+            if cloud_account is None or not cloud_account.api_key:
+                await proxy_router.release(
+                    decision.backend_id, affinity_key=decision.affinity_key
+                )
+                return JSONResponse(
+                    ProxyError(
+                        502,
+                        "Conta Ollama Cloud selecionada nao esta disponivel",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            headers["authorization"] = f"Bearer {cloud_account.api_key}"
+            target_url = f"https://ollama.com/v1/{path}"
+        else:
+            target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
         backend_label = (
             f"platform:{decision.provider or decision.backend_port}"
             if decision.backend_type == "platform"
@@ -2105,6 +2203,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             *,
             status_code: Optional[int] = None,
             response: Optional[httpx.Response] = None,
+            mark_unavailable: bool = True,
         ):
             nonlocal decision, failover_hops, optimized_data, forward_body
             nonlocal prev_backend_key, transport_failover
@@ -2123,11 +2222,12 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 decision.backend_port, cause, failover_hops,
                 sorted(failed_backend_ids),
             )
-            await proxy_router.mark_backend_unavailable(
-                current_id,
-                _proxy_failure_cooldown(status_code, response),
-                reason=cause,
-            )
+            if mark_unavailable:
+                await proxy_router.mark_backend_unavailable(
+                    current_id,
+                    _proxy_failure_cooldown(status_code, response),
+                    reason=cause,
+                )
             try:
                 new_decision = await proxy_router.reassign(
                     decision.affinity_key,
@@ -2214,6 +2314,33 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     headers=headers,
                     backend_label=backend_label,
                 )
+                if cloud_account is not None and upstream.status_code == 403:
+                    denied_content = await upstream.aread()
+                    subscription_denied = _ollama_subscription_denied(upstream)
+                    if subscription_denied:
+                        config_manager.record_ollama_cloud_model_denial(
+                            forward_model, cloud_account.id
+                        )
+                    await upstream.aclose()
+                    await proxy_router.release(
+                        decision.backend_id, affinity_key=decision.affinity_key
+                    )
+                    if subscription_denied:
+                        err = await _failover(
+                            "HTTP 403 subscription_required",
+                            status_code=403,
+                            response=upstream,
+                            mark_unavailable=False,
+                        )
+                        if err is not None:
+                            return err
+                        continue
+                    return Response(
+                        content=denied_content,
+                        status_code=403,
+                        headers=_filter_proxy_headers(dict(upstream.headers)),
+                        media_type=upstream.headers.get("content-type"),
+                    )
                 if _is_retryable_upstream_status(upstream.status_code):
                     status = upstream.status_code
                     failed_response = upstream
@@ -2264,6 +2391,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
 
             usage: Optional[Dict[str, Any]] = None
             failover_cause: Optional[str] = None
+            failover_status: Optional[int] = None
+            failover_mark_unavailable = True
             try:
                 resp = await _proxy_post_with_retry(
                     target_url,
@@ -2271,8 +2400,19 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     headers=headers,
                     backend_label=backend_label,
                 )
-                if _is_retryable_upstream_status(resp.status_code):
+                if (
+                    cloud_account is not None
+                    and _ollama_subscription_denied(resp)
+                ):
+                    config_manager.record_ollama_cloud_model_denial(
+                        forward_model, cloud_account.id
+                    )
+                    failover_cause = "HTTP 403 subscription_required"
+                    failover_status = 403
+                    failover_mark_unavailable = False
+                elif _is_retryable_upstream_status(resp.status_code):
                     failover_cause = f"HTTP {resp.status_code}"
+                    failover_status = resp.status_code
                 else:
                     content = resp.content
                     if decision.rewrite:
@@ -2296,11 +2436,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     usage=usage,
                 )
             if failover_cause:
-                status = int(failover_cause.rsplit(" ", 1)[-1])
                 err = await _failover(
                     failover_cause,
-                    status_code=status,
+                    status_code=failover_status,
                     response=resp,
+                    mark_unavailable=failover_mark_unavailable,
                 )
                 if err is not None:
                     return err
@@ -2346,7 +2486,12 @@ async def openai_proxy(
             data = {}
 
     instances = _hybrid_status().get("instances", [])
-    if not instances:
+    has_ollama_cloud = bool(ollama_cloud_manager.get_accounts())
+    cloud_model_requested = (
+        bool(requested_model)
+        and platform_provider_for_listing(str(requested_model)) == "ollama-cloud"
+    )
+    if not instances and not (has_ollama_cloud and cloud_model_requested):
         raise HTTPException(status_code=503, detail="Nenhum modelo carregado")
 
     proxy_settings = config_manager.get_smart_proxy_settings()
@@ -2389,7 +2534,13 @@ async def openai_proxy(
         # define a primeira escolha. A configuracao global continua servindo
         # para chamadas sem um modelo reconhecivel e para a visao administrativa.
         configured_primary = _find_primary_instance(instances, proxy_settings)
+        requested_provider = platform_provider_for_listing(str(requested_model))
         if (
+            (
+                requested_provider == "ollama-cloud"
+                and has_ollama_cloud
+            )
+            or
             _requested_primary_instance(instances, str(requested_model)) is not None
             or _is_primary_model_request(
                 str(requested_model), proxy_settings, configured_primary, instances

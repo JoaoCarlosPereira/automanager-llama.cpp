@@ -576,6 +576,50 @@ class ConfigManager:
             for acc in accounts
         ]
 
+    def get_ollama_cloud_accounts_raw(self) -> list[dict]:
+        """Return Ollama Cloud accounts for internal authenticated use only."""
+        config = self.load()
+        accounts = config.get("ollama_cloud_accounts")
+        if not isinstance(accounts, list):
+            return []
+        return [dict(acc) for acc in accounts if isinstance(acc, dict)]
+
+    def get_ollama_cloud_model_denials(self) -> dict[str, list[str]]:
+        """Return model ids denied with subscription-required, by account id."""
+        raw = self.load().get("ollama_cloud_model_denials")
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(model_id): [str(account_id) for account_id in account_ids]
+            for model_id, account_ids in raw.items()
+            if isinstance(account_ids, list)
+        }
+
+    def record_ollama_cloud_model_denial(
+        self, model_id: str, account_id: str
+    ) -> None:
+        model_id = str(model_id or "").strip()
+        account_id = str(account_id or "").strip()
+        if not model_id or not account_id:
+            return
+        config = self.load()
+        denials = config.get("ollama_cloud_model_denials")
+        if not isinstance(denials, dict):
+            denials = {}
+        account_ids = denials.get(model_id)
+        if not isinstance(account_ids, list):
+            account_ids = []
+        if account_id not in account_ids:
+            account_ids.append(account_id)
+        denials[model_id] = account_ids
+        config["ollama_cloud_model_denials"] = denials
+        self.save(config)
+
+    def clear_ollama_cloud_model_denials(self) -> None:
+        config = self.load()
+        if config.pop("ollama_cloud_model_denials", None) is not None:
+            self.save(config)
+
     def add_ollama_cloud_account(self, api_key: str, label: str = "") -> dict:
         """Add a new Ollama Cloud account and return it (with masked api_key).
 

@@ -26,7 +26,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from proxy_router import ProxyRouter, DEFAULT_BACKEND_COOLDOWN_SECONDS
+from proxy_router import (
+    ProxyRouter,
+    StickySession,
+    DEFAULT_BACKEND_COOLDOWN_SECONDS,
+)
 from platform_ollama_cloud import OllamaCloudAccount, OllamaCloudAccountManager, OllamaCloudCatalog
 
 
@@ -262,7 +266,11 @@ class TestCandidatesIncludesOllamaCloud:
         router = _make_router(mgr)
         # Mock _backend_available for instances (none provided)
         instances = []
-        config = {}
+        config = {
+            "platform_configs": {
+                "platform:ollama-cloud": {"proxy_eligible": True},
+            },
+        }
         candidates = router._candidates(
             instances, config, None, 0, False,
             exclude_backend_ids=None,
@@ -435,3 +443,79 @@ class TestFullFailoverFlow:
         # Phase 4: Both available again
         assert any(c["account_id"] == "a1" for c in candidates)
         assert any(c["account_id"] == "a2" for c in candidates)
+
+
+class TestProviderSafeReassign:
+    @staticmethod
+    def _router_with_cli_and_cloud():
+        acc_a = _make_account("a1", "Account A")
+        acc_b = _make_account("a2", "Account B")
+        router = _make_router(_make_manager([acc_a, acc_b]))
+        router._get_status = lambda: {
+            "instances": [
+                {
+                    "backend_id": "platform:codex",
+                    "backend_type": "platform",
+                    "provider": "codex",
+                    "status": "running",
+                    "port": 8317,
+                    "model": "Codex",
+                    "model_path": "",
+                    "config": {},
+                }
+            ]
+        }
+        router._config.get_config.return_value = {
+            "model_configs": {},
+            "platform_configs": {
+                "platform:ollama-cloud": {"proxy_eligible": True},
+                "platform:codex": {"proxy_eligible": True},
+            },
+        }
+        cloud_a = next(
+            item for item in router._routing_instances()
+            if item.get("account_id") == "a1"
+        )
+        router._sessions["sid:test"] = StickySession(
+            affinity_key="sid:test",
+            backend_port=cloud_a["port"],
+            backend_model_path="",
+            external_model="gemma4:31b-custom.gguf",
+            internal_model="gemma4:31b",
+            detected_tag=None,
+            created_at="2026-01-01T00:00:00+00:00",
+            last_used_at="2026-01-01T00:00:00+00:00",
+            backend_id=cloud_a["backend_id"],
+            backend_type="platform",
+            provider="ollama-cloud",
+        )
+        return router, cloud_a
+
+    def test_uses_second_ollama_account_before_other_platform(self):
+        router, cloud_a = self._router_with_cli_and_cloud()
+        decision = asyncio.run(
+            router.reassign(
+                "sid:test",
+                exclude_backend_ids={cloud_a["backend_id"]},
+                reason="test_account_failover",
+            )
+        )
+        assert decision is not None
+        assert decision.provider == "ollama-cloud"
+        assert decision.backend_id.endswith(":a2")
+
+    def test_uses_other_platform_only_after_all_ollama_accounts_fail(self):
+        router, cloud_a = self._router_with_cli_and_cloud()
+        decision = asyncio.run(
+            router.reassign(
+                "sid:test",
+                exclude_backend_ids={
+                    cloud_a["backend_id"],
+                    "platform:ollama-cloud:a2",
+                },
+                reason="test_provider_fallback",
+            )
+        )
+        assert decision is not None
+        assert decision.provider == "codex"
+        assert decision.backend_id == "platform:codex"
