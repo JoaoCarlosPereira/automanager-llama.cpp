@@ -1907,6 +1907,15 @@ def _forward_model_for_backend(
     return resolve_platform_listing_model(model_name, _local_model_ids(instances))
 
 
+def _normalize_ollama_cloud_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize OpenAI fields unsupported by Ollama's compatible API."""
+    normalized = dict(payload)
+    max_completion_tokens = normalized.pop("max_completion_tokens", None)
+    if "max_tokens" not in normalized and max_completion_tokens is not None:
+        normalized["max_tokens"] = max_completion_tokens
+    return normalized
+
+
 async def _resolve_forward_model(
     model_name: str,
     target_instance: Dict[str, Any],
@@ -2273,8 +2282,15 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             instances,
             route_headers,
         )
+        payload_to_forward = optimized_data
+        if (
+            decision.provider == "ollama-cloud"
+            or str(decision_instance.get("provider") or "").strip().lower()
+            == "ollama-cloud"
+        ):
+            payload_to_forward = _normalize_ollama_cloud_payload(optimized_data)
         forward_body = json.dumps(
-            {**optimized_data, "model": forward_model}, ensure_ascii=False
+            {**payload_to_forward, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
         headers = dict(request.headers)
         headers.pop("host", None)

@@ -142,6 +142,32 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+class TestOllamaCloudPayload:
+    def test_translates_max_completion_tokens(self):
+        payload = {
+            "model": "gemma4:31b",
+            "messages": [{"role": "user", "content": "Oi"}],
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 256
+        assert "max_completion_tokens" not in normalized
+        assert "max_completion_tokens" in payload
+
+    def test_preserves_explicit_max_tokens(self):
+        payload = {
+            "max_tokens": 128,
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 128
+        assert "max_completion_tokens" not in normalized
+
+
 # ---------------------------------------------------------------------------
 # Task 04 — desvio /v1, filtro /v1/models, transparência não-stream
 # ---------------------------------------------------------------------------
@@ -1338,4 +1364,3 @@ class TestTask08ContextOptimizerIntegration:
         mock_post.assert_not_called()
         assert smart_env.router._sessions == {}
         assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
-
