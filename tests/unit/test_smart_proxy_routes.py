@@ -15,7 +15,11 @@ import llama_manager
 from config_manager import ConfigManager
 from llama_manager import app, auth_manager
 from proxy_router import ProxyRouter
-from platform_manager import platform_model_listing_id
+from platform_manager import (
+    clear_platform_listing_registry,
+    platform_model_listing_id,
+    register_platform_bare_model,
+)
 
 client = TestClient(app)
 
@@ -239,6 +243,39 @@ class TestSmartRouting:
         assert target_url == "http://127.0.0.1:9100/v1/chat/completions"
         sent_payload = json.loads(mock_post.await_args.kwargs["content"])
         assert sent_payload["model"] == "codex-default.gguf"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_model_alias_uses_configured_target_inside_smart_proxy(
+        self, mock_post, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        smart_env.cfg.set_model_alias("gpt-5.5", "codex-target")
+        clear_platform_listing_registry()
+        register_platform_bare_model("codex-target", provider="codex")
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-alias", "model": "codex-target"}
+        )
+        try:
+            response = client.post(
+                "/v1/chat/completions",
+                json=chat_body(model="gpt-5.5"),
+            )
+        finally:
+            clear_platform_listing_registry()
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        assert mock_post.await_args.args[0] == (
+            "http://127.0.0.1:9100/v1/chat/completions"
+        )
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "codex-target"
+        assert response.json()["model"] == "gpt-5.5"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_primary_model_routed_with_internal_rewrite(

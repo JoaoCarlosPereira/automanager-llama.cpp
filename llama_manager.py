@@ -1866,6 +1866,10 @@ async def _ensure_platform_listing_registry(
                 root = str(m.get("id") or "")
                 if not root or should_skip_platform_model_listing(root, local_ids):
                     continue
+                # Keep bare provider IDs resolvable too. Model aliases such as
+                # gpt-5.5 -> gpt-5.6-luna must enter Smart Proxy routing with
+                # the configured platform as their requested primary.
+                register_platform_bare_model(root, provider=provider)
                 register_platform_model_listings(root, provider)
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
             logger.warning(
@@ -2141,7 +2145,12 @@ async def _primary_only_models_response(
     return JSONResponse({"object": "list", "data": entries[:1]})
 
 
-async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]):
+async def _smart_proxy_forward(
+    request: Request,
+    path: str,
+    data: Dict[str, Any],
+    client_model: Optional[str] = None,
+):
     """Encaminha uma requisição ao modelo principal via ProxyRouter (PRD F4-F8)."""
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")
@@ -2582,7 +2591,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         if dec.rewrite:
                             # Reescrita por linha (ADR-006)
                             async for chunk in rewrite_sse_stream(
-                                response.aiter_bytes(), dec.external_model,
+                                response.aiter_bytes(), client_model or dec.external_model,
                                 usage_holder,
                             ):
                                 yield chunk
@@ -2638,12 +2647,9 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     return _unsupported_custom_tools_response(data)
                 else:
                     content = resp.content
-                    if decision.rewrite:
-                        content, usage = rewrite_json_model(
-                            content, decision.external_model
-                        )
-                    else:
-                        _, usage = rewrite_json_model(content, decision.external_model)
+                    content, usage = rewrite_json_model(
+                        content, client_model or decision.external_model
+                    )
                     response_headers = _filter_proxy_headers(dict(resp.headers))
                     response_headers.update(telemetry)
                     return Response(
@@ -2757,6 +2763,7 @@ async def openai_proxy(
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     if proxy_enabled and request.method == "POST" and requested_model:
+        alias_requested = external_model_name is not None
         # Principal dinamico: o modelo explicitamente invocado pelo cliente
         # define a primeira escolha. A configuracao global continua servindo
         # para chamadas sem um modelo reconhecivel e para a visao administrativa.
@@ -2768,12 +2775,19 @@ async def openai_proxy(
                 and has_ollama_cloud
             )
             or
+            alias_requested
+            or
             _requested_primary_instance(instances, str(requested_model)) is not None
             or _is_primary_model_request(
                 str(requested_model), proxy_settings, configured_primary, instances
             )
         ):
-            return await _smart_proxy_forward(request, path, data)
+            return await _smart_proxy_forward(
+                request,
+                path,
+                data,
+                client_model=client_requested_model,
+            )
 
     target_instance = _find_target_instance(instances, requested_model)
     forward_model = await _resolve_forward_model(

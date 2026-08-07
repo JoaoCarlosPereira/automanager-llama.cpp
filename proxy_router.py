@@ -33,6 +33,7 @@ from context_optimizer import (
     derive_target_capabilities,
     resolve_model_limits,
 )
+from platform_manager import platform_provider_for_listing
 from schemas import (
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_MAX_PARALLEL_REQUESTS,
@@ -964,6 +965,16 @@ class ProxyRouter:
                 == requested_norm
             )
         ]
+        platform_provider = platform_provider_for_listing(requested_model)
+        if platform_provider:
+            platform_matches = [
+                instance
+                for instance in instances
+                if self._backend_type(instance) == "platform"
+                and str(instance.get("provider") or "") == platform_provider
+            ]
+            if platform_matches:
+                return min(platform_matches, key=lambda item: item["port"])
         return min(matches, key=lambda item: item["port"]) if matches else None
 
     def backends_snapshot(self) -> List[Dict[str, Any]]:
@@ -1695,6 +1706,7 @@ class ProxyRouter:
         configured_primary_active = (
             primary is not None and self._backend_available(primary)
         )
+        custom_tools_requested = _has_custom_tools(body)
         custom_platform_selected = False
 
         # llama-server supports function tools, but not Cursor's free-form
@@ -1702,10 +1714,7 @@ class ProxyRouter:
         # a local primary, move it to an eligible platform backend before
         # committing the route.  The client-facing model remains unchanged;
         # _internal_model() selects the platform's configured default model.
-        if (
-            _has_custom_tools(body)
-            and (primary is None or self._backend_type(primary) != "platform")
-        ):
+        if custom_tools_requested:
             platform_candidates = [
                 instance
                 for instance in self._candidates(
@@ -1735,6 +1744,42 @@ class ProxyRouter:
                     primary_backend_id,
                     primary.get("provider"),
                 )
+            else:
+                # If the current primary is a platform but all its eligible
+                # capacity is occupied, do not fall back to a local backend
+                # that cannot parse custom tools. Permit the router's dynamic
+                # capacity policy to keep the request on a platform.
+                platform_candidates = [
+                    instance
+                    for instance in self._candidates(
+                        instances,
+                        config,
+                        None,
+                        0,
+                        ignore_capacity=True,
+                        external_model=external_model,
+                        configured_primary_backend_id=configured_backend_id,
+                    )
+                    if self._backend_type(instance) == "platform"
+                ]
+                if platform_candidates:
+                    primary = self._pick_for_dynamic_growth(
+                        platform_candidates, config, configured_backend_id
+                    )
+                    primary_port = primary["port"]
+                    primary_backend_id = self._backend_id(primary)
+                    custom_platform_selected = True
+                    logger.info(
+                        "[proxy] custom tools using platform capacity backend=%s provider=%s",
+                        primary_backend_id,
+                        primary.get("provider"),
+                    )
+                elif primary is not None and self._backend_type(primary) == "platform":
+                    raise ProxyError(
+                        503,
+                        "Nenhum backend de plataforma disponivel para ferramentas custom.",
+                        code="no_backend",
+                    )
 
         if not configured_primary_active and not custom_platform_selected:
             fallback = self._candidates(
