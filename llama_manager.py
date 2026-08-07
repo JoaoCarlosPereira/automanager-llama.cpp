@@ -69,6 +69,7 @@ from platform_manager import (
     platform_listing_registry_populated,
     platform_model_listing_entry,
     platform_model_listing_id,
+    register_platform_bare_model,
     platform_provider_for_listing,
     register_platform_model_listings,
     resolve_platform_listing_model,
@@ -419,6 +420,38 @@ _PLATFORM_MODEL_CATALOG_URL = (
 _platform_model_catalog_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _platform_model_catalog_loaded_at = 0.0
 _platform_model_catalog_lock = asyncio.Lock()
+_ollama_cloud_model_catalog: Dict[str, Dict[str, Any]] = {}
+_ollama_cloud_model_catalog_loaded_at = 0.0
+_ollama_cloud_model_catalog_lock = asyncio.Lock()
+
+# Ollama Cloud's /v1/models response currently exposes the model ID but not
+# the model limits. Keep conservative, provider-published defaults for models
+# whose metadata is incomplete so the context optimizer can enforce the real
+# target budget instead of treating the model as unknown.
+_OLLAMA_CLOUD_MODEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "gemma4:31b": {
+        "context_length": 262144,
+        "capabilities": ["text", "vision", "tools"],
+    },
+}
+
+
+def _platform_model_metadata(
+    provider: str,
+    model_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Return catalog metadata for a concrete platform model."""
+    normalized_provider = str(provider or "").strip().lower()
+    bare_model = resolve_platform_listing_model(str(model_name or ""))
+    provider_catalog = (
+        _ollama_cloud_model_catalog
+        if normalized_provider == "ollama-cloud"
+        else _platform_model_catalog_cache.get(normalized_provider)
+    )
+    if not isinstance(provider_catalog, dict):
+        return None
+    metadata = provider_catalog.get(bare_model)
+    return metadata if isinstance(metadata, dict) else None
 
 
 def _catalog_provider(group: str) -> Optional[str]:
@@ -503,10 +536,7 @@ def _platform_model_context_limit(
     """Return the catalog context limit for one concrete platform model."""
     provider = str(instance.get("provider") or "").strip().lower()
     bare_model = resolve_platform_listing_model(str(model_name or ""))
-    provider_catalog = _platform_model_catalog_cache.get(provider)
-    if not isinstance(provider_catalog, dict):
-        return None
-    metadata = provider_catalog.get(bare_model)
+    metadata = _platform_model_metadata(provider, bare_model)
     if not isinstance(metadata, dict):
         requested_provider = platform_provider_for_listing(str(model_name or ""))
         return 0 if requested_provider and requested_provider != provider else None
@@ -713,6 +743,90 @@ def _ollama_cloud_auth_status() -> Dict[str, Any]:
         "default_method": "api-key",
         "available_methods": ["api-key"],
     }
+
+
+async def _ensure_ollama_cloud_model_registry(
+    instances: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> None:
+    """Discover and register Ollama Cloud model IDs before routing.
+
+    Ollama Cloud is a direct HTTP backend, so it does not have a sidecar
+    ``/v1/models`` endpoint that the generic platform registry can inspect.
+    Populate the same listing registry from the provider catalog, including
+    the bare provider ID (for example ``gemma4:31b``) and its virtual API
+    listing (``gemma4:31b-custom.gguf``).
+    """
+    global _ollama_cloud_model_catalog_loaded_at
+
+    if instances is not None and not any(
+        str(inst.get("provider") or "").strip().lower() == "ollama-cloud"
+        for inst in instances
+    ):
+        return
+    accounts = ollama_cloud_manager.get_accounts()
+    if not accounts:
+        return
+    now = time.monotonic()
+    if (
+        _ollama_cloud_model_catalog
+        and not force
+        and now - _ollama_cloud_model_catalog_loaded_at < 600
+    ):
+        return
+
+    async with _ollama_cloud_model_catalog_lock:
+        now = time.monotonic()
+        if (
+            _ollama_cloud_model_catalog
+            and not force
+            and now - _ollama_cloud_model_catalog_loaded_at < 600
+        ):
+            return
+
+        discovered: List[Dict[str, Any]] = []
+        for account in accounts:
+            provider = OllamaCloudProvider(account)
+            try:
+                discovered = await provider.list_models()
+                if discovered:
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao descobrir modelos Ollama Cloud account=%s: %s",
+                    account.id,
+                    exc,
+                )
+            finally:
+                await provider.close()
+
+        for model in discovered:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+            enriched_model = dict(_OLLAMA_CLOUD_MODEL_DEFAULTS.get(model_id, {}))
+            enriched_model.update(model)
+            _ollama_cloud_model_catalog[model_id] = enriched_model
+            register_platform_bare_model(model_id, provider="ollama-cloud")
+            register_platform_model_listings(model_id, provider="ollama-cloud")
+        _ollama_cloud_model_catalog_loaded_at = time.monotonic()
+
+
+async def _ollama_cloud_models_for_listing(
+    instances: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return Ollama Cloud models in the same public shape as other platforms."""
+    await _ensure_ollama_cloud_model_registry(instances)
+    local_ids = _local_model_ids(instances)
+    models: List[Dict[str, Any]] = []
+    for model in _ollama_cloud_model_catalog.values():
+        model_id = str(model.get("id") or "")
+        if not model_id or should_skip_platform_model_listing(model_id, local_ids):
+            continue
+        models.append(platform_model_listing_entry(model, provider="ollama-cloud"))
+    return models
 
 
 def _model_catalog_response() -> Dict[str, Any]:
@@ -1595,6 +1709,12 @@ async def _aggregate_models_response(
                 continue
             seen_ids.add(model_id)
             merged.append(model)
+    for model in await _ollama_cloud_models_for_listing(instances):
+        model_id = model.get("id")
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        merged.append(model)
     return JSONResponse({"object": "list", "data": merged})
 
 
@@ -2008,10 +2128,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             model_metadata = None
             if planned_decision.backend_type == "platform":
                 provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                provider_catalog = _platform_model_catalog_cache.get(provider)
-                if isinstance(provider_catalog, dict):
-                    model_metadata = provider_catalog.get(bare_model)
+                model_metadata = _platform_model_metadata(
+                    provider,
+                    str(planned_decision.internal_model or data.get("model") or ""),
+                )
 
             try:
                 opt_result = await context_optimizer.optimize(
@@ -2043,10 +2163,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     cand_meta = None
                     if cand_inst.get("backend_type") == "platform":
                         prov = str(cand_inst.get("provider") or "").strip().lower()
-                        bare = resolve_platform_listing_model(str(cand_inst.get("model") or data.get("model") or ""))
-                        prov_cat = _platform_model_catalog_cache.get(prov)
-                        if isinstance(prov_cat, dict):
-                            cand_meta = prov_cat.get(bare)
+                        cand_meta = _platform_model_metadata(
+                            prov,
+                            str(cand_inst.get("model") or data.get("model") or ""),
+                        )
                     return resolve_model_limits(cand_inst, cand_meta), derive_target_capabilities(cand_inst, cand_meta)
 
                 def _fits_cand(cand_inst: Dict[str, Any], cand_ctx: int) -> bool:
@@ -2074,10 +2194,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     )
                     if planned_decision.backend_type == "platform":
                         provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                        bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                        provider_catalog = _platform_model_catalog_cache.get(provider)
-                        if isinstance(provider_catalog, dict):
-                            model_metadata = provider_catalog.get(bare_model)
+                        model_metadata = _platform_model_metadata(
+                            provider,
+                            str(planned_decision.internal_model or data.get("model") or ""),
+                        )
                     limits = resolve_model_limits(decision_instance, model_metadata)
                     target_caps = derive_target_capabilities(decision_instance, model_metadata)
                     budget = calculate_target_budget(data, limits, target_caps)
@@ -2487,6 +2607,10 @@ async def openai_proxy(
 
     instances = _hybrid_status().get("instances", [])
     has_ollama_cloud = bool(ollama_cloud_manager.get_accounts())
+    if has_ollama_cloud:
+        # Register bare provider IDs before model aliases and routing are
+        # resolved (e.g. ``gemma4:31b`` must select Ollama Cloud, not Codex).
+        await _ensure_ollama_cloud_model_registry(instances)
     cloud_model_requested = (
         bool(requested_model)
         and platform_provider_for_listing(str(requested_model)) == "ollama-cloud"
