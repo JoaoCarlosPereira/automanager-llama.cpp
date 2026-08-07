@@ -305,8 +305,8 @@ def test_html_contains_proxy_monitor_panel(html):
     assert 'id="optimizer-enabled-toggle"' in html
     assert 'id="optimizer-audit-toggle"' in html
     assert 'id="audit-log-list"' in html
-    assert 'id="resolve-payload-input"' in html
-    assert 'resolveWithPreview()' in html
+    assert 'id="resolve-payload-input"' not in html
+    assert "resolveWithPreview()" not in html
 
 
 def test_html_proxy_toggle_checked_state_follows_config(client, mock_index_deps):

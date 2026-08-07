@@ -3734,18 +3734,6 @@ def _build_html(
                             <input type="hidden" id="audit-log-page" value="1">
                         </div>
 
-                        <!-- Resolve Preview Panel -->
-                        <div class="p-3 rounded-xl border border-violet-700/40 bg-violet-950/20 space-y-2">
-                            <div class="flex items-center gap-2 mb-2">
-                                <i class="fas fa-search text-violet-400"></i>
-                                <p class="text-ui-label font-black text-slate-300 uppercase tracking-widest">Resolve Preview</p>
-                            </div>
-                            <textarea id="resolve-payload-input" class="w-full h-20 px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-ui-label text-slate-200 font-mono resize-none" placeholder='{{"model":"...","messages":[]}}'></textarea>
-                            <button type="button" onclick="resolveWithPreview()" class="px-3 py-1.5 rounded-lg bg-violet-800/80 text-ui-label font-bold uppercase tracking-widest text-violet-300 hover:text-white hover:bg-violet-900/60 border border-violet-700/60 transition-all">
-                                <i class="fas fa-play mr-1.5"></i>Resolver
-                            </button>
-                            <div id="resolve-result" class="mt-2 text-ui-label text-slate-400"></div>
-                        </div>
                     </div>
                 </div>
             </section>
