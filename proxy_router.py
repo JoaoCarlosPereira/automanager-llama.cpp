@@ -491,7 +491,7 @@ class ProxyRouter:
     def _resolve_flight_key(self, key: str | int) -> str:
         if isinstance(key, str):
             return key
-        for inst in self._running_instances():
+        for inst in self._routing_instances():
             if inst.get("port") == key:
                 return self._backend_id(inst)
         return f"port:{key}"
@@ -533,7 +533,7 @@ class ProxyRouter:
     def set_backend_enabled(self, port: int, enabled: bool) -> None:
         if enabled:
             self._disabled_ports.discard(port)
-            for instance in self._running_instances():
+            for instance in self._routing_instances():
                 if instance.get("port") == port:
                     self._unavailable_until.pop(self._backend_id(instance), None)
         else:
@@ -614,8 +614,9 @@ class ProxyRouter:
                 "backend_id": bid,
                 "backend_type": "platform",
                 "provider": "ollama-cloud",
+                "status": "running",
                 "port": synthetic_port,
-                "model": "",
+                "model": account.label or "Ollama Cloud",
                 "model_path": "",
                 "config": {},
                 "account_id": account.id,
@@ -750,6 +751,16 @@ class ProxyRouter:
             if inst.get("status") == "running" and inst.get("port") is not None
         ]
 
+    def _routing_instances(self) -> List[Dict[str, Any]]:
+        """Return local/sidecar instances plus direct Ollama Cloud accounts."""
+        instances = self._running_instances()
+        known_ids = {self._backend_id(inst) for inst in instances}
+        instances.extend(
+            inst for inst in self._ollama_cloud_candidates()
+            if self._backend_id(inst) not in known_ids
+        )
+        return instances
+
     def _model_flags(self, model_configs: dict, model_path: str) -> Tuple[bool, int]:
         cfg = lookup_model_config(model_configs, model_path or "")
         eligible = cfg.get("proxy_eligible", DEFAULT_PROXY_ELIGIBLE)
@@ -776,6 +787,13 @@ class ProxyRouter:
         if model_path:
             return f"local:{normalize_model_path(model_path)}"
         return f"local:{instance.get('port')}"
+
+    def _config_backend_id(self, instance: Dict[str, Any]) -> str:
+        """Map per-account cloud backends to their shared platform config."""
+        backend_id = self._backend_id(instance)
+        if instance.get("provider") == "ollama-cloud":
+            return "platform:ollama-cloud"
+        return backend_id
 
     def benchmark_key(self, instance: Dict[str, Any]) -> str:
         """Identidade estavel usada pelo ranking entre reinicializacoes."""
@@ -819,7 +837,7 @@ class ProxyRouter:
     ) -> Tuple[bool, int]:
         if self._backend_type(instance) == "platform":
             cfg = lookup_platform_config(
-                config.get("platform_configs", {}), self._backend_id(instance)
+                config.get("platform_configs", {}), self._config_backend_id(instance)
             )
             eligible = cfg.get("proxy_eligible", False)
             max_parallel = cfg.get(
@@ -838,7 +856,7 @@ class ProxyRouter:
             return None
         config = self._config.get_config()
         cfg = lookup_platform_config(
-            config.get("platform_configs", {}), self._backend_id(instance)
+            config.get("platform_configs", {}), self._config_backend_id(instance)
         )
         value = cfg.get("default_model")
         return value or None
@@ -897,6 +915,7 @@ class ProxyRouter:
             matches = [
                 inst for inst in instances
                 if self._backend_id(inst) == primary_backend_id
+                or self._config_backend_id(inst) == primary_backend_id
             ]
             if not matches:
                 return None
@@ -947,14 +966,17 @@ class ProxyRouter:
         )
         config = self._config.get_config()
         snapshot = []
-        for inst in self._running_instances():
+        for inst in self._routing_instances():
             port = inst["port"]
             model_path = inst.get("model_path")
             backend_id = self._backend_id(inst)
             backend_type = self._backend_type(inst)
             eligible, max_parallel = self._backend_flags(config, inst)
             if primary_backend_id:
-                is_primary = backend_id == primary_backend_id
+                is_primary = (
+                    backend_id == primary_backend_id
+                    or self._config_backend_id(inst) == primary_backend_id
+                )
             else:
                 is_primary = (
                     primary_norm is not None
@@ -1038,10 +1060,22 @@ class ProxyRouter:
     ) -> List[Dict[str, Any]]:
         """Backends elegíveis para NOVA sessão (PRD F6)."""
         result = []
-        for inst in instances:
+        all_instances = list(instances)
+        known_ids = {self._backend_id(inst) for inst in all_instances}
+        all_instances.extend(
+            inst for inst in self._ollama_cloud_candidates(
+                exclude_backend_ids=exclude_backend_ids
+            )
+            if self._backend_id(inst) not in known_ids
+        )
+        for inst in all_instances:
             port = inst["port"]
             backend_id = self._backend_id(inst)
-            if exclude_backend_ids and backend_id in exclude_backend_ids:
+            config_backend_id = self._config_backend_id(inst)
+            if exclude_backend_ids and (
+                backend_id in exclude_backend_ids
+                or config_backend_id in exclude_backend_ids
+            ):
                 continue
             if exclude_ports and port in exclude_ports:
                 continue
@@ -1050,6 +1084,7 @@ class ProxyRouter:
             eligible, max_parallel = self._backend_flags(config, inst)
             is_primary = (
                 backend_id == configured_primary_backend_id
+                or config_backend_id == configured_primary_backend_id
                 if configured_primary_backend_id
                 else port == primary_port
             )
@@ -1065,12 +1100,6 @@ class ProxyRouter:
             if not ignore_capacity and self.in_flight_for(inst) >= max_parallel:
                 continue
             result.append(inst)
-        # Append Ollama Cloud account backends (Task 07)
-        ollama_candidates = self._ollama_cloud_candidates(
-            exclude_backend_ids=exclude_backend_ids,
-        )
-        if ollama_candidates:
-            result.extend(ollama_candidates)
         return result
 
     def _pick_least_busy(
@@ -1319,7 +1348,7 @@ class ProxyRouter:
         async with self._lock:
             self._expire_locked()
             affinity_key, tag = self.extract_affinity(headers, body, client_ip, user_agent)
-            instances = self._running_instances()
+            instances = self._routing_instances()
             config = self._config.get_config()
             settings = self._settings()
 
@@ -1465,7 +1494,7 @@ class ProxyRouter:
                 )
 
             decision = plan.decision
-            instances = self._running_instances()
+            instances = self._routing_instances()
             target_inst = None
             if decision.backend_id:
                 target_inst = next(
@@ -1608,7 +1637,7 @@ class ProxyRouter:
         needed_ctx = int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
         est_tokens = self.estimate_prompt_tokens(body)
 
-        instances = self._running_instances()
+        instances = self._routing_instances()
         config = self._config.get_config()
         requested_model = str(body.get("model") or "")
         requested_primary = self._find_requested_primary(instances, requested_model)
@@ -2098,7 +2127,7 @@ class ProxyRouter:
             if session is None:
                 return None
             settings = self._settings()
-            instances = self._running_instances()
+            instances = self._routing_instances()
             primary = self._find_primary(instances, settings)
             config = self._config.get_config()
             primary_backend_id = (
@@ -2114,25 +2143,36 @@ class ProxyRouter:
             if exclude_current and session.backend_id and len(instances) > 1:
                 excluded.add(session.backend_id)
 
-            # Principal tem prioridade absoluta: se estiver livre e nao for o
-            # backend que acabou de falhar, reatribui pra ele antes de
-            # considerar qualquer secundario.
             chosen = None
-            if (
+            candidates = self._candidates(
+                instances, config, primary["port"] if primary else None, 0,
+                ignore_capacity=True,
+                exclude_backend_ids=excluded or None,
+            )
+            # Em failover, esgote primeiro as contas do mesmo provedor da
+            # sessao. So atravesse para outra plataforma quando nenhuma conta
+            # daquele provedor continuar elegivel.
+            preferred_provider = session.provider
+            preferred_candidates = [
+                inst for inst in candidates
+                if preferred_provider
+                and inst.get("provider") == preferred_provider
+            ]
+            if preferred_candidates:
+                chosen = self._pick_for_dynamic_growth(
+                    preferred_candidates, config, primary_backend_id
+                )
+
+            if chosen is None and (
                 primary is not None
                 and self._backend_available(primary)
-                and primary_backend_id not in excluded
+                and self._backend_id(primary) not in excluded
             ):
                 _, primary_max = self._backend_flags(config, primary)
                 if self.in_flight_for(primary) < primary_max:
                     chosen = primary
 
             if chosen is None:
-                candidates = self._candidates(
-                    instances, config, primary["port"] if primary else None, 0,
-                    ignore_capacity=True,
-                    exclude_backend_ids=excluded or None,
-                )
                 # Plataformas primeiro: com o principal indisponível, a
                 # próxima integração de plataforma assume; backends locais
                 # só entram quando nenhuma plataforma está disponível.

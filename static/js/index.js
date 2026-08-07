@@ -1,5 +1,5 @@
 import { state } from './state.js?v=4.2.12';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.18';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.19';
 import { cancelAutoBalance } from './gpu.js?v=4.2.12';
 import {
     syncContextSizeCustomVisibility,
@@ -16,14 +16,14 @@ import {
     startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-    startCliproxyAuth, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
+    startCliproxyAuth, manageOllamaCloudAuth, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart,
-} from './models.js?v=4.2.18';
+} from './models.js?v=4.2.19';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.12';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
-} from './proxy.js?v=4.2.18';
+} from './proxy.js?v=4.2.19';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -45,6 +45,7 @@ win.startModel = startModel;
 win.startPlatform = startPlatform;
 win.stopPlatform = stopPlatform;
 win.startCliproxyAuth = startCliproxyAuth;
+win.manageOllamaCloudAuth = manageOllamaCloudAuth;
 win.closeCliproxyAuthModal = closeCliproxyAuthModal;
 win.cancelCliproxyAuth = cancelCliproxyAuth;
 win.submitCliproxyAuthCallback = submitCliproxyAuthCallback;

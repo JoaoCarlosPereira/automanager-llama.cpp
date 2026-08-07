@@ -480,9 +480,9 @@ class OllamaCloudProvider:
         return payload.get("data", [])
 
     async def health_check(self) -> bool:
-        """HEAD /v1/models — lightweight availability check."""
+        """GET /v1/models — validate credentials and API availability."""
         try:
-            resp = await self._client.head("/models")
+            resp = await self._client.get("/models")
             return resp.status_code < 400
         except Exception:
             return False
@@ -582,13 +582,13 @@ class OllamaCloudAccountManager:
 
     def get_accounts(self) -> List[OllamaCloudAccount]:
         """Return all accounts stored in ConfigManager as ``OllamaCloudAccount`` objects."""
-        raw_accounts = self.config_manager.get_ollama_cloud_accounts()
+        raw_accounts = self.config_manager.get_ollama_cloud_accounts_raw()
         accounts: List[OllamaCloudAccount] = []
         for acc in raw_accounts:
             accounts.append(
                 OllamaCloudAccount(
                     id=acc["id"],
-                    api_key="",  # api_key is masked at config level
+                    api_key=acc.get("api_key", ""),
                     label=acc.get("label", ""),
                     status="available",
                 )

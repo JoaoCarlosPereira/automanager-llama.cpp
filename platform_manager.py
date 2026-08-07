@@ -50,6 +50,18 @@ class ExecutableDetection:
     reason: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Platforms without a local CLI executable (e.g. Ollama Cloud)
+# ---------------------------------------------------------------------------
+
+DEFAULT_OLLAMA_CLOUD_DEFINITION = PlatformDefinition(
+    backend_id="platform:ollama-cloud",
+    provider="ollama-cloud",
+    display_name="Ollama Cloud",
+    command_candidates=(),  # no CLI
+    has_cli=False,
+)
+
 DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
     PlatformDefinition(
         backend_id="platform:codex",
@@ -69,18 +81,7 @@ DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         display_name="Google Antigravity",
         command_candidates=("agy", "antigravity", "antigravity.cmd", "antigravity.exe"),
     ),
-)
-
-# ---------------------------------------------------------------------------
-# Platforms without a local CLI executable (e.g. Ollama Cloud)
-# ---------------------------------------------------------------------------
-
-DEFAULT_OLLAMA_CLOUD_DEFINITION = PlatformDefinition(
-    backend_id="platform:ollama-cloud",
-    provider="ollama-cloud",
-    display_name="Ollama Cloud",
-    command_candidates=(),  # no CLI
-    has_cli=False,
+    DEFAULT_OLLAMA_CLOUD_DEFINITION,
 )
 
 DEFAULT_CLIPROXY_CANDIDATES = (
@@ -113,6 +114,7 @@ CURSOR_BLOCKED_MODEL_TOKENS = (
 
 # listing_id exposto na API -> id real do sidecar
 _PLATFORM_LISTING_REGISTRY: Dict[str, str] = {}
+_PLATFORM_LISTING_PROVIDER_REGISTRY: Dict[str, str] = {}
 
 
 def merge_platform_model_metadata(
@@ -158,11 +160,16 @@ def merge_platform_model_metadata(
 
 def clear_platform_listing_registry() -> None:
     _PLATFORM_LISTING_REGISTRY.clear()
+    _PLATFORM_LISTING_PROVIDER_REGISTRY.clear()
 
 
-def register_platform_listing(listing_id: str, bare_id: str) -> None:
+def register_platform_listing(
+    listing_id: str, bare_id: str, provider: str = ""
+) -> None:
     if listing_id and bare_id:
         _PLATFORM_LISTING_REGISTRY[listing_id] = bare_id
+        if provider:
+            _PLATFORM_LISTING_PROVIDER_REGISTRY[listing_id] = provider
 
 
 def lookup_platform_bare_id(listing_id: str) -> Optional[str]:
@@ -233,9 +240,9 @@ def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
     if not bare:
         return bare_id
     primary = platform_model_listing_id(bare, provider)
-    register_platform_listing(primary, bare)
+    register_platform_listing(primary, bare, provider)
     legacy = f"{bare}{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
-    register_platform_listing(legacy, bare)
+    register_platform_listing(legacy, bare, provider)
     prov_slug = _provider_slug(provider)
     if prov_slug == "codex":
         opaque = primary[: -len(PLATFORM_MODEL_LISTING_SUFFIX)]
@@ -243,7 +250,7 @@ def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
             openai_listing = (
                 f"openai-{opaque[len('codex-'):]}{PLATFORM_MODEL_LISTING_SUFFIX}"
             )
-            register_platform_listing(openai_listing, bare)
+            register_platform_listing(openai_listing, bare, provider)
     return primary
 
 
@@ -348,6 +355,9 @@ def platform_listing_provider_prefix(model_name: str) -> Optional[str]:
 
 def platform_provider_for_listing(model_name: str) -> Optional[str]:
     """Provider da integração para um ID opaco de listagem."""
+    registered = _PLATFORM_LISTING_PROVIDER_REGISTRY.get(model_name)
+    if registered:
+        return registered
     return platform_listing_provider_prefix(model_name)
 
 
@@ -705,7 +715,10 @@ class PlatformIntegrationManager:
     ) -> None:
         self._config = config_manager
         self._resolver = executable_resolver or default_executable_resolver
-        self._definitions = tuple(platform_definitions)
+        definitions_by_id = {}
+        for definition in platform_definitions:
+            definitions_by_id.setdefault(definition.backend_id, definition)
+        self._definitions = tuple(definitions_by_id.values())
         self._cliproxy_candidates = tuple(cliproxy_candidates)
         self._cliproxy = self._detect_executable(
             self._cliproxy_candidates,
@@ -859,13 +872,17 @@ class PlatformIntegrationManager:
             for acc in accounts:
                 try:
                     import asyncio
-                    result = asyncio.get_event_loop().run_until_complete(
+                    result = asyncio.run(
                         self._ollama_cloud_account_manager.validate_connection(acc)
                     )
                     if result:
                         any_error = False
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Ollama Cloud account validation failed id=%s: %s",
+                        getattr(acc, "id", "unknown"),
+                        exc,
+                    )
             if any_error:
                 self._set_runtime_error(backend_id, "error", "Connection validation failed for all accounts")
                 raise PlatformIntegrationError(502, "Ollama Cloud connection validation failed")
@@ -1005,9 +1022,14 @@ class PlatformIntegrationManager:
             "provider": definition.provider,
             "name": definition.display_name,
             "display_name": definition.display_name,
+            "detected": True,
             "has_cli": False,
             "status": status,
-            "reason": None,
+            "reason": (
+                "Nenhuma conta configurada — adicione uma API key pelos endpoints administrativos"
+                if status == "missing"
+                else None
+            ),
             "proxy_eligible": bool(config.get("proxy_eligible", False)),
             "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
             "auto_start": bool(config.get("auto_start", False)),

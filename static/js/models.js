@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.18';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.19';
 import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
 import { checkForUpdates } from './version.js?v=4.2.3';
 
@@ -186,7 +186,7 @@ const PLATFORM_STATUS_LABELS = {
 
 function platformAuthSummary(platform) {
     const auth = platform.cliproxy_auth || {};
-    if (!platform.detected || platform.cliproxy_detected === false) return '';
+    if (platform.provider !== 'ollama-cloud' && (!platform.detected || platform.cliproxy_detected === false)) return '';
     if (auth.authenticated) {
         const count = (auth.accounts || []).length;
         return count > 1 ? `Autenticado (${count} contas)` : 'Autenticado';
@@ -203,12 +203,14 @@ function platformAuthClass(platform) {
 }
 
 function buildPlatformAuthButton(platform, safeBackendId) {
-    if (!platform.detected || platform.cliproxy_detected === false) return '';
+    if (platform.provider !== 'ollama-cloud' && (!platform.detected || platform.cliproxy_detected === false)) return '';
     const auth = platform.cliproxy_auth || {};
     const provider = platform.provider || '';
     const label = auth.authenticated ? 'Reautenticar' : 'Autenticar';
     const displayName = platform.display_name || platform.name || provider;
-    return `<button type="button" onclick="event.stopPropagation(); startCliproxyAuth('${safeBackendId}', '${jsString(provider)}', '${jsString(displayName)}')" title="${label} no CLIProxyAPI" aria-label="${label}" class="w-8 h-8 flex items-center justify-center rounded bg-amber-600/10 text-amber-300 hover:bg-amber-600/20"><i class="fas fa-key text-ui-label"></i></button>`;
+    const action = provider === 'ollama-cloud' ? 'manageOllamaCloudAuth' : 'startCliproxyAuth';
+    const args = provider === 'ollama-cloud' ? `'${safeBackendId}', '${jsString(displayName)}'` : `'${safeBackendId}', '${jsString(provider)}', '${jsString(displayName)}'`;
+    return `<button type="button" onclick="event.stopPropagation(); ${action}(${args})" title="${label}" aria-label="${label}" class="w-8 h-8 flex items-center justify-center rounded bg-amber-600/10 text-amber-300 hover:bg-amber-600/20"><i class="fas fa-key text-ui-label"></i></button>`;
 }
 
 function platformStatusClass(status) {
@@ -758,12 +760,13 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
     const safeId = jsString(backendId);
     const provider = jsString(platform.provider || '');
     const displayName = jsString(platform.display_name || platform.name || backendId);
+    const authAction = platform.provider === 'ollama-cloud' ? `manageOllamaCloudAuth('${safeId}', '${displayName}')` : `startCliproxyAuth('${safeId}', '${provider}', '${displayName}')`;
     if (isRunning) {
         return `
             <button type="button" onclick="stopPlatform('${safeId}')" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
                 Encerrar
             </button>
-            <button type="button" onclick="startCliproxyAuth('${safeId}', '${provider}', '${displayName}')" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+            <button type="button" onclick="${authAction}" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
                 <i class="fas fa-key"></i> Conta
             </button>`;
     }
@@ -772,7 +775,7 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
         <button type="button" ${canStart ? '' : 'disabled'} onclick="startPlatform('${safeId}')" class="px-8 py-3 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:pointer-events-none text-white text-ui-body-sm font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-violet-600/30 transition-all">
             <i class="fas fa-bolt"></i> Iniciar Integração
         </button>
-        <button type="button" onclick="startCliproxyAuth('${safeId}', '${provider}', '${displayName}')" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
+        <button type="button" onclick="${authAction}" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
             <i class="fas fa-key"></i> Autenticar
         </button>`;
 }
@@ -2331,6 +2334,34 @@ export async function startCliproxyAuth(_backendId, provider, displayName) {
     } catch (e) {
         els.status.textContent = e.message || 'Erro ao iniciar autenticacao.';
         showToast(els.status.textContent, 'error');
+    }
+}
+
+export async function manageOllamaCloudAuth(_backendId, displayName) {
+    const apiKey = await showPrompt(
+        `Cole a chave de API do ${displayName || 'Ollama Cloud'}:`,
+        '',
+        { confirmLabel: 'Salvar e validar' },
+    );
+    if (!apiKey?.trim()) return;
+    try {
+        const res = await apiFetch('/platforms/ollama-cloud/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: apiKey.trim() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Não foi possível salvar a chave.');
+        const validation = await apiFetch(`/platforms/ollama-cloud/accounts/${encodeURIComponent(data.id)}/validate`, { method: 'POST' });
+        const validationData = await validation.json().catch(() => ({}));
+        if (!validation.ok || !validationData.valid) {
+            throw new Error('A chave foi salva, mas não foi aceita pelo Ollama Cloud.');
+        }
+        showToast('Ollama Cloud autenticado com sucesso.', 'success');
+        await updateModels();
+        await window.updateStatus?.();
+    } catch (e) {
+        showToast(e.message || 'Falha ao autenticar no Ollama Cloud.', 'error');
     }
 }
 

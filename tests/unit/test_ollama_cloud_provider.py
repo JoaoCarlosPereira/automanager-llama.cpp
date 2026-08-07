@@ -259,20 +259,20 @@ class TestHealthCheck:
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.head.return_value = mock_response
+            mock_client.get.return_value = mock_response
             mock_client_cls.return_value = mock_client
 
             provider = OllamaCloudProvider(account)
             result = await provider.health_check()
             assert result is True
-            mock_client.head.assert_called_once_with("/models")
+            mock_client.get.assert_called_once_with("/models")
             await mock_client.aclose()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_exception(self, account):
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.head.side_effect = httpx.ConnectError("connection failed")
+            mock_client.get.side_effect = httpx.ConnectError("connection failed")
             mock_client_cls.return_value = mock_client
 
             provider = OllamaCloudProvider(account)
@@ -284,7 +284,7 @@ class TestHealthCheck:
     async def test_returns_false_on_timeout(self, account):
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.head.side_effect = httpx.ReadTimeout("timeout")
+            mock_client.get.side_effect = httpx.ReadTimeout("timeout")
             mock_client_cls.return_value = mock_client
 
             provider = OllamaCloudProvider(account)
@@ -299,7 +299,7 @@ class TestHealthCheck:
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.head.return_value = mock_response
+            mock_client.get.return_value = mock_response
             mock_client_cls.return_value = mock_client
 
             provider = OllamaCloudProvider(account)

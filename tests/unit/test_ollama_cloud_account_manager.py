@@ -19,7 +19,7 @@ from platform_ollama_cloud import (
 def config_manager():
     """Mock ConfigManager with real-looking CRUD behaviour."""
     cm = MagicMock()
-    cm.get_ollama_cloud_accounts.return_value = []
+    cm.get_ollama_cloud_accounts_raw.return_value = []
     cm.add_ollama_cloud_account.return_value = {
         "id": "acc-new-1",
         "api_key": "sk-****",
@@ -65,10 +65,10 @@ class TestGetAccounts:
     def test_returns_empty_list_when_no_accounts(self, manager):
         accounts = manager.get_accounts()
         assert accounts == []
-        manager.config_manager.get_ollama_cloud_accounts.assert_called_once()
+        manager.config_manager.get_ollama_cloud_accounts_raw.assert_called_once()
 
     def test_returns_list_of_accounts(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {
                 "id": "acc-001",
                 "api_key": "sk-****",
@@ -90,7 +90,7 @@ class TestGetAccounts:
         assert accounts[1].label == "Account 2"
 
     def test_api_key_is_masked(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {
                 "id": "acc-001",
                 "api_key": "sk-****",
@@ -98,10 +98,10 @@ class TestGetAccounts:
             }
         ]
         accounts = manager.get_accounts()
-        assert accounts[0].api_key == ""  # masked to empty string
+        assert accounts[0].api_key == "sk-****"
 
     def test_defaults_status_to_available(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {
                 "id": "acc-001",
                 "api_key": "sk-****",
@@ -112,7 +112,7 @@ class TestGetAccounts:
         assert accounts[0].status == "available"
 
     def test_defaults_cooldown_until_to_none(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {
                 "id": "acc-001",
                 "api_key": "sk-****",
@@ -242,7 +242,7 @@ class TestResolveForRequest:
         assert result is None
 
     def test_returns_first_available_account(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
             {"id": "acc-002", "api_key": "sk-****", "label": "B"},
         ]
@@ -251,7 +251,7 @@ class TestResolveForRequest:
         assert result.id == "acc-001"
 
     def test_skips_cooldown_account(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
             {"id": "acc-002", "api_key": "sk-****", "label": "B"},
         ]
@@ -267,7 +267,7 @@ class TestResolveForRequest:
             assert result.id == "acc-002"
 
     def test_skips_error_account(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
             {"id": "acc-002", "api_key": "sk-****", "label": "B"},
         ]
@@ -280,7 +280,7 @@ class TestResolveForRequest:
             assert result.id == "acc-002"
 
     def test_excludes_account_by_id(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
             {"id": "acc-002", "api_key": "sk-****", "label": "B"},
         ]
@@ -289,14 +289,14 @@ class TestResolveForRequest:
         assert result.id == "acc-002"
 
     def test_returns_none_when_all_accounts_excluded(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
         ]
         result = manager.resolve_for_request(frozenset(), 4096, exclude_account_id="acc-001")
         assert result is None
 
     def test_clears_cooldown_when_expired(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
         ]
         accounts = manager.get_accounts()
@@ -311,7 +311,7 @@ class TestResolveForRequest:
             assert result.cooldown_until is None
 
     def test_skips_cooldown_when_not_expired(self, manager):
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
         ]
         accounts = manager.get_accounts()
@@ -324,7 +324,7 @@ class TestResolveForRequest:
 
     def test_returns_first_account_when_no_filters_match(self, manager):
         """If required_capabilities or needed_ctx are empty/low, first available wins."""
-        manager.config_manager.get_ollama_cloud_accounts.return_value = [
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [
             {"id": "acc-001", "api_key": "sk-****", "label": "A"},
             {"id": "acc-002", "api_key": "sk-****", "label": "B"},
         ]
@@ -415,7 +415,7 @@ class TestClose:
 class TestLifecycleCycle:
     def test_add_get_remove_cycle(self):
         cm = MagicMock()
-        cm.get_ollama_cloud_accounts.return_value = []
+        cm.get_ollama_cloud_accounts_raw.return_value = []
         cm.add_ollama_cloud_account.return_value = {
             "id": "acc-new",
             "api_key": "sk-****",
@@ -431,7 +431,7 @@ class TestLifecycleCycle:
         assert acc.api_key == "sk-my-key"
 
         # Get — now the account exists
-        cm.get_ollama_cloud_accounts.return_value = [
+        cm.get_ollama_cloud_accounts_raw.return_value = [
             {
                 "id": "acc-new",
                 "api_key": "sk-****",
@@ -448,6 +448,6 @@ class TestLifecycleCycle:
         cm.remove_ollama_cloud_account.assert_called_with("acc-new")
 
         # Get — now empty
-        cm.get_ollama_cloud_accounts.return_value = []
+        cm.get_ollama_cloud_accounts_raw.return_value = []
         accounts = mgr.get_accounts()
         assert len(accounts) == 0
