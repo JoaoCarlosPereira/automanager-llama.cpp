@@ -17,7 +17,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from config_manager import (
     lookup_model_config,

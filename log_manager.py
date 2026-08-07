@@ -1,17 +1,16 @@
 """Log file management, rotation, and SSE streaming."""
 
 import asyncio
+import logging
 import os
 import subprocess
-import time
-import logging
 import threading
+import time
 from logging.handlers import RotatingFileHandler
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from typing import Dict, List, Optional, Tuple
 
 from paths import (
     LOGS_DIR,
