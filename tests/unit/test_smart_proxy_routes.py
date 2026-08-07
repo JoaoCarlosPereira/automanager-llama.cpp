@@ -216,6 +216,31 @@ class TestSmartRouting:
         mock_post.assert_not_awaited()
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_switch_from_local_to_platform_backend(
+        self, mock_post, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-platform", "model": "codex-default.gguf"}
+        )
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:9100/v1/chat/completions"
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "codex-default.gguf"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_primary_model_routed_with_internal_rewrite(
         self, mock_post, smart_env
     ):
