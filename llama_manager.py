@@ -2216,7 +2216,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     payload=data,
                     backend_info=decision_instance,
                     model_metadata=model_metadata,
-                    stage_limit="safe",
+                    stage_limit="moderate",
+                    cost_optimization=True,
                 )
                 optimized_data = opt_result.safe_payload
             except ContextTooLargeError as exc:
@@ -2226,7 +2227,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 optimized_data = data
                 opt_result = None
 
-            # Fallback para janela maior se o payload Safe exceder o orçamento do destino planejado
+            # Fallback para janela maior se o payload otimizado exceder o orçamento
+            # do destino planejado.
             limits = resolve_model_limits(decision_instance, model_metadata)
             if limits.is_known and limits.context_tokens:
                 decision_instance.setdefault("config", {})["context_size"] = limits.context_tokens
@@ -2292,6 +2294,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         payload=data,
                         backend_info=decision_instance,
                         model_metadata=model_metadata,
+                        cost_optimization=True,
                     )
                     optimized_data = opt_result.safe_payload
                 except ContextTooLargeError as exc:
@@ -2476,7 +2479,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                             payload=data,
                             backend_info=new_instance,
                             model_metadata=model_metadata,
-                            stage_limit="safe",
+                            cost_optimization=True,
                         )
                         optimized_data = new_opt.safe_payload
                         logger.info(
@@ -3143,7 +3146,12 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         try:
             preview_opt = ContextOptimizer(config_manager=config_manager, audit_recorder=None)
             decision_inst = next((b for b in proxy_router.backends_snapshot() if b["port"] == decision.backend_port), {})
-            res = await preview_opt.optimize(payload=data, backend_info=decision_inst)
+            res = await preview_opt.optimize(
+                payload=data,
+                backend_info=decision_inst,
+                stage_limit="moderate",
+                cost_optimization=True,
+            )
             opt_preview = {
                 "strategy": res.audit.strategy,
                 "original_cost": res.audit.original_cost,
