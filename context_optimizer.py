@@ -456,10 +456,20 @@ class ModelLimits:
     max_output_tokens: Optional[int]
     source: str
     confidence: LimitConfidence
+    # Some platform catalogs expose an input-only limit rather than a shared
+    # input+output context window.  Keeping it explicit prevents subtracting
+    # the maximum output allowance from an input budget a second time.
+    input_tokens: Optional[int] = None
 
     @property
     def is_known(self) -> bool:
-        return self.confidence != LimitConfidence.UNKNOWN and self.context_tokens is not None and self.context_tokens > 0
+        return (
+            self.confidence != LimitConfidence.UNKNOWN
+            and (
+                (self.input_tokens is not None and self.input_tokens > 0)
+                or (self.context_tokens is not None and self.context_tokens > 0)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -545,15 +555,32 @@ def resolve_model_limits(
 
     if backend_type == "platform":
         raw_context = model_metadata.get("context_length")
-        if raw_context is None:
-            raw_context = model_metadata.get("inputTokenLimit")
+        raw_input = model_metadata.get("inputTokenLimit")
 
         raw_output = model_metadata.get("max_completion_tokens")
         if raw_output is None:
             raw_output = model_metadata.get("outputTokenLimit")
 
         context_val = int(raw_context) if raw_context is not None and isinstance(raw_context, (int, float, str)) and str(raw_context).isdigit() else None
+        input_val = int(raw_input) if raw_input is not None and isinstance(raw_input, (int, float, str)) and str(raw_input).isdigit() else None
         output_val = int(raw_output) if raw_output is not None and isinstance(raw_output, (int, float, str)) and str(raw_output).isdigit() else None
+
+        # CLIProxyAPI's Codex catalog calls the OAuth input allowance
+        # ``context_length``.  Router decisions already compare prompt tokens
+        # directly against that value, so preserve the same meaning here.
+        provider = str(
+            backend_info.get("provider")
+            or (backend_info.get("config") or {}).get("provider")
+            or ""
+        ).strip().lower()
+        if input_val is None and provider == "codex":
+            input_val = context_val
+
+        # Providers such as Gemini may publish only inputTokenLimit.  Mirror it
+        # as context_tokens for compatibility with routing/reporting, while the
+        # explicit input_tokens field retains its input-only semantics.
+        if context_val is None:
+            context_val = input_val
 
         if context_val is None or context_val == UNKNOWN_PLATFORM_CONTEXT_LIMIT or context_val <= 0:
             return ModelLimits(
@@ -561,6 +588,7 @@ def resolve_model_limits(
                 max_output_tokens=output_val,
                 source="platform_catalog",
                 confidence=LimitConfidence.UNKNOWN,
+                input_tokens=None,
             )
 
         return ModelLimits(
@@ -568,6 +596,7 @@ def resolve_model_limits(
             max_output_tokens=output_val,
             source="platform_catalog",
             confidence=LimitConfidence.KNOWN_PROVIDER,
+            input_tokens=input_val,
         )
 
     config = backend_info.get("config") or {}
@@ -657,8 +686,13 @@ def calculate_target_budget(
             capabilities=capabilities,
         )
 
-    context_val = limits.context_tokens or 0
-    budget = context_val - reserve - protocol_overhead - safety_margin
+    context_val = limits.context_tokens or limits.input_tokens or 0
+    if limits.input_tokens is not None and limits.input_tokens > 0:
+        # input_tokens is already the provider's input allowance; output has a
+        # separate cap and must not be deducted from it.
+        budget = limits.input_tokens - protocol_overhead - safety_margin
+    else:
+        budget = context_val - reserve - protocol_overhead - safety_margin
 
     return TargetBudget(
         context_limit=context_val,

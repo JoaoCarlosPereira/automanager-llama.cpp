@@ -606,8 +606,8 @@ def _platform_model_context_limit(
     if not isinstance(source_meta, dict):
         source_meta = {}
     raw_limit = (
-        metadata.get("context_length")
-        or metadata.get("inputTokenLimit")
+        metadata.get("inputTokenLimit")
+        or metadata.get("context_length")
         or source_meta.get("n_ctx")
         or source_meta.get("context_length")
     )
