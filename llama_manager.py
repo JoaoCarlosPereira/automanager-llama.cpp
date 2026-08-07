@@ -1862,7 +1862,10 @@ async def _ensure_platform_listing_registry(
             )
             resp.raise_for_status()
             local_ids = _local_model_ids(instances)
-            for m in resp.json().get("data") or []:
+            models = filter_models_for_provider(
+                resp.json().get("data") or [], provider
+            )
+            for m in models:
                 root = str(m.get("id") or "")
                 if not root or should_skip_platform_model_listing(root, local_ids):
                     continue
