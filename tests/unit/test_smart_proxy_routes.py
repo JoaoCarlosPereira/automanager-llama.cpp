@@ -142,11 +142,104 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+def custom_tool_body(model="main.gguf", stream=False):
+    body = chat_body(model=model, stream=stream)
+    body["tools"] = [{
+        "type": "custom",
+        "name": "ApplyPatch",
+        "description": "Edit files",
+        "format": {"type": "grammar", "definition": "start: value"},
+    }]
+    return body
+
+
+class TestOllamaCloudPayload:
+    def test_translates_max_completion_tokens(self):
+        payload = {
+            "model": "gemma4:31b",
+            "messages": [{"role": "user", "content": "Oi"}],
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 256
+        assert "max_completion_tokens" not in normalized
+        assert "max_completion_tokens" in payload
+
+    def test_preserves_explicit_max_tokens(self):
+        payload = {
+            "max_tokens": 128,
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 128
+        assert "max_completion_tokens" not in normalized
+
+
 # ---------------------------------------------------------------------------
 # Task 04 — desvio /v1, filtro /v1/models, transparência não-stream
 # ---------------------------------------------------------------------------
 
 class TestSmartRouting:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_rejected_as_client_error_before_backend(
+        self, mock_post, smart_env
+    ):
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+        mock_post.assert_not_awaited()
+        assert all(
+            smart_env.router.in_flight(port) == 0
+            for port in (8085, 8086, 8087)
+        )
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_rejected_when_smart_proxy_is_disabled(
+        self, mock_post, smart_env
+    ):
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "unsupported_tool_type"
+        mock_post.assert_not_awaited()
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_switch_from_local_to_platform_backend(
+        self, mock_post, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-platform", "model": "codex-default.gguf"}
+        )
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:9100/v1/chat/completions"
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "codex-default.gguf"
+
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_primary_model_routed_with_internal_rewrite(
         self, mock_post, smart_env
@@ -1338,4 +1431,3 @@ class TestTask08ContextOptimizerIntegration:
         mock_post.assert_not_called()
         assert smart_env.router._sessions == {}
         assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
-

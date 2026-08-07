@@ -1,0 +1,7 @@
+port: 8317
+host: "127.0.0.1"
+auth-dir: "/home/joao/automanager-llama.cpp/data/cliproxy/auth"
+api-keys: []
+remote-management:
+  secret-key: ""
+  allow-remote: false

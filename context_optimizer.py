@@ -1372,10 +1372,13 @@ async def optimize_request_ir_moderate(
     tokenizer_mappings: Optional[Dict[str, Any]] = None,
     original_cost: Optional[int] = None,
     safe_audit: Optional[OptimizationAudit] = None,
+    cost_optimization: bool = False,
 ) -> OptimizationResult:
     """Pipeline de otimização modo Moderate (redução determinística de baixo risco).
 
-    Executa apenas quando o limite do destino é conhecido (confidence != UNKNOWN).
+    No modo normal, executa apenas quando o limite do destino é conhecido
+    (confidence != UNKNOWN). Com ``cost_optimization=True``, também pode remover
+    unidades históricas não protegidas sem depender de um limite conhecido.
     Remove apenas grupos atômicos completos antigos e blocos desprotegidos antigos.
     Preserva system/developer, turno atual, decisões técnicas, código, mídia, arquivos e logs críticos.
     Interrompe a remoção assim que o orçamento for satisfeito.
@@ -1386,8 +1389,17 @@ async def optimize_request_ir_moderate(
     orig_cost = ir.calculate_total_tokens() if original_cost is None else original_cost
     current_tokens = ir.calculate_total_tokens()
 
-    # Invariante 1: Se limite é desconhecido ou input_budget é None, NÃO executar Moderate
-    if not budget.confidence or budget.confidence == LimitConfidence.UNKNOWN or budget.input_budget is None:
+    # Sem limite conhecido, Moderate só pode ser executado quando explicitamente
+    # solicitado como otimização de custo. Nesse modo removemos apenas unidades
+    # históricas não protegidas; não dependemos de um orçamento arbitrário.
+    if (
+        not cost_optimization
+        and (
+            not budget.confidence
+            or budget.confidence == LimitConfidence.UNKNOWN
+            or budget.input_budget is None
+        )
+    ):
         audit = safe_audit or OptimizationAudit(
             strategy="safe",
             original_cost=orig_cost,
@@ -1399,8 +1411,14 @@ async def optimize_request_ir_moderate(
         )
         return OptimizationResult(audit=audit, safe_payload=ir.to_payload())
 
-    # Invariante 2: Se já cabe no orçamento, não remover nada
-    if current_tokens <= budget.input_budget:
+    # O modo normal só reduz quando necessário. O modo de economia de custo
+    # continua até esgotar as unidades históricas não protegidas, mesmo que o
+    # contexto já caiba no orçamento.
+    if (
+        not cost_optimization
+        and budget.input_budget is not None
+        and current_tokens <= budget.input_budget
+    ):
         audit = OptimizationAudit(
             strategy="moderate",
             original_cost=orig_cost,
@@ -1450,7 +1468,11 @@ async def optimize_request_ir_moderate(
     transformations_applied = list(safe_audit.transformations_applied) if safe_audit else []
 
     for unit in ordered_candidates:
-        if current_tokens <= budget.input_budget:
+        if (
+            not cost_optimization
+            and budget.input_budget is not None
+            and current_tokens <= budget.input_budget
+        ):
             break
 
         unit_blocks = unit["blocks"]
@@ -1480,7 +1502,10 @@ async def optimize_request_ir_moderate(
                 original_cost=orig_cost,
                 optimized_cost=final_cost,
                 savings_tokens=max(0, orig_cost - final_cost),
-                transformations_applied=transformations_applied or ["moderate_reduction"],
+                transformations_applied=(
+                    transformations_applied
+                    or (["moderate_reduction"] if removed_blocks_count else ["cost_optimization_no_eligible_units"])
+                ),
                 protected_units_preserved=len(ir.protected_unit_ids),
                 blocks_removed=(safe_audit.blocks_removed if safe_audit else 0) + removed_blocks_count,
                 blocks_merged=safe_audit.blocks_merged if safe_audit else 0,
@@ -1512,10 +1537,14 @@ async def optimize_request_ir_aggressive(
     tokenizer_mappings: Optional[Dict[str, Any]] = None,
     original_cost: Optional[int] = None,
     moderate_audit: Optional[OptimizationAudit] = None,
+    cost_optimization: bool = False,
 ) -> OptimizationResult:
     """Pipeline de otimização modo Aggressive (redução drástica preservando apenas o conjunto mínimo).
 
-    Executa apenas quando o limite do destino é conhecido (confidence != UNKNOWN).
+    Executa apenas quando o limite do destino é conhecido (confidence != UNKNOWN)
+    no fluxo de orçamento. O modo de economia de custo aceita a execução sem
+    limite conhecido, embora o proxy só use Aggressive quando há orçamento para
+    validar.
     Remove grupos/blocos antigos inteiros desprotegidos, descartando inclusive
     retenções estendidas (decisões técnicas, código antigo, mídias antigas e logs antigos).
     Preserva estritamente o conjunto mínimo obrigatório: system, developer, turno atual
@@ -1531,7 +1560,14 @@ async def optimize_request_ir_aggressive(
     current_tokens = ir.calculate_total_tokens()
 
     # Invariante 1: Se limite é desconhecido ou input_budget é None, NÃO executar Aggressive
-    if not budget.confidence or budget.confidence == LimitConfidence.UNKNOWN or budget.input_budget is None:
+    if (
+        not cost_optimization
+        and (
+            not budget.confidence
+            or budget.confidence == LimitConfidence.UNKNOWN
+            or budget.input_budget is None
+        )
+    ):
         audit = moderate_audit or OptimizationAudit(
             strategy="moderate",
             original_cost=orig_cost,
@@ -1544,7 +1580,11 @@ async def optimize_request_ir_aggressive(
         return OptimizationResult(audit=audit, safe_payload=ir.to_payload())
 
     # Invariante 2: Se já cabe no orçamento, não remover nada
-    if current_tokens <= budget.input_budget:
+    if (
+        not cost_optimization
+        and budget.input_budget is not None
+        and current_tokens <= budget.input_budget
+    ):
         audit = OptimizationAudit(
             strategy="aggressive",
             original_cost=orig_cost,
@@ -1632,7 +1672,11 @@ async def optimize_request_ir_aggressive(
     transformations_applied = list(moderate_audit.transformations_applied) if moderate_audit else []
 
     for unit in ordered_candidates:
-        if current_tokens <= budget.input_budget:
+        if (
+            not cost_optimization
+            and budget.input_budget is not None
+            and current_tokens <= budget.input_budget
+        ):
             break
 
         unit_blocks = unit["blocks"]
@@ -1661,7 +1705,10 @@ async def optimize_request_ir_aggressive(
         )
         if report.valid:
             final_cost = report.candidate_cost
-            fits_budget = final_cost <= budget.input_budget
+            fits_budget = (
+                budget.input_budget is None
+                or final_cost <= budget.input_budget
+            )
 
             audit = OptimizationAudit(
                 strategy="aggressive" if fits_budget else "context_too_large",
@@ -1712,13 +1759,15 @@ class ContextOptimizer:
         backend_info: Dict[str, Any],
         model_metadata: Optional[Dict[str, Any]] = None,
         stage_limit: Optional[str] = None,
+        cost_optimization: bool = False,
     ) -> OptimizationResult:
         """Executa a otimização Safe/Moderate/Aggressive do payload para o backend de destino.
 
         Se o limite for excedido mesmo no estágio Aggressive, registra na auditoria e lança
         ContextTooLargeError(413, ..., code="context_too_large").
-        Se o limite for desconhecido ou se ocorrer erro interno não previsto durante a otimização,
-        executa fail-open seguro retornando o payload original intacto.
+        Se o limite for desconhecido, o fluxo normal executa apenas Safe; quando
+        ``cost_optimization`` está ativo, unidades históricas não protegidas
+        ainda podem ser removidas. Erros internos continuam em fail-open.
         """
         try:
             ir = parse_request_ir(payload)
@@ -1760,9 +1809,12 @@ class ContextOptimizer:
                 return result
 
             if (
-                limits.is_known
-                and budget.input_budget is not None
-                and result.audit.optimized_cost > budget.input_budget
+                cost_optimization
+                or (
+                    limits.is_known
+                    and budget.input_budget is not None
+                    and result.audit.optimized_cost > budget.input_budget
+                )
             ):
                 moderate_ir = parse_request_ir(result.safe_payload)
                 result = await optimize_request_ir_moderate(
@@ -1772,6 +1824,7 @@ class ContextOptimizer:
                     tokenizer_mappings=tokenizer_mappings,
                     original_cost=result.audit.original_cost,
                     safe_audit=result.audit,
+                    cost_optimization=cost_optimization,
                 )
 
             if stage_limit == "moderate":
@@ -1792,6 +1845,7 @@ class ContextOptimizer:
                     tokenizer_mappings=tokenizer_mappings,
                     original_cost=result.audit.original_cost,
                     moderate_audit=result.audit,
+                    cost_optimization=cost_optimization,
                 )
 
             if (
@@ -1837,5 +1891,3 @@ class ContextOptimizer:
         if self.audit_recorder:
             return self.audit_recorder.query(page=page, per_page=per_page, strategy_filter=strategy_filter)
         return {"page": page, "per_page": per_page, "total": 0, "pages": 1, "items": []}
-
-

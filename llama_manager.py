@@ -69,6 +69,7 @@ from platform_manager import (
     platform_listing_registry_populated,
     platform_model_listing_entry,
     platform_model_listing_id,
+    register_platform_bare_model,
     platform_provider_for_listing,
     register_platform_model_listings,
     resolve_platform_listing_model,
@@ -117,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.19"  # Ranking de velocidade do proxy no startup
+_DASHBOARD_JS_V = "4.2.20"  # Adiciona gpt-5.5 ao catálogo BYOK do Cursor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -233,6 +234,68 @@ def _proxy_failure_cooldown(
 
 def _is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in _PROXY_RETRYABLE_STATUSES
+
+
+def _custom_tool_names(payload: Dict[str, Any]) -> List[str]:
+    """Return Cursor custom-tool names present in an OpenAI request."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("tools"), list):
+        return []
+    names = []
+    for tool in payload["tools"]:
+        if not isinstance(tool, dict) or str(tool.get("type") or "").lower() != "custom":
+            continue
+        name = str(tool.get("name") or "custom").strip()
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _unsupported_custom_tools_response(payload: Dict[str, Any]) -> JSONResponse:
+    """Build an OpenAI-compatible client error for unsupported custom tools."""
+    names = _custom_tool_names(payload)
+    rendered_names = ", ".join(names[:3]) or "custom"
+    if len(names) > 3:
+        rendered_names += ", ..."
+    return JSONResponse(
+        {
+            "error": {
+                "message": (
+                    "O backend selecionado nao suporta ferramentas do tipo "
+                    f"custom ({rendered_names})."
+                ),
+                "type": "invalid_request_error",
+                "param": "tools",
+                "code": "unsupported_tool_type",
+            }
+        },
+        status_code=400,
+    )
+
+
+def _local_backend_rejects_custom_tools(
+    payload: Dict[str, Any], backend_info: Optional[Dict[str, Any]]
+) -> bool:
+    """llama-server currently accepts function tools, but not Cursor custom tools."""
+    if not isinstance(backend_info, dict):
+        return False
+    backend_type = str(backend_info.get("backend_type") or "local").lower()
+    return backend_type != "platform" and bool(_custom_tool_names(payload))
+
+
+async def _is_upstream_custom_tool_parse_error(response: httpx.Response) -> bool:
+    """Recognize llama-server's legacy 500 for an unsupported custom tool."""
+    if response.status_code != 500:
+        return False
+    try:
+        try:
+            content = response.content
+        except Exception:
+            # Streaming responses do not expose content until aread().
+            content = await response.aread()
+        text = content.decode("utf-8", errors="replace").lower()
+    except Exception:
+        return False
+    return "failed to parse tools" in text and "unsupported tool type" in text
 
 
 def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
@@ -419,6 +482,38 @@ _PLATFORM_MODEL_CATALOG_URL = (
 _platform_model_catalog_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _platform_model_catalog_loaded_at = 0.0
 _platform_model_catalog_lock = asyncio.Lock()
+_ollama_cloud_model_catalog: Dict[str, Dict[str, Any]] = {}
+_ollama_cloud_model_catalog_loaded_at = 0.0
+_ollama_cloud_model_catalog_lock = asyncio.Lock()
+
+# Ollama Cloud's /v1/models response currently exposes the model ID but not
+# the model limits. Keep conservative, provider-published defaults for models
+# whose metadata is incomplete so the context optimizer can enforce the real
+# target budget instead of treating the model as unknown.
+_OLLAMA_CLOUD_MODEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "gemma4:31b": {
+        "context_length": 262144,
+        "capabilities": ["text", "vision", "tools"],
+    },
+}
+
+
+def _platform_model_metadata(
+    provider: str,
+    model_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Return catalog metadata for a concrete platform model."""
+    normalized_provider = str(provider or "").strip().lower()
+    bare_model = resolve_platform_listing_model(str(model_name or ""))
+    provider_catalog = (
+        _ollama_cloud_model_catalog
+        if normalized_provider == "ollama-cloud"
+        else _platform_model_catalog_cache.get(normalized_provider)
+    )
+    if not isinstance(provider_catalog, dict):
+        return None
+    metadata = provider_catalog.get(bare_model)
+    return metadata if isinstance(metadata, dict) else None
 
 
 def _catalog_provider(group: str) -> Optional[str]:
@@ -503,10 +598,7 @@ def _platform_model_context_limit(
     """Return the catalog context limit for one concrete platform model."""
     provider = str(instance.get("provider") or "").strip().lower()
     bare_model = resolve_platform_listing_model(str(model_name or ""))
-    provider_catalog = _platform_model_catalog_cache.get(provider)
-    if not isinstance(provider_catalog, dict):
-        return None
-    metadata = provider_catalog.get(bare_model)
+    metadata = _platform_model_metadata(provider, bare_model)
     if not isinstance(metadata, dict):
         requested_provider = platform_provider_for_listing(str(model_name or ""))
         return 0 if requested_provider and requested_provider != provider else None
@@ -713,6 +805,90 @@ def _ollama_cloud_auth_status() -> Dict[str, Any]:
         "default_method": "api-key",
         "available_methods": ["api-key"],
     }
+
+
+async def _ensure_ollama_cloud_model_registry(
+    instances: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> None:
+    """Discover and register Ollama Cloud model IDs before routing.
+
+    Ollama Cloud is a direct HTTP backend, so it does not have a sidecar
+    ``/v1/models`` endpoint that the generic platform registry can inspect.
+    Populate the same listing registry from the provider catalog, including
+    the bare provider ID (for example ``gemma4:31b``) and its virtual API
+    listing (``gemma4:31b-custom.gguf``).
+    """
+    global _ollama_cloud_model_catalog_loaded_at
+
+    if instances is not None and not any(
+        str(inst.get("provider") or "").strip().lower() == "ollama-cloud"
+        for inst in instances
+    ):
+        return
+    accounts = ollama_cloud_manager.get_accounts()
+    if not accounts:
+        return
+    now = time.monotonic()
+    if (
+        _ollama_cloud_model_catalog
+        and not force
+        and now - _ollama_cloud_model_catalog_loaded_at < 600
+    ):
+        return
+
+    async with _ollama_cloud_model_catalog_lock:
+        now = time.monotonic()
+        if (
+            _ollama_cloud_model_catalog
+            and not force
+            and now - _ollama_cloud_model_catalog_loaded_at < 600
+        ):
+            return
+
+        discovered: List[Dict[str, Any]] = []
+        for account in accounts:
+            provider = OllamaCloudProvider(account)
+            try:
+                discovered = await provider.list_models()
+                if discovered:
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao descobrir modelos Ollama Cloud account=%s: %s",
+                    account.id,
+                    exc,
+                )
+            finally:
+                await provider.close()
+
+        for model in discovered:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+            enriched_model = dict(_OLLAMA_CLOUD_MODEL_DEFAULTS.get(model_id, {}))
+            enriched_model.update(model)
+            _ollama_cloud_model_catalog[model_id] = enriched_model
+            register_platform_bare_model(model_id, provider="ollama-cloud")
+            register_platform_model_listings(model_id, provider="ollama-cloud")
+        _ollama_cloud_model_catalog_loaded_at = time.monotonic()
+
+
+async def _ollama_cloud_models_for_listing(
+    instances: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return Ollama Cloud models in the same public shape as other platforms."""
+    await _ensure_ollama_cloud_model_registry(instances)
+    local_ids = _local_model_ids(instances)
+    models: List[Dict[str, Any]] = []
+    for model in _ollama_cloud_model_catalog.values():
+        model_id = str(model.get("id") or "")
+        if not model_id or should_skip_platform_model_listing(model_id, local_ids):
+            continue
+        models.append(platform_model_listing_entry(model, provider="ollama-cloud"))
+    return models
 
 
 def _model_catalog_response() -> Dict[str, Any]:
@@ -1595,6 +1771,12 @@ async def _aggregate_models_response(
                 continue
             seen_ids.add(model_id)
             merged.append(model)
+    for model in await _ollama_cloud_models_for_listing(instances):
+        model_id = model.get("id")
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        merged.append(model)
     return JSONResponse({"object": "list", "data": merged})
 
 
@@ -1785,6 +1967,15 @@ def _forward_model_for_backend(
     if target_instance.get("backend_type") != "platform":
         return model_name
     return resolve_platform_listing_model(model_name, _local_model_ids(instances))
+
+
+def _normalize_ollama_cloud_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize OpenAI fields unsupported by Ollama's compatible API."""
+    normalized = dict(payload)
+    max_completion_tokens = normalized.pop("max_completion_tokens", None)
+    if "max_tokens" not in normalized and max_completion_tokens is not None:
+        normalized["max_tokens"] = max_completion_tokens
+    return normalized
 
 
 async def _resolve_forward_model(
@@ -2004,21 +2195,29 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 {"backend_type": planned_decision.backend_type},
             )
 
+        if _local_backend_rejects_custom_tools(data, decision_instance):
+            logger.warning(
+                "[proxy] rejecting unsupported custom tools before backend=%s",
+                planned_decision.backend_port,
+            )
+            return _unsupported_custom_tools_response(data)
+
         if co_enabled:
             model_metadata = None
             if planned_decision.backend_type == "platform":
                 provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                provider_catalog = _platform_model_catalog_cache.get(provider)
-                if isinstance(provider_catalog, dict):
-                    model_metadata = provider_catalog.get(bare_model)
+                model_metadata = _platform_model_metadata(
+                    provider,
+                    str(planned_decision.internal_model or data.get("model") or ""),
+                )
 
             try:
                 opt_result = await context_optimizer.optimize(
                     payload=data,
                     backend_info=decision_instance,
                     model_metadata=model_metadata,
-                    stage_limit="safe",
+                    stage_limit="moderate",
+                    cost_optimization=True,
                 )
                 optimized_data = opt_result.safe_payload
             except ContextTooLargeError as exc:
@@ -2028,7 +2227,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 optimized_data = data
                 opt_result = None
 
-            # Fallback para janela maior se o payload Safe exceder o orçamento do destino planejado
+            # Fallback para janela maior se o payload otimizado exceder o orçamento
+            # do destino planejado.
             limits = resolve_model_limits(decision_instance, model_metadata)
             if limits.is_known and limits.context_tokens:
                 decision_instance.setdefault("config", {})["context_size"] = limits.context_tokens
@@ -2043,10 +2243,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     cand_meta = None
                     if cand_inst.get("backend_type") == "platform":
                         prov = str(cand_inst.get("provider") or "").strip().lower()
-                        bare = resolve_platform_listing_model(str(cand_inst.get("model") or data.get("model") or ""))
-                        prov_cat = _platform_model_catalog_cache.get(prov)
-                        if isinstance(prov_cat, dict):
-                            cand_meta = prov_cat.get(bare)
+                        cand_meta = _platform_model_metadata(
+                            prov,
+                            str(cand_inst.get("model") or data.get("model") or ""),
+                        )
                     return resolve_model_limits(cand_inst, cand_meta), derive_target_capabilities(cand_inst, cand_meta)
 
                 def _fits_cand(cand_inst: Dict[str, Any], cand_ctx: int) -> bool:
@@ -2074,10 +2274,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     )
                     if planned_decision.backend_type == "platform":
                         provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                        bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                        provider_catalog = _platform_model_catalog_cache.get(provider)
-                        if isinstance(provider_catalog, dict):
-                            model_metadata = provider_catalog.get(bare_model)
+                        model_metadata = _platform_model_metadata(
+                            provider,
+                            str(planned_decision.internal_model or data.get("model") or ""),
+                        )
                     limits = resolve_model_limits(decision_instance, model_metadata)
                     target_caps = derive_target_capabilities(decision_instance, model_metadata)
                     budget = calculate_target_budget(data, limits, target_caps)
@@ -2094,6 +2294,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         payload=data,
                         backend_info=decision_instance,
                         model_metadata=model_metadata,
+                        cost_optimization=True,
                     )
                     optimized_data = opt_result.safe_payload
                 except ContextTooLargeError as exc:
@@ -2153,8 +2354,15 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             instances,
             route_headers,
         )
+        payload_to_forward = optimized_data
+        if (
+            decision.provider == "ollama-cloud"
+            or str(decision_instance.get("provider") or "").strip().lower()
+            == "ollama-cloud"
+        ):
+            payload_to_forward = _normalize_ollama_cloud_payload(optimized_data)
         forward_body = json.dumps(
-            {**optimized_data, "model": forward_model}, ensure_ascii=False
+            {**payload_to_forward, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -2271,7 +2479,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                             payload=data,
                             backend_info=new_instance,
                             model_metadata=model_metadata,
-                            stage_limit="safe",
+                            cost_optimization=True,
                         )
                         optimized_data = new_opt.safe_payload
                         logger.info(
@@ -2358,6 +2566,16 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         return err
                     continue
 
+                if await _is_upstream_custom_tool_parse_error(upstream):
+                    await upstream.aclose()
+                    await proxy_router.release(
+                        decision.backend_id, affinity_key=decision.affinity_key
+                    )
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
+
                 async def stream_generator(response=upstream, dec=decision):
                     usage_holder: Dict[str, Any] = {}
                     try:
@@ -2413,6 +2631,11 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 elif _is_retryable_upstream_status(resp.status_code):
                     failover_cause = f"HTTP {resp.status_code}"
                     failover_status = resp.status_code
+                elif await _is_upstream_custom_tool_parse_error(resp):
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
                 else:
                     content = resp.content
                     if decision.rewrite:
@@ -2487,6 +2710,10 @@ async def openai_proxy(
 
     instances = _hybrid_status().get("instances", [])
     has_ollama_cloud = bool(ollama_cloud_manager.get_accounts())
+    if has_ollama_cloud:
+        # Register bare provider IDs before model aliases and routing are
+        # resolved (e.g. ``gemma4:31b`` must select Ollama Cloud, not Codex).
+        await _ensure_ollama_cloud_model_registry(instances)
     cloud_model_requested = (
         bool(requested_model)
         and platform_provider_for_listing(str(requested_model)) == "ollama-cloud"
@@ -2556,6 +2783,13 @@ async def openai_proxy(
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
+    if _local_backend_rejects_custom_tools(data, target_instance):
+        logger.warning(
+            "[proxy] rejecting unsupported custom tools before backend=%s",
+            target_instance.get("port"),
+        )
+        return _unsupported_custom_tools_response(data)
+
     client_facing_model = _platform_response_model_name(
         client_requested_model, target_instance, instances
     )
@@ -2599,6 +2833,13 @@ async def openai_proxy(
                     backend_label=backend_label,
                 )
 
+                if await _is_upstream_custom_tool_parse_error(upstream):
+                    await upstream.aclose()
+                    logger.warning(
+                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                    )
+                    return _unsupported_custom_tools_response(data)
+
                 async def stream_generator(response=upstream):
                     try:
                         byte_iter = response.aiter_bytes()
@@ -2629,6 +2870,11 @@ async def openai_proxy(
                 headers=headers,
                 backend_label=backend_label,
             )
+            if await _is_upstream_custom_tool_parse_error(resp):
+                logger.warning(
+                    "[proxy] mapping upstream custom-tool parse error to HTTP 400"
+                )
+                return _unsupported_custom_tools_response(data)
             content = resp.content
             if client_facing_model and target_instance.get("backend_type") != "platform":
                 content, _ = rewrite_json_model(content, client_facing_model)
@@ -2900,7 +3146,12 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         try:
             preview_opt = ContextOptimizer(config_manager=config_manager, audit_recorder=None)
             decision_inst = next((b for b in proxy_router.backends_snapshot() if b["port"] == decision.backend_port), {})
-            res = await preview_opt.optimize(payload=data, backend_info=decision_inst)
+            res = await preview_opt.optimize(
+                payload=data,
+                backend_info=decision_inst,
+                stage_limit="moderate",
+                cost_optimization=True,
+            )
             opt_preview = {
                 "strategy": res.audit.strategy,
                 "original_cost": res.audit.original_cost,

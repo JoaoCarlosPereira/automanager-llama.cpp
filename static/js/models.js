@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.19';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.20';
 import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
 import { checkForUpdates } from './version.js?v=4.2.3';
 
@@ -610,7 +610,7 @@ function syncPlatformCursorSelectors(tab, models) {
     if (!aliasSelect || !targetSelect) return;
     const names = state.cursorCompatibleNames?.length
         ? state.cursorCompatibleNames
-        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini'];
+        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini', 'gpt-5.5'];
     if (!aliasSelect.options.length) {
         aliasSelect.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
     }

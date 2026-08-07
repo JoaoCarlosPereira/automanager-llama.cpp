@@ -294,3 +294,40 @@ async def test_moderate_stops_as_soon_as_budget_is_met():
 
     assert result.audit.blocks_removed < 3
     assert result.audit.optimized_cost <= target_budget_tokens
+
+
+@pytest.mark.asyncio
+async def test_cost_optimization_reduces_history_even_when_context_fits():
+    """Economia de custo não deve depender de estourar a janela."""
+    payload = {
+        "messages": [
+            {"role": "system", "content": "Sistema."},
+            {"role": "user", "content": "Pergunta histórica."},
+            {"role": "assistant", "content": "Resposta histórica."},
+            {"role": "user", "content": "Solicitação atual."},
+        ],
+    }
+    ir = parse_request_ir(payload)
+    budget = calculate_target_budget(
+        payload,
+        ModelLimits(
+            context_tokens=131072,
+            max_output_tokens=2048,
+            source="local",
+            confidence=LimitConfidence.KNOWN_LOCAL,
+        ),
+        frozenset({"text"}),
+    )
+
+    result = await optimize_request_ir_moderate(
+        ir,
+        budget,
+        cost_optimization=True,
+    )
+
+    assert result.audit.strategy == "moderate"
+    assert result.audit.savings_tokens > 0
+    assert result.safe_payload["messages"] == [
+        payload["messages"][0],
+        payload["messages"][-1],
+    ]

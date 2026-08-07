@@ -173,6 +173,16 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+def _has_custom_tools(body: dict) -> bool:
+    """Return whether the request uses Cursor/OpenAI custom tools."""
+    tools = body.get("tools") if isinstance(body, dict) else None
+    return isinstance(tools, list) and any(
+        isinstance(tool, dict)
+        and str(tool.get("type") or "").strip().lower() == "custom"
+        for tool in tools
+    )
+
+
 def gpu_label(instance: Dict[str, Any]) -> str:
     """Nome amigável da GPU da instância a partir de config.gpu_weights."""
     config = instance.get("config") or {}
@@ -1685,7 +1695,48 @@ class ProxyRouter:
         configured_primary_active = (
             primary is not None and self._backend_available(primary)
         )
-        if not configured_primary_active:
+        custom_platform_selected = False
+
+        # llama-server supports function tools, but not Cursor's free-form
+        # custom tools (for example ApplyPatch).  When such a request targets
+        # a local primary, move it to an eligible platform backend before
+        # committing the route.  The client-facing model remains unchanged;
+        # _internal_model() selects the platform's configured default model.
+        if (
+            _has_custom_tools(body)
+            and (primary is None or self._backend_type(primary) != "platform")
+        ):
+            platform_candidates = [
+                instance
+                for instance in self._candidates(
+                    instances,
+                    config,
+                    None,
+                    0,
+                    ignore_capacity=ignore_capacity,
+                    external_model=external_model,
+                    configured_primary_backend_id=configured_backend_id,
+                )
+                if self._backend_type(instance) == "platform"
+            ]
+            if platform_candidates:
+                primary = self._pick_least_busy(
+                    platform_candidates,
+                    primary_backend_id=(
+                        self._backend_id(primary) if primary is not None
+                        else configured_backend_id or None
+                    ),
+                )
+                primary_port = primary["port"]
+                primary_backend_id = self._backend_id(primary)
+                custom_platform_selected = True
+                logger.info(
+                    "[proxy] custom tools require platform backend=%s provider=%s",
+                    primary_backend_id,
+                    primary.get("provider"),
+                )
+
+        if not configured_primary_active and not custom_platform_selected:
             fallback = self._candidates(
                 instances,
                 config,

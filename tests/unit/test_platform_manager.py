@@ -15,7 +15,9 @@ from platform_manager import (
     platform_client_facing_model,
     platform_model_listing_entry,
     platform_model_listing_id,
+    platform_provider_for_listing,
     register_platform_model_listings,
+    register_platform_bare_model,
     resolve_platform_listing_model,
 )
 
@@ -106,6 +108,11 @@ class TestPlatformModelListing:
     def test_resolve_uses_registry(self):
         register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
         assert resolve_platform_listing_model("antigravity-31prolow.gguf") == "gemini-3.1-pro-low"
+
+    def test_bare_model_id_can_be_bound_to_ollama_cloud(self):
+        register_platform_bare_model("gemma4:31b", "ollama-cloud")
+        assert platform_provider_for_listing("gemma4:31b") == "ollama-cloud"
+        assert resolve_platform_listing_model("gemma4:31b") == "gemma4:31b"
 
     def test_resolve_proagent_listing(self):
         register_platform_model_listings("gemini-pro-agent", "antigravity")

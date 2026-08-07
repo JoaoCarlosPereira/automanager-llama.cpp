@@ -88,6 +88,7 @@ CURSOR_COMPATIBLE_ALIAS_NAMES = (
     "gpt-4",
     "gpt-3.5-turbo",
     "o3-mini",
+    "gpt-5.5",
 )
 
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
