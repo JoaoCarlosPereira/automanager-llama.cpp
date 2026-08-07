@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.19"  # Ranking de velocidade do proxy no startup
+_DASHBOARD_JS_V = "4.2.20"  # Adiciona gpt-5.5 ao catálogo BYOK do Cursor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
