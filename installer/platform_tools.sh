@@ -168,6 +168,31 @@ install_claude_code() {
   fi
 }
 
+install_httpx_deps() {
+  local venv_path="${INSTALL_DIR:-/opt/automanager}/venv"
+  local pip_path="${venv_path}/bin/pip"
+  local python_path="${venv_path}/bin/python"
+
+  if [[ ! -f "${pip_path}" ]]; then
+    log_warn "Python virtualenv not found at ${venv_path}, skipping httpx check."
+    return 0
+  fi
+
+  if "${python_path}" -c "import httpx" 2>/dev/null; then
+    log_info "httpx is already installed in the virtualenv."
+    return 0
+  fi
+
+  log_info "httpx not found in virtualenv — installing..."
+  if "${pip_path}" install --upgrade pip &>/dev/null \
+    && "${pip_path}" install "httpx>=0.27.0" 2>&1 | tail -1; then
+    log_info "httpx installed successfully."
+  else
+    log_error "Failed to install httpx in ${venv_path}."
+    return 1
+  fi
+}
+
 verify_platform_tools() {
   local label path
   local -a required=(cli-proxy-api codex agy)
@@ -194,6 +219,7 @@ install_platform_tools() {
   local failed=0
 
   log_info "Installing hybrid platform dependencies..."
+  install_httpx_deps || failed=1
   install_cliproxyapi || failed=1
   install_codex || failed=1
   install_antigravity_cli || failed=1

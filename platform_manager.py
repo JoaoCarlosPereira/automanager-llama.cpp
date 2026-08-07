@@ -39,6 +39,7 @@ class PlatformDefinition:
     provider: str
     display_name: str
     command_candidates: tuple[str, ...]
+    has_cli: bool = True
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,18 @@ DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         display_name="Google Antigravity",
         command_candidates=("agy", "antigravity", "antigravity.cmd", "antigravity.exe"),
     ),
+)
+
+# ---------------------------------------------------------------------------
+# Platforms without a local CLI executable (e.g. Ollama Cloud)
+# ---------------------------------------------------------------------------
+
+DEFAULT_OLLAMA_CLOUD_DEFINITION = PlatformDefinition(
+    backend_id="platform:ollama-cloud",
+    provider="ollama-cloud",
+    display_name="Ollama Cloud",
+    command_candidates=(),  # no CLI
+    has_cli=False,
 )
 
 DEFAULT_CLIPROXY_CANDIDATES = (
@@ -671,7 +684,14 @@ class CLIProxySidecarManager:
 
 
 class PlatformIntegrationManager:
-    """In-memory platform catalog built from startup-time executable detection."""
+    """In-memory platform catalog built from startup-time executable detection.
+
+    Supports two kinds of platforms:
+
+    * **CLI platforms** — require a local executable and a CLIProxyAPI sidecar.
+    * **Non-CLI platforms** — operate as direct HTTP backends (e.g. Ollama Cloud).
+      They have ``has_cli=False`` and skip executable detection entirely.
+    """
 
     def __init__(
         self,
@@ -680,6 +700,8 @@ class PlatformIntegrationManager:
         executable_resolver: Optional[ExecutableResolver] = None,
         platform_definitions: Iterable[PlatformDefinition] = DEFAULT_PLATFORM_DEFINITIONS,
         cliproxy_candidates: Iterable[str] = DEFAULT_CLIPROXY_CANDIDATES,
+        ollama_cloud_account_manager=None,
+        ollama_cloud_catalog=None,
     ) -> None:
         self._config = config_manager
         self._resolver = executable_resolver or default_executable_resolver
@@ -689,10 +711,21 @@ class PlatformIntegrationManager:
             self._cliproxy_candidates,
             "CLIProxyAPI executable not found",
         )
-        self._detections = {
-            definition.backend_id: self._detect_platform(definition)
-            for definition in self._definitions
-        }
+        self._detections: Dict[str, ExecutableDetection] = {}
+        self._non_cli_defs: Dict[str, PlatformDefinition] = {}
+        all_defs: list = []
+        for definition in self._definitions:
+            all_defs.append(definition)
+            if definition.has_cli:
+                self._detections[definition.backend_id] = self._detect_platform(definition)
+            else:
+                self._non_cli_defs[definition.backend_id] = definition
+        self._definitions = tuple(all_defs)
+
+        # Non-CLI platform managers
+        self._ollama_cloud_account_manager = ollama_cloud_account_manager
+        self._ollama_cloud_catalog = ollama_cloud_catalog
+
         self._runtime: Dict[str, dict] = {}
         self._runtime_lock = threading.Lock()
 
@@ -731,14 +764,20 @@ class PlatformIntegrationManager:
             }
         with self._runtime_lock:
             runtime = dict(self._runtime.get(backend_id, {}))
-        return {
+
+        # Build runtime state merging non-CLI accounts list
+        base = {
             **item,
             "active": bool(runtime.get("active")),
             "sidecar_port": runtime.get("sidecar_port"),
             "start_time": runtime.get("start_time"),
             "last_error": runtime.get("last_error"),
-            "status": runtime.get("status") or item["status"],
+            "status": runtime.get("status") or item.get("status"),
         }
+        # Include accounts list for non-CLI platforms
+        if "accounts" in item:
+            base["accounts"] = item["accounts"]
+        return base
 
     def active_instances(self) -> list[dict]:
         instances = []
@@ -765,12 +804,24 @@ class PlatformIntegrationManager:
             })
         return instances
 
+    def _is_non_cli_backend(self, backend_id: str) -> bool:
+        """Return True if *backend_id* belongs to a non-CLI platform."""
+        for bid in self._non_cli_defs:
+            if bid == backend_id:
+                return True
+        return False
+
     def start_backend(
         self, backend_id: str, sidecar: CLIProxySidecarManager
     ) -> dict:
         item = self.get(backend_id)
         if item is None:
             raise PlatformIntegrationError(404, "Platform integration not defined")
+
+        # Non-CLI platform: validate via AccountManager (no sidecar)
+        if self._is_non_cli_backend(backend_id):
+            return self._start_non_cli_backend(backend_id, item)
+
         if not item.get("detected"):
             error = item.get("reason") or "Platform integration executable not found"
             self._set_runtime_error(backend_id, "missing", error)
@@ -796,11 +847,55 @@ class PlatformIntegrationManager:
             self._runtime[backend_id] = runtime
         return self.runtime_state(backend_id)
 
+    def _start_non_cli_backend(self, backend_id: str, item: dict) -> dict:
+        """Start a non-CLI platform by validating connection via AccountManager."""
+        if backend_id == "platform:ollama-cloud" and self._ollama_cloud_account_manager is not None:
+            # Validate connection against each account
+            accounts = self._ollama_cloud_account_manager.get_accounts()
+            if not accounts:
+                self._set_runtime_error(backend_id, "error", "No accounts configured")
+                raise PlatformIntegrationError(502, "Ollama Cloud connection validation failed")
+            any_error = True
+            for acc in accounts:
+                try:
+                    import asyncio
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self._ollama_cloud_account_manager.validate_connection(acc)
+                    )
+                    if result:
+                        any_error = False
+                except Exception:
+                    pass
+            if any_error:
+                self._set_runtime_error(backend_id, "error", "Connection validation failed for all accounts")
+                raise PlatformIntegrationError(502, "Ollama Cloud connection validation failed")
+        runtime = {
+            "active": True,
+            "status": "running",
+            "start_time": time.time(),
+            "last_error": None,
+        }
+        with self._runtime_lock:
+            self._runtime[backend_id] = runtime
+        return self.runtime_state(backend_id)
+
     def stop_backend(
         self, backend_id: str, sidecar: CLIProxySidecarManager
     ) -> dict:
         if self.get(backend_id) is None:
             raise PlatformIntegrationError(404, "Platform integration not defined")
+
+        # Non-CLI platform: just update runtime state (no sidecar)
+        if self._is_non_cli_backend(backend_id):
+            with self._runtime_lock:
+                self._runtime[backend_id] = {
+                    **self._runtime.get(backend_id, {}),
+                    "active": False,
+                    "status": "stopped",
+                    "sidecar_port": None,
+                }
+            return self.runtime_state(backend_id)
+
         with self._runtime_lock:
             self._runtime[backend_id] = {
                 **self._runtime.get(backend_id, {}),
@@ -831,8 +926,28 @@ class PlatformIntegrationManager:
                 "last_error": error,
             }
 
+    def _is_non_cli(self, definition: PlatformDefinition) -> bool:
+        return not definition.has_cli
+
     def _catalog_entry(self, definition: PlatformDefinition, config: Dict) -> dict:
-        detection = self._detections[definition.backend_id]
+        detection = self._detections.get(definition.backend_id)
+        is_non_cli = self._is_non_cli(definition)
+        if is_non_cli:
+            return self._non_cli_catalog_entry(definition, config)
+        if detection is None:
+            return {
+                "backend_id": definition.backend_id,
+                "backend_type": "platform",
+                "provider": definition.provider,
+                "name": definition.display_name,
+                "display_name": definition.display_name,
+                "detected": False,
+                "status": "missing",
+                "reason": "Platform integration not defined",
+                "proxy_eligible": bool(config.get("proxy_eligible", False)),
+                "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
+                "auto_start": bool(config.get("auto_start", False)),
+            }
         status, reason = self._status_and_reason(definition, detection)
         return {
             "backend_id": definition.backend_id,
@@ -850,6 +965,56 @@ class PlatformIntegrationManager:
             "proxy_eligible": bool(config.get("proxy_eligible", False)),
             "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
             "auto_start": bool(config.get("auto_start", False)),
+        }
+
+    def _non_cli_catalog_entry(self, definition: PlatformDefinition, config: Dict) -> dict:
+        """Build a catalog entry for a non-CLI platform (e.g. Ollama Cloud)."""
+        status = "available"
+        accounts_status = []
+        account_count = 0
+        catalog_status_val: str = "stale"
+        last_catalog_update: Optional[float] = None
+
+        if self._ollama_cloud_account_manager is not None:
+            accounts = self._ollama_cloud_account_manager.get_accounts()
+            account_count = len(accounts)
+            for acc in accounts:
+                acc_info = {
+                    "id": acc.id,
+                    "label": acc.label,
+                    "status": acc.status,
+                }
+                if acc.cooldown_until:
+                    acc_info["cooldown_until"] = acc.cooldown_until
+                accounts_status.append(acc_info)
+            # Platform status: "available" if at least one account is available,
+            # else "error" if any account exists, else "missing"
+            any_available = any(a.status == "available" for a in accounts)
+            if accounts:
+                status = "available" if any_available else "error"
+            else:
+                status = "missing"
+
+        if self._ollama_cloud_catalog is not None:
+            catalog_status_val = self._ollama_cloud_catalog.catalog_status
+            last_catalog_update = self._ollama_cloud_catalog.last_refresh
+
+        return {
+            "backend_id": definition.backend_id,
+            "backend_type": "platform",
+            "provider": definition.provider,
+            "name": definition.display_name,
+            "display_name": definition.display_name,
+            "has_cli": False,
+            "status": status,
+            "reason": None,
+            "proxy_eligible": bool(config.get("proxy_eligible", False)),
+            "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
+            "auto_start": bool(config.get("auto_start", False)),
+            "accounts": accounts_status,
+            "account_count": account_count,
+            "catalog_status": catalog_status_val,
+            "last_catalog_update": last_catalog_update,
         }
 
     def _status_and_reason(

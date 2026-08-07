@@ -6,6 +6,7 @@ import logging
 import hashlib
 import secrets
 import threading
+import uuid as uuid_mod
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -45,6 +46,7 @@ from schemas import (
     DEFAULT_PROXY_TTL_MINUTES,
     DEFAULT_PROXY_MAX_WAIT_SECONDS,
 )
+from utils import mask_api_key
 
 DEFAULT_THINKING_ENABLED = True
 
@@ -548,6 +550,97 @@ class ConfigManager:
             return [normalize_model_path(p) for p in defaults if p]
         legacy = config.get("default_model")
         return [normalize_model_path(legacy)] if legacy else []
+
+    # ------------------------------------------------------------------ ollama_cloud_accounts
+    @staticmethod
+    def _mask_api_key(api_key: str) -> str:
+        """Return a safe mask for *api_key* (``sk-****...****``).
+
+        Delegado ao utilitário compartilhado ``utils.mask_api_key``.
+        """
+        return mask_api_key(api_key)
+
+    def get_ollama_cloud_accounts(self) -> list[dict]:
+        """Return a list of Ollama Cloud account dicts with masked api_key."""
+        config = self.load()
+        accounts = config.get("ollama_cloud_accounts")
+        if not isinstance(accounts, list):
+            return []
+        return [
+            {
+                "id": acc["id"],
+                "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "label": acc.get("label", ""),
+                "created_at": acc.get("created_at"),
+            }
+            for acc in accounts
+        ]
+
+    def add_ollama_cloud_account(self, api_key: str, label: str = "") -> dict:
+        """Add a new Ollama Cloud account and return it (with masked api_key).
+
+        The real api_key is stored; the returned dict always has a masked version.
+        """
+        if not api_key:
+            raise ValueError("api_key is required")
+        config = self.load()
+        accounts: list = config.get("ollama_cloud_accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+        account = {
+            "id": str(uuid_mod.uuid4()),
+            "api_key": api_key,
+            "label": label or "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        accounts.append(account)
+        config["ollama_cloud_accounts"] = accounts
+        self.save(config)
+        return {
+            "id": account["id"],
+            "api_key": self._mask_api_key(api_key),
+            "label": account["label"],
+            "created_at": account["created_at"],
+        }
+
+    def remove_ollama_cloud_account(self, account_id: str) -> bool:
+        """Remove the Ollama Cloud account identified by *account_id*. Returns True if found."""
+        config = self.load()
+        accounts: list = config.get("ollama_cloud_accounts")
+        if not isinstance(accounts, list):
+            return False
+        before = len(accounts)
+        accounts = [acc for acc in accounts if acc.get("id") != account_id]
+        if len(accounts) == before:
+            return False  # not found
+        config["ollama_cloud_accounts"] = accounts
+        self.save(config)
+        return True
+
+    def update_ollama_cloud_account(self, account_id: str, updates: dict) -> Optional[dict]:
+        """Partially update an Ollama Cloud account. Returns the updated dict (masked) or None."""
+        config = self.load()
+        accounts: list = config.get("ollama_cloud_accounts")
+        if not isinstance(accounts, list):
+            return None
+        for acc in accounts:
+            if acc.get("id") != account_id:
+                continue
+            if "api_key" in updates and updates["api_key"]:
+                acc["api_key"] = updates["api_key"]
+            if "label" in updates:
+                acc["label"] = str(updates["label"] or "")
+            if "created_at" in updates:
+                acc["created_at"] = updates["created_at"]
+            config["ollama_cloud_accounts"] = accounts
+            self.save(config)
+            return {
+                "id": acc["id"],
+                "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "label": acc.get("label", ""),
+                "created_at": acc.get("created_at"),
+            }
+        return None
 
 
 class TokenManager:

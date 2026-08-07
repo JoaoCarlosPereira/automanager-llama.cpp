@@ -158,6 +158,9 @@ print(f"  CLIProxyAPI: {'detected' if cliproxy.detected else 'missing'} ({clipro
 PY
 ) 2>/dev/null || log_warn "Could not print platform detection summary."
 
+# Print Ollama Cloud status (non-CLI platform, HTTP backend)
+log_info "  Ollama Cloud: disponivel (plataforma HTTP sem CLI)"
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Automanager Llama.cpp instalado${NC}"

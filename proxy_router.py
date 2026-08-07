@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -266,6 +267,7 @@ class ProxyRouter:
         requested_primary_resolver: Optional[
             Callable[[List[Dict[str, Any]], str], Optional[Dict[str, Any]]]
         ] = None,
+        ollama_cloud_account_manager=None,
     ) -> None:
         self._get_status = get_status
         self._config = config_manager
@@ -273,6 +275,7 @@ class ProxyRouter:
         self._now = now or _utcnow
         self._context_limit_resolver = context_limit_resolver
         self._requested_primary_resolver = requested_primary_resolver
+        self._ollama_cloud_account_manager = ollama_cloud_account_manager
         self._lock = asyncio.Lock()
         self._sessions: Dict[str, StickySession] = {}
         self._in_flight: Dict[str, int] = {}
@@ -556,6 +559,165 @@ class ProxyRouter:
         if instance.get("port") in self._disabled_ports:
             return False
         return self._backend_cooldown_until(self._backend_id(instance)) is None
+
+    # ------------------------------------------------------------------
+    # Ollama Cloud account integration (Task 07)
+    # ------------------------------------------------------------------
+
+    def _ollama_cloud_backend_ids(self) -> List[str]:
+        """Return backend_ids for all Ollama Cloud accounts."""
+        if self._ollama_cloud_account_manager is None:
+            return []
+        backend_ids = []
+        for account in self._ollama_cloud_account_manager.get_accounts():
+            backend_ids.append(f"platform:ollama-cloud:{account.id}")
+        return backend_ids
+
+    def _ollama_cloud_candidates(
+        self,
+        exclude_backend_ids: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build virtual backend dicts for available Ollama Cloud accounts.
+
+        Each account becomes a routing candidate with:
+        * backend_id = ``platform:ollama-cloud:<account_id>``
+        * ``backend_type = "platform"``
+        * ``provider = "ollama-cloud"``
+        * ``port`` is a synthetic negative key derived from account id.
+        """
+        if self._ollama_cloud_account_manager is None:
+            return []
+
+        candidates = []
+        for account in self._ollama_cloud_account_manager.get_accounts():
+            bid = f"platform:ollama-cloud:{account.id}"
+            if exclude_backend_ids and bid in exclude_backend_ids:
+                continue
+
+            # Skip accounts in cooldown
+            if account.cooldown_until is not None:
+                if time.time() < account.cooldown_until:
+                    continue
+                # Cooldown expired — clear it
+                account.cooldown_until = None
+                account.status = "available"
+
+            if account.status != "available":
+                continue
+
+            # Check cooldown expiry on status
+            if account.cooldown_until is not None and time.time() < account.cooldown_until:
+                continue
+
+            synthetic_port = -(abs(hash(account.id)) % (10**9)) + 40000
+            candidates.append({
+                "backend_id": bid,
+                "backend_type": "platform",
+                "provider": "ollama-cloud",
+                "port": synthetic_port,
+                "model": "",
+                "model_path": "",
+                "config": {},
+                "account_id": account.id,
+                "account_label": account.label,
+                "ollama_cloud_account": account,
+            })
+        return candidates
+
+    def _pick_ollama_cloud_least_busy(
+        self,
+        candidates: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Pick the least-busy Ollama Cloud account.
+
+        Prioritizes accounts NOT in cooldown. Among accounts at the same
+        cooldown state, picks the one with the lowest in-flight count
+        (synthetic accounts always have 0 in-flight).
+        """
+        if not candidates:
+            return None
+
+        def cooldown_priority(inst: Dict[str, Any]) -> int:
+            """0 = not in cooldown (best), 1 = in cooldown (worst)."""
+            acc = inst.get("ollama_cloud_account")
+            if acc is not None and acc.cooldown_until is not None:
+                return 1
+            return 0
+
+        return min(
+            candidates,
+            key=lambda i: (
+                cooldown_priority(i),
+                self.in_flight_for(i),
+                i["port"],
+                id(i),
+            ),
+        )
+
+    async def handle_http_error(
+        self,
+        status_code: int,
+        account: Any,
+        *,
+        retry_after: Optional[float] = None,
+        reason: str = "upstream_error",
+    ) -> bool:
+        """Handle an HTTP error from the Ollama Cloud provider.
+
+        Applies cooldown to the account and marks the backend unavailable.
+
+        Returns ``True`` if cooldown was applied (failover may be needed).
+        """
+        if self._ollama_cloud_account_manager is None:
+            return False
+
+        # Determine cooldown duration based on status code
+        if 400 <= status_code < 500:
+            # 4xx — likely rate limit; use retry_after or default
+            cooldown_seconds = retry_after or DEFAULT_BACKEND_COOLDOWN_SECONDS
+        elif status_code >= 500:
+            # 5xx — server error; shorter cooldown
+            cooldown_seconds = (retry_after or 30) if retry_after else 30
+        else:
+            # Other errors — default cooldown
+            cooldown_seconds = DEFAULT_BACKEND_COOLDOWN_SECONDS
+
+        # Apply cooldown to the account
+        self._ollama_cloud_account_manager.apply_cooldown(account, cooldown_seconds)
+
+        # Mark the backend unavailable in proxy_router
+        backend_id = f"platform:ollama-cloud:{account.id}"
+        await self._mark_backend_unavailable_locked(
+            backend_id,
+            cooldown_seconds=cooldown_seconds,
+            reason=reason,
+        )
+        return True
+
+    async def _mark_backend_unavailable_locked(
+        self,
+        backend_id: str,
+        cooldown_seconds: float,
+        *,
+        reason: str,
+    ) -> datetime:
+        """Internal: mark backend unavailable without re-checking normalization.
+
+        Used by ``handle_http_error`` to avoid calling ``mark_backend_unavailable``
+        directly (which would re-normalize and re-validate the backend_id).
+        """
+        seconds = max(1.0, float(cooldown_seconds))
+        async with self._lock:
+            until = self._now() + timedelta(seconds=seconds)
+            previous = self._backend_cooldown_until(backend_id)
+            if previous is not None and previous > until:
+                until = previous
+            self._unavailable_until[backend_id] = until
+        logger.warning(
+            "[proxy] backend_id=%s in cooldown until=%s reason=%s",
+            backend_id, _iso(until), reason,
+        )
+        return until
 
     async def mark_backend_unavailable(
         self,
@@ -903,6 +1065,12 @@ class ProxyRouter:
             if not ignore_capacity and self.in_flight_for(inst) >= max_parallel:
                 continue
             result.append(inst)
+        # Append Ollama Cloud account backends (Task 07)
+        ollama_candidates = self._ollama_cloud_candidates(
+            exclude_backend_ids=exclude_backend_ids,
+        )
+        if ollama_candidates:
+            result.extend(ollama_candidates)
         return result
 
     def _pick_least_busy(
@@ -915,7 +1083,8 @@ class ProxyRouter:
         atribuídas, preferência por backend principal (por id, não porta),
         depois evita o mesmo sidecar do principal (outra integração na
         mesma porta tende a sofrer a mesma contenção), depois instâncias de
-        plataforma (poupa GPU local dedicada) e menor porta."""
+        plataforma (poupa GPU local dedicada), depois contas Ollama Cloud
+        sem cooldown, e menor porta. (Task 07)"""
         if not candidates:
             return None
         session_counts: Dict[str, int] = {}
@@ -935,6 +1104,15 @@ class ProxyRouter:
                 session_counts.get(self._backend_id(i), 0),
                 1 if (primary_port is not None and i["port"] == primary_port) else 0,
                 0 if self._backend_type(i) == "platform" else 1,
+                # (Task 07) Priorize Ollama Cloud accounts NOT in cooldown
+                (
+                    0 if (
+                        i.get("backend_type") == "platform"
+                        and i.get("provider") == "ollama-cloud"
+                        and i.get("ollama_cloud_account") is not None
+                        and i["ollama_cloud_account"].cooldown_until is None
+                    ) else 1
+                ),
                 i["port"],
             ),
         )

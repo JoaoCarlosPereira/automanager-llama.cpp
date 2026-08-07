@@ -75,6 +75,11 @@ from platform_manager import (
     merge_platform_model_metadata,
     should_skip_platform_model_listing,
 )
+from platform_ollama_cloud import (
+    OllamaCloudAccount,
+    OllamaCloudAccountManager,
+    OllamaCloudCatalog,
+)
 from version_manager import check_for_updates
 from schemas import (
     BATCH_SIZE_PRESETS,
@@ -108,6 +113,7 @@ from schemas import (
 )
 from gpu_manager import GPUManager, reasoning_cli_args, mtp_cli_args, compute_server_ctx_size
 from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reload_module_paths
+from utils import mask_api_key
 
 # Version tracking
 _DASHBOARD_JS_V = "4.2.18"  # Ranking de velocidade do proxy no startup
@@ -576,6 +582,10 @@ proxy_router = ProxyRouter(
 )
 audit_recorder = AuditRecorder(log_dir=get_paths().audit_logs_dir)
 context_optimizer = ContextOptimizer(config_manager=config_manager, audit_recorder=audit_recorder)
+
+# Ollama Cloud — account management and catalog
+_ollama_cloud_catalog = OllamaCloudCatalog()
+ollama_cloud_manager = OllamaCloudAccountManager(config_manager, _ollama_cloud_catalog)
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
 )
@@ -969,6 +979,134 @@ async def stop_platform(
         "platform": state,
         "sidecar": cliproxy_sidecar.status(),
     }
+
+
+# ── Ollama Cloud administrative endpoints ───────────────────────────────────
+
+class OllamaCloudAddAccountRequest(BaseModel):
+    api_key: str
+    label: str = ""
+
+
+class OllamaCloudUpdateAccountRequest(BaseModel):
+    label: str = ""
+
+
+@app.get("/platforms/ollama-cloud/accounts")
+async def get_ollama_cloud_accounts(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    accounts = ollama_cloud_manager.get_accounts()
+    return {
+        "accounts": [
+            {
+                "id": a.id,
+                "api_key": mask_api_key(a.api_key),
+                "label": a.label,
+                "status": a.status,
+                "created_at": None,
+            }
+            for a in accounts
+        ],
+    }
+
+
+@app.post("/platforms/ollama-cloud/accounts", status_code=201)
+async def add_ollama_cloud_account(
+    req: OllamaCloudAddAccountRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        account = ollama_cloud_manager.add_account(req.api_key, req.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": account.id,
+        "api_key": mask_api_key(account.api_key),
+        "label": account.label,
+        "status": account.status,
+    }
+
+
+@app.delete("/platforms/ollama-cloud/accounts/{account_id}")
+async def delete_ollama_cloud_account(
+    account_id: str,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        ollama_cloud_manager.remove_account(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"message": "Conta removida"}
+
+
+@app.patch("/platforms/ollama-cloud/accounts/{account_id}")
+async def update_ollama_cloud_account(
+    account_id: str,
+    req: OllamaCloudUpdateAccountRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    updated = config_manager.update_ollama_cloud_account(account_id, req.model_dump())
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return updated
+
+
+@app.post("/platforms/ollama-cloud/accounts/{account_id}/validate")
+async def validate_ollama_cloud_account(
+    account_id: str,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    accounts = ollama_cloud_manager.get_accounts()
+    target = next((a for a in accounts if a.id == account_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Need the real api_key — read directly from config (masked values won't work)
+    config = config_manager.load()
+    raw_list = config.get("ollama_cloud_accounts", [])
+    real_key = None
+    for acc in raw_list:
+        if acc.get("id") == account_id:
+            real_key = acc.get("api_key", "")
+            break
+    if not real_key:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    full_account = OllamaCloudAccount(
+        id=target.id,
+        api_key=real_key,
+        label=target.label,
+        status=target.status,
+    )
+    try:
+        success = await ollama_cloud_manager.validate_connection(full_account)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Validation failed: {exc}")
+    return {"valid": success, "status": full_account.status}
+
+
+@app.post("/platforms/ollama-cloud/catalog/refresh")
+async def refresh_ollama_cloud_catalog(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        await _ollama_cloud_catalog.refresh()
+        return {
+            "message": "Catalog refresh completed",
+            "status": _ollama_cloud_catalog.catalog_status,
+            "models_count": len(_ollama_cloud_catalog.all_models),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Catalog refresh failed: {exc}")
 
 
 @app.get("/cliproxy/auth")
