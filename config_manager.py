@@ -88,7 +88,28 @@ CURSOR_COMPATIBLE_ALIAS_NAMES = (
     "gpt-4",
     "gpt-3.5-turbo",
     "o3-mini",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4-turbo",
+    "gpt-4-turbo-preview",
+    "gpt-4-0125-preview",
+    "gpt-4-1106-preview",
+    "gpt-4-0613",
+    "gpt-3.5-turbo-0125",
+    "gpt-3.5-turbo-1106",
+    "o1",
+    "o1-mini",
+    "o1-preview",
+    "o1-pro",
+    "o3",
+    "o3-pro",
+    "o4-mini",
+    "gpt-5",
     "gpt-5.5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-chat-latest",
+    "codex-mini-latest",
 )
 
 SESSION_IDLE_SECONDS = 86400  # 24h sem atividade
@@ -438,6 +459,7 @@ class ConfigManager:
         for key in ("enabled", "audit_enabled"):
             if key in stored:
                 defaults[key] = bool(stored[key])
+        defaults["enabled"] = True
         tokenizers = stored.get("tokenizers")
         if isinstance(tokenizers, dict):
             defaults["tokenizers"] = {
@@ -527,6 +549,15 @@ class ConfigManager:
         aliases = self.get_model_aliases()
         return aliases.get(model_name, model_name)
 
+    def is_removed_model_alias(self, model_name: Optional[str]) -> bool:
+        """Return whether a previously configured alias was explicitly removed."""
+        alias = str(model_name or "").strip()
+        if not alias:
+            return False
+        config = self.load()
+        removed = config.get("removed_model_aliases")
+        return isinstance(removed, list) and alias in removed
+
     def set_model_alias(self, alias: str, target: Optional[str]) -> Dict[str, str]:
         alias_key = str(alias or "").strip()
         if not alias_key:
@@ -535,14 +566,52 @@ class ConfigManager:
         aliases = config.get("model_aliases")
         if not isinstance(aliases, dict):
             aliases = {}
+        removed = config.get("removed_model_aliases")
+        if not isinstance(removed, list):
+            removed = []
         target_val = str(target or "").strip()
         if target_val:
             aliases[alias_key] = target_val
+            removed = [item for item in removed if item != alias_key]
         else:
             aliases.pop(alias_key, None)
+            if alias_key not in removed:
+                removed.append(alias_key)
         config["model_aliases"] = aliases
+        config["removed_model_aliases"] = removed
         self.save(config)
         return self.get_model_aliases()
+
+    def replace_model_alias_target(self, old_target: str, new_target: Optional[str]) -> None:
+        """Update or remove aliases pointing at a local model target."""
+        old_value = str(old_target or "").strip().replace("\\", "/")
+        new_value = str(new_target or "").strip().replace("\\", "/")
+        if not old_value:
+            return
+        config = self.load()
+        aliases = config.get("model_aliases")
+        if not isinstance(aliases, dict):
+            return
+        removed = config.get("removed_model_aliases")
+        if not isinstance(removed, list):
+            removed = []
+        changed = False
+        old_basename = os.path.basename(old_value)
+        for alias, target in list(aliases.items()):
+            target_value = str(target or "").strip().replace("\\", "/")
+            if target_value != old_value and os.path.basename(target_value) != old_basename:
+                continue
+            if new_value:
+                aliases[alias] = new_value
+            else:
+                aliases.pop(alias, None)
+                if alias not in removed:
+                    removed.append(alias)
+            changed = True
+        if changed:
+            config["model_aliases"] = aliases
+            config["removed_model_aliases"] = removed
+            self.save(config)
 
     def get_default_models(self) -> list[str]:
         config = self.config.load() if hasattr(self, "config") else self.load()

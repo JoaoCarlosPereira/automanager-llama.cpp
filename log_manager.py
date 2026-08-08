@@ -1,11 +1,13 @@
 """Log file management, rotation, and SSE streaming."""
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +22,8 @@ from paths import (
 
 MAX_LOG_SIZE = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
+MAX_PROXY_REQUEST_LOG_SIZE = 50 * 1024 * 1024
+PROXY_REQUEST_LOG_BACKUP_COUNT = 5
 
 logger = logging.getLogger("automanager")
 
@@ -147,8 +151,69 @@ class LogManager:
         os.makedirs(self._logs_dir, exist_ok=True)
         self._stream_threads: Dict[int, threading.Thread] = {}
         self._stream_lock = threading.Lock()
+        self._proxy_request_log_lock = threading.Lock()
         self._setup_manager_logging()
         self._setup_server_log_rotation(self._default_server_log_path)
+
+    def record_proxy_request(
+        self,
+        *,
+        path: str,
+        received_payload: Dict[str, Any],
+        forwarded_payload: Dict[str, Any],
+        backend: Optional[Dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        duration_ms: Optional[float] = None,
+        stream: bool = False,
+    ) -> None:
+        """Persist a complete proxy payload for post-request diagnostics.
+
+        Authentication headers are intentionally not included. The request
+        body is preserved because fields such as ``reasoning_effort`` are
+        needed to diagnose provider compatibility.
+        """
+        record = {
+            "id": uuid.uuid4().hex,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "path": path,
+            "stream": bool(stream),
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+            "backend": backend or {},
+            "received_payload": received_payload,
+            "forwarded_payload": forwarded_payload,
+        }
+        path = os.path.join(self._logs_dir, "proxy_requests.jsonl")
+        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        try:
+            with self._proxy_request_log_lock:
+                self._rotate_proxy_request_log(path)
+                with open(path, "a", encoding="utf-8") as handle:
+                    handle.write(line)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Failed to persist proxy request log: %s", exc)
+
+    def _rotate_proxy_request_log(self, path: str) -> None:
+        """Rotate the diagnostic request log before it exceeds its limit."""
+        try:
+            if not os.path.exists(path):
+                return
+            if os.path.getsize(path) + 4096 <= MAX_PROXY_REQUEST_LOG_SIZE:
+                return
+        except OSError:
+            return
+        for index in range(PROXY_REQUEST_LOG_BACKUP_COUNT - 1, 0, -1):
+            source = f"{path}.{index}"
+            target = f"{path}.{index + 1}"
+            try:
+                if os.path.exists(source):
+                    os.replace(source, target)
+            except OSError:
+                pass
+        try:
+            os.replace(path, f"{path}.1")
+        except OSError:
+            pass
 
     def _setup_manager_logging(self) -> None:
         root_logger = logging.getLogger("automanager")

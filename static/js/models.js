@@ -93,7 +93,7 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.20';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.22';
 import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
 import { checkForUpdates } from './version.js?v=4.2.3';
 
@@ -411,6 +411,13 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     bindTabListeners(tabId);
     bindGpuManualListeners(tabId);
     bindTabLogPanelHeightSync(tabId);
+    const localAliasSelect = tabDiv.querySelector('.local-cursor-alias-select');
+    tabDiv.querySelector('.local-cursor-save-alias')?.addEventListener('click', () => {
+        const alias = localAliasSelect?.value;
+        if (!alias) return;
+        saveModelAlias(alias, m_js, tabDiv).then(() => refreshLocalCursorSection(tabDiv, m_js));
+    });
+    refreshLocalCursorSection(tabDiv, m_js);
     return tabId;
 }
 
@@ -604,6 +611,40 @@ function renderPlatformCursorAliases(tab, aliasState) {
     });
 }
 
+function renderLocalCursorAliases(tab, aliasState, modelPath) {
+    const list = tab.querySelector('.local-cursor-aliases-list');
+    const select = tab.querySelector('.local-cursor-alias-select');
+    if (!list || !select) return;
+    const normalizedPath = (modelPath || '').replace(/\\/g, '/');
+    const aliases = Object.entries(aliasState?.aliases || {}).filter(([, target]) => {
+        const normalizedTarget = String(target || '').replace(/\\/g, '/');
+        return normalizedTarget === normalizedPath
+            || normalizedTarget.split('/').pop() === normalizedPath.split('/').pop();
+    });
+    if (!aliases.length) {
+        list.innerHTML = '<li class="text-slate-600 italic">Nenhum alias configurado para este modelo.</li>';
+    } else {
+        list.innerHTML = aliases.map(([alias]) => `
+            <li class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-slate-950/40 border border-slate-800/50">
+                <span class="text-cyan-300">${escapeHtml(alias)}</span>
+                <button type="button" class="text-rose-400 hover:text-rose-300 text-ui-label uppercase font-black" data-local-alias="${escapeHtml(alias)}">Remover</button>
+            </li>`).join('');
+        list.querySelectorAll('button[data-local-alias]').forEach((button) => {
+            button.addEventListener('click', () => saveModelAlias(button.dataset.localAlias, null, tab));
+        });
+    }
+    const names = aliasState?.cursor_compatible_names || [
+        'gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini', 'gpt-5.5'
+    ];
+    const current = aliases[0]?.[0] || '';
+    select.innerHTML = names.map(name => `
+        <option value="${escapeHtml(name)}">${escapeHtml(name)}</option>
+    `).join('');
+    if (current && [...select.options].some(option => option.value === current)) {
+        select.value = current;
+    }
+}
+
 function syncPlatformCursorSelectors(tab, models) {
     const aliasSelect = tab.querySelector('.platform-cursor-alias-select');
     const targetSelect = tab.querySelector('.platform-cursor-target-select');
@@ -634,7 +675,11 @@ async function saveModelAlias(alias, target, tab) {
         if (!res.ok) throw new Error('alias');
         const data = await res.json();
         window.lastConfig = { ...(window.lastConfig || {}), model_aliases: data.aliases };
-        if (tab) renderPlatformCursorAliases(tab, data);
+        if (tab?.querySelector('.local-cursor-aliases-list')) {
+            renderLocalCursorAliases(tab, data, tab.dataset.path || '');
+        } else if (tab) {
+            renderPlatformCursorAliases(tab, data);
+        }
         if (target) {
             showToast(`Alias "${alias}" → "${target}". No Cursor, selecione "${alias}".`, 'success');
         } else {
@@ -643,6 +688,30 @@ async function saveModelAlias(alias, target, tab) {
     } catch {
         showToast('Falha ao salvar alias.', 'error');
     }
+}
+
+export async function configureLocalModelAlias(target) {
+    const normalizedTarget = (target || '').replace(/\\/g, '/');
+    if (!normalizedTarget) return;
+    const aliasState = await fetchModelAliasState();
+    const aliases = aliasState?.aliases || {};
+    const existing = Object.entries(aliases).find(([, value]) => {
+        const normalizedValue = String(value || '').replace(/\\/g, '/');
+        return normalizedValue === normalizedTarget
+            || normalizedValue.split('/').pop() === normalizedTarget.split('/').pop();
+    });
+    const currentAlias = existing?.[0] || '';
+    const alias = await showPrompt(
+        currentAlias
+            ? 'Alias do modelo local (deixe vazio para remover):'
+            : 'Nome do alias para este modelo local:',
+        currentAlias,
+        { confirmLabel: currentAlias ? 'Salvar' : 'Adicionar' }
+    );
+    if (alias === null || alias === undefined) return;
+    if (!alias.trim() && !currentAlias) return;
+    await saveModelAlias(alias.trim() || currentAlias, alias.trim() ? normalizedTarget : null);
+    await updateModels();
 }
 
 async function copyPlatformAlias(alias) {
@@ -671,6 +740,12 @@ async function refreshPlatformCursorSection(tab) {
     const aliasState = await fetchModelAliasState();
     state.cursorCompatibleNames = aliasState.cursor_compatible_names || [];
     renderPlatformCursorAliases(tab, aliasState);
+}
+
+async function refreshLocalCursorSection(tab, modelPath) {
+    const aliasState = await fetchModelAliasState();
+    state.cursorCompatibleNames = aliasState.cursor_compatible_names || [];
+    renderLocalCursorAliases(tab, aliasState, modelPath);
 }
 
 export function populatePlatformTab(tabId, backendId, detail = null) {
@@ -1610,6 +1685,11 @@ function buildModelListHtml(models, cfg, platforms = []) {
         const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
 
         const mCfg = (cfg.model_configs || {})[m_js] || {};
+        const localAlias = Object.entries(cfg.model_aliases || {}).find(([, target]) => {
+            const normalizedTarget = String(target || '').replace(/\\/g, '/');
+            return normalizedTarget === m_js
+                || normalizedTarget.split('/').pop() === m_js.split('/').pop();
+        })?.[0] || '';
         const isProxyPrimary = (cfg.smart_proxy || {}).primary_model_path === m_js;
         const isProxyEligible = mCfg.proxy_eligible !== false;
         const proxyMaxParallel = mCfg.max_parallel_requests || 1;
@@ -1625,12 +1705,14 @@ function buildModelListHtml(models, cfg, platforms = []) {
                     <div class="flex-1 min-w-0">
                         <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
                         <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
+                        ${localAlias ? `<p class="text-ui-label text-cyan-400/80 font-mono truncate mt-1">Alias: ${escapeHtml(localAlias)}</p>` : ''}
                     </div>
                     ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
                 </div>
                 <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-700/30">
                     <div class="flex items-center gap-1 flex-wrap">
                         <button onclick="event.stopPropagation(); renameModel('${safePath}')" title="Renomear modelo" aria-label="Renomear modelo" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); configureLocalModelAlias('${safePath}')" title="${localAlias ? 'Editar alias' : 'Adicionar alias'}" aria-label="${localAlias ? 'Editar alias' : 'Adicionar alias'}" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-cyan-400"><i class="fas fa-tag text-ui-label"></i></button>
                         <button onclick="event.stopPropagation(); deleteModel('${safePath}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
                         ${visionControls}
                     </div>

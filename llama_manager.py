@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.20"  # Adiciona gpt-5.5 ao catálogo BYOK do Cursor
+_DASHBOARD_JS_V = "4.2.22"  # Corrige remoção de aliases e atualização imediata da UI
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -234,68 +234,6 @@ def _proxy_failure_cooldown(
 
 def _is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in _PROXY_RETRYABLE_STATUSES
-
-
-def _custom_tool_names(payload: Dict[str, Any]) -> List[str]:
-    """Return Cursor custom-tool names present in an OpenAI request."""
-    if not isinstance(payload, dict) or not isinstance(payload.get("tools"), list):
-        return []
-    names = []
-    for tool in payload["tools"]:
-        if not isinstance(tool, dict) or str(tool.get("type") or "").lower() != "custom":
-            continue
-        name = str(tool.get("name") or "custom").strip()
-        if name not in names:
-            names.append(name)
-    return names
-
-
-def _unsupported_custom_tools_response(payload: Dict[str, Any]) -> JSONResponse:
-    """Build an OpenAI-compatible client error for unsupported custom tools."""
-    names = _custom_tool_names(payload)
-    rendered_names = ", ".join(names[:3]) or "custom"
-    if len(names) > 3:
-        rendered_names += ", ..."
-    return JSONResponse(
-        {
-            "error": {
-                "message": (
-                    "O backend selecionado nao suporta ferramentas do tipo "
-                    f"custom ({rendered_names})."
-                ),
-                "type": "invalid_request_error",
-                "param": "tools",
-                "code": "unsupported_tool_type",
-            }
-        },
-        status_code=400,
-    )
-
-
-def _local_backend_rejects_custom_tools(
-    payload: Dict[str, Any], backend_info: Optional[Dict[str, Any]]
-) -> bool:
-    """llama-server currently accepts function tools, but not Cursor custom tools."""
-    if not isinstance(backend_info, dict):
-        return False
-    backend_type = str(backend_info.get("backend_type") or "local").lower()
-    return backend_type != "platform" and bool(_custom_tool_names(payload))
-
-
-async def _is_upstream_custom_tool_parse_error(response: httpx.Response) -> bool:
-    """Recognize llama-server's legacy 500 for an unsupported custom tool."""
-    if response.status_code != 500:
-        return False
-    try:
-        try:
-            content = response.content
-        except Exception:
-            # Streaming responses do not expose content until aread().
-            content = await response.aread()
-        text = content.decode("utf-8", errors="replace").lower()
-    except Exception:
-        return False
-    return "failed to parse tools" in text and "unsupported tool type" in text
 
 
 def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
@@ -767,7 +705,7 @@ def _hybrid_status() -> Dict[str, Any]:
     models_map = tokenizers_cfg.get("models", {}) if isinstance(tokenizers_cfg, dict) else {}
     families_map = tokenizers_cfg.get("families", {}) if isinstance(tokenizers_cfg, dict) else {}
     status["tokenizers"] = {
-        "enabled": co.get("enabled", True),
+        "enabled": True,
         "audit_enabled": co.get("audit_enabled", True),
         "models_count": len(models_map),
         "families_count": len(families_map),
@@ -1472,6 +1410,7 @@ async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require
     if not authenticated:
         raise HTTPException(status_code=401)
     model_scanner.delete_model(req.path)
+    config_manager.replace_model_alias_target(req.path, None)
     _invalidate_models_cache()
     return {"message": "Excluido"}
 
@@ -1481,6 +1420,7 @@ async def rename_model(req: RenameRequest, authenticated: bool = Depends(require
     if not authenticated:
         raise HTTPException(status_code=401)
     new_path = model_scanner.rename_model(req.path, req.new_name)
+    config_manager.replace_model_alias_target(req.path, new_path)
     _invalidate_models_cache()
     return {"message": "Renomeado", "new_path": new_path}
 
@@ -1781,18 +1721,41 @@ async def _aggregate_models_response(
 
 
 def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Adiciona entradas de alias (ex.: gpt-4o) com o mesmo shape dos modelos locais."""
+    """Adiciona aliases usando o shape do modelo real sempre que possível."""
     aliases = config_manager.get_model_aliases()
     if not aliases:
         return models
     existing_ids = {str(m.get("id") or "") for m in models}
+    by_id = {str(m.get("id") or ""): m for m in models}
     augmented = list(models)
     for alias, target in aliases.items():
         if alias in existing_ids:
             continue
-        entry = platform_model_listing_entry(
-            {"id": target, "owned_by": "platform"}, provider="platform"
-        )
+        target_text = str(target or "").strip()
+        target_entry = by_id.get(target_text)
+        if target_entry is None:
+            target_basename = os.path.basename(target_text.replace("\\", "/"))
+            target_entry = next(
+                (
+                    model for model in models
+                    if os.path.basename(
+                        str(model.get("id") or "").replace("\\", "/")
+                    ) == target_basename
+                ),
+                None,
+            )
+        if target_entry is not None:
+            entry = dict(target_entry)
+            entry["owned_by"] = "llamacpp"
+            entry["meta"] = {
+                **(entry.get("meta") or {}),
+                "root_model": target_text,
+                "alias_target": target_text,
+            }
+        else:
+            entry = platform_model_listing_entry(
+                {"id": target_text, "owned_by": "platform"}, provider="platform"
+            )
         entry["id"] = alias
         augmented.append(entry)
         existing_ids.add(alias)
@@ -1966,6 +1929,14 @@ def _prepare_request_model(
     return {**data, "model": resolved}, original
 
 
+def _reject_removed_model_alias(model_name: Optional[str]) -> None:
+    if model_name and config_manager.is_removed_model_alias(model_name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Alias de modelo '{model_name}' foi removido.",
+        )
+
+
 def _forward_model_for_backend(
     model_name: str,
     target_instance: Dict[str, Any],
@@ -2020,10 +1991,17 @@ def _instance_matches_model(
     requested_model: str,
     instances: List[Dict[str, Any]],
 ) -> bool:
-    if inst.get("model") == requested_model or inst.get("model_path") == requested_model:
+    requested = str(requested_model or "")
+    model = str(inst.get("model") or "")
+    model_path = str(inst.get("model_path") or "")
+    if requested in {model, model_path}:
         return True
     if inst.get("backend_type") != "platform":
-        return False
+        requested_basename = os.path.basename(requested.replace("\\", "/"))
+        return requested_basename in {
+            os.path.basename(model.replace("\\", "/")),
+            os.path.basename(model_path.replace("\\", "/")),
+        }
     local_ids = _local_model_ids(instances)
     provider = str(inst.get("provider") or "")
     bare = resolve_platform_listing_model(requested_model, local_ids)
@@ -2153,8 +2131,10 @@ async def _smart_proxy_forward(
     path: str,
     data: Dict[str, Any],
     client_model: Optional[str] = None,
+    received_payload: Optional[Dict[str, Any]] = None,
 ):
     """Encaminha uma requisição ao modelo principal via ProxyRouter (PRD F4-F8)."""
+    request_started = time.perf_counter()
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")
     is_stream = bool(data.get("stream"))
@@ -2168,8 +2148,7 @@ async def _smart_proxy_forward(
     await _fetch_platform_model_catalog()
 
     proxy_settings = config_manager.get_smart_proxy_settings()
-    co_settings = proxy_settings.get("context_optimizer", {}) if isinstance(proxy_settings, dict) else {}
-    co_enabled = co_settings.get("enabled", True) if isinstance(co_settings, dict) else True
+    co_enabled = True
 
     optimized_data = data
     decision = None
@@ -2206,13 +2185,6 @@ async def _smart_proxy_forward(
                 ),
                 {"backend_type": planned_decision.backend_type},
             )
-
-        if _local_backend_rejects_custom_tools(data, decision_instance):
-            logger.warning(
-                "[proxy] rejecting unsupported custom tools before backend=%s",
-                planned_decision.backend_port,
-            )
-            return _unsupported_custom_tools_response(data)
 
         if co_enabled:
             model_metadata = None
@@ -2534,6 +2506,23 @@ async def _smart_proxy_forward(
                     headers=headers,
                     backend_label=backend_label,
                 )
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=payload_to_forward | {"model": forward_model},
+                    backend={
+                        "id": decision.backend_id,
+                        "port": decision.backend_port,
+                        "type": decision.backend_type,
+                        "provider": decision.provider,
+                        "model": forward_model,
+                    },
+                    status_code=upstream.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=True,
+                )
                 if cloud_account is not None and upstream.status_code == 403:
                     denied_content = await upstream.aread()
                     subscription_denied = _ollama_subscription_denied(upstream)
@@ -2578,16 +2567,6 @@ async def _smart_proxy_forward(
                         return err
                     continue
 
-                if await _is_upstream_custom_tool_parse_error(upstream):
-                    await upstream.aclose()
-                    await proxy_router.release(
-                        decision.backend_id, affinity_key=decision.affinity_key
-                    )
-                    logger.warning(
-                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
-                    )
-                    return _unsupported_custom_tools_response(data)
-
                 async def stream_generator(response=upstream, dec=decision):
                     usage_holder: Dict[str, Any] = {}
                     try:
@@ -2630,6 +2609,23 @@ async def _smart_proxy_forward(
                     headers=headers,
                     backend_label=backend_label,
                 )
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=payload_to_forward | {"model": forward_model},
+                    backend={
+                        "id": decision.backend_id,
+                        "port": decision.backend_port,
+                        "type": decision.backend_type,
+                        "provider": decision.provider,
+                        "model": forward_model,
+                    },
+                    status_code=resp.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=False,
+                )
                 if (
                     cloud_account is not None
                     and _ollama_subscription_denied(resp)
@@ -2643,11 +2639,6 @@ async def _smart_proxy_forward(
                 elif _is_retryable_upstream_status(resp.status_code):
                     failover_cause = f"HTTP {resp.status_code}"
                     failover_status = resp.status_code
-                elif await _is_upstream_custom_tool_parse_error(resp):
-                    logger.warning(
-                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
-                    )
-                    return _unsupported_custom_tools_response(data)
                 else:
                     content = resp.content
                     content, usage = rewrite_json_model(
@@ -2707,12 +2698,15 @@ async def openai_proxy(
     if not authenticated:
         return _openai_auth_error()
     body = await request.body()
+    request_started = time.perf_counter()
     data: Dict[str, Any] = {}
+    received_payload: Dict[str, Any] = {}
     requested_model = None
 
     if body:
         try:
             data = json.loads(body)
+            received_payload = json.loads(json.dumps(data, ensure_ascii=False))
             requested_model = data.get("model")
         except json.JSONDecodeError:
             data = {}
@@ -2760,6 +2754,7 @@ async def openai_proxy(
     client_requested_model = requested_model
     external_model_name: Optional[str] = None
     if requested_model:
+        _reject_removed_model_alias(str(requested_model))
         data, external_model_name = _prepare_request_model(data, instances)
         requested_model = data.get("model")
         if body and data:
@@ -2790,6 +2785,7 @@ async def openai_proxy(
                 path,
                 data,
                 client_model=client_requested_model,
+                received_payload=received_payload,
             )
 
     target_instance = _find_target_instance(instances, requested_model)
@@ -2799,13 +2795,6 @@ async def openai_proxy(
     if requested_model and forward_model != requested_model:
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-
-    if _local_backend_rejects_custom_tools(data, target_instance):
-        logger.warning(
-            "[proxy] rejecting unsupported custom tools before backend=%s",
-            target_instance.get("port"),
-        )
-        return _unsupported_custom_tools_response(data)
 
     client_facing_model = _platform_response_model_name(
         client_requested_model, target_instance, instances
@@ -2849,13 +2838,23 @@ async def openai_proxy(
                     headers=headers,
                     backend_label=backend_label,
                 )
-
-                if await _is_upstream_custom_tool_parse_error(upstream):
-                    await upstream.aclose()
-                    logger.warning(
-                        "[proxy] mapping upstream custom-tool parse error to HTTP 400"
-                    )
-                    return _unsupported_custom_tools_response(data)
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=data,
+                    backend={
+                        "id": target_instance.get("backend_id"),
+                        "port": target_instance.get("port"),
+                        "type": target_instance.get("backend_type", "local"),
+                        "provider": target_instance.get("provider"),
+                        "model": forward_model,
+                    },
+                    status_code=upstream.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=True,
+                )
 
                 async def stream_generator(response=upstream):
                     try:
@@ -2887,11 +2886,23 @@ async def openai_proxy(
                 headers=headers,
                 backend_label=backend_label,
             )
-            if await _is_upstream_custom_tool_parse_error(resp):
-                logger.warning(
-                    "[proxy] mapping upstream custom-tool parse error to HTTP 400"
-                )
-                return _unsupported_custom_tools_response(data)
+            log_manager.record_proxy_request(
+                path=f"/v1/{path}",
+                received_payload=received_payload or data,
+                forwarded_payload=data,
+                backend={
+                    "id": target_instance.get("backend_id"),
+                    "port": target_instance.get("port"),
+                    "type": target_instance.get("backend_type", "local"),
+                    "provider": target_instance.get("provider"),
+                    "model": forward_model,
+                },
+                status_code=resp.status_code,
+                duration_ms=round(
+                    (time.perf_counter() - request_started) * 1000, 2
+                ),
+                stream=False,
+            )
             content = resp.content
             if client_facing_model and target_instance.get("backend_type") != "platform":
                 content, _ = rewrite_json_model(content, client_facing_model)
@@ -3957,23 +3968,6 @@ def _build_html(
                         </div>
                     </div>
                     <div id="proxy-panel-body" class="space-y-4 hidden">
-                        <!-- Context Optimizer Controls -->
-                        <div class="p-3 rounded-xl border border-emerald-700/40 bg-emerald-950/20 space-y-2">
-                            <div class="flex items-center gap-2 mb-2">
-                                <i class="fas fa-microchip text-emerald-400"></i>
-                                <p class="text-ui-label font-black text-slate-300 uppercase tracking-widest">Context Optimizer</p>
-                                <span id="optimizer-enabled-status" class="px-2 py-0.5 rounded-full text-ui-label font-bold text-slate-400 bg-slate-800/60">—</span>
-                            </div>
-                            <label class="flex items-center justify-between gap-2">
-                                <span class="text-ui-label text-slate-300">Ativar otimização de contexto</span>
-                                <input type="checkbox" id="optimizer-enabled-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerEnabled(this)">
-                            </label>
-                            <label class="flex items-center justify-between gap-2">
-                                <span class="text-ui-label text-slate-300">Registrar auditoria</span>
-                                <input type="checkbox" id="optimizer-audit-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerAudit(this)">
-                            </label>
-                        </div>
-
                         <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
                         <div>
                             <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
@@ -3986,20 +3980,6 @@ def _build_html(
                                 </button>
                             </div>
                             <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
-                        </div>
-
-                        <!-- Audit Log Panel -->
-                        <div class="p-3 rounded-xl border border-slate-700/60 bg-slate-900/30 space-y-2">
-                            <div class="flex items-center justify-between gap-2 mb-2">
-                                <div class="flex items-center gap-2">
-                                    <i class="fas fa-clipboard-check text-slate-400"></i>
-                                    <p class="text-ui-label font-black text-slate-400 uppercase tracking-widest">Auditoria</p>
-                                </div>
-                                <span class="text-ui-label text-slate-500"><span id="audit-log-total">0</span> registros · <span id="audit-log-pages">0</span> págs</span>
-                            </div>
-                            <div id="audit-log-list" class="space-y-1.5 max-h-48 overflow-y-auto custom-scroll pr-1"></div>
-                            <div id="audit-log-pagination" class="flex items-center justify-between mt-2"></div>
-                            <input type="hidden" id="audit-log-page" value="1">
                         </div>
 
                     </div>
@@ -4073,6 +4053,21 @@ def _build_html(
                              <div class="tab-actions flex items-center gap-3">
                                  <!-- Buttons Start/Stop/Chat -->
                              </div>
+                        </div>
+                    </div>
+
+                    <div class="local-cursor-alias-panel glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
+                        <div>
+                            <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso no Cursor</p>
+                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Escolha um nome compatível com o Cursor para expor este modelo local via BYOK.</p>
+                        </div>
+                        <ul class="local-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
+                        <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
+                            <label class="space-y-1">
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome no Cursor</span>
+                                <select class="local-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
+                            </label>
+                            <button type="button" class="local-cursor-save-alias px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase tracking-widest hover:bg-cyan-600/30 transition-all">Salvar alias</button>
                         </div>
                     </div>
 

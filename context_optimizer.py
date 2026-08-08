@@ -1180,6 +1180,25 @@ def _normalize_whitespace(payload: Any) -> Any:
     return payload
 
 
+def _normalize_message_whitespace(
+    payload: Dict[str, Any],
+    blocks: List[ConversationBlock],
+) -> Dict[str, Any]:
+    """Normaliza apenas mensagens históricas não protegidas."""
+    normalized = copy.deepcopy(payload)
+    messages = normalized.get("messages")
+    if not isinstance(messages, list):
+        return normalized
+
+    for message, block in zip(messages, blocks):
+        if block.protected:
+            continue
+        normalized_message = _normalize_whitespace(message)
+        message.clear()
+        message.update(normalized_message)
+    return normalized
+
+
 def _normalize_string(key: str, value: Any) -> Any:
     """Normaliza whitespace em strings, mantendo dados binários e numéricos intactos."""
     if not isinstance(value, str):
@@ -1348,7 +1367,7 @@ async def optimize_request_ir_safe(
 
         # Step 2: Normalização de whitespace
         safe_payload = await _rebuild_with_blocks(ir, blocks)
-        normalized_payload = _normalize_whitespace(safe_payload)
+        normalized_payload = _normalize_message_whitespace(safe_payload, blocks)
         normalized_ir = parse_request_ir(normalized_payload)
 
         # Step 3: Deduplicação de blocos consecutivos idênticos

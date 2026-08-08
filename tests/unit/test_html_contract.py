@@ -246,6 +246,14 @@ def test_html_contains_default_model_toggle(html):
     assert "setDefaultModel(this," in html
 
 
+def test_html_contains_local_cursor_alias_panel(html):
+    """Local model tabs expose the same predefined Cursor alias workflow."""
+    assert "local-cursor-alias-panel" in html
+    assert "local-cursor-aliases-list" in html
+    assert "local-cursor-alias-select" in html
+    assert "local-cursor-save-alias" in html
+
+
 # ── Proxy Inteligente ─────────────────────────────────────────────────────
 
 
@@ -302,9 +310,9 @@ def test_html_contains_proxy_monitor_panel(html):
     assert 'id="proxy-sessions-clear-btn"' in html
     assert 'id="proxy-sessions-ttl-hint"' in html
     assert "proxyClearAllSessions()" in html
-    assert 'id="optimizer-enabled-toggle"' in html
-    assert 'id="optimizer-audit-toggle"' in html
-    assert 'id="audit-log-list"' in html
+    assert 'id="optimizer-enabled-toggle"' not in html
+    assert 'id="optimizer-audit-toggle"' not in html
+    assert 'id="audit-log-list"' not in html
     assert 'id="resolve-payload-input"' not in html
     assert "resolveWithPreview()" not in html
 

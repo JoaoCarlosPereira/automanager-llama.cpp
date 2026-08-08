@@ -174,16 +174,6 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _has_custom_tools(body: dict) -> bool:
-    """Return whether the request uses Cursor/OpenAI custom tools."""
-    tools = body.get("tools") if isinstance(body, dict) else None
-    return isinstance(tools, list) and any(
-        isinstance(tool, dict)
-        and str(tool.get("type") or "").strip().lower() == "custom"
-        for tool in tools
-    )
-
-
 def gpu_label(instance: Dict[str, Any]) -> str:
     """Nome amigável da GPU da instância a partir de config.gpu_weights."""
     config = instance.get("config") or {}
@@ -1706,82 +1696,7 @@ class ProxyRouter:
         configured_primary_active = (
             primary is not None and self._backend_available(primary)
         )
-        custom_tools_requested = _has_custom_tools(body)
-        custom_platform_selected = False
-
-        # llama-server supports function tools, but not Cursor's free-form
-        # custom tools (for example ApplyPatch).  When such a request targets
-        # a local primary, move it to an eligible platform backend before
-        # committing the route.  The client-facing model remains unchanged;
-        # _internal_model() selects the platform's configured default model.
-        if custom_tools_requested:
-            platform_candidates = [
-                instance
-                for instance in self._candidates(
-                    instances,
-                    config,
-                    None,
-                    0,
-                    ignore_capacity=ignore_capacity,
-                    external_model=external_model,
-                    configured_primary_backend_id=configured_backend_id,
-                )
-                if self._backend_type(instance) == "platform"
-            ]
-            if platform_candidates:
-                primary = self._pick_least_busy(
-                    platform_candidates,
-                    primary_backend_id=(
-                        self._backend_id(primary) if primary is not None
-                        else configured_backend_id or None
-                    ),
-                )
-                primary_port = primary["port"]
-                primary_backend_id = self._backend_id(primary)
-                custom_platform_selected = True
-                logger.info(
-                    "[proxy] custom tools require platform backend=%s provider=%s",
-                    primary_backend_id,
-                    primary.get("provider"),
-                )
-            else:
-                # If the current primary is a platform but all its eligible
-                # capacity is occupied, do not fall back to a local backend
-                # that cannot parse custom tools. Permit the router's dynamic
-                # capacity policy to keep the request on a platform.
-                platform_candidates = [
-                    instance
-                    for instance in self._candidates(
-                        instances,
-                        config,
-                        None,
-                        0,
-                        ignore_capacity=True,
-                        external_model=external_model,
-                        configured_primary_backend_id=configured_backend_id,
-                    )
-                    if self._backend_type(instance) == "platform"
-                ]
-                if platform_candidates:
-                    primary = self._pick_for_dynamic_growth(
-                        platform_candidates, config, configured_backend_id
-                    )
-                    primary_port = primary["port"]
-                    primary_backend_id = self._backend_id(primary)
-                    custom_platform_selected = True
-                    logger.info(
-                        "[proxy] custom tools using platform capacity backend=%s provider=%s",
-                        primary_backend_id,
-                        primary.get("provider"),
-                    )
-                elif primary is not None and self._backend_type(primary) == "platform":
-                    raise ProxyError(
-                        503,
-                        "Nenhum backend de plataforma disponivel para ferramentas custom.",
-                        code="no_backend",
-                    )
-
-        if not configured_primary_active and not custom_platform_selected:
+        if not configured_primary_active:
             fallback = self._candidates(
                 instances,
                 config,

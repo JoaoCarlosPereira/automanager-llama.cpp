@@ -189,38 +189,41 @@ class TestOllamaCloudPayload:
 
 class TestSmartRouting:
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_custom_tools_are_rejected_as_client_error_before_backend(
+    def test_custom_tools_are_forwarded_to_local_backend(
         self, mock_post, smart_env
     ):
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-local", "model": "main.gguf"}
+        )
         response = client.post(
             "/v1/chat/completions", json=custom_tool_body()
         )
 
-        assert response.status_code == 400
-        assert response.json()["error"]["type"] == "invalid_request_error"
-        assert response.json()["error"]["code"] == "unsupported_tool_type"
-        mock_post.assert_not_awaited()
-        assert all(
-            smart_env.router.in_flight(port) == 0
-            for port in (8085, 8086, 8087)
-        )
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_custom_tools_are_rejected_when_smart_proxy_is_disabled(
+    def test_custom_tools_are_forwarded_to_local_backend_when_smart_proxy_is_disabled(
         self, mock_post, smart_env
     ):
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-local", "model": "main.gguf"}
+        )
         smart_env.cfg.update_smart_proxy_settings({"enabled": False})
 
         response = client.post(
             "/v1/chat/completions", json=custom_tool_body()
         )
 
-        assert response.status_code == 400
-        assert response.json()["error"]["code"] == "unsupported_tool_type"
-        mock_post.assert_not_awaited()
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_custom_tools_switch_from_local_to_platform_backend(
+    def test_custom_tools_stay_on_local_backend_when_platform_is_available(
         self, mock_post, smart_env
     ):
         platform = make_platform_instance()
@@ -240,9 +243,9 @@ class TestSmartRouting:
         assert response.status_code == 200
         mock_post.assert_awaited_once()
         target_url = mock_post.await_args.args[0]
-        assert target_url == "http://127.0.0.1:9100/v1/chat/completions"
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
         sent_payload = json.loads(mock_post.await_args.kwargs["content"])
-        assert sent_payload["model"] == "codex-default.gguf"
+        assert sent_payload["model"] == "main.gguf"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_model_alias_uses_configured_target_inside_smart_proxy(
@@ -1353,12 +1356,13 @@ class TestTask08ContextOptimizerIntegration:
         assert sent["top_k"] == 40
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_disabled_optimizer_bypasses_optimization(self, mock_post, smart_env):
-        """Otimizador desabilitado preserva fluxo sem alteração do payload."""
+    def test_optimizer_cannot_be_disabled(self, mock_post, smart_env):
+        """O Context Optimizer permanece ativo mesmo com override legado."""
         smart_env.cfg.update_smart_proxy_settings({
             "enabled": True,
             "context_optimizer": {"enabled": False},
         })
+        assert smart_env.cfg.get_smart_proxy_settings()["context_optimizer"]["enabled"] is True
         mock_post.return_value = _mock_response({"id": "opt-disabled", "model": "main.gguf"})
         body = {
             "model": "main.gguf",
@@ -1371,8 +1375,8 @@ class TestTask08ContextOptimizerIntegration:
         response = client.post("/v1/chat/completions", json=body)
         assert response.status_code == 200
         sent = json.loads(mock_post.call_args.kwargs["content"])
-        assert len(sent["messages"]) == 3
-        assert sent["messages"][2]["content"] == "  Espaços   manter  "
+        assert len(sent["messages"]) == 2
+        assert sent["messages"][1]["content"] == "  Espaços   manter  "
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_missing_optimizer_key_defaults_to_enabled(self, mock_post, smart_env):

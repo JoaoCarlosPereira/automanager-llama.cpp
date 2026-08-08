@@ -87,8 +87,8 @@ async def test_safe_mode_deduplicates_duplicate_consecutive_blocks():
     payload = {
         "messages": [
             {"role": "system", "content": "Instrução"},
-            {"role": "assistant", "content": "Ok"},
-            {"role": "assistant", "content": "Ok"},  # duplicado consecutivo
+            {"role": "assistant", "content": "O arquivo foi analisado."},
+            {"role": "assistant", "content": "O arquivo foi analisado."},  # duplicado consecutivo
             {"role": "user", "content": "Pergunta"},
         ],
     }

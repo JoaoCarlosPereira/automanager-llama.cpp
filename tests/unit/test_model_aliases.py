@@ -40,6 +40,41 @@ def alias_cfg(tmp_path, monkeypatch):
 def test_config_resolve_model_alias(alias_cfg):
     assert alias_cfg.resolve_model_alias("gpt-4o") == "gemini-3.1-pro-low"
     assert alias_cfg.resolve_model_alias("other") == "other"
+    assert alias_cfg.is_removed_model_alias("gpt-4o") is False
+
+
+def test_config_updates_local_alias_target_on_model_rename(tmp_path):
+    cfg = ConfigManager(config_path=str(tmp_path / "cfg.json"))
+    cfg.set_model_alias("qwen-local", "/models/Qwen3.gguf")
+
+    cfg.replace_model_alias_target("/models/Qwen3.gguf", "/models/Qwen3-renamed.gguf")
+
+    assert cfg.get_model_aliases() == {
+        "qwen-local": "/models/Qwen3-renamed.gguf",
+    }
+
+
+def test_config_removes_local_alias_target_on_model_delete(tmp_path):
+    cfg = ConfigManager(config_path=str(tmp_path / "cfg.json"))
+    cfg.set_model_alias("qwen-local", "/models/Qwen3.gguf")
+
+    cfg.replace_model_alias_target("/models/Qwen3.gguf", None)
+
+    assert cfg.get_model_aliases() == {}
+
+
+def test_removed_alias_is_marked_and_can_be_reused(tmp_path):
+    cfg = ConfigManager(config_path=str(tmp_path / "cfg.json"))
+    cfg.set_model_alias("qwen-local", "/models/Qwen3.gguf")
+
+    cfg.set_model_alias("qwen-local", None)
+
+    assert cfg.get_model_aliases() == {}
+    assert cfg.is_removed_model_alias("qwen-local") is True
+
+    cfg.set_model_alias("qwen-local", "/models/Qwen4.gguf")
+
+    assert cfg.is_removed_model_alias("qwen-local") is False
 
 
 @patch("llama_manager._hybrid_status")
@@ -62,6 +97,35 @@ def test_v1_models_includes_aliases(mock_get, mock_status, alias_cfg):
     alias_entry = next(m for m in response.json()["data"] if m["id"] == "gpt-4o")
     assert alias_entry["owned_by"] == "llamacpp"
     assert "meta" in alias_entry
+
+
+@patch("llama_manager._hybrid_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+def test_v1_models_local_alias_copies_local_entry(mock_get, mock_status, alias_cfg):
+    local_inst = {
+        "port": 9101,
+        "backend_type": "local",
+        "model": "Qwen3.gguf",
+        "model_path": "/models/Qwen3.gguf",
+    }
+    alias_cfg.set_model_alias("qwen-local", "/models/Qwen3.gguf")
+    mock_status.return_value = {"instances": [local_inst]}
+    resp = MagicMock(spec=httpx.Response)
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {
+        "object": "list",
+        "data": [{"id": "/models/Qwen3.gguf", "object": "model", "owned_by": "llamacpp"}],
+    }
+    mock_get.return_value = resp
+
+    response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    alias_entry = next(
+        model for model in response.json()["data"] if model["id"] == "qwen-local"
+    )
+    assert alias_entry["owned_by"] == "llamacpp"
+    assert alias_entry["meta"]["root_model"] == "/models/Qwen3.gguf"
 
 
 @patch("llama_manager._hybrid_status")
