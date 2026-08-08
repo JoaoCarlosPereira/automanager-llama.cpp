@@ -60,13 +60,42 @@ def test_resolve_model_limits_local_multi_slot_divided_once():
 
 
 def test_resolve_model_limits_platform_known():
-    backend_info = {"backend_type": "platform"}
+    backend_info = {"backend_type": "platform", "provider": "codex"}
     metadata = {"context_length": 128000, "max_completion_tokens": 4096}
     limits = resolve_model_limits(backend_info, metadata)
     assert limits.context_tokens == 128000
+    assert limits.input_tokens == 128000
     assert limits.max_output_tokens == 4096
     assert limits.confidence == LimitConfidence.KNOWN_PROVIDER
     assert limits.is_known is True
+
+
+def test_platform_input_limit_does_not_reserve_output_twice():
+    backend_info = {"backend_type": "platform", "provider": "codex"}
+    metadata = {"context_length": 372000, "max_completion_tokens": 128000}
+    limits = resolve_model_limits(backend_info, metadata)
+
+    budget = calculate_target_budget(
+        {}, limits, frozenset({"text"}), protocol_overhead=512, safety_margin=256
+    )
+
+    assert limits.input_tokens == 372000
+    assert budget.output_reserve == 128000
+    assert budget.input_budget == 372000 - 512 - 256
+
+
+def test_explicit_platform_input_token_limit_is_input_only():
+    backend_info = {"backend_type": "platform", "provider": "antigravity"}
+    metadata = {"inputTokenLimit": 1048576, "outputTokenLimit": 65535}
+    limits = resolve_model_limits(backend_info, metadata)
+
+    budget = calculate_target_budget(
+        {}, limits, frozenset({"text"}), protocol_overhead=512, safety_margin=256
+    )
+
+    assert limits.context_tokens == 1048576
+    assert limits.input_tokens == 1048576
+    assert budget.input_budget == 1048576 - 512 - 256
 
 
 def test_resolve_model_limits_platform_unknown_or_sentinel():

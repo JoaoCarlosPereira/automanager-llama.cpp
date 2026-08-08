@@ -33,6 +33,7 @@ from context_optimizer import (
     derive_target_capabilities,
     resolve_model_limits,
 )
+from platform_manager import platform_provider_for_listing
 from schemas import (
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_MAX_PARALLEL_REQUESTS,
@@ -954,6 +955,16 @@ class ProxyRouter:
                 == requested_norm
             )
         ]
+        platform_provider = platform_provider_for_listing(requested_model)
+        if platform_provider:
+            platform_matches = [
+                instance
+                for instance in instances
+                if self._backend_type(instance) == "platform"
+                and str(instance.get("provider") or "") == platform_provider
+            ]
+            if platform_matches:
+                return min(platform_matches, key=lambda item: item["port"])
         return min(matches, key=lambda item: item["port"]) if matches else None
 
     def backends_snapshot(self) -> List[Dict[str, Any]]:

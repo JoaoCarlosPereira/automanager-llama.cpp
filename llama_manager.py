@@ -69,6 +69,7 @@ from platform_manager import (
     platform_listing_registry_populated,
     platform_model_listing_entry,
     platform_model_listing_id,
+    register_platform_bare_model,
     platform_provider_for_listing,
     register_platform_model_listings,
     resolve_platform_listing_model,
@@ -117,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.19"  # Ranking de velocidade do proxy no startup
+_DASHBOARD_JS_V = "4.2.22"  # Corrige remoção de aliases e atualização imediata da UI
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -419,6 +420,38 @@ _PLATFORM_MODEL_CATALOG_URL = (
 _platform_model_catalog_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _platform_model_catalog_loaded_at = 0.0
 _platform_model_catalog_lock = asyncio.Lock()
+_ollama_cloud_model_catalog: Dict[str, Dict[str, Any]] = {}
+_ollama_cloud_model_catalog_loaded_at = 0.0
+_ollama_cloud_model_catalog_lock = asyncio.Lock()
+
+# Ollama Cloud's /v1/models response currently exposes the model ID but not
+# the model limits. Keep conservative, provider-published defaults for models
+# whose metadata is incomplete so the context optimizer can enforce the real
+# target budget instead of treating the model as unknown.
+_OLLAMA_CLOUD_MODEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "gemma4:31b": {
+        "context_length": 262144,
+        "capabilities": ["text", "vision", "tools"],
+    },
+}
+
+
+def _platform_model_metadata(
+    provider: str,
+    model_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Return catalog metadata for a concrete platform model."""
+    normalized_provider = str(provider or "").strip().lower()
+    bare_model = resolve_platform_listing_model(str(model_name or ""))
+    provider_catalog = (
+        _ollama_cloud_model_catalog
+        if normalized_provider == "ollama-cloud"
+        else _platform_model_catalog_cache.get(normalized_provider)
+    )
+    if not isinstance(provider_catalog, dict):
+        return None
+    metadata = provider_catalog.get(bare_model)
+    return metadata if isinstance(metadata, dict) else None
 
 
 def _catalog_provider(group: str) -> Optional[str]:
@@ -503,10 +536,7 @@ def _platform_model_context_limit(
     """Return the catalog context limit for one concrete platform model."""
     provider = str(instance.get("provider") or "").strip().lower()
     bare_model = resolve_platform_listing_model(str(model_name or ""))
-    provider_catalog = _platform_model_catalog_cache.get(provider)
-    if not isinstance(provider_catalog, dict):
-        return None
-    metadata = provider_catalog.get(bare_model)
+    metadata = _platform_model_metadata(provider, bare_model)
     if not isinstance(metadata, dict):
         requested_provider = platform_provider_for_listing(str(model_name or ""))
         return 0 if requested_provider and requested_provider != provider else None
@@ -514,8 +544,8 @@ def _platform_model_context_limit(
     if not isinstance(source_meta, dict):
         source_meta = {}
     raw_limit = (
-        metadata.get("context_length")
-        or metadata.get("inputTokenLimit")
+        metadata.get("inputTokenLimit")
+        or metadata.get("context_length")
         or source_meta.get("n_ctx")
         or source_meta.get("context_length")
     )
@@ -675,7 +705,7 @@ def _hybrid_status() -> Dict[str, Any]:
     models_map = tokenizers_cfg.get("models", {}) if isinstance(tokenizers_cfg, dict) else {}
     families_map = tokenizers_cfg.get("families", {}) if isinstance(tokenizers_cfg, dict) else {}
     status["tokenizers"] = {
-        "enabled": co.get("enabled", True),
+        "enabled": True,
         "audit_enabled": co.get("audit_enabled", True),
         "models_count": len(models_map),
         "families_count": len(families_map),
@@ -713,6 +743,90 @@ def _ollama_cloud_auth_status() -> Dict[str, Any]:
         "default_method": "api-key",
         "available_methods": ["api-key"],
     }
+
+
+async def _ensure_ollama_cloud_model_registry(
+    instances: Optional[List[Dict[str, Any]]] = None,
+    force: bool = False,
+) -> None:
+    """Discover and register Ollama Cloud model IDs before routing.
+
+    Ollama Cloud is a direct HTTP backend, so it does not have a sidecar
+    ``/v1/models`` endpoint that the generic platform registry can inspect.
+    Populate the same listing registry from the provider catalog, including
+    the bare provider ID (for example ``gemma4:31b``) and its virtual API
+    listing (``gemma4:31b-custom.gguf``).
+    """
+    global _ollama_cloud_model_catalog_loaded_at
+
+    if instances is not None and not any(
+        str(inst.get("provider") or "").strip().lower() == "ollama-cloud"
+        for inst in instances
+    ):
+        return
+    accounts = ollama_cloud_manager.get_accounts()
+    if not accounts:
+        return
+    now = time.monotonic()
+    if (
+        _ollama_cloud_model_catalog
+        and not force
+        and now - _ollama_cloud_model_catalog_loaded_at < 600
+    ):
+        return
+
+    async with _ollama_cloud_model_catalog_lock:
+        now = time.monotonic()
+        if (
+            _ollama_cloud_model_catalog
+            and not force
+            and now - _ollama_cloud_model_catalog_loaded_at < 600
+        ):
+            return
+
+        discovered: List[Dict[str, Any]] = []
+        for account in accounts:
+            provider = OllamaCloudProvider(account)
+            try:
+                discovered = await provider.list_models()
+                if discovered:
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao descobrir modelos Ollama Cloud account=%s: %s",
+                    account.id,
+                    exc,
+                )
+            finally:
+                await provider.close()
+
+        for model in discovered:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or "").strip()
+            if not model_id:
+                continue
+            enriched_model = dict(_OLLAMA_CLOUD_MODEL_DEFAULTS.get(model_id, {}))
+            enriched_model.update(model)
+            _ollama_cloud_model_catalog[model_id] = enriched_model
+            register_platform_bare_model(model_id, provider="ollama-cloud")
+            register_platform_model_listings(model_id, provider="ollama-cloud")
+        _ollama_cloud_model_catalog_loaded_at = time.monotonic()
+
+
+async def _ollama_cloud_models_for_listing(
+    instances: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return Ollama Cloud models in the same public shape as other platforms."""
+    await _ensure_ollama_cloud_model_registry(instances)
+    local_ids = _local_model_ids(instances)
+    models: List[Dict[str, Any]] = []
+    for model in _ollama_cloud_model_catalog.values():
+        model_id = str(model.get("id") or "")
+        if not model_id or should_skip_platform_model_listing(model_id, local_ids):
+            continue
+        models.append(platform_model_listing_entry(model, provider="ollama-cloud"))
+    return models
 
 
 def _model_catalog_response() -> Dict[str, Any]:
@@ -1296,6 +1410,7 @@ async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require
     if not authenticated:
         raise HTTPException(status_code=401)
     model_scanner.delete_model(req.path)
+    config_manager.replace_model_alias_target(req.path, None)
     _invalidate_models_cache()
     return {"message": "Excluido"}
 
@@ -1305,6 +1420,7 @@ async def rename_model(req: RenameRequest, authenticated: bool = Depends(require
     if not authenticated:
         raise HTTPException(status_code=401)
     new_path = model_scanner.rename_model(req.path, req.new_name)
+    config_manager.replace_model_alias_target(req.path, new_path)
     _invalidate_models_cache()
     return {"message": "Renomeado", "new_path": new_path}
 
@@ -1595,22 +1711,51 @@ async def _aggregate_models_response(
                 continue
             seen_ids.add(model_id)
             merged.append(model)
+    for model in await _ollama_cloud_models_for_listing(instances):
+        model_id = model.get("id")
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        merged.append(model)
     return JSONResponse({"object": "list", "data": merged})
 
 
 def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Adiciona entradas de alias (ex.: gpt-4o) com o mesmo shape dos modelos locais."""
+    """Adiciona aliases usando o shape do modelo real sempre que possível."""
     aliases = config_manager.get_model_aliases()
     if not aliases:
         return models
     existing_ids = {str(m.get("id") or "") for m in models}
+    by_id = {str(m.get("id") or ""): m for m in models}
     augmented = list(models)
     for alias, target in aliases.items():
         if alias in existing_ids:
             continue
-        entry = platform_model_listing_entry(
-            {"id": target, "owned_by": "platform"}, provider="platform"
-        )
+        target_text = str(target or "").strip()
+        target_entry = by_id.get(target_text)
+        if target_entry is None:
+            target_basename = os.path.basename(target_text.replace("\\", "/"))
+            target_entry = next(
+                (
+                    model for model in models
+                    if os.path.basename(
+                        str(model.get("id") or "").replace("\\", "/")
+                    ) == target_basename
+                ),
+                None,
+            )
+        if target_entry is not None:
+            entry = dict(target_entry)
+            entry["owned_by"] = "llamacpp"
+            entry["meta"] = {
+                **(entry.get("meta") or {}),
+                "root_model": target_text,
+                "alias_target": target_text,
+            }
+        else:
+            entry = platform_model_listing_entry(
+                {"id": target_text, "owned_by": "platform"}, provider="platform"
+            )
         entry["id"] = alias
         augmented.append(entry)
         existing_ids.add(alias)
@@ -1680,10 +1825,17 @@ async def _ensure_platform_listing_registry(
             )
             resp.raise_for_status()
             local_ids = _local_model_ids(instances)
-            for m in resp.json().get("data") or []:
+            models = filter_models_for_provider(
+                resp.json().get("data") or [], provider
+            )
+            for m in models:
                 root = str(m.get("id") or "")
                 if not root or should_skip_platform_model_listing(root, local_ids):
                     continue
+                # Keep bare provider IDs resolvable too. Model aliases such as
+                # gpt-5.5 -> gpt-5.6-luna must enter Smart Proxy routing with
+                # the configured platform as their requested primary.
+                register_platform_bare_model(root, provider=provider)
                 register_platform_model_listings(root, provider)
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
             logger.warning(
@@ -1777,6 +1929,14 @@ def _prepare_request_model(
     return {**data, "model": resolved}, original
 
 
+def _reject_removed_model_alias(model_name: Optional[str]) -> None:
+    if model_name and config_manager.is_removed_model_alias(model_name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Alias de modelo '{model_name}' foi removido.",
+        )
+
+
 def _forward_model_for_backend(
     model_name: str,
     target_instance: Dict[str, Any],
@@ -1785,6 +1945,15 @@ def _forward_model_for_backend(
     if target_instance.get("backend_type") != "platform":
         return model_name
     return resolve_platform_listing_model(model_name, _local_model_ids(instances))
+
+
+def _normalize_ollama_cloud_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize OpenAI fields unsupported by Ollama's compatible API."""
+    normalized = dict(payload)
+    max_completion_tokens = normalized.pop("max_completion_tokens", None)
+    if "max_tokens" not in normalized and max_completion_tokens is not None:
+        normalized["max_tokens"] = max_completion_tokens
+    return normalized
 
 
 async def _resolve_forward_model(
@@ -1822,10 +1991,17 @@ def _instance_matches_model(
     requested_model: str,
     instances: List[Dict[str, Any]],
 ) -> bool:
-    if inst.get("model") == requested_model or inst.get("model_path") == requested_model:
+    requested = str(requested_model or "")
+    model = str(inst.get("model") or "")
+    model_path = str(inst.get("model_path") or "")
+    if requested in {model, model_path}:
         return True
     if inst.get("backend_type") != "platform":
-        return False
+        requested_basename = os.path.basename(requested.replace("\\", "/"))
+        return requested_basename in {
+            os.path.basename(model.replace("\\", "/")),
+            os.path.basename(model_path.replace("\\", "/")),
+        }
     local_ids = _local_model_ids(instances)
     provider = str(inst.get("provider") or "")
     bare = resolve_platform_listing_model(requested_model, local_ids)
@@ -1950,8 +2126,15 @@ async def _primary_only_models_response(
     return JSONResponse({"object": "list", "data": entries[:1]})
 
 
-async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]):
+async def _smart_proxy_forward(
+    request: Request,
+    path: str,
+    data: Dict[str, Any],
+    client_model: Optional[str] = None,
+    received_payload: Optional[Dict[str, Any]] = None,
+):
     """Encaminha uma requisição ao modelo principal via ProxyRouter (PRD F4-F8)."""
+    request_started = time.perf_counter()
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")
     is_stream = bool(data.get("stream"))
@@ -1965,8 +2148,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
     await _fetch_platform_model_catalog()
 
     proxy_settings = config_manager.get_smart_proxy_settings()
-    co_settings = proxy_settings.get("context_optimizer", {}) if isinstance(proxy_settings, dict) else {}
-    co_enabled = co_settings.get("enabled", True) if isinstance(co_settings, dict) else True
+    co_enabled = True
 
     optimized_data = data
     decision = None
@@ -2008,17 +2190,18 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             model_metadata = None
             if planned_decision.backend_type == "platform":
                 provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                provider_catalog = _platform_model_catalog_cache.get(provider)
-                if isinstance(provider_catalog, dict):
-                    model_metadata = provider_catalog.get(bare_model)
+                model_metadata = _platform_model_metadata(
+                    provider,
+                    str(planned_decision.internal_model or data.get("model") or ""),
+                )
 
             try:
                 opt_result = await context_optimizer.optimize(
                     payload=data,
                     backend_info=decision_instance,
                     model_metadata=model_metadata,
-                    stage_limit="safe",
+                    stage_limit="moderate",
+                    cost_optimization=True,
                 )
                 optimized_data = opt_result.safe_payload
             except ContextTooLargeError as exc:
@@ -2028,7 +2211,8 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                 optimized_data = data
                 opt_result = None
 
-            # Fallback para janela maior se o payload Safe exceder o orçamento do destino planejado
+            # Fallback para janela maior se o payload otimizado exceder o orçamento
+            # do destino planejado.
             limits = resolve_model_limits(decision_instance, model_metadata)
             if limits.is_known and limits.context_tokens:
                 decision_instance.setdefault("config", {})["context_size"] = limits.context_tokens
@@ -2043,10 +2227,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     cand_meta = None
                     if cand_inst.get("backend_type") == "platform":
                         prov = str(cand_inst.get("provider") or "").strip().lower()
-                        bare = resolve_platform_listing_model(str(cand_inst.get("model") or data.get("model") or ""))
-                        prov_cat = _platform_model_catalog_cache.get(prov)
-                        if isinstance(prov_cat, dict):
-                            cand_meta = prov_cat.get(bare)
+                        cand_meta = _platform_model_metadata(
+                            prov,
+                            str(cand_inst.get("model") or data.get("model") or ""),
+                        )
                     return resolve_model_limits(cand_inst, cand_meta), derive_target_capabilities(cand_inst, cand_meta)
 
                 def _fits_cand(cand_inst: Dict[str, Any], cand_ctx: int) -> bool:
@@ -2074,10 +2258,10 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     )
                     if planned_decision.backend_type == "platform":
                         provider = str(decision_instance.get("provider") or planned_decision.provider or "").strip().lower()
-                        bare_model = resolve_platform_listing_model(str(planned_decision.internal_model or data.get("model") or ""))
-                        provider_catalog = _platform_model_catalog_cache.get(provider)
-                        if isinstance(provider_catalog, dict):
-                            model_metadata = provider_catalog.get(bare_model)
+                        model_metadata = _platform_model_metadata(
+                            provider,
+                            str(planned_decision.internal_model or data.get("model") or ""),
+                        )
                     limits = resolve_model_limits(decision_instance, model_metadata)
                     target_caps = derive_target_capabilities(decision_instance, model_metadata)
                     budget = calculate_target_budget(data, limits, target_caps)
@@ -2094,6 +2278,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         payload=data,
                         backend_info=decision_instance,
                         model_metadata=model_metadata,
+                        cost_optimization=True,
                     )
                     optimized_data = opt_result.safe_payload
                 except ContextTooLargeError as exc:
@@ -2153,8 +2338,15 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
             instances,
             route_headers,
         )
+        payload_to_forward = optimized_data
+        if (
+            decision.provider == "ollama-cloud"
+            or str(decision_instance.get("provider") or "").strip().lower()
+            == "ollama-cloud"
+        ):
+            payload_to_forward = _normalize_ollama_cloud_payload(optimized_data)
         forward_body = json.dumps(
-            {**optimized_data, "model": forward_model}, ensure_ascii=False
+            {**payload_to_forward, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
         headers = dict(request.headers)
         headers.pop("host", None)
@@ -2271,7 +2463,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                             payload=data,
                             backend_info=new_instance,
                             model_metadata=model_metadata,
-                            stage_limit="safe",
+                            cost_optimization=True,
                         )
                         optimized_data = new_opt.safe_payload
                         logger.info(
@@ -2313,6 +2505,23 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     content=forward_body,
                     headers=headers,
                     backend_label=backend_label,
+                )
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=payload_to_forward | {"model": forward_model},
+                    backend={
+                        "id": decision.backend_id,
+                        "port": decision.backend_port,
+                        "type": decision.backend_type,
+                        "provider": decision.provider,
+                        "model": forward_model,
+                    },
+                    status_code=upstream.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=True,
                 )
                 if cloud_account is not None and upstream.status_code == 403:
                     denied_content = await upstream.aread()
@@ -2364,7 +2573,7 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                         if dec.rewrite:
                             # Reescrita por linha (ADR-006)
                             async for chunk in rewrite_sse_stream(
-                                response.aiter_bytes(), dec.external_model,
+                                response.aiter_bytes(), client_model or dec.external_model,
                                 usage_holder,
                             ):
                                 yield chunk
@@ -2400,6 +2609,23 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     headers=headers,
                     backend_label=backend_label,
                 )
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=payload_to_forward | {"model": forward_model},
+                    backend={
+                        "id": decision.backend_id,
+                        "port": decision.backend_port,
+                        "type": decision.backend_type,
+                        "provider": decision.provider,
+                        "model": forward_model,
+                    },
+                    status_code=resp.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=False,
+                )
                 if (
                     cloud_account is not None
                     and _ollama_subscription_denied(resp)
@@ -2415,12 +2641,9 @@ async def _smart_proxy_forward(request: Request, path: str, data: Dict[str, Any]
                     failover_status = resp.status_code
                 else:
                     content = resp.content
-                    if decision.rewrite:
-                        content, usage = rewrite_json_model(
-                            content, decision.external_model
-                        )
-                    else:
-                        _, usage = rewrite_json_model(content, decision.external_model)
+                    content, usage = rewrite_json_model(
+                        content, client_model or decision.external_model
+                    )
                     response_headers = _filter_proxy_headers(dict(resp.headers))
                     response_headers.update(telemetry)
                     return Response(
@@ -2475,18 +2698,25 @@ async def openai_proxy(
     if not authenticated:
         return _openai_auth_error()
     body = await request.body()
+    request_started = time.perf_counter()
     data: Dict[str, Any] = {}
+    received_payload: Dict[str, Any] = {}
     requested_model = None
 
     if body:
         try:
             data = json.loads(body)
+            received_payload = json.loads(json.dumps(data, ensure_ascii=False))
             requested_model = data.get("model")
         except json.JSONDecodeError:
             data = {}
 
     instances = _hybrid_status().get("instances", [])
     has_ollama_cloud = bool(ollama_cloud_manager.get_accounts())
+    if has_ollama_cloud:
+        # Register bare provider IDs before model aliases and routing are
+        # resolved (e.g. ``gemma4:31b`` must select Ollama Cloud, not Codex).
+        await _ensure_ollama_cloud_model_registry(instances)
     cloud_model_requested = (
         bool(requested_model)
         and platform_provider_for_listing(str(requested_model)) == "ollama-cloud"
@@ -2524,12 +2754,14 @@ async def openai_proxy(
     client_requested_model = requested_model
     external_model_name: Optional[str] = None
     if requested_model:
+        _reject_removed_model_alias(str(requested_model))
         data, external_model_name = _prepare_request_model(data, instances)
         requested_model = data.get("model")
         if body and data:
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
     if proxy_enabled and request.method == "POST" and requested_model:
+        alias_requested = external_model_name is not None
         # Principal dinamico: o modelo explicitamente invocado pelo cliente
         # define a primeira escolha. A configuracao global continua servindo
         # para chamadas sem um modelo reconhecivel e para a visao administrativa.
@@ -2541,12 +2773,20 @@ async def openai_proxy(
                 and has_ollama_cloud
             )
             or
+            alias_requested
+            or
             _requested_primary_instance(instances, str(requested_model)) is not None
             or _is_primary_model_request(
                 str(requested_model), proxy_settings, configured_primary, instances
             )
         ):
-            return await _smart_proxy_forward(request, path, data)
+            return await _smart_proxy_forward(
+                request,
+                path,
+                data,
+                client_model=client_requested_model,
+                received_payload=received_payload,
+            )
 
     target_instance = _find_target_instance(instances, requested_model)
     forward_model = await _resolve_forward_model(
@@ -2598,6 +2838,23 @@ async def openai_proxy(
                     headers=headers,
                     backend_label=backend_label,
                 )
+                log_manager.record_proxy_request(
+                    path=f"/v1/{path}",
+                    received_payload=received_payload or data,
+                    forwarded_payload=data,
+                    backend={
+                        "id": target_instance.get("backend_id"),
+                        "port": target_instance.get("port"),
+                        "type": target_instance.get("backend_type", "local"),
+                        "provider": target_instance.get("provider"),
+                        "model": forward_model,
+                    },
+                    status_code=upstream.status_code,
+                    duration_ms=round(
+                        (time.perf_counter() - request_started) * 1000, 2
+                    ),
+                    stream=True,
+                )
 
                 async def stream_generator(response=upstream):
                     try:
@@ -2628,6 +2885,23 @@ async def openai_proxy(
                 content=body,
                 headers=headers,
                 backend_label=backend_label,
+            )
+            log_manager.record_proxy_request(
+                path=f"/v1/{path}",
+                received_payload=received_payload or data,
+                forwarded_payload=data,
+                backend={
+                    "id": target_instance.get("backend_id"),
+                    "port": target_instance.get("port"),
+                    "type": target_instance.get("backend_type", "local"),
+                    "provider": target_instance.get("provider"),
+                    "model": forward_model,
+                },
+                status_code=resp.status_code,
+                duration_ms=round(
+                    (time.perf_counter() - request_started) * 1000, 2
+                ),
+                stream=False,
             )
             content = resp.content
             if client_facing_model and target_instance.get("backend_type") != "platform":
@@ -2900,7 +3174,12 @@ async def proxy_resolve(request: Request, authenticated: bool = Depends(require_
         try:
             preview_opt = ContextOptimizer(config_manager=config_manager, audit_recorder=None)
             decision_inst = next((b for b in proxy_router.backends_snapshot() if b["port"] == decision.backend_port), {})
-            res = await preview_opt.optimize(payload=data, backend_info=decision_inst)
+            res = await preview_opt.optimize(
+                payload=data,
+                backend_info=decision_inst,
+                stage_limit="moderate",
+                cost_optimization=True,
+            )
             opt_preview = {
                 "strategy": res.audit.strategy,
                 "original_cost": res.audit.original_cost,
@@ -3689,23 +3968,6 @@ def _build_html(
                         </div>
                     </div>
                     <div id="proxy-panel-body" class="space-y-4 hidden">
-                        <!-- Context Optimizer Controls -->
-                        <div class="p-3 rounded-xl border border-emerald-700/40 bg-emerald-950/20 space-y-2">
-                            <div class="flex items-center gap-2 mb-2">
-                                <i class="fas fa-microchip text-emerald-400"></i>
-                                <p class="text-ui-label font-black text-slate-300 uppercase tracking-widest">Context Optimizer</p>
-                                <span id="optimizer-enabled-status" class="px-2 py-0.5 rounded-full text-ui-label font-bold text-slate-400 bg-slate-800/60">—</span>
-                            </div>
-                            <label class="flex items-center justify-between gap-2">
-                                <span class="text-ui-label text-slate-300">Ativar otimização de contexto</span>
-                                <input type="checkbox" id="optimizer-enabled-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerEnabled(this)">
-                            </label>
-                            <label class="flex items-center justify-between gap-2">
-                                <span class="text-ui-label text-slate-300">Registrar auditoria</span>
-                                <input type="checkbox" id="optimizer-audit-toggle" class="w-4 h-4 bg-slate-950 border-slate-700 rounded text-emerald-600 cursor-pointer shrink-0" onchange="toggleOptimizerAudit(this)">
-                            </label>
-                        </div>
-
                         <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
                         <div>
                             <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
@@ -3718,20 +3980,6 @@ def _build_html(
                                 </button>
                             </div>
                             <div id="proxy-sessions-list" class="space-y-1.5 max-h-56 overflow-y-auto custom-scroll pr-1"></div>
-                        </div>
-
-                        <!-- Audit Log Panel -->
-                        <div class="p-3 rounded-xl border border-slate-700/60 bg-slate-900/30 space-y-2">
-                            <div class="flex items-center justify-between gap-2 mb-2">
-                                <div class="flex items-center gap-2">
-                                    <i class="fas fa-clipboard-check text-slate-400"></i>
-                                    <p class="text-ui-label font-black text-slate-400 uppercase tracking-widest">Auditoria</p>
-                                </div>
-                                <span class="text-ui-label text-slate-500"><span id="audit-log-total">0</span> registros · <span id="audit-log-pages">0</span> págs</span>
-                            </div>
-                            <div id="audit-log-list" class="space-y-1.5 max-h-48 overflow-y-auto custom-scroll pr-1"></div>
-                            <div id="audit-log-pagination" class="flex items-center justify-between mt-2"></div>
-                            <input type="hidden" id="audit-log-page" value="1">
                         </div>
 
                     </div>
@@ -3805,6 +4053,21 @@ def _build_html(
                              <div class="tab-actions flex items-center gap-3">
                                  <!-- Buttons Start/Stop/Chat -->
                              </div>
+                        </div>
+                    </div>
+
+                    <div class="local-cursor-alias-panel glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
+                        <div>
+                            <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso no Cursor</p>
+                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Escolha um nome compatível com o Cursor para expor este modelo local via BYOK.</p>
+                        </div>
+                        <ul class="local-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
+                        <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
+                            <label class="space-y-1">
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome no Cursor</span>
+                                <select class="local-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
+                            </label>
+                            <button type="button" class="local-cursor-save-alias px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase tracking-widest hover:bg-cyan-600/30 transition-all">Salvar alias</button>
                         </div>
                     </div>
 

@@ -254,6 +254,13 @@ def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
     return primary
 
 
+def register_platform_bare_model(bare_id: str, provider: str = "") -> None:
+    """Register a provider for a real platform ID without changing listings."""
+    bare = _bare_platform_model_id(bare_id)
+    if bare:
+        register_platform_listing(bare, bare, provider)
+
+
 def is_platform_listing_id(
     model_name: str, local_model_ids: Optional[set[str]] = None
 ) -> bool:

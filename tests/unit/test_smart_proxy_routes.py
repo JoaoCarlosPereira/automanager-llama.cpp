@@ -15,7 +15,11 @@ import llama_manager
 from config_manager import ConfigManager
 from llama_manager import app, auth_manager
 from proxy_router import ProxyRouter
-from platform_manager import platform_model_listing_id
+from platform_manager import (
+    clear_platform_listing_registry,
+    platform_model_listing_id,
+    register_platform_bare_model,
+)
 
 client = TestClient(app)
 
@@ -142,11 +146,140 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+def custom_tool_body(model="main.gguf", stream=False):
+    body = chat_body(model=model, stream=stream)
+    body["tools"] = [{
+        "type": "custom",
+        "name": "ApplyPatch",
+        "description": "Edit files",
+        "format": {"type": "grammar", "definition": "start: value"},
+    }]
+    return body
+
+
+class TestOllamaCloudPayload:
+    def test_translates_max_completion_tokens(self):
+        payload = {
+            "model": "gemma4:31b",
+            "messages": [{"role": "user", "content": "Oi"}],
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 256
+        assert "max_completion_tokens" not in normalized
+        assert "max_completion_tokens" in payload
+
+    def test_preserves_explicit_max_tokens(self):
+        payload = {
+            "max_tokens": 128,
+            "max_completion_tokens": 256,
+        }
+
+        normalized = llama_manager._normalize_ollama_cloud_payload(payload)
+
+        assert normalized["max_tokens"] == 128
+        assert "max_completion_tokens" not in normalized
+
+
 # ---------------------------------------------------------------------------
 # Task 04 — desvio /v1, filtro /v1/models, transparência não-stream
 # ---------------------------------------------------------------------------
 
 class TestSmartRouting:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_forwarded_to_local_backend(
+        self, mock_post, smart_env
+    ):
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-local", "model": "main.gguf"}
+        )
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_are_forwarded_to_local_backend_when_smart_proxy_is_disabled(
+        self, mock_post, smart_env
+    ):
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-local", "model": "main.gguf"}
+        )
+        smart_env.cfg.update_smart_proxy_settings({"enabled": False})
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_custom_tools_stay_on_local_backend_when_platform_is_available(
+        self, mock_post, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-platform", "model": "codex-default.gguf"}
+        )
+
+        response = client.post(
+            "/v1/chat/completions", json=custom_tool_body()
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        target_url = mock_post.await_args.args[0]
+        assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "main.gguf"
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_model_alias_uses_configured_target_inside_smart_proxy(
+        self, mock_post, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "codex-default.gguf"},
+        )
+        smart_env.cfg.set_model_alias("gpt-5.5", "codex-target")
+        clear_platform_listing_registry()
+        register_platform_bare_model("codex-target", provider="codex")
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-alias", "model": "codex-target"}
+        )
+        try:
+            response = client.post(
+                "/v1/chat/completions",
+                json=chat_body(model="gpt-5.5"),
+            )
+        finally:
+            clear_platform_listing_registry()
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+        assert mock_post.await_args.args[0] == (
+            "http://127.0.0.1:9100/v1/chat/completions"
+        )
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "codex-target"
+        assert response.json()["model"] == "gpt-5.5"
+
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_primary_model_routed_with_internal_rewrite(
         self, mock_post, smart_env
@@ -1223,12 +1356,13 @@ class TestTask08ContextOptimizerIntegration:
         assert sent["top_k"] == 40
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_disabled_optimizer_bypasses_optimization(self, mock_post, smart_env):
-        """Otimizador desabilitado preserva fluxo sem alteração do payload."""
+    def test_optimizer_cannot_be_disabled(self, mock_post, smart_env):
+        """O Context Optimizer permanece ativo mesmo com override legado."""
         smart_env.cfg.update_smart_proxy_settings({
             "enabled": True,
             "context_optimizer": {"enabled": False},
         })
+        assert smart_env.cfg.get_smart_proxy_settings()["context_optimizer"]["enabled"] is True
         mock_post.return_value = _mock_response({"id": "opt-disabled", "model": "main.gguf"})
         body = {
             "model": "main.gguf",
@@ -1241,8 +1375,8 @@ class TestTask08ContextOptimizerIntegration:
         response = client.post("/v1/chat/completions", json=body)
         assert response.status_code == 200
         sent = json.loads(mock_post.call_args.kwargs["content"])
-        assert len(sent["messages"]) == 3
-        assert sent["messages"][2]["content"] == "  Espaços   manter  "
+        assert len(sent["messages"]) == 2
+        assert sent["messages"][1]["content"] == "  Espaços   manter  "
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_missing_optimizer_key_defaults_to_enabled(self, mock_post, smart_env):
@@ -1338,4 +1472,3 @@ class TestTask08ContextOptimizerIntegration:
         mock_post.assert_not_called()
         assert smart_env.router._sessions == {}
         assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
-
