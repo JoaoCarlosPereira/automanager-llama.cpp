@@ -2496,12 +2496,20 @@ export async function startModel(path, tabId) {
         if (!inst || inst.status !== 'running') {
             showToast('O servidor encerrou logo após iniciar. Verifique os logs abaixo.', 'error');
         }
+        if (!startData.probing && startData.mtp_applied !== undefined) {
+            if (!startData.mtp_applied && startData.mtp_reason) {
+                window.showMtpWarning(startData.mtp_reason);
+            } else {
+                window.hideMtpWarning();
+            }
+        }
     } catch (e) {
         showToast("Erro de rede.", 'error');
         window.updateStatus();
     } finally {
         delete tab.dataset.starting;
     }
+    setTimeout(window.updateStatus, 2000);
 }
 
 export async function stopModel(port = null) {
