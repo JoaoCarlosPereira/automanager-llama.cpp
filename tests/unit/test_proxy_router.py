@@ -799,15 +799,49 @@ class TestSelection:
         await router.release(d2_again.backend_port)
 
     @pytest.mark.asyncio
-    async def test_tagged_sessions_expand_sticky_backend(self, router, status_holder):
-        """Afinidade explícita cresce no próprio backend sem fila ou 503."""
+    async def test_tagged_sessions_overflow_to_free_backend(self, router, status_holder):
+        """Afinidade explícita ocupada transborda para o próximo backend livre."""
         d1 = await resolve(router, body=body_with(tag="rock"))
         d2 = await resolve(router, body=body_with(tag="rock"))
-        assert d2.backend_port == d1.backend_port
-        assert d2.reason == "sticky_dynamic_capacity"
-        assert router.in_flight(d1.backend_port) == 2
+        assert d2.backend_port != d1.backend_port
+        assert d2.affinity_key == f"{d1.affinity_key}#2"
+        assert d2.reason == "sticky_busy_overflow"
+        assert router.in_flight(d1.backend_port) == 1
+        assert router.in_flight(d2.backend_port) == 1
         await router.release(d1.backend_port)
         await router.release(d2.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_tagged_overflow_branch_is_reused(self, router):
+        d1 = await resolve(router, body=body_with(tag="rock"))
+        d2 = await resolve(router, body=body_with(tag="rock"))
+        await router.release(d2.backend_port)
+
+        d2_again = await resolve(router, body=body_with(tag="rock"))
+
+        assert d2_again.affinity_key == d2.affinity_key
+        assert d2_again.backend_port == d2.backend_port
+        assert d2_again.reason == "sticky_branch"
+        await router.release(d1.backend_port)
+        await router.release(d2_again.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_tagged_session_uses_busy_backend_only_when_all_are_busy(
+        self, router
+    ):
+        d1 = await resolve(router, body=body_with(tag="rock"))
+        d2 = await resolve(router, body=body_with(tag="rock"))
+        d3 = await resolve(router, body=body_with(tag="rock"))
+        assert {d1.backend_port, d2.backend_port, d3.backend_port} == {
+            8085, 8086, 8087
+        }
+
+        d4 = await resolve(router, body=body_with(tag="rock"))
+
+        assert d4.backend_port == d1.backend_port
+        assert d4.reason == "sticky_dynamic_capacity"
+        for decision in (d1, d2, d3, d4):
+            await router.release(decision.backend_port)
 
     @pytest.mark.asyncio
     async def test_untagged_new_session_overflows_when_primary_busy(
@@ -1245,4 +1279,3 @@ class TestPlanLargerWindow:
             required_capabilities={"text"},
         )
         assert plan is None
-

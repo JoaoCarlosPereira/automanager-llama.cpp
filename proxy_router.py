@@ -1223,7 +1223,7 @@ class ProxyRouter:
         if self._unsaved_uses >= PERSIST_EVERY_N_REQUESTS:
             self._save_sessions()
 
-    def _hash_branch_locked(
+    def _busy_affinity_branch_locked(
         self,
         affinity_key: str,
         by_port: Dict[int, Dict[str, Any]],
@@ -1237,12 +1237,14 @@ class ProxyRouter:
         _decision,
         _commit,
     ) -> Optional[RouteDecision]:
-        """Ramifica uma sessão hash: ocupada para um backend livre.
+        """Ramifica uma afinidade ocupada para um backend livre.
 
-        Sessões de afinidade fraca não distinguem subagentes com prompts
-        iniciais idênticos; sob concorrência, cada fluxo extra vira um ramo
-        sticky próprio (hash:...#2, #3, ...) no backend menos ocupado.
-        Retorna None quando não há backend livre (o chamador espera).
+        Sob concorrência, cada fluxo extra vira um ramo sticky próprio
+        (chave-base#2, #3, ...) no backend menos ocupado. Isso vale também
+        para afinidades explícitas: sticky preserva continuidade enquanto há
+        capacidade, mas não deve concentrar chamadas num backend já cheio.
+        Retorna None quando não há backend livre; o chamador então usa a
+        capacidade dinâmica do sticky atual como fila de último recurso.
         """
         for n in range(2, MAX_HASH_BRANCHES + 1):
             branch_key = f"{affinity_key}#{n}"
@@ -1285,12 +1287,17 @@ class ProxyRouter:
             )
             if chosen is None:
                 return None
-            logger.info(
-                "[proxy] concurrent hash session branched affinity_key=%s "
-                "branch=%s selected_backend=%s reason=hash_branch",
-                affinity_key, branch_key, chosen["port"],
+            reason = (
+                "hash_branch"
+                if affinity_key.startswith("hash:")
+                else "sticky_busy_overflow"
             )
-            return _commit(chosen, False, "hash_branch", None, key=branch_key)
+            logger.info(
+                "[proxy] busy affinity branched affinity_key=%s "
+                "branch=%s selected_backend=%s reason=%s",
+                affinity_key, branch_key, chosen["port"], reason,
+            )
+            return _commit(chosen, False, reason, None, key=branch_key)
         return None
 
     async def plan_route(
@@ -1938,22 +1945,18 @@ class ProxyRouter:
                 if ignore_capacity:
                     return _decision(inst, True, "sticky"), None
                 if self.in_flight_for(inst) >= max_parallel:
-                    # Afinidade fraca (hash:): requisições SIMULTÂNEAS com a
-                    # mesma assinatura são fluxos paralelos (subagentes) — uma
-                    # conversa não sobrepõe turnos. Ramifica para backend livre
-                    # em vez de enfileirar (spec original: "muitas requisições
-                    # simultâneas parecidas → pode distribuir").
-                    if affinity_key.startswith("hash:"):
-                        branched = self._hash_branch_locked(
-                            affinity_key, by_port, instances, config,
-                            primary_port, primary_backend_id, needed_ctx,
-                            external_model, configured_backend_id,
-                            _decision, _commit,
-                        )
-                        if branched is not None:
-                            return branched, None
-                    # Afinidade explícita permanece no mesmo backend, mas sua
-                    # capacidade cresce em vez de enfileirar/retornar 503.
+                    # Backend sticky cheio: preserve a chave-base no backend
+                    # original e direcione a chamada concorrente para um ramo
+                    # sticky no próximo backend livre. Se todos estiverem cheios,
+                    # a capacidade dinâmica continua sendo o último recurso.
+                    branched = self._busy_affinity_branch_locked(
+                        affinity_key, by_port, instances, config,
+                        primary_port, primary_backend_id, needed_ctx,
+                        external_model, configured_backend_id,
+                        _decision, _commit,
+                    )
+                    if branched is not None:
+                        return branched, None
                     return _commit(
                         inst, True, "sticky_dynamic_capacity", existing
                     ), None
