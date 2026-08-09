@@ -483,7 +483,12 @@ function bindPlatformTabListeners(tabId, backendId) {
         const platform = platformDisplayState(
             (state.lastPlatformList || []).find(p => p.backend_id === backendId) || { backend_id: backendId }
         );
-        startCliproxyAuth(backendId, platform.provider || '', platform.display_name || platform.name || backendId);
+        const displayName = platform.display_name || platform.name || backendId;
+        if (platform.provider === 'ollama-cloud') {
+            manageOllamaCloudAuth(backendId, displayName);
+        } else {
+            startCliproxyAuth(backendId, platform.provider || '', displayName);
+        }
     });
 
     tab.querySelector('.platform-refresh-models-btn')?.addEventListener('click', () => {
@@ -786,9 +791,29 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
 
     const accountsEl = tab.querySelector('.platform-auth-accounts');
     const accounts = auth.accounts || [];
-    accountsEl.innerHTML = accounts.length
-        ? accounts.map(a => `<li class="truncate"><i class="fas fa-user-circle text-slate-600 mr-1"></i>${escapeHtml(a)}</li>`).join('')
-        : '<li class="text-slate-600 italic">Nenhuma conta autenticada</li>';
+    const accountDetails = auth.account_details || [];
+    if (platform.provider === 'ollama-cloud' && accountDetails.length) {
+        accountsEl.innerHTML = accountDetails.map(account => `
+            <li class="flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-950/40 px-2 py-1.5">
+                <i class="fas fa-user-circle text-slate-600 shrink-0"></i>
+                <span class="min-w-0 flex-1">
+                    <span class="block truncate text-slate-400">${escapeHtml(account.label || account.id)}</span>
+                    ${account.api_key ? `<span class="block truncate text-slate-600">${escapeHtml(account.api_key)}</span>` : ''}
+                </span>
+                <button type="button" class="ollama-account-delete w-7 h-7 shrink-0 rounded bg-red-600/10 text-red-400 hover:bg-red-600/20" data-account-id="${escapeHtml(account.id)}" title="Apagar credencial" aria-label="Apagar credencial">
+                    <i class="fas fa-trash-alt"></i>
+                </button>
+            </li>`).join('');
+        accountsEl.querySelectorAll('.ollama-account-delete').forEach(button => {
+            button.addEventListener('click', () => {
+                deleteOllamaCloudAccount(button.dataset.accountId, backendId, tab.id);
+            });
+        });
+    } else {
+        accountsEl.innerHTML = accounts.length
+            ? accounts.map(a => `<li class="truncate"><i class="fas fa-user-circle text-slate-600 mr-1"></i>${escapeHtml(a)}</li>`).join('')
+            : '<li class="text-slate-600 italic">Nenhuma conta autenticada</li>';
+    }
 
     const methods = auth.available_methods || [];
     tab.querySelector('.platform-auth-methods').textContent = methods.length
@@ -2444,6 +2469,26 @@ export async function manageOllamaCloudAuth(_backendId, displayName) {
         await window.updateStatus?.();
     } catch (e) {
         showToast(e.message || 'Falha ao autenticar no Ollama Cloud.', 'error');
+    }
+}
+
+export async function deleteOllamaCloudAccount(accountId, backendId, tabId = null) {
+    if (!accountId) return;
+    if (!await showConfirm('Apagar esta credencial do Ollama Cloud?', { confirmLabel: 'Apagar' })) return;
+    try {
+        const res = await apiFetch(`/platforms/ollama-cloud/accounts/${encodeURIComponent(accountId)}`, {
+            method: 'DELETE',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Não foi possível apagar a credencial.');
+        showToast('Credencial do Ollama Cloud apagada.', 'success');
+        await updateModels();
+        await window.updateStatus?.();
+        if (tabId && backendId && document.getElementById(tabId)) {
+            await loadPlatformTabDetails(tabId, backendId);
+        }
+    } catch (e) {
+        showToast(e.message || 'Falha ao apagar a credencial do Ollama Cloud.', 'error');
     }
 }
 

@@ -145,6 +145,71 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
 
 
 class TestProxyRetryAndFailover:
+    @pytest.mark.parametrize("error_status", [400, 401, 403, 404, 500])
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_any_http_error_retries_then_fails_over(
+        self, mock_post, mock_sleep, error_status, retry_env
+    ):
+        """Qualquer 4xx/5xx persistente deve migrar para outro backend."""
+        failed = _mock_response({"error": "upstream"}, status=error_status)
+        succeeded = _mock_response({"id": "ok", "model": "aux1.gguf"})
+        mock_post.side_effect = [failed, failed, failed, succeeded]
+
+        response = client.post(
+            "/v1/chat/completions",
+            json=chat_body(tag=f"http-{error_status}"),
+        )
+
+        assert response.status_code == 200
+        assert mock_post.call_count == 4
+        ports = [
+            call.args[0].split(":")[2].split("/")[0]
+            for call in mock_post.call_args_list
+        ]
+        assert ports[:3] == ["8085", "8085", "8085"]
+        assert ports[3] != "8085"
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.send", new_callable=AsyncMock)
+    def test_stream_http_500_retries_then_fails_over(
+        self, mock_send, mock_sleep, retry_env
+    ):
+        failed = _sse_upstream([b'{"error":"invalid tool call"}'], status=500)
+        succeeded = _sse_upstream([
+            b'data: {"model":"aux1.gguf","choices":[]}\n\n',
+            b'data: [DONE]\n\n',
+        ])
+        mock_send.side_effect = [failed, failed, failed, succeeded]
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(tag="stream-500", stream=True)
+        )
+
+        assert response.status_code == 200
+        assert mock_send.call_count == 4
+        assert b"data: [DONE]" in response.content
+
+    @patch("llama_manager.context_optimizer.optimize", new_callable=AsyncMock)
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_disabled_optimizer_stays_disabled_during_failover(
+        self, mock_post, mock_sleep, mock_optimize, retry_env
+    ):
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
+        resp_503 = _mock_response({"error": "unavailable"}, status=503)
+        resp_200 = _mock_response({"id": "ok", "model": "aux0.gguf"})
+        mock_post.side_effect = [resp_503, resp_503, resp_503, resp_200]
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(tag="optimizer-off")
+        )
+
+        assert response.status_code == 200
+        mock_optimize.assert_not_awaited()
+
     @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_three_retries_same_backend_reuse_same_payload(
@@ -230,6 +295,9 @@ class TestProxyRetryAndFailover:
         self, mock_post, mock_sleep, retry_env
     ):
         """HTTP 429 nao autoriza estratégias destrutivas Moderate/Aggressive."""
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
         resp_429 = _mock_response({"error": "rate_limit"}, status=429)
         resp_200 = _mock_response({"id": "ok", "model": "aux1.gguf"})
         mock_post.side_effect = [resp_429, resp_429, resp_429, resp_200]
@@ -249,6 +317,9 @@ class TestProxyRetryAndFailover:
         self, mock_post, mock_sleep, retry_env
     ):
         """Erro de conexão upstream nao dispara Moderate ou Aggressive."""
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
         ok = _mock_response({"id": "cmpl-ok", "model": "aux1.gguf"})
         mock_post.side_effect = [
             httpx.ConnectError("Connection refused"),
@@ -338,10 +409,10 @@ class TestProxyRetryAndFailover:
         assert res1.status_code == 200
         assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
 
-        # Caminho 2: Erro 500 no backend
+        # Caminho 2: Erro 500 em todos os backends esgota o failover
         mock_post.return_value = _mock_response({"error": "internal"}, status=500)
         res2 = client.post("/v1/chat/completions", json=chat_body())
-        assert res2.status_code == 500
+        assert res2.status_code in (502, 503)
         assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
 
         # Caminho 3: Falha total de conexão

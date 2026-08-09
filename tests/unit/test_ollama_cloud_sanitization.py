@@ -41,9 +41,16 @@ class TestMaskApiKey:
         assert result == "sk-abc****...****"
         assert result != "sk-abcdef1234567890"
 
-    def test_non_sk_key_unchanged(self):
+    def test_non_sk_key_is_masked(self):
         from utils import mask_api_key
-        assert mask_api_key("another-string") == "another-string"
+        assert mask_api_key("another-string") == "anothe****...ring"
+
+    def test_ollama_cloud_key_is_masked(self):
+        from utils import mask_api_key
+        key = "4d1995a7c08d44eca05e856926d4034a.secretvalue"
+        masked = mask_api_key(key)
+        assert masked == "4d1995****...alue"
+        assert key not in masked
 
     def test_empty_string(self):
         from utils import mask_api_key
@@ -55,7 +62,7 @@ class TestMaskApiKey:
 
     def test_non_string_returns_empty(self):
         from utils import mask_api_key
-        assert mask_api_key(123) == "123"
+        assert mask_api_key(123) == "12****"
         # 0 is falsy, so it returns "" (same as None / "")
         assert mask_api_key(0) == ""
 

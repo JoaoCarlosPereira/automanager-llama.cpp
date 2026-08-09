@@ -26,6 +26,10 @@ data/proxy_backend_benchmarks.json
 # Local model files (large binaries)
 data/models/
 
+# Local auth tokens / session files (cliproxy, platform CLIs)
+data/cliproxy/auth/
+data/proxy_sessions.json
+
 # Test / debug artifacts
 test_output.txt
 

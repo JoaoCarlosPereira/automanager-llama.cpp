@@ -1356,13 +1356,13 @@ class TestTask08ContextOptimizerIntegration:
         assert sent["top_k"] == 40
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_optimizer_cannot_be_disabled(self, mock_post, smart_env):
-        """O Context Optimizer permanece ativo mesmo com override legado."""
+    def test_optimizer_can_be_disabled(self, mock_post, smart_env):
+        """Desativado, o Context Optimizer encaminha o payload intacto."""
         smart_env.cfg.update_smart_proxy_settings({
             "enabled": True,
             "context_optimizer": {"enabled": False},
         })
-        assert smart_env.cfg.get_smart_proxy_settings()["context_optimizer"]["enabled"] is True
+        assert smart_env.cfg.get_smart_proxy_settings()["context_optimizer"]["enabled"] is False
         mock_post.return_value = _mock_response({"id": "opt-disabled", "model": "main.gguf"})
         body = {
             "model": "main.gguf",
@@ -1375,8 +1375,7 @@ class TestTask08ContextOptimizerIntegration:
         response = client.post("/v1/chat/completions", json=body)
         assert response.status_code == 200
         sent = json.loads(mock_post.call_args.kwargs["content"])
-        assert len(sent["messages"]) == 2
-        assert sent["messages"][1]["content"] == "  Espaços   manter  "
+        assert sent["messages"] == body["messages"]
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_missing_optimizer_key_defaults_to_enabled(self, mock_post, smart_env):

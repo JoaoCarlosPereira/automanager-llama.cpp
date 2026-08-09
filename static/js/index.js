@@ -16,9 +16,9 @@ import {
     startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, configureLocalModelAlias, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
-    startCliproxyAuth, manageOllamaCloudAuth, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
+    startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart,
-} from './models.js?v=4.2.22';
+} from './models.js?v=4.2.23';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
@@ -46,6 +46,7 @@ win.startPlatform = startPlatform;
 win.stopPlatform = stopPlatform;
 win.startCliproxyAuth = startCliproxyAuth;
 win.manageOllamaCloudAuth = manageOllamaCloudAuth;
+win.deleteOllamaCloudAccount = deleteOllamaCloudAccount;
 win.closeCliproxyAuthModal = closeCliproxyAuthModal;
 win.cancelCliproxyAuth = cancelCliproxyAuth;
 win.submitCliproxyAuthCallback = submitCliproxyAuthCallback;

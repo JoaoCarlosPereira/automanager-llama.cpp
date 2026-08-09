@@ -102,10 +102,28 @@ def _clear_accounts():
 
 @pytest.fixture(autouse=True)
 def _clear_ollama_accounts():
-    """Ensure config has no ollama_cloud_accounts before each test."""
+    """Run each test cleanly and restore the user's accounts afterwards."""
+    path = _get_config_path()
+    try:
+        original_data = json.loads(open(path).read()) if os.path.isfile(path) else {}
+    except Exception:
+        original_data = {}
+    had_accounts = "ollama_cloud_accounts" in original_data
+    original_accounts = original_data.get("ollama_cloud_accounts")
     _clear_accounts()
     yield
-    _clear_accounts()
+    try:
+        current_data = json.loads(open(path).read()) if os.path.isfile(path) else {}
+    except Exception:
+        current_data = {}
+    if had_accounts:
+        current_data["ollama_cloud_accounts"] = original_accounts
+    else:
+        current_data.pop("ollama_cloud_accounts", None)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(current_data, f, indent=2)
+    os.replace(tmp, path)
 
 
 @pytest.fixture()

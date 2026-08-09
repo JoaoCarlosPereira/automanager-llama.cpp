@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.22"  # Corrige remoção de aliases e atualização imediata da UI
+_DASHBOARD_JS_V = "4.2.23"  # Gerenciamento individual de credenciais Ollama Cloud
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -146,7 +146,6 @@ def _filter_proxy_headers(headers: Dict[str, str]) -> Dict[str, str]:
     }
 
 
-_PROXY_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 _PROXY_MAX_ATTEMPTS = 3
 # Hops de failover entre backends distintos (após retries no mesmo).
 _PROXY_MAX_FAILOVER_HOPS = 5
@@ -233,7 +232,13 @@ def _proxy_failure_cooldown(
 
 
 def _is_retryable_upstream_status(status_code: int) -> bool:
-    return status_code in _PROXY_RETRYABLE_STATUSES
+    """Todo erro HTTP do provedor autoriza retry e failover.
+
+    O proxy recebe aliases que podem apontar para backends heterogêneos. Um
+    erro definitivo para um deles (inclusive 400/401/403/404/500) não deve
+    prender a sessão naquele backend enquanto outro ainda pode responder.
+    """
+    return 400 <= int(status_code) <= 599
 
 
 def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
@@ -736,10 +741,23 @@ def _hybrid_status() -> Dict[str, Any]:
 
 def _ollama_cloud_auth_status() -> Dict[str, Any]:
     accounts = ollama_cloud_manager.get_accounts()
+    masked_accounts = {
+        account.get("id"): account
+        for account in config_manager.get_ollama_cloud_accounts()
+    }
     return {
         "provider": "ollama-cloud",
         "authenticated": bool(accounts),
         "accounts": [account.label or account.id for account in accounts],
+        "account_details": [
+            {
+                "id": account.id,
+                "label": account.label or account.id,
+                "api_key": masked_accounts.get(account.id, {}).get("api_key", ""),
+                "status": account.status,
+            }
+            for account in accounts
+        ],
         "default_method": "api-key",
         "available_methods": ["api-key"],
     }
@@ -2148,7 +2166,9 @@ async def _smart_proxy_forward(
     await _fetch_platform_model_catalog()
 
     proxy_settings = config_manager.get_smart_proxy_settings()
-    co_enabled = True
+    co_enabled = bool(
+        proxy_settings.get("context_optimizer", {}).get("enabled", True)
+    )
 
     optimized_data = data
     decision = None
@@ -2457,7 +2477,7 @@ async def _smart_proxy_forward(
                     ):
                         new_instance = inst
                         break
-                if new_instance is not None:
+                if new_instance is not None and co_enabled:
                     try:
                         new_opt = await context_optimizer.optimize(
                             payload=data,
@@ -2524,7 +2544,7 @@ async def _smart_proxy_forward(
                     stream=True,
                 )
                 if cloud_account is not None and upstream.status_code == 403:
-                    denied_content = await upstream.aread()
+                    await upstream.aread()
                     subscription_denied = _ollama_subscription_denied(upstream)
                     if subscription_denied:
                         config_manager.record_ollama_cloud_model_denial(
@@ -2534,22 +2554,19 @@ async def _smart_proxy_forward(
                     await proxy_router.release(
                         decision.backend_id, affinity_key=decision.affinity_key
                     )
-                    if subscription_denied:
-                        err = await _failover(
-                            "HTTP 403 subscription_required",
-                            status_code=403,
-                            response=upstream,
-                            mark_unavailable=False,
-                        )
-                        if err is not None:
-                            return err
-                        continue
-                    return Response(
-                        content=denied_content,
+                    err = await _failover(
+                        (
+                            "HTTP 403 subscription_required"
+                            if subscription_denied
+                            else "HTTP 403"
+                        ),
                         status_code=403,
-                        headers=_filter_proxy_headers(dict(upstream.headers)),
-                        media_type=upstream.headers.get("content-type"),
+                        response=upstream,
+                        mark_unavailable=not subscription_denied,
                     )
+                    if err is not None:
+                        return err
+                    continue
                 if _is_retryable_upstream_status(upstream.status_code):
                     status = upstream.status_code
                     failed_response = upstream

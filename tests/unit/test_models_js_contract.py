@@ -99,3 +99,18 @@ def test_probing_branch_sets_auto_balance_pending(try_block: str):
     assert "startData.probing" in try_block
     assert "autoBalancePending" in try_block
     assert "syncAutoBalanceCancelButton(true)" in try_block
+
+
+def test_ollama_credentials_have_individual_delete_control(models_js: str):
+    """Cada conta Ollama Cloud deve poder ser removida sem apagar as demais."""
+    assert 'class="ollama-account-delete' in models_js
+    assert "data-account-id=" in models_js
+    assert "export async function deleteOllamaCloudAccount" in models_js
+    assert "method: 'DELETE'" in models_js
+    assert "/platforms/ollama-cloud/accounts/${encodeURIComponent(accountId)}" in models_js
+
+
+def test_ollama_platform_manage_button_uses_cloud_flow(models_js: str):
+    """O botão Gerenciar da aba Ollama não deve abrir o OAuth do CLIProxy."""
+    assert "if (platform.provider === 'ollama-cloud')" in models_js
+    assert "manageOllamaCloudAuth(backendId, displayName)" in models_js

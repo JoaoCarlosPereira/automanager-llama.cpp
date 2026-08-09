@@ -8,15 +8,15 @@ def mask_api_key(api_key: Any) -> str:
     """Return a safe masked representation of *api_key*.
 
     - Keys starting with ``sk-`` show the first 6 characters then ``****...****``.
-    - All other strings are returned unchanged (prefix too short or different format).
+    - Other credential formats show only the first 6 and last 4 characters.
     - ``None`` / empty strings return ``""``.
     - Non-string truthy values are converted to string and processed.
 
     Examples:
         >>> mask_api_key("sk-12345")
         'sk-123****...****'
-        >>> mask_api_key("outra-string")
-        'outra-string'
+        >>> mask_api_key("outra-string-secreta")
+        'outra-****...reta'
         >>> mask_api_key("")
         ''
         >>> mask_api_key(None)
@@ -31,9 +31,11 @@ def mask_api_key(api_key: Any) -> str:
         if len(api_key) <= 6:
             return api_key + "****"
         return api_key[:6] + "****...****"
-    # Keys from other providers (e.g. anthropic-..., hc-...) — do not mask;
-    # they have no stable prefix convention we can safely expose.
-    return api_key
+    # Credenciais como as do Ollama Cloud não usam o prefixo sk-. Ainda são
+    # segredos e nunca devem ser devolvidas integralmente pela API/UI.
+    if len(api_key) <= 8:
+        return api_key[:2] + "****"
+    return api_key[:6] + "****..." + api_key[-4:]
 
 
 def sanitize_for_log(value: Any, key_name: str = "credential") -> str:

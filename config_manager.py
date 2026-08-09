@@ -459,7 +459,6 @@ class ConfigManager:
         for key in ("enabled", "audit_enabled"):
             if key in stored:
                 defaults[key] = bool(stored[key])
-        defaults["enabled"] = True
         tokenizers = stored.get("tokenizers")
         if isinstance(tokenizers, dict):
             defaults["tokenizers"] = {

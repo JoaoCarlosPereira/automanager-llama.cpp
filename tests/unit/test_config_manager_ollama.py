@@ -29,6 +29,12 @@ class TestOllamaCloudAccountsMasking:
         result = ConfigManager._mask_api_key(key)
         assert result == "sk-abc****"
 
+    def test_mask_api_key_ollama_format(self):
+        key = "4d1995a7c08d44eca05e856926d4034a.secretvalue"
+        result = ConfigManager._mask_api_key(key)
+        assert result == "4d1995****...alue"
+        assert result != key
+
 
 class TestOllamaCloudAccountsGet:
     """Tests for get_ollama_cloud_accounts."""
