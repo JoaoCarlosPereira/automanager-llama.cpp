@@ -169,9 +169,28 @@ install_claude_code() {
 }
 
 install_httpx_deps() {
-  local venv_path="${INSTALL_DIR:-/opt/automanager}/venv"
-  local pip_path="${venv_path}/bin/pip"
-  local python_path="${venv_path}/bin/python"
+  # Resolve the correct venv: use PROJECT_DIR/.venv when available,
+  # fall back to INSTALL_DIR/.venv, then to a hardcoded path.
+  local project_dir="" venv_path="" pip_path="" python_path=""
+
+  if [[ -n "${PROJECT_DIR:-}" ]] && [[ -d "${PROJECT_DIR}/.venv" ]]; then
+    project_dir="${PROJECT_DIR}"
+  elif [[ -n "${INSTALL_DIR:-}" ]] && [[ -d "${INSTALL_DIR}" ]]; then
+    project_dir="${INSTALL_DIR}"
+  elif [[ -d "/home/joao/automanager-llama.cpp/.venv" ]]; then
+    project_dir="/home/joao/automanager-llama.cpp"
+  elif [[ -d "/opt/automanager/.venv" ]]; then
+    project_dir="/opt/automanager"
+  fi
+
+  if [[ -n "${project_dir}" ]]; then
+    venv_path="${project_dir}/.venv"
+  else
+    venv_path="/opt/automanager/venv"
+  fi
+
+  pip_path="${venv_path}/bin/pip"
+  python_path="${venv_path}/bin/python"
 
   if [[ ! -f "${pip_path}" ]]; then
     log_warn "Python virtualenv not found at ${venv_path}, skipping httpx check."

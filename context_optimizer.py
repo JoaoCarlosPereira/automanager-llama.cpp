@@ -1665,9 +1665,9 @@ async def optimize_request_ir_aggressive(
 
     for block in ir.ordered_units:
         is_min_protected = False
-        if block.protected:
-            is_min_protected = True
-        elif block.role in ("system", "developer"):
+        # O Aggressive descarta retenções estendidas (código antigo, logs, decisões técnicas)
+        # e protege apenas: system/developer, turno atual (last_user_idx+), e grupos atômicos.
+        if block.role in ("system", "developer"):
             is_min_protected = True
         elif last_user_idx >= 0 and block.original_index >= last_user_idx:
             is_min_protected = True

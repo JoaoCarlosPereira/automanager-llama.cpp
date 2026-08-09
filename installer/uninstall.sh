@@ -145,9 +145,11 @@ if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
   systemctl disable "${SERVICE_NAME}" || true
 fi
 
-if pgrep -f llama-server >/dev/null 2>&1; then
-  log_info "Stopping llama-server processes..."
-  pkill -9 -f llama-server 2>/dev/null || true
+# If the service is still running, let systemd handle graceful shutdown.
+# Avoid global pkill — it can kill unrelated llama-server instances on the host.
+if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  log_info "Stopping ${SERVICE_NAME} (service already running)..."
+  systemctl stop "${SERVICE_NAME}" || true
 fi
 
 if [[ -f "${SERVICE_FILE}" ]]; then
@@ -166,17 +168,75 @@ else
 fi
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    rm -f "${CONFIG_FILE}"
-    log_info "Removed config file ${CONFIG_FILE}"
+  _purge_paths=()
+
+  # --- helper: validate a path for safe deletion ---
+  _validate_purge_path() {
+    local p="$1" label="$2"
+    # Reject empty / bare /
+    if [[ -z "${p}" || "${p}" == "/" ]]; then
+      log_error "Purge target '${label}' is empty or '/'. Aborting to prevent data loss."
+      return 1
+    fi
+    # Resolve real path (handle symlinks)
+    if [[ ! -e "${p}" ]]; then
+      log_warn "Purge target '${label}' does not exist: ${p}"
+      return 1
+    fi
+    local real
+    real="$(realpath "${p}" 2>/dev/null)" || {
+      log_error "Cannot resolve purge target '${label}': ${p}"
+      return 1
+    }
+    # Must be under PROJECT_DIR (or its children)
+    if [[ "${real}" != "${PROJECT_DIR}" && "${real}" != "${PROJECT_DIR}/"* ]]; then
+      log_error "Purge target '${label}' resolves outside project: ${real}"
+      log_error "  (PROJECT_DIR=${PROJECT_DIR})"
+      log_error "External paths are rejected for --purge safety."
+      return 1
+    fi
+    # For directories, refuse if it looks like /usr /etc /home /opt /var /tmp /boot /srv /root
+    if [[ -d "${real}" ]]; then
+      case "${real}" in
+        /usr|/usr/*|/etc|/etc/*|/home|/home/*|/opt|/opt/*|\
+/var|/var/*|/tmp|/tmp/*|/boot|/boot/*|/srv|/srv/*|\
+/root|/root/*)
+          log_error "Purge target '${label}' is a dangerous directory: ${real}"
+          return 1
+          ;;
+      esac
+    fi
+    _purge_paths+=("${real}")
+    log_info "  Purge-validated '${label}': ${real}"
+    return 0
+  }
+
+  # --- config file ---
+  if [[ -n "${CONFIG_FILE:-}" ]]; then
+    _validate_purge_path "${CONFIG_FILE}" "config" || { PURGE_DATA=0; }
   fi
-  if [[ -d "${LOGS_DIR}" ]]; then
-    rm -rf "${LOGS_DIR}"
-    log_info "Removed logs directory ${LOGS_DIR}"
+
+  # --- logs directory ---
+  if [[ -n "${LOGS_DIR:-}" ]]; then
+    _validate_purge_path "${LOGS_DIR}" "logs" || { PURGE_DATA=0; }
   fi
-  if [[ -f "${PATHS_FILE}" ]]; then
-    rm -f "${PATHS_FILE}"
-    log_info "Removed ${PATHS_FILE}"
+
+  # --- paths.json (file only) ---
+  if [[ -n "${PATHS_FILE:-}" ]]; then
+    _validate_purge_path "${PATHS_FILE}" "paths.json" || { PURGE_DATA=0; }
+  fi
+
+  if [[ "${PURGE_DATA}" -eq 1 ]]; then
+    # Delete all validated paths
+    for _pp in "${_purge_paths[@]}"; do
+      if [[ -f "${_pp}" ]]; then
+        rm -f "${_pp}"
+        log_info "Removed ${_pp}"
+      elif [[ -d "${_pp}" ]]; then
+        rm -rf "${_pp}"
+        log_info "Removed directory ${_pp}"
+      fi
+    done
   fi
 fi
 

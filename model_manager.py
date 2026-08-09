@@ -509,10 +509,18 @@ class DownloadManager:
     def _do_download(
         self, download_id: str, url: str, filename: str, path: str
     ) -> None:
+        part_path = path + ".part"
         try:
             with self._lock:
                 if self._downloads.get(download_id, {}).get("cancel_requested"):
                     raise DownloadCancelled()
+
+            # Limpar .part residuo de crash anterior
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except OSError:
+                    pass
 
             # Segue redirects manualmente revalidando cada salto: requests segue
             # redirects por padrão, o que permitiria burlar _validate_download_url
@@ -544,7 +552,7 @@ class DownloadManager:
                 )
             downloaded = 0
             start_time = time.time()
-            with open(path, "wb") as f:
+            with open(part_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192 * 4):
                     with self._lock:
                         if self._downloads.get(download_id, {}).get("cancel_requested"):
@@ -577,6 +585,8 @@ class DownloadManager:
                                     entry["progress"] = round(
                                         (downloaded / total_size) * 100, 2
                                     )
+            # Rename atomico: .part -> destino final
+            os.rename(part_path, path)
             with self._lock:
                 if download_id in self._downloads:
                     entry = self._downloads[download_id]
@@ -587,9 +597,9 @@ class DownloadManager:
                     entry["elapsed_seconds"] = time.time() - start_time
             logger.info(f"Download completed: {filename}")
         except DownloadCancelled:
-            if os.path.exists(path):
+            if os.path.exists(part_path):
                 try:
-                    os.remove(path)
+                    os.remove(part_path)
                 except OSError:
                     pass
             with self._lock:
@@ -603,9 +613,9 @@ class DownloadManager:
                         entry["elapsed_seconds"] = time.time() - entry["start_time"]
             logger.info(f"Download cancelled: {filename}")
         except Exception as e:
-            if os.path.exists(path):
+            if os.path.exists(part_path):
                 try:
-                    os.remove(path)
+                    os.remove(part_path)
                 except OSError:
                     pass
             logger.error(f"Download error {download_id}: {e}")

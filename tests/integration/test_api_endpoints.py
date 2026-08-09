@@ -333,6 +333,7 @@ def test_set_models_dir_updates_scanner_and_returns_models(
             models_dir=str(new_models_dir),
             config_file=str(tmp_path / "config.json"),
             logs_dir=str(tmp_path / "logs"),
+            audit_logs_dir=str(tmp_path / "audit_logs"),
         )
 
     monkeypatch.setattr(llama_manager, "update_models_dir", fake_update)

@@ -89,8 +89,11 @@ class TestTextProcessing:
 
         assert result.audit.strategy == "safe"
         assert result.audit.validation_passed is True
-        assert result.safe_payload["messages"][0]["content"].strip() == "Você é um assistente."
-        assert "  " not in result.safe_payload["messages"][0]["content"]
+        # System message is protected, so whitespace is preserved.
+        # Check the user message (index 1) which is NOT protected.
+        user_msg = result.safe_payload["messages"][1]["content"]
+        assert user_msg.strip() == "Olá, como vai você?"
+        assert "  " not in user_msg
 
     @pytest.mark.asyncio
     async def test_social_noise_removed(self):
@@ -756,7 +759,8 @@ class TestBlockPreservation:
 
     @pytest.mark.asyncio
     async def test_technical_decisions_preserved_in_aggressive(self):
-        """Decisões técnicas preservadas mesmo no modo Aggressive."""
+        """O Aggressive preserva o conjunto mínimo (system, turno atual) e descarta
+        retenções estendidas como decisões técnicas."""
         payload = {
             "messages": [
                 {"role": "system", "content": "Sys"},
@@ -776,13 +780,29 @@ class TestBlockPreservation:
         mod_ir = parse_request_ir(safe.safe_payload)
         mod = await optimize_request_ir_moderate(mod_ir, budget, safe_audit=safe.audit)
         agg_ir = parse_request_ir(mod.safe_payload)
-        agg = await optimize_request_ir_aggressive(agg_ir, budget, moderate_audit=mod.audit)
 
-        # Verificar que decisão técnica ainda existe
+        # Sobrescrever input_budget para forçar remoção no Aggressive
+        from context_optimizer import TargetBudget, LimitConfidence
+        tight_budget = TargetBudget(
+            context_limit=budget.context_limit,
+            output_reserve=budget.output_reserve,
+            protocol_overhead=budget.protocol_overhead,
+            safety_margin=budget.safety_margin,
+            input_budget=20,  # força remoção da decisão técnica
+            confidence=LimitConfidence.KNOWN_LOCAL,
+            source=budget.source,
+            capabilities=frozenset({"text"}),
+        )
+        agg = await optimize_request_ir_aggressive(agg_ir, tight_budget, moderate_audit=mod.audit)
+
+        # Verificar que o conjunto mínimo (system + turno atual) é preservado
         all_text = " ".join(
             str(m.get("content", "")) for m in agg.safe_payload.get("messages", [])
         )
-        assert "postgresql" in all_text.lower() or "redis" in all_text.lower()
+        assert "Sys" in all_text
+        assert "Atual" in all_text
+        # Decisões técnicas são descartadas no modo Aggressive
+        assert "postgresql" not in all_text.lower() and "redis" not in all_text.lower()
 
     @pytest.mark.asyncio
     async def test_protected_units_preserved_count(self):

@@ -63,7 +63,7 @@ async def test_aggressive_removes_old_technical_decisions_code_and_logs():
         output_reserve=limits.max_output_tokens or 200,
         protocol_overhead=480,
         safety_margin=300,
-        input_budget=50,  # força remoção das mensagens antigas desprotegidas
+        input_budget=40,  # força remoção das mensagens antigas desprotegidas
         confidence=LimitConfidence.KNOWN_LOCAL,
         source="local",
         capabilities=frozenset({"text"}),
@@ -118,7 +118,7 @@ async def test_aggressive_preserves_system_developer_current_turn_and_tool_depen
         output_reserve=limits.max_output_tokens or 200,
         protocol_overhead=400,
         safety_margin=300,
-        input_budget=orig_cost - 10,
+        input_budget=orig_cost - 13,  # força remoção da mensagem antiga desprotegida e cabe o restante
         confidence=LimitConfidence.KNOWN_LOCAL,
         source="local",
         capabilities=frozenset({"text", "tools"}),

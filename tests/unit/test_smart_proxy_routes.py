@@ -222,9 +222,10 @@ class TestSmartRouting:
         target_url = mock_post.await_args.args[0]
         assert target_url == "http://127.0.0.1:8085/v1/chat/completions"
 
+    @patch("llama_manager._ensure_platform_listing_registry", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_custom_tools_stay_on_local_backend_when_platform_is_available(
-        self, mock_post, smart_env
+        self, mock_post, mock_ensure_registry, smart_env
     ):
         platform = make_platform_instance()
         smart_env.holder["instances"].append(platform)
@@ -247,9 +248,10 @@ class TestSmartRouting:
         sent_payload = json.loads(mock_post.await_args.kwargs["content"])
         assert sent_payload["model"] == "main.gguf"
 
+    @patch("llama_manager._ensure_platform_listing_registry", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_model_alias_uses_configured_target_inside_smart_proxy(
-        self, mock_post, smart_env
+        self, mock_post, mock_ensure_registry, smart_env
     ):
         platform = make_platform_instance()
         smart_env.holder["instances"].append(platform)

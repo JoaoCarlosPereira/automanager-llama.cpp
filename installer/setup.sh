@@ -65,19 +65,35 @@ else
 fi
 
 if [[ -d "${VENV_DIR}" ]]; then
-  log_warn "Removing existing venv at ${VENV_DIR}"
-  rm -rf "${VENV_DIR}"
+  log_warn "Existing venv found at ${VENV_DIR}."
+  log_warn "To rebuild it, run with VENV_REBUILD=1."
+  if [[ "${VENV_REBUILD:-}" != "1" ]]; then
+    log_info "Skipping venv creation to preserve existing dependencies."
+    PYTHON_BIN="${VENV_DIR}/bin/python"
+  else
+    log_info "VENV_REBUILD=1 — removing existing venv and rebuilding."
+    rm -rf "${VENV_DIR}"
+    python3 -m venv "${VENV_DIR}"
+    # shellcheck source=/dev/null
+    source "${VENV_DIR}/bin/activate"
+    pip install --upgrade pip
+    pip install -r "${PROJECT_DIR}/requirements.txt"
+    PYTHON_BIN="${VENV_DIR}/bin/python"
+    log_info "Python dependencies installed"
+  fi
+else
+  log_info "Creating virtualenv at ${VENV_DIR}..."
+  python3 -m venv "${VENV_DIR}"
+  # shellcheck source=/dev/null
+  source "${VENV_DIR}/bin/activate"
+  pip install --upgrade pip
+  pip install -r "${PROJECT_DIR}/requirements.txt"
+  PYTHON_BIN="${VENV_DIR}/bin/python"
+  log_info "Python dependencies installed"
 fi
 
-python3 -m venv "${VENV_DIR}"
-# shellcheck source=/dev/null
-source "${VENV_DIR}/bin/activate"
-pip install --upgrade pip
-pip install -r "${PROJECT_DIR}/requirements.txt"
-log_info "Python dependencies installed"
-
 log_info "Creating configured directories..."
-(cd "${PROJECT_DIR}" && "${VENV_DIR}/bin/python" - <<'PY'
+(cd "${PROJECT_DIR}" && "${PYTHON_BIN}" - <<'PY'
 from paths import ensure_directories
 
 paths = ensure_directories()
@@ -91,20 +107,27 @@ SERVICE_FILE="/etc/systemd/system/llama-manager.service"
 cat >"${SERVICE_FILE}" <<EOF
 [Unit]
 Description=Automanager Llama.cpp
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=${PROJECT_DIR}
 ExecStart=${VENV_DIR}/bin/python ${PROJECT_DIR}/llama_manager.py
-ExecStop=/bin/sh -c '/usr/bin/pkill -9 -f llama-server 2>/dev/null || true'
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
 Environment=PATH=${VENV_DIR}/bin:/root/.local/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
 Environment=HF_HOME=${PROJECT_DIR}/data/huggingface_cache
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=${PROJECT_DIR}/data ${PROJECT_DIR}/logs
 
 [Install]
 WantedBy=multi-user.target
@@ -133,11 +156,20 @@ finally:
 PY
 )"
 
-sleep 3
-if curl -sf "http://localhost:${MANAGER_PORT}/" >/dev/null 2>&1; then
+# Health check with retry loop (max 30s / 10 attempts)
+HEALTHY=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -sf "http://localhost:${MANAGER_PORT}/" >/dev/null 2>&1 \
+    && systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    HEALTHY=1
+    break
+  fi
+  sleep 3
+done
+if [[ "${HEALTHY}" -eq 1 ]]; then
   log_info "Health check passed."
 else
-  log_warn "Health check failed. Run: journalctl -u llama-manager.service -f"
+  log_warn "Health check failed after retries. Run: journalctl -u llama-manager.service -f"
 fi
 
 (cd "${PROJECT_DIR}" && HOME=/root "${VENV_DIR}/bin/python" - <<'PY'
