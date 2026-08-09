@@ -1119,31 +1119,45 @@ class ProxyRouter:
         primary_port: Optional[int] = None,
         primary_backend_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Menos ocupado por in-flight; empates: menos sessões sticky
-        atribuídas, preferência por backend principal (por id, não porta),
-        depois evita o mesmo sidecar do principal (outra integração na
-        mesma porta tende a sofrer a mesma contenção), depois instâncias de
-        plataforma (poupa GPU local dedicada), depois contas Ollama Cloud
-        sem cooldown, e menor porta. (Task 07)"""
+        """Escolhe sem enfileirar enquanto houver algum backend livre.
+
+        Entre backends com o mesmo estado de ocupação, a ordem é: principal,
+        plataformas e, por último, locais secundários. Assim uma GPU local só
+        antecede uma plataforma quando ela é o backend principal. Benchmark e
+        afinidade apenas desempatarão candidatos da mesma classe.
+        """
         if not candidates:
             return None
         session_counts: Dict[str, int] = {}
         for session in self._sessions.values():
             sid = session.backend_id or f"port:{session.backend_port}"
             session_counts[sid] = session_counts.get(sid, 0) + 1
+
+        def routing_priority(instance: Dict[str, Any]) -> int:
+            backend_id = self._backend_id(instance)
+            is_primary = bool(
+                primary_backend_id
+                and (
+                    backend_id == primary_backend_id
+                    or self._config_backend_id(instance) == primary_backend_id
+                )
+            )
+            if is_primary:
+                return 0
+            if self._backend_type(instance) == "platform":
+                return 1
+            return 2
+
         return min(
             candidates,
             key=lambda i: (
-                0 if (
-                    primary_backend_id
-                    and self._backend_id(i) == primary_backend_id
-                ) else 1,
-                self._benchmark_latency(i) is None,
-                self._benchmark_latency(i) or float("inf"),
+                0 if self.in_flight_for(i) == 0 else 1,
+                routing_priority(i),
                 self.in_flight_for(i),
                 session_counts.get(self._backend_id(i), 0),
+                self._benchmark_latency(i) is None,
+                self._benchmark_latency(i) or float("inf"),
                 1 if (primary_port is not None and i["port"] == primary_port) else 0,
-                0 if self._backend_type(i) == "platform" else 1,
                 # (Task 07) Priorize Ollama Cloud accounts NOT in cooldown
                 (
                     0 if (
@@ -1176,13 +1190,25 @@ class ProxyRouter:
         def load_key(instance: Dict[str, Any]) -> tuple:
             _, initial_capacity = self._backend_flags(config, instance)
             in_flight = self.in_flight_for(instance)
+            backend_id = self._backend_id(instance)
+            is_primary = bool(
+                primary_backend_id
+                and (
+                    backend_id == primary_backend_id
+                    or self._config_backend_id(instance) == primary_backend_id
+                )
+            )
+            routing_priority = (
+                0
+                if is_primary
+                else 1 if self._backend_type(instance) == "platform" else 2
+            )
             return (
                 in_flight / max(1, initial_capacity),
-                0 if self._backend_id(instance) == primary_backend_id else 1,
+                routing_priority,
                 self._benchmark_latency(instance) is None,
                 self._benchmark_latency(instance) or float("inf"),
                 in_flight,
-                0 if self._backend_type(instance) == "platform" else 1,
                 instance["port"],
             )
 

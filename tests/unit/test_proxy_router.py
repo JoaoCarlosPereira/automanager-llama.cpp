@@ -393,6 +393,55 @@ class TestSelection:
         await router.release(primary.backend_port)
         await router.release(overflow.backend_port)
 
+    @pytest.mark.asyncio
+    async def test_platform_precedes_faster_secondary_local(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(backend_id="platform:codex")
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_instance(8086, AUX0_PATH),
+            codex,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        router.set_benchmark_results({
+            f"local:{normalize_model_path(AUX0_PATH)}": 10.0,
+            "platform:codex": 1000.0,
+        })
+
+        primary = await resolve(router, body=body_with())
+        overflow = await resolve(router, body=body_with(tag="platform-first"))
+
+        assert primary.backend_port == 8085
+        assert overflow.backend_id == "platform:codex"
+        await router.release(primary.backend_id)
+        await router.release(overflow.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_free_secondary_local_precedes_occupied_platform(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(backend_id="platform:codex")
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_instance(8086, AUX0_PATH),
+            codex,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+
+        primary = await resolve(router, body=body_with())
+        platform = await resolve(router, body=body_with(tag="platform"))
+        local = await resolve(router, body=body_with(tag="local-while-platform-busy"))
+
+        assert platform.backend_id == "platform:codex"
+        assert local.backend_port == 8086
+        for decision in (primary, platform, local):
+            await router.release(decision.backend_id)
+
     def test_snapshot_is_sorted_by_measured_speed_after_primary(self, router):
         router.set_benchmark_results({
             f"local:{normalize_model_path(MAIN_PATH)}": 900.0,
@@ -649,11 +698,10 @@ class TestSelection:
         await router.release(decision.backend_id)
 
     @pytest.mark.asyncio
-    async def test_platform_primary_overflow_prefers_local_over_shared_sidecar(
+    async def test_platform_primary_overflow_prefers_next_platform(
         self, router, proxy_config, status_holder
     ):
-        """Transbordo do principal plataforma deve preferir GPUs locais, não outra
-        integração no mesmo sidecar (mesma porta)."""
+        """Outra plataforma antecede locais mesmo compartilhando o sidecar."""
         shared_port = 8317
         antigravity = make_platform_instance(
             port=shared_port, backend_id="platform:google-antigravity",
@@ -685,7 +733,7 @@ class TestSelection:
             router, body=body_with(tag="a1", model="antigravity-proagent.gguf")
         )
         assert d_main.backend_id == "platform:google-antigravity"
-        assert overflow.backend_type == "local"
+        assert overflow.backend_id == "platform:codex"
         assert overflow.reason == "subagent_least_busy"
         await router.release(d_main.backend_id)
         await router.release(overflow.backend_id)
