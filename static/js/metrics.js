@@ -6,7 +6,7 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.2.3';
-import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.23';
+import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.24';
 import { updateProxyPanel } from './proxy.js?v=4.2.22';
 
 export async function updateStatus() {
@@ -82,8 +82,10 @@ export async function updateStatus() {
 
                 if (document.activeElement?.closest(`#${tab.id}`) === null) {
                     if (inst.config && !tabEl?.dataset.proposal) {
-                        // Merge: preserva ajustes locais (mmproj/pins) ausentes em inst.config.
-                        window.modelConfigs[path] = { ...(window.modelConfigs[path] || {}), ...inst.config };
+                        // A instância descreve o processo que já está rodando; ajustes
+                        // persistidos na UI (como "Sem visão") valem para o próximo start
+                        // e não podem ser revertidos pelo polling desse estado antigo.
+                        window.modelConfigs[path] = { ...inst.config, ...(window.modelConfigs[path] || {}) };
                     }
                 }
             } else if (stateChanged && inst && inst.status === 'stopped') {
@@ -125,7 +127,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.2.23').then(m => {
+                        import('./models.js?v=4.2.24').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,

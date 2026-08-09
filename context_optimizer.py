@@ -518,23 +518,46 @@ def derive_required_capabilities(payload: Dict[str, Any]) -> RequiredCapabilitie
     has_tools = bool(payload.get("tools"))
     has_structured = bool(payload.get("response_format"))
 
-    messages = payload.get("messages")
     has_vision = False
     has_files = False
 
-    if isinstance(messages, list):
+    def inspect_messages(messages: Any) -> None:
+        nonlocal has_vision, has_files
+        if not isinstance(messages, list):
+            return
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            # Responses API items can themselves be typed content parts.
             content = msg.get("content")
+            if content is None and msg.get("type") in {
+                "image", "image_url", "input_image", "file", "file_url", "input_file"
+            }:
+                content = [msg]
             if isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict):
                         ptype = str(part.get("type") or "").lower()
-                        if ptype in ("image_url", "image") or "image_url" in part:
+                        source = part.get("source")
+                        source_media_type = (
+                            str(source.get("media_type") or "").lower()
+                            if isinstance(source, dict)
+                            else ""
+                        )
+                        if (
+                            ptype in ("image_url", "image", "input_image")
+                            or "image_url" in part
+                            or source_media_type.startswith("image/")
+                        ):
                             has_vision = True
-                        if ptype in ("file", "file_url") or "file_url" in part:
+                        if (
+                            ptype in ("file", "file_url", "input_file")
+                            or "file_url" in part
+                        ):
                             has_files = True
+
+    inspect_messages(payload.get("messages"))
+    inspect_messages(payload.get("input"))
 
     return RequiredCapabilities(
         text=True,

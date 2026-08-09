@@ -78,6 +78,28 @@ def test_config_update_model_settings(config_manager):
     assert "last_started" in saved
 
 
+def test_config_preserves_explicit_no_vision_across_model_start(config_manager):
+    model_path = "/models/vision.gguf"
+    config_manager.update_model_settings(
+        model_path,
+        {"mmproj_path": "__no_vision__", "mmproj_disabled": True},
+    )
+
+    # /start resolves the sentinel to a null path but must keep the explicit
+    # opt-out so a later catalog refresh does not auto-select the projector.
+    config_manager.update_model_settings(
+        model_path,
+        {"mmproj_path": None, "mmproj_disabled": True, "context_size": 32768},
+    )
+
+    saved = config_manager.get_model_settings(model_path)
+    assert saved["mmproj_path"] is None
+    assert saved["mmproj_disabled"] is True
+
+    config_manager.update_model_settings(model_path, {"parallel_slots": 2})
+    assert config_manager.get_model_settings(model_path)["mmproj_disabled"] is True
+
+
 def test_config_update_model_settings_engine_fields(config_manager):
     model_path = "/models/engine.gguf"
     settings = {

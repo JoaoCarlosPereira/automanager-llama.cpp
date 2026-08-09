@@ -350,6 +350,12 @@ def test_html_does_not_contain_global_mmproj_select(html):
     assert 'id="mmproj-path"' not in html
 
 
+def test_explicit_no_vision_flag_prevents_mmproj_autoselection():
+    model = {"mmproj_candidates": ["/models/model-mmproj.gguf"]}
+    config = {"mmproj_path": None, "mmproj_disabled": True}
+    assert llama_manager._resolved_mmproj_path(model, config) is None
+
+
 # ── Version update modal ──────────────────────────────────────────────────
 
 

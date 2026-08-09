@@ -38,6 +38,48 @@ def test_derive_required_capabilities():
     assert not req2.is_subset_of(frozenset({"text", "tools"}))
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/png;base64,AA=="}
+                    ],
+                }
+            ]
+        },
+        {
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "https://example.com/a.png"}
+                    ],
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg"},
+                        }
+                    ],
+                }
+            ]
+        },
+    ],
+)
+def test_derive_required_capabilities_recognizes_image_variants(payload):
+    assert derive_required_capabilities(payload).vision is True
+
+
 def test_resolve_model_limits_local_single_slot():
     backend_info = {
         "backend_type": "local",

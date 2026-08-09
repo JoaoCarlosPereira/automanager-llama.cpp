@@ -144,7 +144,58 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+def image_body(tag=None, model="main.gguf"):
+    body = chat_body(tag=tag, model=model)
+    body["messages"][-1]["content"] = [
+        {"type": "text", "text": "Descreva a imagem"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AA=="},
+        },
+    ]
+    return body
+
+
 class TestProxyRetryAndFailover:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_image_request_skips_local_backends_without_active_vision(
+        self, mock_post, retry_env
+    ):
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
+        retry_env.holder["instances"][2]["config"].update({
+            "mmproj_path": "/models/mmproj.gguf",
+            "mmproj_disabled": False,
+        })
+        mock_post.return_value = _mock_response({"id": "vision-ok"})
+
+        response = client.post(
+            "/v1/chat/completions", json=image_body(tag="vision-route")
+        )
+
+        assert response.status_code == 200
+        assert mock_post.call_count == 1
+        assert ":8087/" in mock_post.call_args.args[0]
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_image_request_fails_before_upstream_when_no_vision_backend_exists(
+        self, mock_post, retry_env
+    ):
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
+
+        response = client.post(
+            "/v1/chat/completions", json=image_body(tag="vision-unavailable")
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "vision_backend_unavailable"
+        mock_post.assert_not_awaited()
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
     @pytest.mark.parametrize("error_status", [400, 401, 403, 404, 500])
     @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)

@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.23"  # Gerenciamento individual de credenciais Ollama Cloud
+_DASHBOARD_JS_V = "4.2.24"  # Persiste "Sem visão" sem o polling reativar mmproj
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -2169,6 +2169,7 @@ async def _smart_proxy_forward(
     co_enabled = bool(
         proxy_settings.get("context_optimizer", {}).get("enabled", True)
     )
+    required_capabilities = derive_required_capabilities(data)
 
     optimized_data = data
     decision = None
@@ -2352,6 +2353,57 @@ async def _smart_proxy_forward(
                 ),
                 {"backend_type": decision.backend_type},
             )
+
+        # Capability validation is independent from context optimization. An
+        # image request must never reach a local process without an active
+        # mmproj (or a platform model whose catalog confirms Vision support).
+        if required_capabilities.vision:
+            capability_metadata = None
+            if decision.backend_type == "platform":
+                provider = str(
+                    decision_instance.get("provider") or decision.provider or ""
+                ).strip().lower()
+                capability_metadata = _platform_model_metadata(
+                    provider,
+                    str(decision.internal_model or data.get("model") or ""),
+                )
+            target_capabilities = derive_target_capabilities(
+                decision_instance, capability_metadata
+            )
+            if "vision" not in target_capabilities:
+                rejected_id = decision.backend_id or f"port:{decision.backend_port}"
+                failed_backend_ids.add(rejected_id)
+                logger.warning(
+                    "[proxy] rejecting image route backend=%s model=%s: "
+                    "Vision is not active",
+                    decision.backend_port,
+                    decision.internal_model,
+                )
+                await proxy_router.release(
+                    decision.backend_id, affinity_key=decision.affinity_key
+                )
+                try:
+                    replacement = await proxy_router.reassign(
+                        decision.affinity_key,
+                        exclude_backend_ids=failed_backend_ids,
+                        reason="reassign_vision_required",
+                    )
+                except ProxyError:
+                    replacement = None
+                if replacement is None:
+                    return JSONResponse(
+                        ProxyError(
+                            422,
+                            "A requisicao contem imagem, mas nenhum modelo com "
+                            "Vision ativo esta disponivel",
+                            code="vision_backend_unavailable",
+                        ).payload(),
+                        status_code=422,
+                    )
+                await proxy_router.acquire(replacement.backend_id)
+                decision = replacement
+                continue
+
         forward_model = await _resolve_forward_model(
             decision.internal_model,
             decision_instance,
@@ -3246,8 +3298,8 @@ def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
     if not candidates:
         return None
     saved = model_cfg.get("mmproj_path")
-    # Preserve the explicit "Sem visão" sentinel
-    if saved == "__no_vision__":
+    # Preserve both the current explicit flag and the legacy UI sentinel.
+    if model_cfg.get("mmproj_disabled") or saved == "__no_vision__":
         return None
     if saved and saved in candidates:
         return saved

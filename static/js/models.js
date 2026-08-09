@@ -1443,8 +1443,8 @@ export function resolveMmprojPath(model) {
     const modelJs = model.path.replace(/\\/g, '/');
     const cfg = window.modelConfigs[modelJs] || model.last_config || {};
     const saved = cfg.mmproj_path;
-    // Preserve the "Sem visão" sentinel
-    if (saved === '__no_vision__') return null;
+    // Preserve both the persisted flag and the legacy sentinel.
+    if (cfg.mmproj_disabled || saved === '__no_vision__') return null;
     if (saved && candidates.includes(saved)) return saved;
     return candidates[0];
 }
@@ -1482,13 +1482,13 @@ export function getSelectedMmprojForModel(modelPath) {
         }
     }
     const cfg = window.modelConfigs[normalized];
-    if (cfg?.mmproj_path === '__no_vision__') return null;
+    if (cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__') return null;
     return cfg?.mmproj_path || null;
 }
 
 function _isMmprojDisabledForModel(modelPath) {
     const cfg = window.modelConfigs[modelPath];
-    return cfg?.mmproj_path === '__no_vision__';
+    return Boolean(cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__');
 }
 
 function onVisionModalKeydown(event) {
@@ -1801,9 +1801,10 @@ async function ensureMmprojSelectionsForModels(models) {
         const candidates = model.mmproj_candidates || [];
         if (!candidates.length) continue;
 
-        const saved = (window.modelConfigs[path] || model.last_config || {}).mmproj_path;
+        const cfg = window.modelConfigs[path] || model.last_config || {};
+        const saved = cfg.mmproj_path;
         // If user explicitly selected "Sem visão", don't re-apply a default
-        if (saved === '__no_vision__') continue;
+        if (cfg.mmproj_disabled || saved === '__no_vision__') continue;
 
         const resolved = resolveMmprojPath(model);
         if (!resolved) continue;
@@ -1906,7 +1907,14 @@ export async function syncRunningModelTabsOnLoad() {
             );
             const id = model?.id || fallbackModelId(path);
             const name = model?.name || inst.model || path.split('/').pop();
-            if (inst.config) window.modelConfigs[path] = inst.config;
+            if (inst.config) {
+                // Preserve escolhas persistidas que ainda não fazem parte do
+                // processo atual (por exemplo, desativar Vision no próximo start).
+                window.modelConfigs[path] = {
+                    ...inst.config,
+                    ...(window.modelConfigs[path] || {}),
+                };
+            }
             const existing = state.activeTabs.find(t => t.path === path);
             const tabId = existing?.id || createModelTab(path, name, id, false);
             if (!firstTabId) firstTabId = tabId;
