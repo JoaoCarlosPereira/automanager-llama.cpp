@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.24"  # Persiste "Sem visão" sem o polling reativar mmproj
+_DASHBOARD_JS_V = "4.2.25"  # Refresh nunca autopersiste mmproj sobre "Sem visão"
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1586,13 +1586,22 @@ async def set_model_alias(
 async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
+    # Versões antigas do dashboard autopersistiam o primeiro mmproj durante
+    # todo refresh da lista. Ignore essas gravações implícitas para que uma
+    # página ainda aberta não reverta a escolha explícita "Sem visão".
+    if not req.user_initiated:
+        return {"status": "ignored", "reason": "explicit_selection_required"}
     settings = {"mmproj_path": req.mmproj_path}
     if req.mmproj_path == "__no_vision__":
         settings["mmproj_disabled"] = True
     elif req.mmproj_path is None or (req.mmproj_path and req.mmproj_path != "__no_vision__"):
         settings["mmproj_disabled"] = False
     config_manager.update_model_settings(req.model_path, settings)
-    return {"status": "ok", "mmproj_path": req.mmproj_path}
+    return {
+        "status": "ok",
+        "mmproj_path": req.mmproj_path,
+        "mmproj_disabled": settings["mmproj_disabled"],
+    }
 
 
 @app.post("/models/thinking")

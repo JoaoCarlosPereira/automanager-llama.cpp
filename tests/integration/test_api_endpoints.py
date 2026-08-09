@@ -111,6 +111,48 @@ def test_login_success_sets_session_cookie(client):
     assert "SameSite=lax" in set_cookie
 
 
+def test_mmproj_route_ignores_implicit_legacy_refresh(
+    monkeypatch, authenticated_client
+):
+    config_manager = MagicMock()
+    monkeypatch.setattr(llama_manager, "config_manager", config_manager)
+
+    response = authenticated_client.post(
+        "/models/mmproj",
+        json={
+            "model_path": "/models/vision.gguf",
+            "mmproj_path": "/models/mmproj.gguf",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+    config_manager.update_model_settings.assert_not_called()
+
+
+def test_mmproj_route_persists_explicit_no_vision(
+    monkeypatch, authenticated_client
+):
+    config_manager = MagicMock()
+    monkeypatch.setattr(llama_manager, "config_manager", config_manager)
+
+    response = authenticated_client.post(
+        "/models/mmproj",
+        json={
+            "model_path": "/models/vision.gguf",
+            "mmproj_path": "__no_vision__",
+            "user_initiated": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["mmproj_disabled"] is True
+    config_manager.update_model_settings.assert_called_once_with(
+        "/models/vision.gguf",
+        {"mmproj_path": "__no_vision__", "mmproj_disabled": True},
+    )
+
+
 def test_login_failure_returns_401_without_session_cookie(client):
     response = client.post(
         "/api/auth/login",

@@ -130,3 +130,11 @@ def test_explicit_no_vision_flag_blocks_mmproj_autoselection(models_js: str):
 def test_running_instance_does_not_overwrite_pending_vision_preference(models_js: str):
     assert "...inst.config," in models_js
     assert "...(window.modelConfigs[path] || {})," in models_js
+
+
+def test_model_list_refresh_never_persists_an_automatic_mmproj(models_js: str):
+    assert "ensureMmprojSelectionsForModels" not in models_js
+
+
+def test_mmproj_update_is_marked_as_an_explicit_user_action(models_js: str):
+    assert "user_initiated: true" in models_js

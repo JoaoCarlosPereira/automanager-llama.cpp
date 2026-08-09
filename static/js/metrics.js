@@ -6,7 +6,7 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.2.3';
-import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.24';
+import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.25';
 import { updateProxyPanel } from './proxy.js?v=4.2.22';
 
 export async function updateStatus() {
@@ -127,7 +127,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.2.24').then(m => {
+                        import('./models.js?v=4.2.25').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,

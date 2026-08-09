@@ -109,6 +109,7 @@ class SetMmprojRequest(BaseModel):
 
     model_path: str
     mmproj_path: Optional[str] = None
+    user_initiated: bool = False
 
 
 class SetThinkingRequest(BaseModel):

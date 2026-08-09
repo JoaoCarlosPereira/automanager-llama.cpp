@@ -1768,7 +1768,6 @@ function buildModelListHtml(models, cfg, platforms = []) {
 
 async function renderModelList(container, models, cfg, platforms = []) {
     container.innerHTML = buildModelListHtml(models, cfg, platforms);
-    await ensureMmprojSelectionsForModels(models);
 }
 
 export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false } = {}) {
@@ -1782,7 +1781,11 @@ export async function persistMmprojSelection(modelPath, mmprojPath, { silent = f
         await apiFetch('/models/mmproj', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ model_path: normalized, mmproj_path: mmproj }),
+            body: JSON.stringify({
+                model_path: normalized,
+                mmproj_path: mmproj,
+                user_initiated: true,
+            }),
         });
     } catch (e) {
         if (!silent) showToast('Erro ao salvar projetor de visão.', 'error');
@@ -1793,26 +1796,6 @@ export async function onMmprojChange(modelPath, selectEl) {
     const val = selectEl?.value;
     // Keep __no_vision__ as a sentinel so it persists in config
     await persistMmprojSelection(modelPath, val || null);
-}
-
-async function ensureMmprojSelectionsForModels(models) {
-    for (const model of models || []) {
-        const path = model.path.replace(/\\/g, '/');
-        const candidates = model.mmproj_candidates || [];
-        if (!candidates.length) continue;
-
-        const cfg = window.modelConfigs[path] || model.last_config || {};
-        const saved = cfg.mmproj_path;
-        // If user explicitly selected "Sem visão", don't re-apply a default
-        if (cfg.mmproj_disabled || saved === '__no_vision__') continue;
-
-        const resolved = resolveMmprojPath(model);
-        if (!resolved) continue;
-
-        if (saved && candidates.includes(saved)) continue;
-
-        await persistMmprojSelection(path, resolved, { silent: true });
-    }
 }
 
 export function formatRepoStorageLabel(storage) {

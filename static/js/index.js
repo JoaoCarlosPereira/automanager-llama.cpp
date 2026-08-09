@@ -18,7 +18,7 @@ import {
     onMmprojChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart,
-} from './models.js?v=4.2.24';
+} from './models.js?v=4.2.25';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
