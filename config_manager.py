@@ -76,6 +76,7 @@ DEFAULT_PLATFORM_BACKEND_IDS = (
 
 DEFAULT_PLATFORM_CONFIG = {
     "proxy_eligible": False,
+    "vision_enabled": True,
     "max_parallel_requests": DEFAULT_MAX_PARALLEL_REQUESTS,
     "auto_start": False,
     "default_model": None,
@@ -321,6 +322,7 @@ class ConfigManager:
                 for k, v in merged.items()
                 if k not in {
                     "proxy_eligible",
+                    "vision_enabled",
                     "max_parallel_requests",
                     "auto_start",
                     "default_model",
@@ -328,6 +330,9 @@ class ConfigManager:
             },
             "proxy_eligible": bool(
                 merged.get("proxy_eligible", DEFAULT_PLATFORM_CONFIG["proxy_eligible"])
+            ),
+            "vision_enabled": bool(
+                merged.get("vision_enabled", DEFAULT_PLATFORM_CONFIG["vision_enabled"])
             ),
             "max_parallel_requests": max_parallel,
             "auto_start": bool(

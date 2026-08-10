@@ -54,10 +54,18 @@ def _make_manager(accounts: List[OllamaCloudAccount]) -> MagicMock:
         account.cooldown_until = time.time() + cooldown_seconds
     mgr.apply_cooldown.side_effect = _apply_cooldown
 
+    def _apply_rate_limit(account, retry_after):
+        account.rate_limited_until = time.time() + (retry_after or 3600)
+    mgr.apply_rate_limit.side_effect = _apply_rate_limit
+
     def _clear_cooldown(account):
         account.status = "available"
         account.cooldown_until = None
     mgr.clear_cooldown.side_effect = _clear_cooldown
+
+    def _clear_rate_limit(account):
+        account.rate_limited_until = None
+    mgr.clear_rate_limit.side_effect = _clear_rate_limit
     return mgr
 
 
@@ -204,14 +212,20 @@ class TestHandleHttpError:
         result = asyncio.run(router.handle_http_error(429, acc))
         assert result is False
 
-    def test_applies_cooldown_on_429(self):
+    def test_applies_rate_limit_on_429(self):
+        """429 applies rate_limit (quota exhausted), not regular cooldown."""
         acc = _make_account("a1")
         mgr = _make_manager([acc])
         router = _make_router(mgr)
         result = asyncio.run(router.handle_http_error(429, acc))
         assert result is True
-        assert acc.status == "cooldown"
-        assert acc.cooldown_until is not None
+        # 429 should set rate_limited_until (1 hour default)
+        assert acc.rate_limited_until is not None
+        rl_secs = acc.rate_limited_until - time.time()
+        assert 3599 < rl_secs <= 3601  # ~1 hour
+        # Should NOT set cooldown
+        assert acc.status == "available"
+        assert acc.cooldown_until is None
 
     def test_4xx_uses_default_cooldown(self):
         acc = _make_account("a1")
@@ -242,8 +256,8 @@ class TestHandleHttpError:
         router = _make_router(mgr)
         result = asyncio.run(router.handle_http_error(429, acc, retry_after=120.0))
         assert result is True
-        cooldown_secs = acc.cooldown_until - time.time()
-        assert 119 < cooldown_secs <= 121
+        rl_secs = acc.rate_limited_until - time.time()
+        assert 119 < rl_secs <= 121
 
     def test_marks_backend_unavailable(self):
         acc = _make_account("a1")
@@ -329,15 +343,15 @@ class TestFailover:
         assert candidates[0]["account_id"] == "a2"
 
     def test_failover_with_retry_after(self):
-        """When account A hits rate limit with retry_after, cooldown respects it."""
+        """When account A hits rate limit with retry_after, rate_limited_until respects it."""
         acc_a = _make_account("a1")
         mgr = _make_manager([acc_a])
         router = _make_router(mgr)
 
         asyncio.run(router.handle_http_error(429, acc_a, retry_after=300.0))
-        assert acc_a.status == "cooldown"
-        cooldown_secs = acc_a.cooldown_until - time.time()
-        assert 299 < cooldown_secs <= 301
+        assert acc_a.status == "available"
+        rl_secs = acc_a.rate_limited_until - time.time()
+        assert 299 < rl_secs <= 301
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +387,8 @@ class TestCooldownExpiryReturn:
 # ---------------------------------------------------------------------------
 
 class TestCooldown5xxVs4xx:
-    def test_5xx_has_shorter_cooldown_than_4xx(self):
-        """5xx errors should have shorter cooldown than 4xx errors."""
+    def test_5xx_has_shorter_cooldown_than_4xx_rate_limit(self):
+        """5xx errors should have shorter cooldown than 429 rate limit."""
         acc_5xx = _make_account("a5")
         acc_4xx = _make_account("a4")
         mgr = _make_manager([acc_5xx, acc_4xx])
@@ -384,11 +398,11 @@ class TestCooldown5xxVs4xx:
         asyncio.run(router.handle_http_error(429, acc_4xx))
 
         cooldown_5xx = acc_5xx.cooldown_until - time.time()
-        cooldown_4xx = acc_4xx.cooldown_until - time.time()
+        rl_4xx = acc_4xx.rate_limited_until - time.time()
 
-        assert cooldown_5xx < cooldown_4xx
+        assert cooldown_5xx < rl_4xx
         assert cooldown_5xx <= 31  # ~30s
-        assert cooldown_4xx >= 59  # ~60s
+        assert rl_4xx >= 3599  # ~1 hour rate limit
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +432,7 @@ class TestMarkBackendUnavailable:
 
 class TestFullFailoverFlow:
     def test_full_failover_and_return_flow(self):
-        """Complete flow: select A -> A hits 429 -> failover to B -> cooldown expires -> back to A."""
+        """Complete flow: select A -> A hits 429 -> failover to B -> rate limit expires -> back to A."""
         acc_a = _make_account("a1", "Account A")
         acc_b = _make_account("a2", "Account B")
         mgr = _make_manager([acc_a, acc_b])
@@ -428,15 +442,14 @@ class TestFullFailoverFlow:
         candidates = router._ollama_cloud_candidates()
         assert len(candidates) == 2
 
-        # Phase 2: Account A hits 429
+        # Phase 2: Account A hits 429 (rate limit applied)
         asyncio.run(router.handle_http_error(429, acc_a))
         candidates = router._ollama_cloud_candidates()
         assert len(candidates) == 1
         assert candidates[0]["account_id"] == "a2"
 
-        # Phase 3: Cooldown expires (set to past)
-        acc_a.cooldown_until = time.time() - 1
-        acc_a.status = "cooldown"
+        # Phase 3: Rate limit expires (set to past)
+        acc_a.rate_limited_until = time.time() - 1
         candidates = router._ollama_cloud_candidates()
         assert len(candidates) == 2
 

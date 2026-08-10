@@ -15,7 +15,7 @@ from paths import INSTALL_ROOT
 PopenFactory = Callable[..., subprocess.Popen]
 
 _PROVIDER_PREFIXES = {
-    "codex": ("codex-",),
+    "codex": ("codex-", "openai-"),
     "claude": ("claude-",),
     "antigravity": ("antigravity-", "agy-"),
 }

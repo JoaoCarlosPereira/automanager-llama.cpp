@@ -418,6 +418,7 @@ class OllamaCloudAccount:
     label: str = ""
     status: str = "available"  # available | cooldown | error
     cooldown_until: Optional[float] = None
+    rate_limited_until: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +665,12 @@ class OllamaCloudAccountManager:
                 # Cooldown expired — treat as available but clear it
                 acc.cooldown_until = None
                 acc.status = "available"
+            # Check rate limit expiry (quota exhausted)
+            if acc.rate_limited_until is not None:
+                if time.time() < acc.rate_limited_until:
+                    continue  # Still rate limited
+                # Rate limit expired — clear it
+                acc.rate_limited_until = None
             if acc.status not in ("available",):
                 continue
             return acc
@@ -686,6 +693,27 @@ class OllamaCloudAccountManager:
             account.id,
             retry_after_seconds,
         )
+
+    def apply_rate_limit(self, account: OllamaCloudAccount, retry_after: Optional[float] = None) -> None:
+        """Put *account* into rate-limit (quota exhausted) state.
+
+        *retry_after* is seconds (from ``Retry-After`` header).  Falls back to
+        3600 s (1 hour) when not provided.
+        """
+        retry_after_seconds = retry_after
+        if retry_after_seconds is None:
+            retry_after_seconds = 3600  # 1 hour default for quota exhaustion
+
+        account.rate_limited_until = time.time() + retry_after_seconds
+        logger.info(
+            "rate_limit_applied id=%s retry_after=%.1f",
+            account.id,
+            retry_after_seconds,
+        )
+
+    def clear_rate_limit(self, account: OllamaCloudAccount) -> None:
+        """Remove rate limit from *account*."""
+        account.rate_limited_until = None
 
     def clear_cooldown(self, account: OllamaCloudAccount) -> None:
         """Remove cooldown from *account* and mark it available."""

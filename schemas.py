@@ -173,6 +173,7 @@ class SetModelProxyRequest(BaseModel):
     model_path: Optional[str] = None
     backend_id: Optional[str] = None
     proxy_eligible: Optional[bool] = None
+    vision_enabled: Optional[bool] = None
     max_parallel_requests: Optional[int] = Field(default=None, ge=1)
     auto_start: Optional[bool] = None
     default_model: Optional[str] = None

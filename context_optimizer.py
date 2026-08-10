@@ -653,13 +653,21 @@ def derive_target_capabilities(
     caps = {"text"}
 
     if backend_type == "platform":
+        config = backend_info.get("config") or {}
+        vision_enabled = config.get("vision_enabled", True) is not False
+        if vision_enabled:
+            caps.add("vision")
         meta_caps = model_metadata.get("capabilities")
         if isinstance(meta_caps, (list, set, tuple, frozenset)):
             for c in meta_caps:
                 cs = str(c).strip().lower()
                 if cs in ("vision", "tools", "structured_output", "files"):
+                    if cs == "vision" and not vision_enabled:
+                        continue
                     caps.add(cs)
-        if model_metadata.get("supports_vision") or model_metadata.get("vision"):
+        if vision_enabled and (
+            model_metadata.get("supports_vision") or model_metadata.get("vision")
+        ):
             caps.add("vision")
         if model_metadata.get("supports_tools") or model_metadata.get("tools"):
             caps.add("tools")

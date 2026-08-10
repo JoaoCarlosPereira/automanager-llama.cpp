@@ -127,6 +127,12 @@ def test_explicit_no_vision_flag_blocks_mmproj_autoselection(models_js: str):
     assert "cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__'" in models_js
 
 
+def test_platform_cards_expose_persisted_vision_checkbox(models_js: str):
+    assert 'class="platform-vision-checkbox' in models_js
+    assert "vision_enabled: checkbox.checked" in models_js
+    assert "export async function setPlatformVisionEnabled" in models_js
+
+
 def test_running_instance_does_not_overwrite_pending_vision_preference(models_js: str):
     assert "...inst.config," in models_js
     assert "...(window.modelConfigs[path] || {})," in models_js

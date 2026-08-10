@@ -146,6 +146,18 @@ def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     return body
 
 
+def image_body(model="main.gguf"):
+    body = chat_body(model=model)
+    body["messages"][-1]["content"] = [
+        {"type": "text", "text": "Descreva a imagem"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AA=="},
+        },
+    ]
+    return body
+
+
 def custom_tool_body(model="main.gguf", stream=False):
     body = chat_body(model=model, stream=stream)
     body["tools"] = [{
@@ -616,11 +628,16 @@ class TestAdminEndpoints:
     def test_models_proxy_accepts_platform_backend_id(self, smart_env):
         response = client.post(
             "/models/proxy",
-            json={"backend_id": "platform:codex", "proxy_eligible": True},
+            json={
+                "backend_id": "platform:codex",
+                "proxy_eligible": True,
+                "vision_enabled": False,
+            },
         )
         assert response.status_code == 200
         config = smart_env.cfg.get_config()
         assert config["platform_configs"]["platform:codex"]["proxy_eligible"] is True
+        assert config["platform_configs"]["platform:codex"]["vision_enabled"] is False
         assert "platform:codex" not in config.get("model_configs", {})
 
     def test_backends_snapshot_shape(self, smart_env):
@@ -1081,6 +1098,57 @@ class TestHybridV1Availability:
         assert "9100" in mock_post.call_args.args[0]
         sent = json.loads(mock_post.call_args.kwargs["content"])
         assert sent["model"] == "codex-pro"
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_platform_vision_is_enabled_by_default(
+        self, mock_post, mock_get, smart_env
+    ):
+        llama_manager.clear_platform_listing_registry()
+        smart_env.holder["instances"] = [make_platform_instance()]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        mock_get.return_value = _models_response(["codex-pro"])
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-vision", "model": "codex-pro"}
+        )
+
+        response = client.post(
+            "/v1/chat/completions",
+            json=image_body(platform_model_listing_id("codex-pro", "codex")),
+        )
+
+        assert response.status_code == 200
+        mock_post.assert_awaited_once()
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_platform_vision_checkbox_can_block_images(
+        self, mock_post, mock_get, smart_env
+    ):
+        llama_manager.clear_platform_listing_registry()
+        smart_env.holder["instances"] = [make_platform_instance()]
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "vision_enabled": False},
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {"enabled": True, "primary_backend_id": "platform:codex"}
+        )
+        mock_get.return_value = _models_response(["codex-pro"])
+
+        response = client.post(
+            "/v1/chat/completions",
+            json=image_body(platform_model_listing_id("codex-pro", "codex")),
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "vision_backend_unavailable"
+        mock_post.assert_not_awaited()
 
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)

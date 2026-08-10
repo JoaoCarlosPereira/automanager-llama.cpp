@@ -172,6 +172,26 @@ def test_derive_target_capabilities_platform():
     assert caps == frozenset({"text", "vision", "tools"})
 
 
+def test_derive_target_capabilities_platform_assumes_vision_without_metadata():
+    b_platform = {"backend_type": "platform"}
+
+    caps = derive_target_capabilities(b_platform)
+
+    assert caps == frozenset({"text", "vision"})
+
+
+def test_derive_target_capabilities_platform_can_disable_vision():
+    b_platform = {
+        "backend_type": "platform",
+        "config": {"vision_enabled": False},
+    }
+    metadata = {"capabilities": ["vision", "tools"], "supports_vision": True}
+
+    caps = derive_target_capabilities(b_platform, metadata)
+
+    assert caps == frozenset({"text", "tools"})
+
+
 def test_calculate_target_budget_order_of_reserves():
     limits = ModelLimits(context_tokens=16384, max_output_tokens=2048, source="local", confidence=LimitConfidence.KNOWN_LOCAL)
     caps = frozenset({"text"})

@@ -17,8 +17,8 @@ import {
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     onMmprojChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
-    setPlatformAutoStart,
-} from './models.js?v=4.2.25';
+    setPlatformAutoStart, setPlatformVisionEnabled,
+} from './models.js?v=4.2.26';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
@@ -55,6 +55,7 @@ win.configureLocalModelAlias = configureLocalModelAlias;
 win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
 win.setPlatformAutoStart = setPlatformAutoStart;
+win.setPlatformVisionEnabled = setPlatformVisionEnabled;
 win.selectModel = selectModel;
 win.selectModelFromEvent = selectModelFromEvent;
 win.selectPlatform = selectPlatform;

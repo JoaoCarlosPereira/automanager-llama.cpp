@@ -509,6 +509,9 @@ function bindPlatformTabListeners(tabId, backendId) {
     tab.querySelector('.platform-proxy-eligible')?.addEventListener('change', (e) => {
         setProxyEligible(e.target, null, backendId);
     });
+    tab.querySelector('.platform-vision-enabled')?.addEventListener('change', (e) => {
+        setPlatformVisionEnabled(e.target, backendId);
+    });
     tab.querySelector('.platform-proxy-parallel')?.addEventListener('change', (e) => {
         setProxyMaxParallel(e.target, null, backendId);
     });
@@ -828,6 +831,7 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
 
     const primaryCb = tab.querySelector('.platform-proxy-primary');
     const eligibleCb = tab.querySelector('.platform-proxy-eligible');
+    const visionCb = tab.querySelector('.platform-vision-enabled');
     const parallelInput = tab.querySelector('.platform-proxy-parallel');
     const autoStartCb = tab.querySelector('.platform-autostart');
     if (primaryCb && document.activeElement !== primaryCb) {
@@ -835,6 +839,9 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
     }
     if (eligibleCb && document.activeElement !== eligibleCb) {
         eligibleCb.checked = pCfg.proxy_eligible === true;
+    }
+    if (visionCb && document.activeElement !== visionCb) {
+        visionCb.checked = pCfg.vision_enabled !== false;
     }
     if (parallelInput && document.activeElement !== parallelInput) {
         parallelInput.value = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
@@ -1572,6 +1579,10 @@ function patchPlatformListItems(platforms, cfg) {
         if (eligibleCb && document.activeElement !== eligibleCb) {
             eligibleCb.checked = pCfg.proxy_eligible === true;
         }
+        const visionCb = el.querySelector('.platform-vision-checkbox');
+        if (visionCb && document.activeElement !== visionCb) {
+            visionCb.checked = pCfg.vision_enabled !== false;
+        }
         const autoStartCb = el.querySelector('.platform-autostart-checkbox');
         if (autoStartCb && document.activeElement !== autoStartCb) {
             autoStartCb.checked = pCfg.auto_start === true;
@@ -1647,6 +1658,7 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
     const platformAutoStart = pCfg.auto_start === true;
     const isProxyPrimary = (cfg.smart_proxy || {}).primary_backend_id === backendId;
     const isProxyEligible = pCfg.proxy_eligible === true;
+    const isVisionEnabled = pCfg.vision_enabled !== false;
     const proxyMaxParallel = pCfg.max_parallel_requests || platform.max_parallel_requests || 1;
     const runningClass = isRunning ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
     const authSummary = platformAuthSummary(platform);
@@ -1688,6 +1700,10 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                     <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Usar como backend no proxy inteligente">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
                         <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, null, '${safeBackendId}')">
+                    </label>
+                    <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Permitir requisições com imagens nesta plataforma">
+                        <span class="text-ui-label font-black text-slate-600 uppercase">Vision</span>
+                        <input type="checkbox" class="platform-vision-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-cyan-600" ${isVisionEnabled ? 'checked' : ''} onclick="setPlatformVisionEnabled(this, '${safeBackendId}')">
                     </label>
                     <label class="flex items-center gap-1 shrink-0 ml-auto" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
@@ -2062,6 +2078,31 @@ export async function setPlatformAutoStart(checkbox, backendId) {
     } catch (e) {
         checkbox.checked = !checkbox.checked;
         showToast(e.message || "Erro ao salvar Auto-Start.", 'error');
+    }
+}
+
+export async function setPlatformVisionEnabled(checkbox, backendId) {
+    try {
+        const res = await apiFetch('/models/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                backend_id: backendId,
+                vision_enabled: checkbox.checked,
+            }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar Vision');
+        }
+        window.platformConfigs = window.platformConfigs || {};
+        window.platformConfigs[backendId] = {
+            ...(window.platformConfigs[backendId] || {}),
+            vision_enabled: checkbox.checked,
+        };
+    } catch (e) {
+        checkbox.checked = !checkbox.checked;
+        showToast(e.message || 'Erro ao salvar Vision.', 'error');
     }
 }
 

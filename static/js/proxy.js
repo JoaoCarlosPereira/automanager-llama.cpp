@@ -164,6 +164,7 @@ const STATE_STYLES = {
     disabled: 'text-rose-400 border-rose-500/40 bg-rose-500/10',
     not_eligible: 'text-slate-500 border-slate-700/50 bg-slate-800/40',
     offline: 'text-slate-500 border-slate-700/50 bg-slate-800/40',
+    rate_limited: 'text-red-400 border-red-500/40 bg-red-500/10',
 };
 
 // Rótulos exibidos em PT-BR; os valores da API permanecem em inglês (contrato)
@@ -174,6 +175,7 @@ const STATE_LABELS = {
     disabled: 'DESATIVADO',
     not_eligible: 'FORA DO PROXY',
     offline: 'OFFLINE',
+    rate_limited: 'ESGOTADO',
 };
 
 function renderModeBadge(enabled) {
@@ -195,7 +197,12 @@ function renderOff() {
 }
 
 function backendCard(backend) {
-    const style = STATE_STYLES[backend.state] || STATE_STYLES.offline;
+    // Rate-limited platform backends: show "ESGOTADO" regardless of state
+    let state = backend.state;
+    if (backend.backend_type === 'platform' && backend.is_rate_limited) {
+        state = 'rate_limited';
+    }
+    const style = STATE_STYLES[state] || STATE_STYLES.offline;
     const isPlatform = backend.backend_type === 'platform';
     const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
     const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
@@ -212,7 +219,7 @@ function backendCard(backend) {
     <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}">
         <div class="flex items-center justify-between gap-2">
             <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
-            <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[backend.state] || backend.state)}</span>
+            <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[state] || backend.state)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
             <span>${role} · ${detail}</span>

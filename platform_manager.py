@@ -818,6 +818,7 @@ class PlatformIntegrationManager:
                     "backend_type": "platform",
                     "provider": state.get("provider"),
                     "proxy_eligible": state.get("proxy_eligible"),
+                    "vision_enabled": state.get("vision_enabled", True),
                     "max_parallel_requests": state.get("max_parallel_requests"),
                     "auto_start": state.get("auto_start"),
                 },
@@ -969,6 +970,7 @@ class PlatformIntegrationManager:
                 "status": "missing",
                 "reason": "Platform integration not defined",
                 "proxy_eligible": bool(config.get("proxy_eligible", False)),
+                "vision_enabled": bool(config.get("vision_enabled", True)),
                 "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
                 "auto_start": bool(config.get("auto_start", False)),
             }
@@ -987,6 +989,7 @@ class PlatformIntegrationManager:
             "cliproxy_detected": self._cliproxy.detected,
             "cliproxy_executable_path": self._cliproxy.path,
             "proxy_eligible": bool(config.get("proxy_eligible", False)),
+            "vision_enabled": bool(config.get("vision_enabled", True)),
             "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
             "auto_start": bool(config.get("auto_start", False)),
         }
@@ -1038,6 +1041,7 @@ class PlatformIntegrationManager:
                 else None
             ),
             "proxy_eligible": bool(config.get("proxy_eligible", False)),
+            "vision_enabled": bool(config.get("vision_enabled", True)),
             "max_parallel_requests": int(config.get("max_parallel_requests", 1) or 1),
             "auto_start": bool(config.get("auto_start", False)),
             "accounts": accounts_status,

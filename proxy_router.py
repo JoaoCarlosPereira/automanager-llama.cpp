@@ -590,6 +590,9 @@ class ProxyRouter:
             return []
 
         candidates = []
+        ollama_config = self._config.get_platform_settings(
+            "platform:ollama-cloud"
+        )
         for account in self._ollama_cloud_account_manager.get_accounts():
             bid = f"platform:ollama-cloud:{account.id}"
             if exclude_backend_ids and bid in exclude_backend_ids:
@@ -606,6 +609,13 @@ class ProxyRouter:
             if account.status != "available":
                 continue
 
+            # Skip accounts in rate limit (quota exhausted)
+            if getattr(account, "rate_limited_until", None) is not None:
+                if time.time() < account.rate_limited_until:
+                    continue
+                # Rate limit expired — clear it
+                account.rate_limited_until = None
+
             # Check cooldown expiry on status
             if account.cooldown_until is not None and time.time() < account.cooldown_until:
                 continue
@@ -619,7 +629,9 @@ class ProxyRouter:
                 "port": synthetic_port,
                 "model": account.label or "Ollama Cloud",
                 "model_path": "",
-                "config": {},
+                "config": {
+                    "vision_enabled": ollama_config.get("vision_enabled", True),
+                },
                 "account_id": account.id,
                 "account_label": account.label,
                 "ollama_cloud_account": account,
@@ -674,8 +686,22 @@ class ProxyRouter:
             return False
 
         # Determine cooldown duration based on status code
+        if status_code == 429:
+            # 429 Too Many Requests — quota exhausted (rate limit); apply 1h
+            # rate-limit instead of regular cooldown (Task 09)
+            rate_limit_seconds = retry_after or 3600  # 1 hour default
+            self._ollama_cloud_account_manager.apply_rate_limit(
+                account, rate_limit_seconds
+            )
+            backend_id = f"platform:ollama-cloud:{account.id}"
+            await self._mark_backend_unavailable_locked(
+                backend_id,
+                cooldown_seconds=rate_limit_seconds,
+                reason="rate_limit_quota_exhausted",
+            )
+            return True
         if 400 <= status_code < 500:
-            # 4xx — likely rate limit; use retry_after or default
+            # Other 4xx — likely client error; use retry_after or default
             cooldown_seconds = retry_after or DEFAULT_BACKEND_COOLDOWN_SECONDS
         elif status_code >= 500:
             # 5xx — server error; shorter cooldown
@@ -995,6 +1021,16 @@ class ProxyRouter:
                 )
             in_flight = self.in_flight_for(inst)
             cooldown_until = self._backend_cooldown_until(backend_id)
+            # Check account-level rate limit for platform backends
+            is_rate_limited = False
+            rate_limited_until = None
+            if backend_type == "platform":
+                acc = inst.get("ollama_cloud_account")
+                if acc is not None and hasattr(acc, "rate_limited_until"):
+                    rlu = acc.rate_limited_until
+                    if rlu is not None and time.time() < rlu:
+                        is_rate_limited = True
+                        rate_limited_until = rlu
             if port in self._disabled_ports:
                 state = "disabled"
             elif cooldown_until is not None:
@@ -1033,6 +1069,10 @@ class ProxyRouter:
                 "cooldown_until": (
                     _iso(cooldown_until) if cooldown_until is not None else None
                 ),
+                "rate_limited_until": (
+                    _iso(rate_limited_until) if rate_limited_until is not None else None
+                ),
+                "is_rate_limited": is_rate_limited,
             })
         snapshot.sort(
             key=lambda backend: (

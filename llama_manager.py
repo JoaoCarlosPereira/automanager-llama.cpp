@@ -118,7 +118,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.25"  # Refresh nunca autopersiste mmproj sobre "Sem visão"
+_DASHBOARD_JS_V = "4.2.26"  # Checkbox Vision por integração de plataforma
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -2363,21 +2363,37 @@ async def _smart_proxy_forward(
                 {"backend_type": decision.backend_type},
             )
 
-        # Capability validation is independent from context optimization. An
-        # image request must never reach a local process without an active
-        # mmproj (or a platform model whose catalog confirms Vision support).
+        # Capability validation is independent from context optimization.
+        # Locals require an active mmproj; platforms use their explicit
+        # per-integration Vision checkbox (enabled by default).
         if required_capabilities.vision:
+            capability_instance = decision_instance
             capability_metadata = None
             if decision.backend_type == "platform":
                 provider = str(
                     decision_instance.get("provider") or decision.provider or ""
                 ).strip().lower()
+                config_backend_id = str(decision.backend_id or "")
+                if provider == "ollama-cloud":
+                    config_backend_id = "platform:ollama-cloud"
+                platform_config = config_manager.get_platform_settings(
+                    config_backend_id
+                )
+                capability_instance = {
+                    **decision_instance,
+                    "config": {
+                        **(decision_instance.get("config") or {}),
+                        "vision_enabled": platform_config.get(
+                            "vision_enabled", True
+                        ),
+                    },
+                }
                 capability_metadata = _platform_model_metadata(
                     provider,
                     str(decision.internal_model or data.get("model") or ""),
                 )
             target_capabilities = derive_target_capabilities(
-                decision_instance, capability_metadata
+                capability_instance, capability_metadata
             )
             if "vision" not in target_capabilities:
                 rejected_id = decision.backend_id or f"port:{decision.backend_port}"
@@ -3092,6 +3108,13 @@ async def set_model_proxy(
     settings: Dict[str, Any] = {}
     if req.proxy_eligible is not None:
         settings["proxy_eligible"] = req.proxy_eligible
+    if req.vision_enabled is not None:
+        if not req.backend_id:
+            raise HTTPException(
+                status_code=400,
+                detail="vision_enabled so e valido para plataformas (backend_id)",
+            )
+        settings["vision_enabled"] = req.vision_enabled
     if req.max_parallel_requests is not None:
         settings["max_parallel_requests"] = req.max_parallel_requests
     if req.auto_start is not None:
@@ -4560,6 +4583,10 @@ def _build_html(
                                 <label class="flex items-center gap-2 cursor-pointer">
                                     <span class="font-black text-slate-500 uppercase">Proxy</span>
                                     <input type="checkbox" class="platform-proxy-eligible w-4 h-4 bg-slate-900 border-slate-700 rounded text-violet-600">
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer" title="Permitir requisições com imagens nesta plataforma">
+                                    <span class="font-black text-slate-500 uppercase">Vision</span>
+                                    <input type="checkbox" class="platform-vision-enabled w-4 h-4 bg-slate-900 border-slate-700 rounded text-cyan-600" checked>
                                 </label>
                                 <label class="flex items-center gap-2" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                                     <span class="font-black text-slate-500 uppercase">Paralelo</span>

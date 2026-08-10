@@ -163,11 +163,13 @@ class TestPlatformProxyFlags:
         settings = tmp_config_manager.update_platform_settings(
             "platform:codex", {
                 "proxy_eligible": True,
+                "vision_enabled": False,
                 "max_parallel_requests": 3,
                 "auto_start": True,
             }
         )
         assert settings["proxy_eligible"] is True
+        assert settings["vision_enabled"] is False
         assert settings["max_parallel_requests"] == 3
         assert settings["auto_start"] is True
         config = tmp_config_manager.get_config()
@@ -208,10 +210,12 @@ class TestProxySchemas:
 
     def test_set_model_proxy_accepts_backend_id(self):
         req = SetModelProxyRequest(
-            backend_id="platform:codex", proxy_eligible=True, auto_start=True
+            backend_id="platform:codex", proxy_eligible=True,
+            vision_enabled=False, auto_start=True
         )
         assert req.model_dump(exclude_unset=True) == {
             "backend_id": "platform:codex",
             "proxy_eligible": True,
+            "vision_enabled": False,
             "auto_start": True,
         }
