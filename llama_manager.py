@@ -856,11 +856,6 @@ async def _ensure_ollama_cloud_model_registry(
     """
     global _ollama_cloud_model_catalog_loaded_at
 
-    if instances is not None and not any(
-        str(inst.get("provider") or "").strip().lower() == "ollama-cloud"
-        for inst in instances
-    ):
-        return
     accounts = ollama_cloud_manager.get_accounts()
     if not accounts:
         return
@@ -897,6 +892,17 @@ async def _ensure_ollama_cloud_model_registry(
             finally:
                 await provider.close()
 
+        # A platform can fail its one-time startup validation while networking
+        # is still coming up.  Do not cache that transient empty result: the
+        # next listing/request must be able to retry discovery and recover the
+        # direct HTTP backend without depending on an already-active runtime.
+        if not discovered:
+            logger.warning(
+                "Nenhum modelo Ollama Cloud descoberto; nova tentativa sera "
+                "feita na proxima requisicao"
+            )
+            return
+
         for model in discovered:
             if not isinstance(model, dict):
                 continue
@@ -915,6 +921,12 @@ async def _ollama_cloud_models_for_listing(
     instances: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Return Ollama Cloud models in the same public shape as other platforms."""
+    if not any(
+        str(instance.get("provider") or "").strip().lower() == "ollama-cloud"
+        and instance.get("status") == "running"
+        for instance in instances
+    ):
+        return []
     await _ensure_ollama_cloud_model_registry(instances)
     local_ids = _local_model_ids(instances)
     models: List[Dict[str, Any]] = []
@@ -4931,16 +4943,54 @@ def _auto_start_platforms() -> None:
 
     logger.info("Platform auto-start requested for: %s", ", ".join(backend_ids))
     for backend_id in backend_ids:
+        _auto_start_platform_with_retry(backend_id)
+
+
+_OLLAMA_CLOUD_AUTO_START_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0)
+
+
+def _auto_start_platform_with_retry(backend_id: str) -> bool:
+    """Start one platform, retrying transient Ollama Cloud boot failures."""
+    retry_delays = (
+        _OLLAMA_CLOUD_AUTO_START_RETRY_DELAYS
+        if backend_id == "platform:ollama-cloud"
+        else ()
+    )
+    attempts = len(retry_delays) + 1
+    for attempt in range(1, attempts + 1):
         try:
             state = platform_manager.start_backend(backend_id, cliproxy_sidecar)
             logger.info(
-                "Platform auto-start: %s status=%s port=%s",
+                "Platform auto-start: %s status=%s port=%s attempt=%s/%s",
                 backend_id,
                 state.get("status"),
                 state.get("sidecar_port"),
+                attempt,
+                attempts,
             )
+            return True
         except Exception as exc:
-            logger.error("Platform auto-start error for %s: %s", backend_id, exc)
+            if attempt >= attempts or shutdown_event.is_set():
+                logger.error(
+                    "Platform auto-start error for %s after %s attempt(s): %s",
+                    backend_id,
+                    attempt,
+                    exc,
+                )
+                return False
+            delay = retry_delays[attempt - 1]
+            logger.warning(
+                "Platform auto-start attempt %s/%s failed for %s: %s; "
+                "retrying in %.0fs",
+                attempt,
+                attempts,
+                backend_id,
+                exc,
+                delay,
+            )
+            if shutdown_event.wait(delay):
+                return False
+    return False
 
 
 _PROXY_BENCHMARK_SCHEMA = 1
