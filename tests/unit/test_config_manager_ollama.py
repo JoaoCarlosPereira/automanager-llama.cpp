@@ -250,6 +250,20 @@ class TestOllamaCloudAccountsUpdate:
         assert len(accounts) == 1
         assert accounts[0]["label"] == "Updated"
 
+    def test_update_persists_runtime_rate_limit_state(self, tmp_path):
+        config_path = str(tmp_path / "config.json")
+        cm = ConfigManager(config_path)
+        acc = cm.add_ollama_cloud_account("sk-key12345678901234567890")
+        cm.update_ollama_cloud_account(acc["id"], {
+            "status": "rate_limited",
+            "cooldown_until": None,
+            "rate_limited_until": 1_800_000_000.0,
+        })
+
+        raw = ConfigManager(config_path).get_ollama_cloud_accounts_raw()[0]
+        assert raw["status"] == "rate_limited"
+        assert raw["rate_limited_until"] == 1_800_000_000.0
+
     def test_update_empty_accounts_list(self, tmp_path):
         """Test update on empty accounts list returns None."""
         cm = ConfigManager(str(tmp_path / "config.json"))

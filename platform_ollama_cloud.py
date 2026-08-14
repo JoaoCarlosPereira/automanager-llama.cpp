@@ -416,7 +416,7 @@ class OllamaCloudAccount:
     id: str
     api_key: str
     label: str = ""
-    status: str = "available"  # available | cooldown | error
+    status: str = "available"  # available | cooldown | rate_limited | error
     cooldown_until: Optional[float] = None
     rate_limited_until: Optional[float] = None
 
@@ -586,15 +586,43 @@ class OllamaCloudAccountManager:
         raw_accounts = self.config_manager.get_ollama_cloud_accounts_raw()
         accounts: List[OllamaCloudAccount] = []
         for acc in raw_accounts:
-            accounts.append(
-                OllamaCloudAccount(
-                    id=acc["id"],
-                    api_key=acc.get("api_key", ""),
-                    label=acc.get("label", ""),
-                    status="available",
-                )
+            status = str(acc.get("status") or "available")
+            cooldown_until = self._optional_timestamp(acc.get("cooldown_until"))
+            rate_limited_until = self._optional_timestamp(
+                acc.get("rate_limited_until")
             )
+            now = time.time()
+            if rate_limited_until is not None and rate_limited_until <= now:
+                rate_limited_until = None
+                if status == "rate_limited":
+                    status = "available"
+            if cooldown_until is not None and cooldown_until <= now:
+                cooldown_until = None
+                if status == "cooldown":
+                    status = "available"
+            accounts.append(OllamaCloudAccount(
+                id=acc["id"],
+                api_key=acc.get("api_key", ""),
+                label=acc.get("label", ""),
+                status=status,
+                cooldown_until=cooldown_until,
+                rate_limited_until=rate_limited_until,
+            ))
         return accounts
+
+    @staticmethod
+    def _optional_timestamp(value: Any) -> Optional[float]:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _persist_runtime_state(self, account: OllamaCloudAccount) -> None:
+        self.config_manager.update_ollama_cloud_account(account.id, {
+            "status": account.status,
+            "cooldown_until": account.cooldown_until,
+            "rate_limited_until": account.rate_limited_until,
+        })
 
     def add_account(self, api_key: str, label: str = "") -> OllamaCloudAccount:
         """Persist a new account via ConfigManager and return it as ``OllamaCloudAccount``."""
@@ -688,6 +716,8 @@ class OllamaCloudAccountManager:
 
         account.status = "cooldown"
         account.cooldown_until = time.time() + retry_after_seconds
+        account.rate_limited_until = None
+        self._persist_runtime_state(account)
         logger.info(
             "cooldown_applied id=%s retry_after=%.1f",
             account.id,
@@ -704,7 +734,10 @@ class OllamaCloudAccountManager:
         if retry_after_seconds is None:
             retry_after_seconds = 3600  # 1 hour default for quota exhaustion
 
+        account.status = "rate_limited"
+        account.cooldown_until = None
         account.rate_limited_until = time.time() + retry_after_seconds
+        self._persist_runtime_state(account)
         logger.info(
             "rate_limit_applied id=%s retry_after=%.1f",
             account.id,
@@ -714,11 +747,15 @@ class OllamaCloudAccountManager:
     def clear_rate_limit(self, account: OllamaCloudAccount) -> None:
         """Remove rate limit from *account*."""
         account.rate_limited_until = None
+        if account.status == "rate_limited":
+            account.status = "available"
+        self._persist_runtime_state(account)
 
     def clear_cooldown(self, account: OllamaCloudAccount) -> None:
         """Remove cooldown from *account* and mark it available."""
         account.cooldown_until = None
         account.status = "available"
+        self._persist_runtime_state(account)
         logger.info("cooldown_cleared id=%s", account.id)
 
     async def close(self) -> None:

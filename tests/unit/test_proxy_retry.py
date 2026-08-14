@@ -135,6 +135,41 @@ def _sse_upstream(chunks, status=200):
     return upstream
 
 
+@pytest.mark.asyncio
+async def test_direct_ollama_429_is_not_retried_on_same_account(monkeypatch):
+    response = _mock_response({"error": "quota exhausted"}, status=429)
+    post = AsyncMock(return_value=response)
+    monkeypatch.setattr(llama_manager.client, "post", post)
+
+    result = await llama_manager._proxy_post_with_retry(
+        "https://ollama.com/v1/chat/completions",
+        content=b"{}",
+        headers={},
+        retry_rate_limits=False,
+    )
+
+    assert result.status_code == 429
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_direct_ollama_stream_429_is_not_retried_on_same_account(monkeypatch):
+    response = _sse_upstream([b'{"error":"quota exhausted"}'], status=429)
+    send = AsyncMock(return_value=response)
+    monkeypatch.setattr(llama_manager.client, "send", send)
+
+    result, iterator = await llama_manager._proxy_open_stream_with_retry(
+        "https://ollama.com/v1/chat/completions",
+        content=b"{}",
+        headers={},
+        retry_rate_limits=False,
+    )
+
+    assert result.status_code == 429
+    assert iterator is None
+    send.assert_awaited_once()
+
+
 def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     system = f"[AGENT:{tag}] Voce ajuda." if tag else "Voce ajuda."
     body = {

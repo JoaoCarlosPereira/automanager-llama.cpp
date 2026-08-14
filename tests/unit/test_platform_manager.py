@@ -63,6 +63,14 @@ class TestFilterModelsForProvider:
         result = filter_models_for_provider(self.SAMPLE, "unknown")
         assert len(result) == 3
 
+    def test_strict_filter_does_not_claim_another_providers_catalog(self):
+        result = filter_models_for_provider(
+            [{"id": "gemma4:31b", "owned_by": "ollama"}],
+            "codex",
+            strict=True,
+        )
+        assert result == []
+
 
 class TestPlatformModelListing:
     def test_catalog_context_is_copied_to_sidecar_model(self):
@@ -113,6 +121,12 @@ class TestPlatformModelListing:
         register_platform_bare_model("gemma4:31b", "ollama-cloud")
         assert platform_provider_for_listing("gemma4:31b") == "ollama-cloud"
         assert resolve_platform_listing_model("gemma4:31b") == "gemma4:31b"
+
+    def test_ollama_bare_model_cannot_be_stolen_by_shared_cli_catalog(self):
+        register_platform_bare_model("gemma4:31b", "ollama-cloud")
+        register_platform_bare_model("gemma4:31b", "codex")
+        register_platform_bare_model("gemma4:31b", "antigravity")
+        assert platform_provider_for_listing("gemma4:31b") == "ollama-cloud"
 
     def test_resolve_proagent_listing(self):
         register_platform_model_listings("gemini-pro-agent", "antigravity")

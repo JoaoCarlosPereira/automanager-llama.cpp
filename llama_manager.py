@@ -234,6 +234,41 @@ def _proxy_failure_cooldown(
     return max(float(base), min(max(retry_after, 0.0), 3600.0))
 
 
+def _platform_rate_limit_retry_after(response: Optional[httpx.Response]) -> float:
+    """Return the platform quota reset delay, defaulting to one hour."""
+    default = 3600.0
+    if response is None:
+        return default
+    try:
+        retry_after = str(response.headers.get("retry-after", "")).strip()
+        reset_at = str(
+            response.headers.get("x-ratelimit-reset")
+            or response.headers.get("ratelimit-reset")
+            or ""
+        ).strip()
+    except Exception:
+        return default
+    if retry_after:
+        try:
+            return max(1.0, float(retry_after))
+        except ValueError:
+            try:
+                target = parsedate_to_datetime(retry_after)
+                if target.tzinfo is None:
+                    target = target.replace(tzinfo=timezone.utc)
+                return max(
+                    1.0, (target - datetime.now(timezone.utc)).total_seconds()
+                )
+            except (TypeError, ValueError, OverflowError):
+                pass
+    if reset_at:
+        try:
+            return max(1.0, float(reset_at) - time.time())
+        except ValueError:
+            pass
+    return default
+
+
 def _is_retryable_upstream_status(status_code: int) -> bool:
     """Todo erro HTTP do provedor autoriza retry e failover.
 
@@ -278,6 +313,7 @@ async def _proxy_post_with_retry(
     content: bytes,
     headers: Dict[str, str],
     backend_label: str = "",
+    retry_rate_limits: bool = True,
 ) -> httpx.Response:
     """Reenvia POST ao backend com backoff em falhas transitórias."""
     last_exc: Optional[Exception] = None
@@ -286,6 +322,7 @@ async def _proxy_post_with_retry(
             resp = await client.post(url, content=content, headers=headers, timeout=None)
             if (
                 _is_retryable_upstream_status(resp.status_code)
+                and (resp.status_code != 429 or retry_rate_limits)
                 and attempt < _PROXY_MAX_ATTEMPTS - 1
             ):
                 logger.warning(
@@ -321,6 +358,7 @@ async def _proxy_open_stream_with_retry(
     content: bytes,
     headers: Dict[str, str],
     backend_label: str = "",
+    retry_rate_limits: bool = True,
 ) -> Tuple[httpx.Response, Optional[Any]]:
     """Abre SSE e confirma o primeiro byte antes de entregar 200 ao cliente.
 
@@ -338,6 +376,7 @@ async def _proxy_open_stream_with_retry(
             )
             if (
                 _is_retryable_upstream_status(upstream.status_code)
+                and (upstream.status_code != 429 or retry_rate_limits)
                 and attempt < _PROXY_MAX_ATTEMPTS - 1
             ):
                 logger.warning(
@@ -2552,11 +2591,24 @@ async def _smart_proxy_forward(
                 sorted(failed_backend_ids),
             )
             if mark_unavailable:
-                await proxy_router.mark_backend_unavailable(
-                    current_id,
-                    _proxy_failure_cooldown(status_code, response),
-                    reason=cause,
-                )
+                if status_code == 429 and cloud_account is not None:
+                    await proxy_router.handle_http_error(
+                        429,
+                        cloud_account,
+                        retry_after=_platform_rate_limit_retry_after(response),
+                        reason=cause,
+                    )
+                elif status_code == 429 and decision.backend_type == "platform":
+                    await proxy_router.mark_backend_rate_limited(
+                        current_id,
+                        _platform_rate_limit_retry_after(response),
+                    )
+                else:
+                    await proxy_router.mark_backend_unavailable(
+                        current_id,
+                        _proxy_failure_cooldown(status_code, response),
+                        reason=cause,
+                    )
             try:
                 new_decision = await proxy_router.reassign(
                     decision.affinity_key,
@@ -2642,6 +2694,7 @@ async def _smart_proxy_forward(
                     content=forward_body,
                     headers=headers,
                     backend_label=backend_label,
+                    retry_rate_limits=decision.backend_type != "platform",
                 )
                 log_manager.record_proxy_request(
                     path=f"/v1/{path}",
@@ -2764,6 +2817,7 @@ async def _smart_proxy_forward(
                     content=forward_body,
                     headers=headers,
                     backend_label=backend_label,
+                    retry_rate_limits=decision.backend_type != "platform",
                 )
                 log_manager.record_proxy_request(
                     path=f"/v1/{path}",

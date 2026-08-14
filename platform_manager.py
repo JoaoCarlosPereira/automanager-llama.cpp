@@ -115,6 +115,14 @@ CURSOR_BLOCKED_MODEL_TOKENS = (
 # listing_id exposto na API -> id real do sidecar
 _PLATFORM_LISTING_REGISTRY: Dict[str, str] = {}
 _PLATFORM_LISTING_PROVIDER_REGISTRY: Dict[str, str] = {}
+_PLATFORM_LISTING_REGISTRY_LOCK = threading.RLock()
+
+# Direct provider catalogs are authoritative for their bare model IDs.  The
+# shared CLIProxy catalog can contain models from several integrations and
+# must never steal an already discovered direct Ollama model.
+_PLATFORM_PROVIDER_PRIORITY = {
+    "ollama-cloud": 100,
+}
 
 
 def merge_platform_model_metadata(
@@ -159,29 +167,37 @@ def merge_platform_model_metadata(
 
 
 def clear_platform_listing_registry() -> None:
-    _PLATFORM_LISTING_REGISTRY.clear()
-    _PLATFORM_LISTING_PROVIDER_REGISTRY.clear()
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        _PLATFORM_LISTING_REGISTRY.clear()
+        _PLATFORM_LISTING_PROVIDER_REGISTRY.clear()
 
 
 def register_platform_listing(
     listing_id: str, bare_id: str, provider: str = ""
 ) -> None:
     if listing_id and bare_id:
-        _PLATFORM_LISTING_REGISTRY[listing_id] = bare_id
-        if provider:
-            _PLATFORM_LISTING_PROVIDER_REGISTRY[listing_id] = provider
+        with _PLATFORM_LISTING_REGISTRY_LOCK:
+            _PLATFORM_LISTING_REGISTRY[listing_id] = bare_id
+            if provider:
+                current = _PLATFORM_LISTING_PROVIDER_REGISTRY.get(listing_id)
+                current_priority = _PLATFORM_PROVIDER_PRIORITY.get(current or "", 0)
+                new_priority = _PLATFORM_PROVIDER_PRIORITY.get(provider, 0)
+                if current is None or current == provider or new_priority >= current_priority:
+                    _PLATFORM_LISTING_PROVIDER_REGISTRY[listing_id] = provider
 
 
 def lookup_platform_bare_id(listing_id: str) -> Optional[str]:
-    return _PLATFORM_LISTING_REGISTRY.get(listing_id)
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        return _PLATFORM_LISTING_REGISTRY.get(listing_id)
 
 
 def lookup_platform_listing_id(bare_id: str) -> Optional[str]:
-    matches = [
-        listing_id
-        for listing_id, root in _PLATFORM_LISTING_REGISTRY.items()
-        if root == bare_id
-    ]
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        matches = [
+            listing_id
+            for listing_id, root in _PLATFORM_LISTING_REGISTRY.items()
+            if root == bare_id
+        ]
     if not matches:
         return None
     virtual = [listing_id for listing_id in matches if listing_id != bare_id]
@@ -189,7 +205,8 @@ def lookup_platform_listing_id(bare_id: str) -> Optional[str]:
 
 
 def platform_listing_registry_populated() -> bool:
-    return bool(_PLATFORM_LISTING_REGISTRY)
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        return bool(_PLATFORM_LISTING_REGISTRY)
 
 
 def _provider_slug(provider: str) -> str:
@@ -362,7 +379,8 @@ def platform_listing_provider_prefix(model_name: str) -> Optional[str]:
 
 def platform_provider_for_listing(model_name: str) -> Optional[str]:
     """Provider da integração para um ID opaco de listagem."""
-    registered = _PLATFORM_LISTING_PROVIDER_REGISTRY.get(model_name)
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        registered = _PLATFORM_LISTING_PROVIDER_REGISTRY.get(model_name)
     if registered:
         return registered
     return platform_listing_provider_prefix(model_name)
@@ -422,7 +440,7 @@ PLATFORM_MODEL_OWNED_BY: Dict[str, tuple[str, ...]] = {
 
 
 def filter_models_for_provider(
-    models: List[Dict], provider: str
+    models: List[Dict], provider: str, *, strict: bool = False
 ) -> List[Dict]:
     """Mantém apenas modelos do provedor da plataforma (sidecar agrega todos)."""
     owners = PLATFORM_MODEL_OWNED_BY.get((provider or "").strip().lower())
@@ -439,6 +457,8 @@ def filter_models_for_provider(
         if isinstance(model, dict)
     }
     if not known_owners.intersection(allowed):
+        if strict:
+            return []
         return list(models)
     return [
         model
@@ -1013,10 +1033,18 @@ class PlatformIntegrationManager:
                 }
                 if acc.cooldown_until:
                     acc_info["cooldown_until"] = acc.cooldown_until
+                if acc.rate_limited_until:
+                    acc_info["rate_limited_until"] = acc.rate_limited_until
                 accounts_status.append(acc_info)
             # Platform status: "available" if at least one account is available,
             # else "error" if any account exists, else "missing"
-            any_available = any(a.status == "available" for a in accounts)
+            now = time.time()
+            any_available = any(
+                a.status == "available"
+                and not (a.cooldown_until and a.cooldown_until > now)
+                and not (a.rate_limited_until and a.rate_limited_until > now)
+                for a in accounts
+            )
             if accounts:
                 status = "available" if any_available else "error"
             else:

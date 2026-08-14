@@ -555,6 +555,7 @@ class ProxyRouter:
         self._in_flight: Dict[str, int] = {}
         self._disabled_ports: set = set()
         self._unavailable_until: Dict[str, datetime] = {}
+        self._rate_limited_until: Dict[str, datetime] = {}
         self._benchmark_latencies_ms: Dict[str, float] = {}
         self._benchmark_measured_at: Optional[str] = None
         self._unsaved_uses = 0
@@ -809,7 +810,9 @@ class ProxyRouter:
             self._disabled_ports.discard(port)
             for instance in self._routing_instances():
                 if instance.get("port") == port:
-                    self._unavailable_until.pop(self._backend_id(instance), None)
+                    backend_id = self._backend_id(instance)
+                    self._unavailable_until.pop(backend_id, None)
+                    self._rate_limited_until.pop(backend_id, None)
         else:
             self._disabled_ports.add(port)
         logger.info(
@@ -834,6 +837,13 @@ class ProxyRouter:
             return False
         return self._backend_cooldown_until(self._backend_id(instance)) is None
 
+    def _backend_rate_limited_until(self, backend_id: str) -> Optional[datetime]:
+        until = self._rate_limited_until.get(backend_id)
+        if until is not None and until <= self._now():
+            self._rate_limited_until.pop(backend_id, None)
+            return None
+        return until
+
     # ------------------------------------------------------------------
     # Ollama Cloud account integration (Task 07)
     # ------------------------------------------------------------------
@@ -850,6 +860,7 @@ class ProxyRouter:
     def _ollama_cloud_candidates(
         self,
         exclude_backend_ids: Optional[set] = None,
+        include_unavailable: bool = False,
     ) -> List[Dict[str, Any]]:
         """Build virtual backend dicts for available Ollama Cloud accounts.
 
@@ -871,23 +882,30 @@ class ProxyRouter:
             if exclude_backend_ids and bid in exclude_backend_ids:
                 continue
 
-            # Skip accounts in cooldown
+            # Skip accounts in cooldown for routing, but retain them in the
+            # administrative snapshot so the UI can explain the real state.
             if account.cooldown_until is not None:
                 if time.time() < account.cooldown_until:
-                    continue
+                    if not include_unavailable:
+                        continue
                 # Cooldown expired — clear it
-                account.cooldown_until = None
-                account.status = "available"
-
-            if account.status != "available":
-                continue
+                else:
+                    account.cooldown_until = None
+                    account.status = "available"
 
             # Skip accounts in rate limit (quota exhausted)
             if getattr(account, "rate_limited_until", None) is not None:
                 if time.time() < account.rate_limited_until:
-                    continue
+                    if not include_unavailable:
+                        continue
                 # Rate limit expired — clear it
-                account.rate_limited_until = None
+                else:
+                    account.rate_limited_until = None
+                    if account.status == "rate_limited":
+                        account.status = "available"
+
+            if account.status != "available" and not include_unavailable:
+                continue
 
             # Check cooldown expiry on status
             if account.cooldown_until is not None and time.time() < account.cooldown_until:
@@ -1044,6 +1062,30 @@ class ProxyRouter:
         )
         return until
 
+    async def mark_backend_rate_limited(
+        self,
+        backend_id: str,
+        retry_after: float = 3600,
+    ) -> datetime:
+        """Mark a platform quota as exhausted until its advertised reset."""
+        normalized = normalize_backend_id(backend_id)
+        if not normalized:
+            raise ValueError("backend_id obrigatorio")
+        seconds = max(1.0, float(retry_after))
+        async with self._lock:
+            until = self._now() + timedelta(seconds=seconds)
+            previous = self._backend_rate_limited_until(normalized)
+            if previous is not None and previous > until:
+                until = previous
+            self._rate_limited_until[normalized] = until
+            self._unavailable_until[normalized] = until
+        logger.warning(
+            "[proxy] backend_id=%s rate limited until=%s",
+            normalized,
+            _iso(until),
+        )
+        return until
+
     def _running_instances(self) -> List[Dict[str, Any]]:
         status = self._get_status() or {}
         return [
@@ -1051,12 +1093,16 @@ class ProxyRouter:
             if inst.get("status") == "running" and inst.get("port") is not None
         ]
 
-    def _routing_instances(self) -> List[Dict[str, Any]]:
+    def _routing_instances(
+        self, *, include_unavailable_ollama: bool = False
+    ) -> List[Dict[str, Any]]:
         """Return local/sidecar instances plus direct Ollama Cloud accounts."""
         instances = self._running_instances()
         known_ids = {self._backend_id(inst) for inst in instances}
         instances.extend(
-            inst for inst in self._ollama_cloud_candidates()
+            inst for inst in self._ollama_cloud_candidates(
+                include_unavailable=include_unavailable_ollama
+            )
             if self._backend_id(inst) not in known_ids
         )
         return instances
@@ -1276,7 +1322,7 @@ class ProxyRouter:
         )
         config = self._config.get_config()
         snapshot = []
-        for inst in self._routing_instances():
+        for inst in self._routing_instances(include_unavailable_ollama=True):
             port = inst["port"]
             model_path = inst.get("model_path")
             backend_id = self._backend_id(inst)
@@ -1295,17 +1341,24 @@ class ProxyRouter:
             in_flight = self.in_flight_for(inst)
             cooldown_until = self._backend_cooldown_until(backend_id)
             # Check account-level rate limit for platform backends
-            is_rate_limited = False
-            rate_limited_until = None
+            rate_limited_until = self._backend_rate_limited_until(backend_id)
+            is_rate_limited = rate_limited_until is not None
             if backend_type == "platform":
                 acc = inst.get("ollama_cloud_account")
                 if acc is not None and hasattr(acc, "rate_limited_until"):
                     rlu = acc.rate_limited_until
                     if rlu is not None and time.time() < rlu:
                         is_rate_limited = True
-                        rate_limited_until = rlu
+                        account_until = datetime.fromtimestamp(rlu, timezone.utc)
+                        if (
+                            rate_limited_until is None
+                            or account_until > rate_limited_until
+                        ):
+                            rate_limited_until = account_until
             if port in self._disabled_ports:
                 state = "disabled"
+            elif is_rate_limited:
+                state = "rate_limited"
             elif cooldown_until is not None:
                 state = "cooldown"
             elif not eligible and (backend_type == "platform" or not is_primary):
@@ -1343,7 +1396,8 @@ class ProxyRouter:
                     _iso(cooldown_until) if cooldown_until is not None else None
                 ),
                 "rate_limited_until": (
-                    _iso(rate_limited_until) if rate_limited_until is not None else None
+                    _iso(rate_limited_until)
+                    if rate_limited_until is not None else None
                 ),
                 "is_rate_limited": is_rate_limited,
             })

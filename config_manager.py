@@ -751,6 +751,9 @@ class ConfigManager:
                 acc["label"] = str(updates["label"] or "")
             if "created_at" in updates:
                 acc["created_at"] = updates["created_at"]
+            for runtime_field in ("status", "cooldown_until", "rate_limited_until"):
+                if runtime_field in updates:
+                    acc[runtime_field] = updates[runtime_field]
             config["ollama_cloud_accounts"] = accounts
             self.save(config)
             return {

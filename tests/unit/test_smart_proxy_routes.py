@@ -1189,7 +1189,7 @@ class TestHybridV1Availability:
         )
         limited = _mock_response({"error": "rate_limit"}, status=429)
         ok = _mock_response({"id": "chatcmpl-1", "model": "antigravity-default"})
-        mock_post.side_effect = [limited, limited, limited, ok, ok]
+        mock_post.side_effect = [limited, ok, ok]
 
         response = client.post(
             "/v1/chat/completions",
@@ -1197,13 +1197,12 @@ class TestHybridV1Availability:
         )
 
         assert response.status_code == 200
-        assert mock_post.call_count == llama_manager._PROXY_MAX_ATTEMPTS + 1
+        assert mock_post.call_count == 2
         sent_models = [
             json.loads(call.kwargs["content"])["model"]
             for call in mock_post.call_args_list
         ]
-        assert sent_models[:3] == ["codex-pro"] * 3
-        assert sent_models[3] == "antigravity-default"
+        assert sent_models == ["codex-pro", "antigravity-default"]
         assert response.headers["x-automanager-backend-id"] == (
             "platform:google-antigravity"
         )
@@ -1211,7 +1210,9 @@ class TestHybridV1Availability:
             backend for backend in smart_env.router.backends_snapshot()
             if backend["backend_id"] == "platform:codex"
         )
-        assert codex["state"] == "cooldown"
+        assert codex["state"] == "rate_limited"
+        assert codex["is_rate_limited"] is True
+        assert codex["rate_limited_until"] is not None
 
         # Uma nova requisição evita o Codex enquanto o circuito estiver aberto.
         second = client.post(
@@ -1219,7 +1220,7 @@ class TestHybridV1Availability:
             json=chat_body(model=platform_model_listing_id("codex-pro", "codex")),
         )
         assert second.status_code == 200
-        assert mock_post.call_count == llama_manager._PROXY_MAX_ATTEMPTS + 2
+        assert mock_post.call_count == 3
         assert json.loads(mock_post.call_args.kwargs["content"])["model"] == (
             "antigravity-default"
         )

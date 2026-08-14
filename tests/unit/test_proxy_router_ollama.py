@@ -167,6 +167,19 @@ class TestOllamaCloudCandidates:
         assert len(candidates) == 1
         assert candidates[0]["backend_id"] == "platform:ollama-cloud:a2"
 
+    def test_snapshot_keeps_exhausted_account_visible(self):
+        acc = _make_account("a1", "Account 1", status="rate_limited")
+        acc.rate_limited_until = time.time() + 600
+        mgr = _make_manager([acc])
+        router = _make_router(mgr)
+
+        snapshot = router.backends_snapshot()
+
+        assert len(snapshot) == 1
+        assert snapshot[0]["state"] == "rate_limited"
+        assert snapshot[0]["is_rate_limited"] is True
+        assert snapshot[0]["rate_limited_until"] is not None
+
 
 # ---------------------------------------------------------------------------
 # _pick_ollama_cloud_least_busy

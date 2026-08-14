@@ -122,6 +122,19 @@ class TestGetAccounts:
         accounts = manager.get_accounts()
         assert accounts[0].cooldown_until is None
 
+    def test_restores_persisted_rate_limit_state(self, manager):
+        reset_at = time.time() + 600
+        manager.config_manager.get_ollama_cloud_accounts_raw.return_value = [{
+            "id": "acc-001",
+            "api_key": "sk-secret",
+            "label": "Account 1",
+            "status": "rate_limited",
+            "rate_limited_until": reset_at,
+        }]
+        account = manager.get_accounts()[0]
+        assert account.status == "rate_limited"
+        assert account.rate_limited_until == reset_at
+
 
 # ---------------------------------------------------------------------------
 # add_account
@@ -371,6 +384,18 @@ class TestApplyCooldown:
         manager.apply_cooldown(account, retry_after=30.0)
         assert account.status == "cooldown"
         assert account.cooldown_until > time.time() - 1  # new, near-future
+
+
+class TestApplyRateLimit:
+    def test_marks_exhausted_and_persists_runtime_state(self, manager, account):
+        manager.apply_rate_limit(account, retry_after=120)
+
+        assert account.status == "rate_limited"
+        assert account.cooldown_until is None
+        assert account.rate_limited_until is not None
+        _, updates = manager.config_manager.update_ollama_cloud_account.call_args.args
+        assert updates["status"] == "rate_limited"
+        assert updates["rate_limited_until"] == account.rate_limited_until
 
 
 # ---------------------------------------------------------------------------
