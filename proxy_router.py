@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
+import httpx
+
 from config_manager import (
     lookup_model_config,
     lookup_platform_config,
@@ -51,6 +53,10 @@ TOKEN_ESTIMATE_MARGIN = 1.1
 PERSIST_EVERY_N_REQUESTS = 20
 # Intervalo do polling de espera por slot livre.
 BUSY_POLL_SECONDS = 0.25
+# A conexao HTTP do proxy nao possui timeout global porque uma geracao pode ser
+# longa. O que nao pode ser ilimitado e o tempo *entre* eventos de um stream:
+# uma conexao TCP aberta e muda deixava o Cursor esperando para sempre.
+DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 120.0
 # Limite de ramificações de uma sessão hash: (afinidade fraca) sob concorrência.
 MAX_HASH_BRANCHES = 8
 # Tempo padrao em que um backend que falhou fica fora do roteamento. O chamador
@@ -234,6 +240,273 @@ async def rewrite_sse_stream(
             yield _rewrite_sse_line(line, external_model, usage_holder) + b"\n"
     if buffer:
         yield _rewrite_sse_line(buffer, external_model, usage_holder)
+
+
+def _sse_payload_is_terminal(payload: bytes) -> bool:
+    """Reconhece conclusao real nos formatos Chat Completions e Responses.
+
+    Alguns upstreams omitem ``[DONE]``, mas enviam ``finish_reason``. Isso e
+    conclusao valida; EOF sem nenhum dos dois e stream truncado.
+    """
+    payload = payload.strip()
+    if payload == b"[DONE]":
+        return True
+    if not payload or payload.startswith(b":"):
+        return False
+    try:
+        event = json.loads(payload)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(event, dict):
+        return False
+    if event.get("type") in {
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+        "error",
+    }:
+        return True
+    choices = event.get("choices")
+    return bool(
+        isinstance(choices, list)
+        and any(
+            isinstance(choice, dict) and choice.get("finish_reason") is not None
+            for choice in choices
+        )
+    )
+
+
+async def guard_sse_stream(
+    byte_iter,
+    *,
+    idle_timeout: float = DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+):
+    """Repassa SSE, mas nunca transforma travamento/truncamento em sucesso.
+
+    ``httpx`` permite streams sem timeout total para geracoes longas. Cada
+    leitura, porem, tem um limite de inatividade. Ao receber EOF, exige um
+    marcador terminal antes de deixar o cliente interpretar a resposta como
+    completa.
+    """
+    iterator = byte_iter.__aiter__()
+    line_buffer = b""
+    terminal = False
+    received_bytes = 0
+    while True:
+        try:
+            chunk = await asyncio.wait_for(
+                iterator.__anext__(), timeout=max(1.0, float(idle_timeout))
+            )
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError as exc:
+            raise httpx.ReadTimeout(
+                f"upstream SSE ficou inativo por {idle_timeout:.0f}s"
+            ) from exc
+        if not chunk:
+            continue
+        received_bytes += len(chunk)
+        line_buffer += chunk
+        while b"\n" in line_buffer:
+            line, line_buffer = line_buffer.split(b"\n", 1)
+            stripped = line.strip()
+            if stripped.startswith(b"data:"):
+                terminal = terminal or _sse_payload_is_terminal(
+                    stripped[len(b"data:"):]
+                )
+            elif stripped.startswith(b"event:") and stripped.split(b":", 1)[1].strip() in {
+                b"response.completed",
+                b"response.failed",
+                b"response.incomplete",
+                b"error",
+            }:
+                terminal = True
+        yield chunk
+
+    if line_buffer.strip().startswith(b"data:"):
+        terminal = terminal or _sse_payload_is_terminal(
+            line_buffer.strip()[len(b"data:"):]
+        )
+    if not terminal:
+        raise httpx.ReadError(
+            "upstream SSE terminou sem marcador de conclusao "
+            f"({received_bytes} bytes recebidos)"
+        )
+
+
+def _json_value_matches_schema(value: Any, schema: Dict[str, Any]) -> bool:
+    expected = schema.get("type")
+    if expected == "string" and not isinstance(value, str):
+        return False
+    if expected == "boolean" and not isinstance(value, bool):
+        return False
+    if expected == "number" and (
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+    ):
+        return False
+    if expected == "integer" and (
+        not isinstance(value, int) or isinstance(value, bool)
+    ):
+        return False
+    if expected == "array" and not isinstance(value, list):
+        return False
+    if expected == "object" and not isinstance(value, dict):
+        return False
+    enum = schema.get("enum")
+    return not isinstance(enum, list) or value in enum
+
+
+def infer_json_tool_call(
+    content: str, tools: Any
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Infere tool call somente quando um JSON casa com um unico schema."""
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    explicit_name = None
+    arguments = parsed
+    if (
+        isinstance(parsed, dict)
+        and isinstance(parsed.get("name"), str)
+        and isinstance(parsed.get("arguments"), dict)
+    ):
+        explicit_name = parsed["name"]
+        arguments = parsed["arguments"]
+    if not isinstance(arguments, dict) or not isinstance(tools, list):
+        return None
+
+    matches: List[Tuple[str, Dict[str, Any]]] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or (explicit_name and name != explicit_name):
+            continue
+        schema = function.get("parameters") or {}
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+        if not isinstance(properties, dict) or not set(arguments).issubset(properties):
+            continue
+        if not set(required).issubset(arguments):
+            continue
+        if not all(
+            _json_value_matches_schema(value, properties.get(key) or {})
+            for key, value in arguments.items()
+        ):
+            continue
+        matches.append((name, arguments))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _tool_call_sse_bytes(
+    template: Dict[str, Any], name: str, arguments: Dict[str, Any]
+) -> bytes:
+    base = {
+        key: value
+        for key, value in template.items()
+        if key not in {"choices", "usage"}
+    }
+    call_id = f"call_automanager_{uuid.uuid4().hex[:16]}"
+    tool_chunk = {
+        **base,
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(
+                            arguments, ensure_ascii=False, separators=(",", ":")
+                        ),
+                    },
+                }]
+            },
+            "finish_reason": None,
+        }],
+    }
+    finish_chunk = {
+        **base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    }
+    return (
+        b"data: " + json.dumps(tool_chunk, ensure_ascii=False).encode() + b"\n\n"
+        + b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode() + b"\n\n"
+        + b"data: [DONE]\n\n"
+    )
+
+
+async def repair_plain_json_tool_call_stream(byte_iter, tools: Any):
+    """Converte JSON de argumentos emitido como texto em tool call inequívoca.
+
+    Modelos menores ocasionalmente escolhem a ferramenta certa, mas imprimem
+    apenas seus argumentos. O conteúdo candidato fica retido ate o evento
+    terminal; texto normal continua passando imediatamente.
+    """
+    line_buffer = b""
+    held: List[bytes] = []
+    content_parts: List[str] = []
+    template: Dict[str, Any] = {}
+    candidate = False
+    saw_structured_tool_call = False
+
+    async for chunk in byte_iter:
+        line_buffer += chunk
+        while b"\n" in line_buffer:
+            line, line_buffer = line_buffer.split(b"\n", 1)
+            framed = line + b"\n"
+            stripped = line.strip()
+            event = None
+            if stripped.startswith(b"data:"):
+                payload = stripped[len(b"data:"):].strip()
+                if payload != b"[DONE]":
+                    try:
+                        event = json.loads(payload)
+                    except (TypeError, ValueError):
+                        event = None
+            delta = None
+            if isinstance(event, dict):
+                template = template or event
+                choices = event.get("choices")
+                if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                    delta = choices[0].get("delta")
+            if isinstance(delta, dict) and delta.get("tool_calls"):
+                saw_structured_tool_call = True
+            piece = delta.get("content") if isinstance(delta, dict) else None
+            if isinstance(piece, str) and piece:
+                if not content_parts:
+                    candidate = piece.lstrip().startswith(("{", "["))
+                if candidate:
+                    content_parts.append(piece)
+
+            if candidate:
+                held.append(framed)
+            else:
+                yield framed
+
+    if line_buffer:
+        (held if candidate else []).append(line_buffer)
+        if not candidate:
+            yield line_buffer
+
+    inferred = (
+        None
+        if saw_structured_tool_call
+        else infer_json_tool_call("".join(content_parts), tools)
+    )
+    if candidate and inferred is not None:
+        name, arguments = inferred
+        logger.warning(
+            "[proxy] repaired plain JSON response as tool_call tool=%s", name
+        )
+        yield _tool_call_sse_bytes(template, name, arguments)
+    elif candidate:
+        for item in held:
+            yield item
 
 
 def rewrite_json_model(
@@ -1158,6 +1431,7 @@ class ProxyRouter:
         candidates: List[Dict[str, Any]],
         primary_port: Optional[int] = None,
         primary_backend_id: Optional[str] = None,
+        preferred_provider: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Escolhe sem enfileirar enquanto houver algum backend livre.
 
@@ -1184,9 +1458,17 @@ class ProxyRouter:
             )
             if is_primary:
                 return 0
-            if self._backend_type(instance) == "platform":
+            # Contas diferentes do mesmo provedor formam um unico pool
+            # logico. Esgote esse pool antes de atravessar para outra
+            # plataforma (especialmente Ollama Cloud multi-account).
+            if (
+                preferred_provider
+                and instance.get("provider") == preferred_provider
+            ):
                 return 1
-            return 2
+            if self._backend_type(instance) == "platform":
+                return 2
+            return 3
 
         return min(
             candidates,
@@ -1349,7 +1631,17 @@ class ProxyRouter:
                 configured_primary_backend_id=configured_primary_backend_id,
             )
             chosen = self._pick_least_busy(
-                candidates, primary_port, primary_backend_id
+                candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=next(
+                    (
+                        inst.get("provider")
+                        for inst in instances
+                        if self._backend_id(inst) == primary_backend_id
+                    ),
+                    None,
+                ),
             )
             if chosen is None:
                 return None
@@ -1523,6 +1815,7 @@ class ProxyRouter:
             chosen = self._pick_least_busy(
                 candidates_available or candidates_all_capacity,
                 primary_backend_id=primary_backend_id or None,
+                preferred_provider=(primary.get("provider") if primary else None),
             )
             if chosen is None:
                 chosen = self._pick_for_dynamic_growth(
@@ -1789,6 +2082,10 @@ class ProxyRouter:
             primary = self._pick_least_busy(
                 platform_fallback or fallback,
                 primary_backend_id=configured_backend_id or None,
+                preferred_provider=(
+                    configured_primary.get("provider")
+                    if configured_primary is not None else None
+                ),
             )
             if primary is None:
                 raise ProxyError(
@@ -2036,7 +2333,10 @@ class ProxyRouter:
                 configured_primary_backend_id=configured_backend_id,
             )
             new_inst = self._pick_least_busy(
-                candidates, primary_port, primary_backend_id
+                candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
             )
             if new_inst is None:
                 fallback = self._candidates(
@@ -2101,7 +2401,10 @@ class ProxyRouter:
                         configured_primary_backend_id=configured_backend_id,
                     )
                     chosen = self._pick_least_busy(
-                        overflow, primary_port, primary_backend_id
+                        overflow,
+                        primary_port,
+                        primary_backend_id,
+                        preferred_provider=primary.get("provider"),
                     )
                     if chosen is not None:
                         return _commit(
@@ -2133,7 +2436,10 @@ class ProxyRouter:
                 configured_primary_backend_id=configured_backend_id,
             )
             chosen = self._pick_least_busy(
-                candidates, primary_port, primary_backend_id
+                candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
             )
             if chosen is None:
                 raise ProxyError(
@@ -2161,7 +2467,10 @@ class ProxyRouter:
             configured_primary_backend_id=configured_backend_id,
         )
         chosen = self._pick_least_busy(
-            candidates, primary_port, primary_backend_id
+            candidates,
+            primary_port,
+            primary_backend_id,
+            preferred_provider=primary.get("provider"),
         )
         if chosen is None:
             any_eligible = self._candidates(

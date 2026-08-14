@@ -37,7 +37,10 @@ from proxy_router import (
     ProxyError,
     ProxyRouter,
     StaleRoutePlan,
+    DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
     TOKEN_ESTIMATE_MARGIN,
+    guard_sse_stream,
+    repair_plain_json_tool_call_stream,
     rewrite_json_model,
     rewrite_sse_stream,
 )
@@ -318,8 +321,12 @@ async def _proxy_open_stream_with_retry(
     content: bytes,
     headers: Dict[str, str],
     backend_label: str = "",
-) -> httpx.Response:
-    """Abre stream SSE no backend; retenta antes de entregar bytes ao cliente."""
+) -> Tuple[httpx.Response, Optional[Any]]:
+    """Abre SSE e confirma o primeiro byte antes de entregar 200 ao cliente.
+
+    Uma resposta HTTP 200 com corpo vazio ainda e falha. Enquanto nenhum byte
+    foi exposto ao Cursor, podemos repetir/fazer failover sem duplicar saida.
+    """
     last_exc: Optional[Exception] = None
     for attempt in range(_PROXY_MAX_ATTEMPTS):
         try:
@@ -344,7 +351,40 @@ async def _proxy_open_stream_with_retry(
                 await upstream.aclose()
                 await asyncio.sleep(_proxy_retry_after(upstream, attempt))
                 continue
-            return upstream
+            if _is_retryable_upstream_status(upstream.status_code):
+                return upstream, None
+
+            iterator = upstream.aiter_bytes().__aiter__()
+            try:
+                while True:
+                    first_chunk = await asyncio.wait_for(
+                        iterator.__anext__(),
+                        timeout=DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+                    )
+                    if first_chunk:
+                        break
+            except (StopAsyncIteration, asyncio.TimeoutError, httpx.RequestError) as exc:
+                await upstream.aclose()
+                last_exc = httpx.ReadError(
+                    "upstream SSE nao produziu o primeiro evento"
+                )
+                if attempt >= _PROXY_MAX_ATTEMPTS - 1:
+                    raise last_exc from exc
+                logger.warning(
+                    "[proxy] %s stream sem primeiro evento — retry %d/%d",
+                    backend_label or url,
+                    attempt + 1,
+                    _PROXY_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(_proxy_retry_delay(attempt))
+                continue
+
+            async def replay_first_chunk(first=first_chunk, remainder=iterator):
+                yield first
+                async for item in remainder:
+                    yield item
+
+            return upstream, replay_first_chunk()
         except httpx.RequestError as exc:
             last_exc = exc
             if attempt >= _PROXY_MAX_ATTEMPTS - 1:
@@ -2597,7 +2637,7 @@ async def _smart_proxy_forward(
             if is_stream:
                 # Plataforma e local: SSE ponta a ponta. Retry só na abertura
                 # (antes de entregar bytes ao cliente).
-                upstream = await _proxy_open_stream_with_retry(
+                upstream, upstream_byte_iter = await _proxy_open_stream_with_retry(
                     target_url,
                     content=forward_body,
                     headers=headers,
@@ -2664,17 +2704,39 @@ async def _smart_proxy_forward(
                 async def stream_generator(response=upstream, dec=decision):
                     usage_holder: Dict[str, Any] = {}
                     try:
+                        guarded_stream = guard_sse_stream(
+                            upstream_byte_iter or response.aiter_bytes()
+                        )
+                        guarded_stream = repair_plain_json_tool_call_stream(
+                            guarded_stream, payload_to_forward.get("tools")
+                        )
                         if dec.rewrite:
                             # Reescrita por linha (ADR-006)
                             async for chunk in rewrite_sse_stream(
-                                response.aiter_bytes(), client_model or dec.external_model,
+                                guarded_stream, client_model or dec.external_model,
                                 usage_holder,
                             ):
                                 yield chunk
                         else:
                             # Backend principal: repasse bruto, sem parse
-                            async for chunk in response.aiter_bytes():
+                            async for chunk in guarded_stream:
                                 yield chunk
+                    except (httpx.ReadError, httpx.ReadTimeout) as exc:
+                        # Depois que bytes chegaram nao e seguro reiniciar a
+                        # chamada escondendo duplicacoes/tool calls. Feche a
+                        # resposta como falha de transporte e abra o circuito:
+                        # o Cursor refaz a chamada na proxima conta livre.
+                        logger.error(
+                            "[proxy] stream incompleto backend=%s: %s",
+                            dec.backend_id,
+                            exc,
+                        )
+                        await proxy_router.mark_backend_unavailable(
+                            dec.backend_id,
+                            _PROXY_BACKEND_COOLDOWN_SECONDS,
+                            reason="incomplete_stream",
+                        )
+                        raise
                     finally:
                         await response.aclose()
                         await proxy_router.release(
@@ -2926,7 +2988,7 @@ async def openai_proxy(
             is_stream = bool(data.get("stream"))
             if is_stream:
                 # Plataforma e local: SSE ponta a ponta. Retry só na abertura.
-                upstream = await _proxy_open_stream_with_retry(
+                upstream, upstream_byte_iter = await _proxy_open_stream_with_retry(
                     target_url,
                     content=body,
                     headers=headers,
@@ -2950,16 +3012,20 @@ async def openai_proxy(
                     stream=True,
                 )
 
-                async def stream_generator(response=upstream):
+                async def stream_generator(
+                    response=upstream, byte_iter=upstream_byte_iter
+                ):
                     try:
-                        byte_iter = response.aiter_bytes()
+                        guarded_stream = guard_sse_stream(
+                            byte_iter or response.aiter_bytes()
+                        )
                         if client_facing_model:
                             async for chunk in rewrite_sse_stream(
-                                byte_iter, client_facing_model
+                                guarded_stream, client_facing_model
                             ):
                                 yield chunk
                         else:
-                            async for chunk in byte_iter:
+                            async for chunk in guarded_stream:
                                 yield chunk
                     finally:
                         await response.aclose()

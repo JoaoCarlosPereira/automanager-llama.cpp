@@ -532,3 +532,31 @@ class TestProviderSafeReassign:
         assert decision is not None
         assert decision.provider == "codex"
         assert decision.backend_id == "platform:codex"
+
+    def test_new_request_uses_free_ollama_sibling_before_other_platform(self):
+        """Overflow do principal deve permanecer no pool multi-account."""
+        router, _ = self._router_with_cli_and_cloud()
+        router._config.get_smart_proxy_settings.return_value = {
+            "primary_backend_id": "platform:ollama-cloud",
+            "primary_model_path": "",
+            "max_wait_seconds": 1,
+        }
+        settings = router._settings()
+        primary = router._find_primary(router._routing_instances(), settings)
+        assert primary is not None
+        asyncio.run(router.acquire(primary["backend_id"]))
+        try:
+            decision = asyncio.run(
+                router.resolve(
+                    headers={"x-automanager-session-id": "new-request"},
+                    body={"model": "", "messages": [{"role": "user", "content": "oi"}]},
+                    client_ip="127.0.0.1",
+                    user_agent="Cursor",
+                )
+            )
+            assert decision.provider == "ollama-cloud"
+            assert decision.backend_id != primary["backend_id"]
+        finally:
+            asyncio.run(router.release(primary["backend_id"]))
+            if "decision" in locals():
+                asyncio.run(router.release(decision.backend_id))

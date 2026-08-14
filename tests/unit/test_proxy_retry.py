@@ -20,7 +20,12 @@ import llama_manager
 from config_manager import ConfigManager
 from context_optimizer import ContextTooLargeError
 from llama_manager import app, auth_manager
-from proxy_router import ProxyRouter
+from proxy_router import (
+    ProxyRouter,
+    guard_sse_stream,
+    infer_json_tool_call,
+    repair_plain_json_tool_call_stream,
+)
 
 client = TestClient(app)
 
@@ -154,6 +159,82 @@ def image_body(tag=None, model="main.gguf"):
         },
     ]
     return body
+
+
+@pytest.mark.asyncio
+async def test_guard_sse_rejects_clean_eof_without_completion_marker():
+    async def truncated_stream():
+        yield b'data: {"choices":[{"delta":{"content":"metade"}}]}\n\n'
+
+    chunks = []
+    with pytest.raises(httpx.ReadError, match="sem marcador de conclusao"):
+        async for chunk in guard_sse_stream(truncated_stream()):
+            chunks.append(chunk)
+
+    assert b"metade" in b"".join(chunks)
+
+
+@pytest.mark.asyncio
+async def test_guard_sse_accepts_finish_reason_without_done_sentinel():
+    async def completed_stream():
+        yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+
+    chunks = [chunk async for chunk in guard_sse_stream(completed_stream())]
+    assert b"finish_reason" in b"".join(chunks)
+
+
+def _grep_tool_schema():
+    return [{
+        "type": "function",
+        "function": {
+            "name": "Grep",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "pattern": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "output_mode": {
+                        "type": "string",
+                        "enum": ["content", "files_with_matches", "count"],
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    }]
+
+
+def test_infer_json_tool_call_requires_one_unambiguous_schema():
+    content = json.dumps({
+        "path": ".",
+        "pattern": "discord",
+        "glob": "*.log",
+        "output_mode": "files_with_matches",
+    })
+    assert infer_json_tool_call(content, _grep_tool_schema()) == (
+        "Grep",
+        json.loads(content),
+    )
+    assert infer_json_tool_call(content, _grep_tool_schema() * 2) is None
+
+
+@pytest.mark.asyncio
+async def test_plain_json_response_is_repaired_as_streamed_tool_call():
+    async def model_stream():
+        yield b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
+        yield b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"{\\"pattern\\":\\"discord\\",\\"path\\":\\".\\"}"},"finish_reason":null}]}\n\n'
+        yield b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        yield b'data: [DONE]\n\n'
+
+    repaired = b"".join([
+        chunk async for chunk in repair_plain_json_tool_call_stream(
+            model_stream(), _grep_tool_schema()
+        )
+    ])
+    assert b'"name": "Grep"' in repaired
+    assert b'"finish_reason": "tool_calls"' in repaired
+    assert b'"finish_reason":"stop"' not in repaired
 
 
 class TestProxyRetryAndFailover:
