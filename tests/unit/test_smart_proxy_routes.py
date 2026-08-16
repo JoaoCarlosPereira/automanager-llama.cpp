@@ -17,6 +17,7 @@ from llama_manager import app, auth_manager
 from proxy_router import ProxyRouter
 from platform_manager import (
     clear_platform_listing_registry,
+    platform_model_listing_entry,
     platform_model_listing_id,
     register_platform_bare_model,
 )
@@ -292,6 +293,42 @@ class TestSmartRouting:
         )
         sent_payload = json.loads(mock_post.await_args.kwargs["content"])
         assert sent_payload["model"] == "codex-target"
+        assert response.json()["model"] == "gpt-5.5"
+
+    @patch("llama_manager._ensure_platform_listing_registry", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_model_alias_uses_bare_target_after_platform_listing_populates_registry(
+        self, mock_post, mock_ensure_registry, smart_env
+    ):
+        platform = make_platform_instance()
+        smart_env.holder["instances"].append(platform)
+        smart_env.cfg.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "default_model": "gpt-5.6-luna"},
+        )
+        smart_env.cfg.set_model_alias("gpt-5.5", "gpt-5.6-sol")
+        clear_platform_listing_registry()
+        platform_model_listing_entry(
+            {"id": "gpt-5.6-sol", "owned_by": "openai"},
+            provider="codex",
+        )
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-alias", "model": "gpt-5.6-sol"}
+        )
+        try:
+            response = client.post(
+                "/v1/chat/completions",
+                json=chat_body(model="gpt-5.5"),
+            )
+        finally:
+            clear_platform_listing_registry()
+
+        assert response.status_code == 200
+        assert mock_post.await_args.args[0] == (
+            "http://127.0.0.1:9100/v1/chat/completions"
+        )
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        assert sent_payload["model"] == "gpt-5.6-sol"
         assert response.json()["model"] == "gpt-5.5"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)

@@ -1943,20 +1943,13 @@ class ProxyRouter:
 
             # Revalidar capacidade de contexto do modelo
             needed_ctx = int(decision.prompt_tokens_estimated * TOKEN_ESTIMATE_MARGIN)
-            settings = self._settings()
-            configured_primary = self._find_primary(instances, settings)
-            configured_backend_id = (
-                self._backend_id(configured_primary) if configured_primary else ""
-            )
-            configured_primary_active = (
-                configured_primary is not None and self._backend_available(configured_primary)
-            )
-            is_primary = bool(
-                configured_primary_active
-                and self._backend_id(target_inst) == configured_backend_id
-            )
-            internal_model = self._internal_model(
-                target_inst, decision.external_model, is_primary
+            # O planejamento ja resolveu se a plataforma e primaria dinamica ou
+            # secundaria e escolheu o modelo concreto. Recalcular isso apenas
+            # contra o principal global pode trocar, no commit, Sol pelo modelo
+            # padrao Luna sem alterar a decisao encaminhada.
+            internal_model = decision.internal_model
+            is_primary = internal_model == self._internal_model(
+                target_inst, decision.external_model, True
             )
             if needed_ctx > self._ctx_per_slot(target_inst, internal_model):
                 raise StaleRoutePlan(plan)
@@ -1978,13 +1971,36 @@ class ProxyRouter:
                 )
             else:
                 old_port = existing.backend_port
+                old_routing_state = (
+                    existing.backend_port,
+                    existing.backend_model_path,
+                    existing.external_model,
+                    existing.internal_model,
+                    existing.backend_id,
+                    existing.backend_type,
+                    existing.provider,
+                )
                 existing.backend_port = target_inst["port"]
                 existing.backend_model_path = target_inst.get("model_path") or ""
+                existing.external_model = decision.external_model
                 existing.internal_model = internal_model
                 existing.backend_id = self._backend_id(target_inst)
                 existing.backend_type = self._backend_type(target_inst)
                 existing.provider = target_inst.get("provider")
+                if decision.detected_tag is not None:
+                    existing.detected_tag = decision.detected_tag
                 self._touch_session_locked(existing)
+                new_routing_state = (
+                    existing.backend_port,
+                    existing.backend_model_path,
+                    existing.external_model,
+                    existing.internal_model,
+                    existing.backend_id,
+                    existing.backend_type,
+                    existing.provider,
+                )
+                if new_routing_state != old_routing_state:
+                    self._save_sessions()
                 if old_port != target_inst["port"] and decision.reason.startswith("reassign"):
                     reason_name = (
                         "backend_down"
@@ -2226,6 +2242,7 @@ class ProxyRouter:
         ) -> RouteDecision:
             key = key or affinity_key
             if apply_side_effects:
+                created = session is None
                 if session is None:
                     session = self._register_session_locked(
                         key, instance, external_model, tag,
@@ -2236,7 +2253,32 @@ class ProxyRouter:
                         "selected_backend=%s reason=%s",
                         key, instance["port"], reason,
                     )
+                current_internal_model = self._internal_model(
+                    instance, external_model, _is_primary_backend(instance)
+                )
+                routing_state = {
+                    "backend_port": instance["port"],
+                    "backend_model_path": instance.get("model_path") or "",
+                    "external_model": external_model,
+                    "internal_model": current_internal_model,
+                    "backend_id": self._backend_id(instance),
+                    "backend_type": self._backend_type(instance),
+                    "provider": instance.get("provider"),
+                }
+                changed = any(
+                    getattr(session, field) != value
+                    for field, value in routing_state.items()
+                )
+                for field, value in routing_state.items():
+                    setattr(session, field, value)
+                if tag is not None:
+                    session.detected_tag = tag
                 self._touch_session_locked(session)
+                if changed and not created:
+                    # Mudancas de modelo/backend precisam aparecer de imediato
+                    # no painel e sobreviver a um restart, sem aguardar o lote
+                    # periodico de persistencia dos contadores.
+                    self._save_sessions()
                 fk = self._flight_key(instance)
                 self._in_flight[fk] = self._in_flight.get(fk, 0) + 1
             return _decision(instance, sticky_hit, reason, key=key)

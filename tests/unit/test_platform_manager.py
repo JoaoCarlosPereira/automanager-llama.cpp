@@ -117,6 +117,16 @@ class TestPlatformModelListing:
         register_platform_model_listings("gemini-3.1-pro-low", "antigravity")
         assert resolve_platform_listing_model("antigravity-31prolow.gguf") == "gemini-3.1-pro-low"
 
+    def test_listing_registration_binds_bare_model_to_provider(self):
+        register_platform_model_listings("gpt-5.6-sol", "codex")
+
+        assert platform_provider_for_listing("gpt-5.6-sol") == "codex"
+
+    def test_synthetic_alias_listing_does_not_claim_bare_model(self):
+        register_platform_model_listings("gpt-5.6-sol", "platform")
+
+        assert platform_provider_for_listing("gpt-5.6-sol") is None
+
     def test_bare_model_id_can_be_bound_to_ollama_cloud(self):
         register_platform_bare_model("gemma4:31b", "ollama-cloud")
         assert platform_provider_for_listing("gemma4:31b") == "ollama-cloud"

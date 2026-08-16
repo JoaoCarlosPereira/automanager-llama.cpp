@@ -252,10 +252,19 @@ def platform_model_listing_id(model_id: str, provider: str = "") -> str:
 
 
 def register_platform_model_listings(bare_id: str, provider: str = "") -> str:
-    """Registra variantes de listagem (atual + legado) e retorna o ID principal."""
+    """Registra o ID real e variantes de listagem; retorna o ID principal.
+
+    O roteador recebe aliases resolvidos para o ID real (por exemplo,
+    ``gpt-5.6-sol``), enquanto clientes como o Cursor usam o slug opaco da
+    listagem.  Ambos precisam apontar para o mesmo provedor.  ``platform`` e
+    apenas o provedor sintetico usado quando o alvo de um alias ainda nao foi
+    encontrado no catalogo e, portanto, nao deve reivindicar o ID real.
+    """
     bare = _bare_platform_model_id(bare_id)
     if not bare:
         return bare_id
+    if provider and provider.strip().lower() != "platform":
+        register_platform_listing(bare, bare, provider)
     primary = platform_model_listing_id(bare, provider)
     register_platform_listing(primary, bare, provider)
     legacy = f"{bare}{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"
@@ -286,7 +295,8 @@ def is_platform_listing_id(
         return False
     if local_model_ids and model_name in local_model_ids:
         return False
-    if lookup_platform_bare_id(model_name):
+    mapped = lookup_platform_bare_id(model_name)
+    if mapped and mapped != model_name:
         return True
     if model_name.endswith(f"{PLATFORM_MODEL_LISTING_MARKER}{PLATFORM_MODEL_LISTING_SUFFIX}"):
         return True

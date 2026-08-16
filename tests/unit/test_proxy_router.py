@@ -469,6 +469,32 @@ class TestSelection:
         assert d2.reason == "sticky"
 
     @pytest.mark.asyncio
+    async def test_sticky_session_updates_models_when_request_model_changes(
+        self, router, tmp_path
+    ):
+        headers = {"x-automanager-session-id": "same-conversation"}
+        first = await resolve(
+            router, headers=headers, body=body_with(model="main.gguf")
+        )
+        await router.release(first.backend_id)
+
+        second = await resolve(
+            router, headers=headers, body=body_with(model="aux0.gguf")
+        )
+        await router.release(second.backend_id)
+
+        session = (await router.sessions())[0]
+        assert second.internal_model == "aux0.gguf"
+        assert session.external_model == "aux0.gguf"
+        assert session.internal_model == "aux0.gguf"
+
+        persisted = json.loads(
+            (tmp_path / "proxy_sessions.json").read_text(encoding="utf-8")
+        )["sessions"][0]
+        assert persisted["external_model"] == "aux0.gguf"
+        assert persisted["internal_model"] == "aux0.gguf"
+
+    @pytest.mark.asyncio
     async def test_context_constraint_excludes_small_secondary(
         self, router, status_holder
     ):
