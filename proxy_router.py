@@ -861,6 +861,7 @@ class ProxyRouter:
         self,
         exclude_backend_ids: Optional[set] = None,
         include_unavailable: bool = False,
+        status: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Build virtual backend dicts for available Ollama Cloud accounts.
 
@@ -871,6 +872,8 @@ class ProxyRouter:
         * ``port`` is a synthetic negative key derived from account id.
         """
         if self._ollama_cloud_account_manager is None:
+            return []
+        if not self._ollama_cloud_platform_running(status):
             return []
 
         candidates = []
@@ -928,6 +931,34 @@ class ProxyRouter:
                 "ollama_cloud_account": account,
             })
         return candidates
+
+    def _ollama_cloud_platform_running(
+        self, status: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Return whether the Ollama Cloud integration is enabled at runtime.
+
+        Older/custom ``get_status`` providers may not expose platform states;
+        in that case keep the historical behaviour.  Once the states are
+        present, however, they are authoritative so stopping the integration
+        also removes its per-account virtual backends from proxy routing.
+        """
+        current = status if status is not None else (self._get_status() or {})
+        platforms = current.get("platforms")
+        if not isinstance(platforms, list):
+            return True
+        state = next(
+            (
+                item
+                for item in platforms
+                if item.get("backend_id") == "platform:ollama-cloud"
+            ),
+            None,
+        )
+        return bool(
+            state
+            and state.get("active")
+            and state.get("status") == "running"
+        )
 
     def _pick_ollama_cloud_least_busy(
         self,
@@ -1097,11 +1128,16 @@ class ProxyRouter:
         self, *, include_unavailable_ollama: bool = False
     ) -> List[Dict[str, Any]]:
         """Return local/sidecar instances plus direct Ollama Cloud accounts."""
-        instances = self._running_instances()
+        status = self._get_status() or {}
+        instances = [
+            inst for inst in status.get("instances", [])
+            if inst.get("status") == "running" and inst.get("port") is not None
+        ]
         known_ids = {self._backend_id(inst) for inst in instances}
         instances.extend(
             inst for inst in self._ollama_cloud_candidates(
-                include_unavailable=include_unavailable_ollama
+                include_unavailable=include_unavailable_ollama,
+                status=status,
             )
             if self._backend_id(inst) not in known_ids
         )

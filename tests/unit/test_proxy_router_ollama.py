@@ -310,6 +310,40 @@ class TestCandidatesIncludesOllamaCloud:
             c.get("provider") == "ollama-cloud" for c in candidates
         )
 
+    def test_stopped_ollama_cloud_is_excluded_from_proxy(self):
+        acc = _make_account("a1")
+        mgr = _make_manager([acc])
+        router = _make_router(mgr)
+        router._get_status = lambda: {
+            "instances": [],
+            "platforms": [{
+                "backend_id": "platform:ollama-cloud",
+                "active": False,
+                "status": "stopped",
+            }],
+        }
+
+        assert router._routing_instances() == []
+        assert router.backends_snapshot() == []
+
+    def test_running_ollama_cloud_is_included_in_proxy(self):
+        acc = _make_account("a1")
+        mgr = _make_manager([acc])
+        router = _make_router(mgr)
+        router._get_status = lambda: {
+            "instances": [],
+            "platforms": [{
+                "backend_id": "platform:ollama-cloud",
+                "active": True,
+                "status": "running",
+            }],
+        }
+
+        instances = router._routing_instances()
+
+        assert len(instances) == 1
+        assert instances[0]["backend_id"] == "platform:ollama-cloud:a1"
+
 
 # ---------------------------------------------------------------------------
 # _pick_least_busy prioritizes non-cooldown accounts
