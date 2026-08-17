@@ -106,6 +106,20 @@ DEFAULT_N_GPU_LAYERS = 99  # Default llama-server --ngl value
 # No MAX_CPU_WEIGHT_PCT — CPU uses whatever is needed as spill-over
 MODEL_RUNTIME_OVERHEAD_MB = 256  # mmap/metadata headroom on top of GGUF weights
 MODEL_RUNTIME_OVERHEAD_RATIO = 0.05  # 5% of file size, whichever is larger
+SMART_CONTEXT_FALLBACKS = (
+    524288,
+    458752,
+    393216,
+    327680,
+    278528,
+    262144,
+    131072,
+    65536,
+    32768,
+    16384,
+    8192,
+    4096,
+)
 
 
 class AutoBalanceCancelled(Exception):
@@ -1594,12 +1608,54 @@ class AutoBalanceProber:
         self._model_path = request.path
         self._smart_calibration = bool(getattr(request, "smart_calibration", False))
         try:
-            success, weights, message, failure = self._discover_empirical(request)
+            calibrated_request = request
+            success, weights, message, failure = self._discover_empirical(
+                calibrated_request
+            )
+
+            # Smart calibration may change every field that is not pinned. If
+            # the exact request does not fit, retry safer cache/context choices
+            # before declaring the hardware incapable. The first successful
+            # candidate is the largest context actually proven by a real probe.
+            if (
+                not success
+                and getattr(request, "smart_calibration", False)
+                and failure
+                and failure.get("code") == FAILURE_HARDWARE_CAPACITY
+            ):
+                for candidate in self._smart_fallback_requests(request):
+                    self._raise_if_cancelled()
+                    _auto_balance_log(
+                        "SMART FALLBACK: tentando contexto=%d cache=%s/%s",
+                        candidate.context_size,
+                        candidate.cache_type_k,
+                        candidate.cache_type_v,
+                        level="warn",
+                    )
+                    success, weights, message, failure = self._discover_empirical(
+                        candidate
+                    )
+                    if success:
+                        calibrated_request = candidate
+                        message = (
+                            f"{message} Configuração Smart viável em contexto "
+                            f"{candidate.context_size} com cache "
+                            f"{candidate.cache_type_k}/{candidate.cache_type_v}."
+                        )
+                        break
 
             result_data = failure
             if success and getattr(request, "smart_calibration", False):
                 result_data = failure or {}
-                result_data["proposal"] = self._generate_smart_proposal(request, weights)
+                proposal = self._generate_smart_proposal(
+                    calibrated_request, weights
+                )
+                # Context/cache changes must be values that the empirical
+                # calibration actually loaded, not an untested heuristic bump.
+                proposal["context_size"] = calibrated_request.context_size
+                proposal["cache_type_k"] = calibrated_request.cache_type_k
+                proposal["cache_type_v"] = calibrated_request.cache_type_v
+                result_data["proposal"] = proposal
 
             return success, weights, message, result_data
         except AutoBalanceCancelled:
@@ -1608,6 +1664,46 @@ class AutoBalanceProber:
             self.process_manager.stop(self.port)
             msg, failure = self.build_server_crash_failure(request, crash)
             return False, request.gpu_weights, msg, failure
+
+    @staticmethod
+    def _smart_fallback_requests(request) -> List[Any]:
+        """Safer unpinned configurations, ordered by expected performance."""
+        pinned = request.pinned_fields or {}
+        candidates: List[Any] = []
+        seen: Set[Tuple[int, str, str]] = set()
+
+        def add(context_size: int, cache_k: str, cache_v: str) -> None:
+            key = (context_size, cache_k, cache_v)
+            original = (
+                request.context_size,
+                request.cache_type_k,
+                request.cache_type_v,
+            )
+            if key == original or key in seen:
+                return
+            seen.add(key)
+            candidate = request.model_copy(deep=True)
+            candidate.context_size = context_size
+            candidate.cache_type_k = cache_k
+            candidate.cache_type_v = cache_v
+            candidates.append(candidate)
+
+        cache_mutable = not pinned.get("cache_type")
+        context_mutable = not pinned.get("context_size")
+        safe_k = "q4_0" if cache_mutable else request.cache_type_k
+        safe_v = "q4_0" if cache_mutable else request.cache_type_v
+
+        # Quantizing KV at the requested context preserves the user's desired
+        # context and is therefore preferable to reducing the context window.
+        if cache_mutable:
+            add(request.context_size, safe_k, safe_v)
+
+        if context_mutable:
+            for context_size in SMART_CONTEXT_FALLBACKS:
+                if context_size < request.context_size:
+                    add(context_size, safe_k, safe_v)
+
+        return candidates
 
     def _generate_smart_proposal(self, request, final_weights: List[GPUWeight]) -> dict:
         """Heurística para sugerir a melhor performance baseada na VRAM sobrando."""
@@ -1957,7 +2053,9 @@ class AutoBalanceProber:
             cpu_config=cpu_config,
         )
 
-        # CPU completamente desabilitado durante Fase 2 (GPU-only)
+        # Se a Fase 1 precisou de CPU, a Fase 2 pode tentar recuperar esse
+        # orçamento para as GPUs, mas deve preservar o último split READY caso
+        # a tentativa GPU-only dê OOM.
         _auto_balance_log(
             "=== Fase 2 PREPARANDO ===\n"
             "  trimmed={%s} main_index=%d cpu_enabled=%s",
@@ -1965,13 +2063,20 @@ class AutoBalanceProber:
             main_index,
             cpu_enabled,
         )
-        phase2_cpu_config = {
-            "enabled": False,
-            "pinned": False,
-            "weight": 0,
-            "cpu_spill_allowed": False,
-        }
-        _auto_balance_log("=== Fase 2 INICIO (maximizar VRAM, GPU-only) ===")
+        phase2_cpu_config = (
+            {**cpu_config, "cpu_spill_allowed": True}
+            if cpu_weight > 0
+            else {
+                "enabled": False,
+                "pinned": False,
+                "weight": 0,
+                "cpu_spill_allowed": False,
+            }
+        )
+        _auto_balance_log(
+            "=== Fase 2 INICIO (maximizar VRAM%s) ===",
+            ", preservando CPU comprovada" if cpu_weight > 0 else ", GPU-only",
+        )
         optimized, attempt, cpu_weight = self._maximize_vram_per_gpu(
             request,
             all_gpus,
@@ -2007,19 +2112,26 @@ class AutoBalanceProber:
             cpu_config=cpu_config,
         )
 
-        optimized, attempt = self._fine_tune_main_gpu_weight(
-            request,
-            all_gpus,
-            main_index,
-            spill_order,
-            optimized,
-            vram_by_index,
-            pinned_map,
-            active_indices,
-            attempt,
-            cpu_config,
-            cpu_weight,
-        )
+        if cpu_weight > 0:
+            _auto_balance_log(
+                "Fase 3: CPU offload %d%% faz parte do último split READY — "
+                "pulando fine-tuning GPU-only",
+                cpu_weight,
+            )
+        else:
+            optimized, attempt = self._fine_tune_main_gpu_weight(
+                request,
+                all_gpus,
+                main_index,
+                spill_order,
+                optimized,
+                vram_by_index,
+                pinned_map,
+                active_indices,
+                attempt,
+                cpu_config,
+                cpu_weight,
+            )
         self._raise_if_cancelled()
 
         budget_selected = self._budget_selected_indices(
@@ -2765,7 +2877,14 @@ class AutoBalanceProber:
                     best = trial
                     best_vram = vram_pct
 
-                if TARGET_VRAM_PCT_MIN <= vram_pct <= TARGET_VRAM_PCT_MAX:
+                # The principal is the primary optimization objective: keep
+                # probing upward until OOM/the hard VRAM ceiling, even after it
+                # first enters the target band. Secondary GPUs may stop once
+                # they reach the band because they only absorb the remainder.
+                if (
+                    target_idx != main_index
+                    and TARGET_VRAM_PCT_MIN <= vram_pct <= TARGET_VRAM_PCT_MAX
+                ):
                     break
 
                 lo = mid + 1

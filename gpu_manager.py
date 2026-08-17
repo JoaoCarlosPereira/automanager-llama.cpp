@@ -281,13 +281,26 @@ class GPUDetector:
 
         gpus: List[Dict[str, Any]] = []
         try:
-            output = subprocess.check_output(
-                ["nvidia-smi",
-                 "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
-                 "temperature.gpu,power.draw",
-                 "--format=csv,noheader,nounits"],
-                timeout=10,
-            ).decode()
+            query = (
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
+                "temperature.gpu,power.draw,pcie.link.width.current"
+            )
+            try:
+                output = subprocess.check_output(
+                    ["nvidia-smi", query, "--format=csv,noheader,nounits"],
+                    timeout=10,
+                ).decode()
+            except subprocess.CalledProcessError:
+                # Older drivers may not expose PCIe link width. Keep the other
+                # GPU metrics available and let the UI show an unknown width.
+                legacy_query = (
+                    "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
+                    "temperature.gpu,power.draw"
+                )
+                output = subprocess.check_output(
+                    ["nvidia-smi", legacy_query, "--format=csv,noheader,nounits"],
+                    timeout=10,
+                ).decode()
             for line in output.strip().split("\n"):
                 if not line.strip():
                     continue
@@ -295,6 +308,11 @@ class GPUDetector:
                 if len(parts) >= 6:
                     mem_used = float(parts[2])
                     mem_total = float(parts[3])
+                    pcie_width = None
+                    if len(parts) >= 7:
+                        raw_width = parts[6].lower().removeprefix("x")
+                        if raw_width.isdigit() and int(raw_width) > 0:
+                            pcie_width = int(raw_width)
                     gpus.append({
                         "index": int(parts[0]),
                         "util": parts[1],
@@ -305,6 +323,7 @@ class GPUDetector:
                         ) if mem_total > 0 else 0,
                         "temp": parts[4],
                         "power": parts[5].split(".")[0] if "." in parts[5] else parts[5],
+                        "pcie_width": pcie_width,
                     })
         except Exception as e:
             logger.error(f"GPU metrics error: {e}")

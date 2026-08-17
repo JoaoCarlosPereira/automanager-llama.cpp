@@ -1140,6 +1140,72 @@ class TestBudgetSelectedIndices:
 
 
 class TestPhase2MaximizeFloors:
+    def test_phase2_keeps_probing_main_after_entering_vram_target_band(self):
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        gpu_manager = MagicMock()
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), gpu_manager, MagicMock()
+        )
+        state = {"main_weight": 70}
+
+        def probe(_request, weight_map, *_args, **_kwargs):
+            state["main_weight"] = weight_map[MAIN_GPU_INDEX]
+            return "ready" if state["main_weight"] <= 95 else "oom"
+
+        # Entering 95% VRAM is not enough: the Smart must continue searching
+        # for the largest empirically viable percentage on the main GPU.
+        prober._probe_start = MagicMock(side_effect=probe)
+        gpu_manager.get_metrics.side_effect = lambda: {
+            "gpus": [{"index": MAIN_GPU_INDEX, "vram_pct": 95.0}]
+        }
+
+        with patch("auto_balance.time.sleep", return_value=None):
+            optimized, _, cpu_weight = prober._maximize_vram_per_gpu(
+                MagicMock(),
+                THREE_GPU_HARDWARE,
+                MAIN_GPU_INDEX,
+                SPILL_ORDER_3090_MAIN,
+                {MAIN_GPU_INDEX: 70},
+                {0: 16384, 1: 16384, 2: 24576},
+                {},
+                0,
+                CPU_VALVE_ON_SPILL,
+                30,
+                active_indices=[MAIN_GPU_INDEX],
+            )
+
+        assert optimized == {MAIN_GPU_INDEX: 95}
+        assert cpu_weight == 5
+        assert any(
+            call.args[1][MAIN_GPU_INDEX] > 85
+            for call in prober._probe_start.call_args_list
+        )
+
+    def test_phase2_keeps_last_ready_cpu_split_when_gpu_reclaim_ooms(self):
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), MagicMock(), MagicMock()
+        )
+        prober._probe_start = MagicMock(return_value="oom")
+        optimized, _, cpu_weight = prober._maximize_vram_per_gpu(
+            MagicMock(),
+            THREE_GPU_HARDWARE,
+            MAIN_GPU_INDEX,
+            SPILL_ORDER_3090_MAIN,
+            {MAIN_GPU_INDEX: 70},
+            {0: 16384, 1: 16384, 2: 24576},
+            {},
+            0,
+            CPU_VALVE_ON_SPILL,
+            30,
+            active_indices=[MAIN_GPU_INDEX],
+        )
+
+        assert optimized == {MAIN_GPU_INDEX: 70}
+        assert cpu_weight == 30
+
     def test_maximize_floors_allow_secondary_down_to_zero(self):
         spill = SPILL_ORDER_3090_MAIN
         weight_map = {2: 90, 0: 10}

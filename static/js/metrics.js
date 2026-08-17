@@ -680,7 +680,10 @@ function renderMiniGpuCards(gpus) {
                         <div data-gpu-util-bar class="h-full bg-blue-500 transition-all duration-700" style="width: 0%"></div>
                     </div>
                 </div>
-                <p data-gpu-mem class="text-ui-label text-slate-400 font-mono mt-1">0MB</p>
+                <div class="flex items-center justify-between gap-2 mt-1 text-ui-label text-slate-400 font-mono">
+                    <span data-gpu-mem>0MB</span>
+                    <span data-gpu-pcie>PCIe --</span>
+                </div>
             </div>
         `).join('');
     }
@@ -688,10 +691,12 @@ function renderMiniGpuCards(gpus) {
     for (const g of gpus) {
         const card = miniGpu.querySelector(`[data-gpu-card="${g.index}"]`);
         if (!card) continue;
+        const pcie = card.querySelector('[data-gpu-pcie]');
         const temp = card.querySelector('[data-gpu-temp]');
         const util = card.querySelector('[data-gpu-util]');
         const bar = card.querySelector('[data-gpu-util-bar]');
         const mem = card.querySelector('[data-gpu-mem]');
+        if (pcie) pcie.textContent = g.pcie_width ? `PCIe x${g.pcie_width}` : 'PCIe --';
         if (temp) temp.textContent = `${g.temp || '--'}°C`;
         if (util) util.textContent = `${g.util}%`;
         if (bar) bar.style.width = `${g.util}%`;

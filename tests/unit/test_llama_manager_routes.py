@@ -567,7 +567,22 @@ class TestContextAndBatchPresets:
     """Tests for context and batch preset constants."""
 
     def test_context_preset_values(self):
-        assert llama_manager.CONTEXT_PRESET_VALUES == [4096, 8192, 16384, 32768, 65536, 131072, "custom"]
+        assert llama_manager.CONTEXT_PRESET_VALUES == [
+            4096,
+            8192,
+            16384,
+            32768,
+            65536,
+            131072,
+            262144,
+            278528,
+            327680,
+            393216,
+            458752,
+            524288,
+            1048576,
+            "custom",
+        ]
 
     def test_context_k_multiplier(self):
         assert llama_manager.CONTEXT_K_MULTIPLIER == 1024

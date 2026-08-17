@@ -62,8 +62,8 @@ class TestGPUDetectorGetMetrics:
     def test_get_metrics_parses_valid_nvidia_smi_output(self):
         detector = GPUDetector()
         smi_output = (
-            "0, 42, 1024, 8192, 65, 125.50\n"
-            "1, 0, 0, 24576, 40, 70\n"
+            "0, 42, 1024, 8192, 65, 125.50, 16\n"
+            "1, 0, 0, 24576, 40, 70, 8\n"
         )
         total_bytes = 16 * 1024 * 1024 * 1024
         used_bytes = 8 * 1024 * 1024 * 1024
@@ -114,6 +114,7 @@ class TestGPUDetectorGetMetrics:
                     "vram_pct": 12.5,
                     "temp": "65",
                     "power": "125",
+                    "pcie_width": 16,
                 },
                 {
                     "index": 1,
@@ -123,6 +124,7 @@ class TestGPUDetectorGetMetrics:
                     "vram_pct": 0.0,
                     "temp": "40",
                     "power": "70",
+                    "pcie_width": 8,
                 },
             ],
         }
@@ -130,7 +132,7 @@ class TestGPUDetectorGetMetrics:
             [
                 "nvidia-smi",
                 "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
-                "temperature.gpu,power.draw",
+                "temperature.gpu,power.draw,pcie.link.width.current",
                 "--format=csv,noheader,nounits",
             ],
             timeout=10,
@@ -162,6 +164,38 @@ class TestGPUDetectorGetMetrics:
             "ram_used_mb": 0,
             "gpus": [],
         }
+
+    def test_get_metrics_falls_back_when_driver_lacks_pcie_width(self):
+        detector = GPUDetector()
+        legacy_output = b"0, 42, 1024, 8192, 65, 125.50\n"
+        virtual_memory = MagicMock(
+            percent=25.0,
+            total=16 * 1024 * 1024 * 1024,
+            available=12 * 1024 * 1024 * 1024,
+        )
+
+        with patch(
+            "gpu_manager.subprocess.check_output",
+            side_effect=[
+                subprocess.CalledProcessError(1, "nvidia-smi"),
+                legacy_output,
+            ],
+        ) as mock_check_output, patch(
+            "gpu_manager.psutil.cpu_percent", return_value=10.0
+        ), patch(
+            "gpu_manager.psutil.virtual_memory", return_value=virtual_memory
+        ), patch.object(
+            detector,
+            "detect_cpu_info",
+            return_value=CPUInfo(
+                name="Test CPU", ram_total_mb=16384, ram_used_mb=4096
+            ),
+        ):
+            result = detector.get_metrics()
+
+        assert result["gpus"][0]["pcie_width"] is None
+        assert mock_check_output.call_count == 2
+        assert "pcie.link.width.current" not in mock_check_output.call_args_list[1].args[0][1]
 
     def test_get_metrics_keeps_system_ram_when_nvidia_smi_fails(self):
         detector = GPUDetector()

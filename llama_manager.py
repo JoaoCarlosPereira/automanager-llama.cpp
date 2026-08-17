@@ -752,7 +752,22 @@ def _openai_auth_error() -> JSONResponse:
     )
 
 # Context and Batch presets for the UI
-CONTEXT_PRESET_VALUES = [4096, 8192, 16384, 32768, 65536, 131072, "custom"]
+CONTEXT_PRESET_VALUES = [
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    278528,
+    327680,
+    393216,
+    458752,
+    524288,
+    1048576,
+    "custom",
+]
 CONTEXT_K_MULTIPLIER = 1024
 
 
@@ -3677,7 +3692,10 @@ async def index(request: Request):
     # Presets for selects
     ctx_opts = ""
     for val in CONTEXT_PRESET_VALUES:
-        label = f"{val}K" if isinstance(val, int) else "Personalizado"
+        if isinstance(val, int):
+            label = f"{val // 1048576}M" if val >= 1048576 else f"{val // 1024}K"
+        else:
+            label = "Personalizado"
         val_attr = val if isinstance(val, int) else "custom"
         selected = 'selected' if val == 65536 else ''
         ctx_opts += f'<option value="{val_attr}" class="bg-slate-900" {selected}>{label}</option>'

@@ -2,7 +2,11 @@
 import threading
 from unittest.mock import MagicMock, patch
 import pytest
-from auto_balance import AutoBalanceProber, AutoBalancePlanner
+from auto_balance import (
+    FAILURE_HARDWARE_CAPACITY,
+    AutoBalanceProber,
+    AutoBalancePlanner,
+)
 from schemas import StartRequest, GPUWeight
 from process_manager import ProcessManager
 
@@ -13,10 +17,11 @@ THREE_GPU_HARDWARE = [
 ]
 
 def _make_request(weights, **kwargs):
+    context_size = kwargs.pop("context_size", 8192)
     req = StartRequest(
         path="/models/test.gguf",
         gpu_weights=weights,
-        context_size=8192,
+        context_size=context_size,
         parallel_slots=1,
         **kwargs
     )
@@ -26,6 +31,7 @@ class TestSmartAutoBalance:
     def _prober(self):
         pm = MagicMock()
         pm._auto_balance_cancel = False
+        pm.auto_balance_cancel_requested = False
         config = MagicMock()
         gpu_mgr = MagicMock()
         log_mgr = MagicMock()
@@ -133,8 +139,76 @@ class TestSmartAutoBalance:
         ok, res_weights, msg, result_data = prober.discover(req)
         
         assert ok is True
-        assert result_data["proposal"] == {"batch_size": 4096}
+        assert result_data["proposal"] == {
+            "batch_size": 4096,
+            "context_size": 8192,
+            "cache_type_k": "f16",
+            "cache_type_v": "f16",
+        }
         assert res_weights == weights
+
+    @patch("auto_balance.AutoBalanceProber._generate_smart_proposal")
+    @patch("auto_balance.AutoBalanceProber._discover_empirical")
+    def test_smart_calibration_reduces_unpinned_context_until_probe_succeeds(
+        self, mock_disc, mock_gen
+    ):
+        prober, _ = self._prober()
+        weights = [
+            GPUWeight(index=2, weight=100, name="3090", active=True, is_main=True)
+        ]
+        failure = {"code": FAILURE_HARDWARE_CAPACITY}
+        mock_disc.side_effect = [
+            (False, weights, "1M failed", failure),
+            (False, weights, "512K failed", failure),
+            (False, weights, "448K failed", failure),
+            (False, weights, "384K failed", failure),
+            (True, weights, "320K ready", None),
+        ]
+        mock_gen.return_value = {"batch_size": 2048, "context_size": 999999}
+        req = _make_request(
+            weights,
+            context_size=1048576,
+            cache_type_k="q4_0",
+            cache_type_v="q4_0",
+            smart_calibration=True,
+            pinned_fields={"context_size": False, "cache_type": False},
+        )
+
+        ok, _, message, result = prober.discover(req)
+
+        assert ok is True
+        assert [call.args[0].context_size for call in mock_disc.call_args_list] == [
+            1048576,
+            524288,
+            458752,
+            393216,
+            327680,
+        ]
+        assert result["proposal"]["context_size"] == 327680
+        assert result["proposal"]["cache_type_k"] == "q4_0"
+        assert "327680" in message
+
+    @patch("auto_balance.AutoBalanceProber._discover_empirical")
+    def test_smart_calibration_does_not_reduce_pinned_context(self, mock_disc):
+        prober, _ = self._prober()
+        weights = [
+            GPUWeight(index=2, weight=100, name="3090", active=True, is_main=True)
+        ]
+        failure = {"code": FAILURE_HARDWARE_CAPACITY}
+        mock_disc.return_value = (False, weights, "failed", failure)
+        req = _make_request(
+            weights,
+            context_size=1048576,
+            cache_type_k="q4_0",
+            cache_type_v="q4_0",
+            smart_calibration=True,
+            pinned_fields={"context_size": True, "cache_type": True},
+        )
+
+        ok, _, _, _ = prober.discover(req)
+
+        assert ok is False
+        mock_disc.assert_called_once_with(req)
 
 def test_process_manager_handles_smart_calibration_flow():
     config = MagicMock()

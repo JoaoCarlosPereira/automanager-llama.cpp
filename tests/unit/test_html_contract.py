@@ -179,6 +179,23 @@ def test_template_contains_engine_params(html):
     """Per-model engine parameters live as tab-* controls in the template."""
     assert "tab-context-size" in html
     assert "tab-context-size-custom" in html
+
+
+def test_local_context_combo_reaches_one_million_tokens(html):
+    assert '<option value="262144"' in html
+    assert '<option value="278528"' in html
+    assert '<option value="327680"' in html
+    assert '<option value="393216"' in html
+    assert '<option value="458752"' in html
+    assert '<option value="524288"' in html
+    assert '<option value="1048576"' in html
+    assert ">256K</option>" in html
+    assert ">272K</option>" in html
+    assert ">320K</option>" in html
+    assert ">384K</option>" in html
+    assert ">448K</option>" in html
+    assert ">512K</option>" in html
+    assert ">1M</option>" in html
     assert "tab-parallel-slots" in html
     assert "tab-batch-size" in html
     assert "tab-ubatch-size" in html
