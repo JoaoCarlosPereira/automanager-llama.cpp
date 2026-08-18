@@ -110,3 +110,24 @@ def test_ui_proxy_rejects_unknown_port(test_client):
     # Porta que não corresponde a nenhuma instância → 404 (evita proxy cego em loopback).
     resp = test_client.get("/ui/6379/")
     assert resp.status_code == 404
+
+
+@patch("llama_manager.client.send", new_callable=AsyncMock)
+def test_ui_proxy_rejects_image_for_local_without_mmproj(mock_send, test_client):
+    resp = test_client.post(
+        "/ui/8085/v1/chat/completions",
+        json={
+            "model": "gemma.gguf",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                }],
+            }],
+        },
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "vision_backend_unavailable"
+    mock_send.assert_not_awaited()

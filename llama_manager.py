@@ -1646,6 +1646,37 @@ async def ui_proxy(request: Request, port: int, path: str = ""):
     if port not in known_ports:
         raise HTTPException(status_code=404, detail="Instancia inexistente")
 
+    ui_path = path.strip("/")
+    if request.method == "POST" and ui_path == "v1/chat/completions":
+        try:
+            ui_payload = json.loads(await request.body())
+        except (json.JSONDecodeError, TypeError):
+            ui_payload = None
+        ui_instance = next(
+            (
+                inst
+                for inst in process_manager.get_status().get("instances", [])
+                if inst.get("port") == port
+            ),
+            None,
+        )
+        ui_required = derive_required_capabilities(ui_payload or {})
+        ui_capabilities = derive_target_capabilities(ui_instance or {})
+        if ui_required.vision and "vision" not in ui_capabilities:
+            logger.warning(
+                "[proxy] rejecting direct UI image backend=%s: Vision is not active",
+                port,
+            )
+            return JSONResponse(
+                ProxyError(
+                    422,
+                    "A requisicao contem imagem, mas o modelo selecionado "
+                    "nao possui Vision ativo",
+                    code="vision_backend_unavailable",
+                ).payload(),
+                status_code=422,
+            )
+
     is_index = not path or path == "index.html"
     if is_index:
         path = ""
