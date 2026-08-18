@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 import httpx
 
+from context_optimizer import count_media_inputs
 from request_normalizer import normalize_custom_tools_for_local
 
 
@@ -86,22 +87,8 @@ class HybridTokenCounter:
 
     @staticmethod
     def media_reserve(body: Dict[str, Any]) -> int:
-        count = 0
-        messages = body.get("messages")
-        if not isinstance(messages, list):
-            return 0
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                kind = str(part.get("type") or "").lower()
-                if kind in {"image", "image_url", "input_image", "file", "file_url"}:
-                    count += 1
+        count = count_media_inputs(body.get("messages"))
+        count += count_media_inputs(body.get("input"))
         return count * IMAGE_TOKEN_RESERVE
 
     @classmethod

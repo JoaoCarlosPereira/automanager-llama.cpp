@@ -510,6 +510,86 @@ class TargetBudget:
     capabilities: FrozenSet[str]
 
 
+_VISION_CONTENT_TYPES = frozenset({"image", "image_url", "input_image"})
+_FILE_CONTENT_TYPES = frozenset({"file", "file_url", "input_file"})
+_VISION_CONTENT_KEYS = frozenset(
+    {
+        "image_url",
+        "imageurl",
+        "input_image",
+        "input_image_url",
+        "images",
+        "inline_data",
+        "inlinedata",
+        "image_data",
+        "imagedata",
+    }
+)
+_FILE_CONTENT_KEYS = frozenset({"file_url", "fileurl", "input_file"})
+
+
+def _scan_media_inputs(value: Any) -> Tuple[int, int]:
+    """Conta entradas de imagem e arquivo em formatos de API conhecidos.
+
+    Clientes diferentes representam multimodalidade de formas ligeiramente
+    diferentes: ``content`` pode ser uma lista ou um objeto, Responses API usa
+    ``input_image`` e Ollama usa ``images``. O roteador precisa reconhecer todos
+    esses formatos antes de escolher o backend.
+    """
+    if isinstance(value, list):
+        vision = files = 0
+        for item in value:
+            item_vision, item_files = _scan_media_inputs(item)
+            vision += item_vision
+            files += item_files
+        return vision, files
+    if not isinstance(value, dict):
+        if isinstance(value, str) and value.lower().startswith("data:image/"):
+            return 1, 0
+        return 0, 0
+
+    ptype = str(value.get("type") or "").strip().lower()
+    if ptype in _VISION_CONTENT_TYPES:
+        return 1, 0
+    if ptype in _FILE_CONTENT_TYPES:
+        return 0, 1
+
+    for media_key in ("media_type", "mime_type", "mimetype", "mimeType"):
+        media_type = str(value.get(media_key) or "").lower()
+        if media_type.startswith("image/"):
+            return 1, 0
+
+    for raw_key, nested in value.items():
+        key = str(raw_key).replace("-", "_").lower()
+        if key in _VISION_CONTENT_KEYS:
+            # Ignore JSON Schema declarations such as {"images":
+            # {"type": "array"}} inside a tool definition.
+            if isinstance(nested, dict) and nested.get("type") in {
+                "array", "object", "string", "number", "boolean"
+            } and not any(
+                marker in nested for marker in ("url", "data", "source", "image_url")
+            ):
+                continue
+            if key == "images" and isinstance(nested, list):
+                return max(1, len(nested)), 0
+            return 1, 0
+        if key in _FILE_CONTENT_KEYS:
+            return 0, 1
+
+    vision = files = 0
+    for nested in value.values():
+        nested_vision, nested_files = _scan_media_inputs(nested)
+        vision += nested_vision
+        files += nested_files
+    return vision, files
+
+
+def count_media_inputs(value: Any) -> int:
+    """Retorna a quantidade de partes multimodais para o orçamento de contexto."""
+    vision, files = _scan_media_inputs(value)
+    return vision + files
+
+
 def derive_required_capabilities(payload: Dict[str, Any]) -> RequiredCapabilities:
     """Deriva capacidades estritamente necessárias do payload da requisição."""
     if not isinstance(payload, dict):
@@ -520,44 +600,10 @@ def derive_required_capabilities(payload: Dict[str, Any]) -> RequiredCapabilitie
 
     has_vision = False
     has_files = False
-
-    def inspect_messages(messages: Any) -> None:
-        nonlocal has_vision, has_files
-        if not isinstance(messages, list):
-            return
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            # Responses API items can themselves be typed content parts.
-            content = msg.get("content")
-            if content is None and msg.get("type") in {
-                "image", "image_url", "input_image", "file", "file_url", "input_file"
-            }:
-                content = [msg]
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        ptype = str(part.get("type") or "").lower()
-                        source = part.get("source")
-                        source_media_type = (
-                            str(source.get("media_type") or "").lower()
-                            if isinstance(source, dict)
-                            else ""
-                        )
-                        if (
-                            ptype in ("image_url", "image", "input_image")
-                            or "image_url" in part
-                            or source_media_type.startswith("image/")
-                        ):
-                            has_vision = True
-                        if (
-                            ptype in ("file", "file_url", "input_file")
-                            or "file_url" in part
-                        ):
-                            has_files = True
-
-    inspect_messages(payload.get("messages"))
-    inspect_messages(payload.get("input"))
+    for field in ("messages", "input"):
+        vision_count, file_count = _scan_media_inputs(payload.get(field))
+        has_vision = has_vision or vision_count > 0
+        has_files = has_files or file_count > 0
 
     return RequiredCapabilities(
         text=True,

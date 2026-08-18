@@ -74,6 +74,20 @@ def test_derive_required_capabilities():
                 }
             ]
         },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": {"type": "image_url", "url": "data:image/png;base64,AA=="},
+                }
+            ]
+        },
+        {
+            "messages": [{"role": "user", "images": ["AA=="]}],
+        },
+        {
+            "input": [{"type": "inline_data", "mime_type": "image/png", "data": "AA=="}],
+        },
     ],
 )
 def test_derive_required_capabilities_recognizes_image_variants(payload):
