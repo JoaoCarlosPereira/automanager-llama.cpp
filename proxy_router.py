@@ -1260,6 +1260,38 @@ class ProxyRouter:
             config.get("model_configs", {}), instance.get("model_path") or ""
         )
 
+    @staticmethod
+    def _required_capability_set(
+        required_capabilities: Any = None,
+        body: Optional[dict] = None,
+    ) -> FrozenSet[str]:
+        """Normaliza capacidades exigidas pela requisição.
+
+        A seleção precisa conhecer a capacidade antes de escolher um backend;
+        a validação posterior no proxy continua existindo como segunda barreira.
+        """
+        if required_capabilities is None:
+            return (
+                derive_required_capabilities(body or {}).as_set()
+                if body is not None else frozenset()
+            )
+        if hasattr(required_capabilities, "as_set"):
+            return frozenset(required_capabilities.as_set())
+        if isinstance(required_capabilities, (set, frozenset, list, tuple)):
+            return frozenset(str(value) for value in required_capabilities)
+        return frozenset()
+
+    @classmethod
+    def _supports_required_capabilities(
+        cls,
+        instance: Dict[str, Any],
+        required_capabilities: Any = None,
+    ) -> bool:
+        required = cls._required_capability_set(required_capabilities)
+        if not required:
+            return True
+        return required.issubset(derive_target_capabilities(instance))
+
     def _platform_default_model(self, instance: Dict[str, Any]) -> Optional[str]:
         """Modelo padrão configurado para a plataforma (usado quando secundária)."""
         if self._backend_type(instance) != "platform":
@@ -1499,6 +1531,7 @@ class ProxyRouter:
         exclude_backend_ids: Optional[set] = None,
         external_model: str = "",
         configured_primary_backend_id: str = "",
+        required_capabilities: Any = None,
     ) -> List[Dict[str, Any]]:
         """Backends elegíveis para NOVA sessão (PRD F6)."""
         result = []
@@ -1522,6 +1555,10 @@ class ProxyRouter:
             if exclude_ports and port in exclude_ports:
                 continue
             if not self._backend_available(inst):
+                continue
+            if not self._supports_required_capabilities(
+                inst, required_capabilities
+            ):
                 continue
             eligible, max_parallel = self._backend_flags(config, inst)
             is_primary = (
@@ -1699,6 +1736,7 @@ class ProxyRouter:
         needed_ctx: int,
         external_model: str,
         configured_primary_backend_id: str,
+        required_capabilities: Any,
         _decision,
         _commit,
     ) -> Optional[RouteDecision]:
@@ -1755,6 +1793,7 @@ class ProxyRouter:
                                 configured_primary_backend_id=(
                                     configured_primary_backend_id
                                 ),
+                                required_capabilities=required_capabilities,
                             )
                             if self._backend_type(candidate) != "platform"
                         ]
@@ -1787,6 +1826,7 @@ class ProxyRouter:
                 ignore_capacity=False,
                 external_model=external_model,
                 configured_primary_backend_id=configured_primary_backend_id,
+                required_capabilities=required_capabilities,
             )
             chosen = self._pick_least_busy(
                 candidates,
@@ -1826,6 +1866,7 @@ class ProxyRouter:
         prompt_tokens: Optional[int] = None,
         required_context: Optional[int] = None,
         token_count_source: str = "estimated",
+        required_capabilities: Any = None,
     ) -> RoutePlan:
         """Planeja o roteamento de forma livre de efeitos colaterais.
 
@@ -1848,6 +1889,7 @@ class ProxyRouter:
                     prompt_tokens=prompt_tokens,
                     required_context=required_context,
                     token_count_source=token_count_source,
+                    required_capabilities=required_capabilities,
                 )
                 if decision is not None:
                     return RoutePlan(
@@ -2158,6 +2200,7 @@ class ProxyRouter:
         client_ip: str,
         user_agent: str,
         dry_run: bool = False,
+        required_capabilities: Any = None,
     ) -> RouteDecision:
         """Decide o backend para a requisição ao modelo principal (wrapper retrocompatível).
 
@@ -2175,6 +2218,7 @@ class ProxyRouter:
                     user_agent=user_agent,
                     apply_side_effects=False,
                     ignore_capacity=True,
+                    required_capabilities=required_capabilities,
                 )
                 if decision is not None:
                     return decision
@@ -2186,6 +2230,7 @@ class ProxyRouter:
                 body=body,
                 client_ip=client_ip,
                 user_agent=user_agent,
+                required_capabilities=required_capabilities,
             )
             try:
                 return await self.commit_route(plan)
@@ -2205,6 +2250,7 @@ class ProxyRouter:
         prompt_tokens: Optional[int] = None,
         required_context: Optional[int] = None,
         token_count_source: str = "estimated",
+        required_capabilities: Any = None,
     ) -> Tuple[Optional[RouteDecision], Optional[str]]:
         """Uma tentativa de decisão sob o lock.
 
@@ -2229,6 +2275,9 @@ class ProxyRouter:
         requested_model = str(body.get("model") or "")
         requested_primary = self._find_requested_primary(instances, requested_model)
         configured_primary = self._find_primary(instances, settings)
+        required_capability_set = self._required_capability_set(
+            required_capabilities, body
+        )
         configured_backend_id = normalize_backend_id(
             settings.get("primary_backend_id")
         )
@@ -2236,6 +2285,46 @@ class ProxyRouter:
             configured_backend_id = (
                 f"local:{normalize_model_path(settings['primary_model_path'])}"
             )
+
+        if required_capability_set:
+            capable_backend_exists = any(
+                self._backend_available(inst)
+                and self._supports_required_capabilities(
+                    inst, required_capability_set
+                )
+                and (
+                    self._backend_flags(config, inst)[0]
+                    or self._backend_id(inst) == configured_backend_id
+                    or self._config_backend_id(inst) == configured_backend_id
+                )
+                for inst in instances
+            )
+            if not capable_backend_exists:
+                any_eligible_backend = any(
+                    self._backend_available(inst)
+                    and (
+                        self._backend_flags(config, inst)[0]
+                        or self._backend_id(inst) == configured_backend_id
+                        or self._config_backend_id(inst) == configured_backend_id
+                    )
+                    for inst in instances
+                )
+                if any_eligible_backend and "vision" in required_capability_set:
+                    raise ProxyError(
+                        422,
+                        "A requisicao contem imagem, mas nenhum modelo com "
+                        "Vision ativo esta disponivel",
+                        code="vision_backend_unavailable",
+                    )
+                if any_eligible_backend and (
+                    required_capability_set - {"text"}
+                ):
+                    raise ProxyError(
+                        422,
+                        "A requisicao contem capacidades que nenhum backend "
+                        "disponivel suporta",
+                        code="required_capability_unavailable",
+                    )
 
         # O modelo explicitamente invocado passa a ser o principal apenas
         # desta requisicao. A configuracao fixa e o fallback quando ``model``
@@ -2270,7 +2359,11 @@ class ProxyRouter:
             external_model = requested_model
 
         configured_primary_active = (
-            primary is not None and self._backend_available(primary)
+            primary is not None
+            and self._backend_available(primary)
+            and self._supports_required_capabilities(
+                primary, required_capability_set
+            )
         )
         if not configured_primary_active:
             fallback = self._candidates(
@@ -2284,6 +2377,7 @@ class ProxyRouter:
                 ),
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
             )
             local_fallback = [
                 instance for instance in fallback
@@ -2490,6 +2584,23 @@ class ProxyRouter:
                 primary, False, "requested_model_changed", existing
             ), None
 
+        if (
+            existing is not None
+            and primary is not None
+            and self._backend_available(primary)
+            and self._supports_required_capabilities(
+                primary, required_capability_set
+            )
+            and needed_ctx <= _context_limit(primary)
+            and existing.backend_id != self._backend_id(primary)
+            and (tag is None or tag == MAIN_TAG)
+        ):
+            # Uma sessão desviada para uma janela maior deve retornar ao
+            # principal assim que a nova requisição voltar a caber nele.
+            return _commit(
+                primary, False, "sticky_return_primary", existing
+            ), None
+
         if existing is not None:
             inst = None
             context_mismatch = False
@@ -2513,6 +2624,16 @@ class ProxyRouter:
                 existing.backend_port = inst["port"]
                 existing.backend_id = self._backend_id(inst)
             if inst is not None and not self._backend_available(inst):
+                inst = None
+            if inst is not None and not self._supports_required_capabilities(
+                inst, required_capability_set
+            ):
+                logger.info(
+                    "[proxy] sticky backend lacks required capabilities "
+                    "affinity_key=%s backend=%s required=%s",
+                    affinity_key, self._backend_id(inst),
+                    sorted(required_capability_set),
+                )
                 inst = None
             if inst is not None and needed_ctx > _context_limit(inst):
                 context_mismatch = True
@@ -2543,6 +2664,7 @@ class ProxyRouter:
                         affinity_key, by_port, instances, config,
                         primary_port, primary_backend_id, needed_ctx,
                         external_model, configured_backend_id,
+                        required_capability_set,
                         _decision, _commit,
                     )
                     if branched is not None:
@@ -2558,6 +2680,7 @@ class ProxyRouter:
                 ignore_capacity=ignore_capacity,
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
             )
             new_inst = self._pick_least_busy(
                 candidates,
@@ -2571,6 +2694,7 @@ class ProxyRouter:
                     ignore_capacity=True,
                     external_model=external_model,
                     configured_primary_backend_id=configured_backend_id,
+                    required_capabilities=required_capability_set,
                 )
                 if not fallback:
                     raise ProxyError(
@@ -2612,7 +2736,12 @@ class ProxyRouter:
 
         if is_main:
             # Conversa principal prefere o principal (PRD F6)
-            if self._backend_available(primary):
+            if (
+                self._backend_available(primary)
+                and self._supports_required_capabilities(
+                    primary, required_capability_set
+                )
+            ):
                 _, max_parallel = self._backend_flags(config, primary)
                 primary_ctx_ok = needed_ctx <= _context_limit(primary)
                 if primary_ctx_ok:
@@ -2626,6 +2755,7 @@ class ProxyRouter:
                         exclude_backend_ids={primary_backend_id},
                         external_model=external_model,
                         configured_primary_backend_id=configured_backend_id,
+                        required_capabilities=required_capability_set,
                     )
                     chosen = self._pick_least_busy(
                         overflow,
@@ -2642,6 +2772,7 @@ class ProxyRouter:
                         ignore_capacity=True,
                         external_model=external_model,
                         configured_primary_backend_id=configured_backend_id,
+                        required_capabilities=required_capability_set,
                     )
                     chosen = self._pick_for_dynamic_growth(
                         expandable, config, primary_backend_id
@@ -2661,6 +2792,7 @@ class ProxyRouter:
                 exclude_backend_ids={primary_backend_id},
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
             )
             chosen = self._pick_least_busy(
                 candidates,
@@ -2690,6 +2822,7 @@ class ProxyRouter:
                     ignore_capacity=ignore_capacity,
                     external_model=external_model,
                     configured_primary_backend_id=configured_backend_id,
+                    required_capabilities=required_capability_set,
                 )
                 if self._backend_type(candidate) != "platform"
             ]
@@ -2709,7 +2842,12 @@ class ProxyRouter:
         # Subagente: tenta o modelo principal primeiro (prioridade absoluta);
         # só se o primary estiver ocupado, escolhe o menos ocupado entre
         # secundários (PRD F6 — main-first para conversas principais e subagentes).
-        if self._backend_available(primary):
+        if (
+            self._backend_available(primary)
+            and self._supports_required_capabilities(
+                primary, required_capability_set
+            )
+        ):
             _, max_parallel = self._backend_flags(config, primary)
             primary_ctx_ok = needed_ctx <= _context_limit(primary)
             if primary_ctx_ok:
@@ -2723,6 +2861,7 @@ class ProxyRouter:
             exclude_backend_ids={primary_backend_id},
             external_model=external_model,
             configured_primary_backend_id=configured_backend_id,
+            required_capabilities=required_capability_set,
         )
         chosen = self._pick_least_busy(
             candidates,
@@ -2736,6 +2875,7 @@ class ProxyRouter:
                 ignore_capacity=True,
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
             )
             if not any_eligible:
                 raise ProxyError(
@@ -2764,6 +2904,7 @@ class ProxyRouter:
         prompt_tokens: int = 0,
         required_context: int = 0,
         token_count_source: str = "estimated",
+        required_capabilities: Any = None,
     ) -> Optional[RouteDecision]:
         """Força a sessão a migrar para o melhor backend disponível.
 
@@ -2780,6 +2921,9 @@ class ProxyRouter:
             instances = self._routing_instances()
             primary = self._find_primary(instances, settings)
             config = self._config.get_config()
+            required_capability_set = self._required_capability_set(
+                required_capabilities
+            )
             primary_backend_id = (
                 self._backend_id(primary)
                 if primary is not None
@@ -2799,10 +2943,14 @@ class ProxyRouter:
                 max(0, int(required_context)),
                 ignore_capacity=True,
                 exclude_backend_ids=excluded or None,
+                required_capabilities=required_capability_set,
             )
             if (
                 primary is not None
                 and self._backend_available(primary)
+                and self._supports_required_capabilities(
+                    primary, required_capability_set
+                )
                 and self._backend_id(primary) not in excluded
                 and (
                     required_context <= 0
@@ -2853,6 +3001,7 @@ class ProxyRouter:
                         exclude_backend_ids=excluded or None,
                         external_model=session.external_model,
                         configured_primary_backend_id=primary_backend_id,
+                        required_capabilities=required_capability_set,
                     )
                     if capacity_agnostic:
                         raise ProxyError(

@@ -2397,6 +2397,7 @@ async def _smart_proxy_forward(
                 prompt_tokens=token_budget.prompt_tokens,
                 required_context=token_budget.required_context,
                 token_count_source=token_budget.source,
+                required_capabilities=required_capabilities,
             )
         except ProxyError as exc:
             logger.warning(
@@ -2624,6 +2625,7 @@ async def _smart_proxy_forward(
                         decision.affinity_key,
                         exclude_backend_ids=failed_backend_ids,
                         reason="reassign_vision_required",
+                        required_capabilities=required_capabilities,
                     )
                 except ProxyError:
                     replacement = None
@@ -2752,6 +2754,7 @@ async def _smart_proxy_forward(
                     prompt_tokens=decision.prompt_tokens_estimated,
                     required_context=decision.required_context_tokens,
                     token_count_source=decision.token_count_source,
+                    required_capabilities=required_capabilities,
                 )
             except ProxyError as pe:
                 return JSONResponse(pe.payload(), status_code=pe.status_code)
@@ -3149,6 +3152,37 @@ async def openai_proxy(
             )
 
     target_instance = _find_target_instance(instances, requested_model)
+    direct_required_capabilities = derive_required_capabilities(data)
+    direct_target_capabilities = derive_target_capabilities(target_instance)
+    if not direct_required_capabilities.as_set().issubset(
+        direct_target_capabilities
+    ):
+        logger.warning(
+            "[proxy] rejecting direct route backend=%s model=%s required=%s "
+            "available=%s",
+            target_instance.get("backend_id") or target_instance.get("port"),
+            requested_model,
+            sorted(direct_required_capabilities.as_set()),
+            sorted(direct_target_capabilities),
+        )
+        if direct_required_capabilities.vision:
+            return JSONResponse(
+                ProxyError(
+                    422,
+                    "A requisicao contem imagem, mas o modelo selecionado "
+                    "nao possui Vision ativo",
+                    code="vision_backend_unavailable",
+                ).payload(),
+                status_code=422,
+            )
+        return JSONResponse(
+            ProxyError(
+                422,
+                "O modelo selecionado nao suporta as capacidades exigidas",
+                code="required_capability_unavailable",
+            ).payload(),
+            status_code=422,
+        )
     forward_model = await _resolve_forward_model(
         str(requested_model or ""), target_instance, instances, route_headers
     )

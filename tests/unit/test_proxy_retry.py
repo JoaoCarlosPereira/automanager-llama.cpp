@@ -328,6 +328,37 @@ class TestProxyRetryAndFailover:
         mock_post.assert_not_awaited()
         assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
 
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_image_failover_does_not_try_backend_without_vision(
+        self, mock_post, mock_sleep, retry_env
+    ):
+        """Um erro no backend Vision nao pode desviar a imagem para Gemma."""
+        retry_env.cfg.update_smart_proxy_settings({
+            "context_optimizer": {"enabled": False},
+        })
+        retry_env.holder["instances"][2]["config"].update({
+            "mmproj_path": "/models/mmproj.gguf",
+            "mmproj_disabled": False,
+        })
+        mock_post.return_value = _mock_response(
+            {"error": "vision backend failed"}, status=500
+        )
+
+        response = client.post(
+            "/v1/chat/completions", json=image_body(tag="vision-failover")
+        )
+
+        assert response.status_code in (502, 503)
+        ports = [
+            call.args[0].split(":")[2].split("/")[0]
+            for call in mock_post.call_args_list
+        ]
+        assert ports
+        assert set(ports) == {"8087"}
+        mock_sleep.assert_awaited()
+        assert all(retry_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
     @pytest.mark.parametrize("error_status", [400, 401, 403, 404, 500])
     @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
