@@ -675,6 +675,87 @@ class TestSelection:
         await router.release(continuation.backend_id)
 
     @pytest.mark.asyncio
+    async def test_new_long_context_subagent_uses_next_provider_when_codex_busy(
+        self, router, proxy_config, status_holder, monkeypatch
+    ):
+        """A shared sidecar port must not hide Antigravity behind Codex."""
+        codex = make_platform_instance(
+            port=8317, backend_id="platform:codex", provider="codex"
+        )
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+            provider="antigravity",
+        )
+        status_holder["instances"] = [
+            make_instance(8086, AUX0_PATH, ctx=65536),
+            codex,
+            antigravity,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:google-antigravity",
+            {
+                "proxy_eligible": True,
+                "default_model": "antigravity-37flashhigh.gguf",
+            },
+        )
+        router._requested_primary_resolver = lambda instances, model: next(
+            instance for instance in instances if instance.get("provider") == "codex"
+        )
+        router._context_limit_resolver = lambda instance, model: {
+            ("codex", "gpt-5.6-luna"): 1_050_000,
+            ("antigravity", "antigravity-37flashhigh.gguf"): 1_048_576,
+        }.get((instance["provider"], model), 0)
+        monkeypatch.setattr(
+            router,
+            "estimate_prompt_tokens",
+            lambda body: body["estimated_tokens"],
+        )
+
+        parent_body = body_with(
+            user="Conversa principal", model="gpt-5.6-luna"
+        )
+        parent_body["estimated_tokens"] = 400_000
+        parent = await resolve(router, body=parent_body)
+        assert parent.backend_id == "platform:codex"
+
+        child_body = body_with(
+            user="Trabalho do subagente", model="gpt-5.6-luna"
+        )
+        child_body["estimated_tokens"] = 40_000
+        child_body["messages"].append({
+            "role": "user",
+            "content": (
+                "Execute a tarefa. <system_reminder>You are running as a "
+                "subagent under a parent agent.</system_reminder>"
+            ),
+        })
+        child = await resolve(router, body=child_body)
+
+        assert child.backend_id == router._backend_id(
+            status_holder["instances"][0]
+        )
+        assert child.reason == "cursor_subagent_local_preference"
+        await router.release(child.backend_id)
+
+        large_child_body = body_with(
+            user="Trabalho grande do subagente", model="gpt-5.6-luna"
+        )
+        large_child_body["estimated_tokens"] = 400_000
+        large_child_body["messages"].append(child_body["messages"][-1])
+        large_child = await resolve(router, body=large_child_body)
+
+        assert large_child.backend_id == "platform:google-antigravity"
+        assert large_child.internal_model == "antigravity-37flashhigh.gguf"
+        assert large_child.reason == "reassign_context_limit"
+        await router.release(parent.backend_id)
+        await router.release(large_child.backend_id)
+
+    @pytest.mark.asyncio
     async def test_dynamic_primary_and_failover_use_each_models_context_limit(
         self, router, proxy_config, status_holder, monkeypatch
     ):

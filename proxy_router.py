@@ -1542,6 +1542,7 @@ class ProxyRouter:
         """Backends elegíveis para NOVA sessão (PRD F6)."""
         result = []
         all_instances = list(instances)
+        requested_provider = platform_provider_for_listing(external_model)
         known_ids = {self._backend_id(inst) for inst in all_instances}
         all_instances.extend(
             inst for inst in self._ollama_cloud_candidates(
@@ -1567,12 +1568,19 @@ class ProxyRouter:
             ):
                 continue
             eligible, max_parallel = self._backend_flags(config, inst)
-            is_primary = (
-                backend_id == configured_primary_backend_id
-                or config_backend_id == configured_primary_backend_id
-                if configured_primary_backend_id
-                else port == primary_port
-            )
+            if configured_primary_backend_id:
+                is_primary = (
+                    backend_id == configured_primary_backend_id
+                    or config_backend_id == configured_primary_backend_id
+                )
+            elif requested_provider and self._backend_type(inst) == "platform":
+                # Codex and Antigravity use the same sidecar port. A port-only
+                # comparison would mark both as primary and make the
+                # secondary receive the wrong model/context metadata, removing
+                # it from the candidate pool exactly when the primary is busy.
+                is_primary = str(inst.get("provider") or "") == requested_provider
+            else:
+                is_primary = port == primary_port
             if not eligible and not is_primary:
                 continue
             internal_model = self._internal_model(
