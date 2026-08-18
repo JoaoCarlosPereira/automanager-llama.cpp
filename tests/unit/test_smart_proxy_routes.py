@@ -1117,6 +1117,40 @@ class TestHybridV1Availability:
         assert detail.json()["context_length"] == 372_000
         assert detail.json()["meta"]["n_ctx"] == 372_000
 
+    def test_codex_luna_context_override_is_used_for_routing(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            llama_manager,
+            "_platform_model_catalog_cache",
+            {
+                "codex": {
+                    "gpt-5.6-luna": {
+                        "id": "gpt-5.6-luna",
+                        "context_length": 372_000,
+                    }
+                }
+            },
+        )
+        instance = {
+            "backend_type": "platform",
+            "provider": "codex",
+            "config": {},
+        }
+
+        assert (
+            llama_manager._platform_model_context_limit(
+                instance, "gpt-5.6-luna"
+            )
+            == 1_050_000
+        )
+        assert (
+            llama_manager._platform_model_metadata(
+                "codex", "gpt-5.6-luna"
+            )["context_length"]
+            == 1_050_000
+        )
+
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_v1_models_dedupes_local_and_sidecar_ids(
         self, mock_get, smart_env, monkeypatch

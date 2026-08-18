@@ -519,6 +519,13 @@ _ollama_cloud_model_catalog: Dict[str, Dict[str, Any]] = {}
 _ollama_cloud_model_catalog_loaded_at = 0.0
 _ollama_cloud_model_catalog_lock = asyncio.Lock()
 
+# The shared CLIProxy catalog currently collapses Codex plan entries and can
+# expose the lower plan limit for GPT-5.6 Luna. Keep the official model limit
+# here so routing does not reject valid long-context requests before Codex.
+_PLATFORM_MODEL_CONTEXT_OVERRIDES: Dict[Tuple[str, str], int] = {
+    ("codex", "gpt-5.6-luna"): 1_050_000,
+}
+
 # Ollama Cloud's /v1/models response currently exposes the model ID but not
 # the model limits. Keep conservative, provider-published defaults for models
 # whose metadata is incomplete so the context optimizer can enforce the real
@@ -546,7 +553,16 @@ def _platform_model_metadata(
     if not isinstance(provider_catalog, dict):
         return None
     metadata = provider_catalog.get(bare_model)
-    return metadata if isinstance(metadata, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    override = _PLATFORM_MODEL_CONTEXT_OVERRIDES.get(
+        (normalized_provider, bare_model)
+    )
+    if override is None:
+        return metadata
+    enriched = dict(metadata)
+    enriched["context_length"] = override
+    return enriched
 
 
 def _catalog_provider(group: str) -> Optional[str]:
@@ -617,6 +633,12 @@ async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]
                                 provider_catalog[model_id] = merged
                             else:
                                 provider_catalog[model_id] = model
+            for (provider, model_id), context_length in (
+                _PLATFORM_MODEL_CONTEXT_OVERRIDES.items()
+            ):
+                model_metadata = catalog.get(provider, {}).get(model_id)
+                if isinstance(model_metadata, dict):
+                    model_metadata["context_length"] = context_length
             if catalog:
                 _platform_model_catalog_cache = catalog
                 _platform_model_catalog_loaded_at = time.monotonic()
