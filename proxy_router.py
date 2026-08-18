@@ -2679,11 +2679,17 @@ class ProxyRouter:
                 return _commit(inst, True, "sticky", existing), None
             # Backend caiu/desabilitado: reatribui UMA vez (PRD F7)
             old_port = existing.backend_port
+            subagent_exclusions = (
+                {primary_backend_id}
+                if tag == CURSOR_SUBAGENT_TAG and primary_backend_id
+                else None
+            )
             candidates = self._candidates(
                 instances, config, primary_port, needed_ctx,
                 ignore_capacity=ignore_capacity,
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
+                exclude_backend_ids=subagent_exclusions,
                 required_capabilities=required_capability_set,
             )
             new_inst = self._pick_least_busy(
@@ -2698,8 +2704,20 @@ class ProxyRouter:
                     ignore_capacity=True,
                     external_model=external_model,
                     configured_primary_backend_id=configured_backend_id,
+                    exclude_backend_ids=subagent_exclusions,
                     required_capabilities=required_capability_set,
                 )
+                if not fallback and subagent_exclusions:
+                    # O primário é o último recurso: um subagente não deve
+                    # voltar ao mesmo modelo só porque o secundário esgotou
+                    # capacidade momentaneamente.
+                    fallback = self._candidates(
+                        instances, config, primary_port, needed_ctx,
+                        ignore_capacity=True,
+                        external_model=external_model,
+                        configured_primary_backend_id=configured_backend_id,
+                        required_capabilities=required_capability_set,
+                    )
                 if not fallback:
                     raise ProxyError(
                         503, "Nenhum backend com contexto suficiente disponivel",
@@ -2840,6 +2858,35 @@ class ProxyRouter:
                     local_choice,
                     False,
                     "cursor_subagent_local_preference",
+                    None,
+                ), None
+
+            # Um subagente não deve retornar ao modelo principal apenas porque
+            # ele ficou livre entre duas chamadas. Depois das GPUs locais,
+            # tente outro provedor compatível; o primário fica como último
+            # recurso abaixo, caso nenhum secundário esteja disponível.
+            secondary_candidates = self._candidates(
+                instances,
+                config,
+                primary_port,
+                needed_ctx,
+                ignore_capacity=ignore_capacity,
+                exclude_backend_ids={primary_backend_id},
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
+            )
+            secondary_choice = self._pick_least_busy(
+                secondary_candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
+            )
+            if secondary_choice is not None:
+                return _commit(
+                    secondary_choice,
+                    False,
+                    "cursor_subagent_secondary_preference",
                     None,
                 ), None
 

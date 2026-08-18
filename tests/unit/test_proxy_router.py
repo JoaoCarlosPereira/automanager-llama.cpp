@@ -741,6 +741,7 @@ class TestSelection:
         )
         assert child.reason == "cursor_subagent_local_preference"
         await router.release(child.backend_id)
+        await router.release(parent.backend_id)
 
         large_child_body = body_with(
             user="Trabalho grande do subagente", model="gpt-5.6-luna"
@@ -752,7 +753,6 @@ class TestSelection:
         assert large_child.backend_id == "platform:google-antigravity"
         assert large_child.internal_model == "antigravity-37flashhigh.gguf"
         assert large_child.reason == "reassign_context_limit"
-        await router.release(parent.backend_id)
         await router.release(large_child.backend_id)
 
     @pytest.mark.asyncio
