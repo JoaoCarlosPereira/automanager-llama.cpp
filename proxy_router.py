@@ -1604,10 +1604,10 @@ class ProxyRouter:
     ) -> Optional[Dict[str, Any]]:
         """Escolhe sem enfileirar enquanto houver algum backend livre.
 
-        A ordem de custo é: principal, locais secundários e, por último,
-        plataformas. Isso mantém clouds como fallback quando houver capacidade
-        local elegível, mesmo que o cloud esteja ocioso. Ocupação, benchmark e
-        afinidade desempatarão candidatos da mesma classe.
+        A ordem de custo é: principal, locais secundários, Ollama Cloud e
+        outras plataformas. Isso mantém clouds como fallback quando houver
+        capacidade local elegível e prioriza Ollama antes de outras clouds.
+        Ocupação, benchmark e afinidade desempatarão candidatos da mesma classe.
         """
         if not candidates:
             return None
@@ -1629,14 +1629,16 @@ class ProxyRouter:
                 return 0
             if self._backend_type(instance) != "platform":
                 return 1
-            # Dentro da camada cloud, contas diferentes do mesmo provedor
-            # formam um unico pool logico antes de outra plataforma.
+            if instance.get("provider") == "ollama-cloud":
+                return 2
+            # Dentro da camada cloud, o provedor solicitado ainda tem
+            # preferência sobre outras plataformas, depois do Ollama.
             if (
                 preferred_provider
                 and instance.get("provider") == preferred_provider
             ):
-                return 2
-            return 3
+                return 3
+            return 4
 
         return min(
             candidates,
@@ -1691,7 +1693,11 @@ class ProxyRouter:
             routing_priority = (
                 0
                 if is_primary
-                else 1 if self._backend_type(instance) != "platform" else 2
+                else 1
+                if self._backend_type(instance) != "platform"
+                else 2
+                if instance.get("provider") == "ollama-cloud"
+                else 3
             )
             return (
                 in_flight / max(1, initial_capacity),

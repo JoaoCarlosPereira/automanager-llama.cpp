@@ -364,6 +364,19 @@ class TestPickLeastBusyPrioritizesNonCooldown:
         assert chosen is not None
         assert chosen["account_id"] == "a2"  # Available account
 
+    def test_ollama_precedes_other_cloud_provider_after_locals(self):
+        router, _ = TestProviderSafeReassign._router_with_cli_and_cloud()
+        candidates = router._routing_instances()
+
+        chosen = router._pick_least_busy(
+            candidates,
+            primary_backend_id="platform:unavailable-primary",
+            preferred_provider="codex",
+        )
+
+        assert chosen is not None
+        assert chosen["provider"] == "ollama-cloud"
+
 
 # ---------------------------------------------------------------------------
 # Failover scenario
