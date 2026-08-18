@@ -2590,6 +2590,39 @@ class ProxyRouter:
 
         if (
             existing is not None
+            and tag == CURSOR_SUBAGENT_TAG
+            and existing.backend_id == primary_backend_id
+        ):
+            # Sessões de subagente persistidas antes da regra de isolamento
+            # não devem continuar presas ao modelo principal. Migre-as assim
+            # que houver um local ou provedor secundário compatível.
+            secondary_candidates = self._candidates(
+                instances,
+                config,
+                primary_port,
+                needed_ctx,
+                ignore_capacity=ignore_capacity,
+                exclude_backend_ids={primary_backend_id},
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
+            )
+            secondary_choice = self._pick_least_busy(
+                secondary_candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
+            )
+            if secondary_choice is not None:
+                return _commit(
+                    secondary_choice,
+                    False,
+                    "cursor_subagent_primary_avoidance",
+                    existing,
+                ), None
+
+        if (
+            existing is not None
             and primary is not None
             and self._backend_available(primary)
             and self._supports_required_capabilities(
@@ -2597,6 +2630,7 @@ class ProxyRouter:
             )
             and needed_ctx <= _context_limit(primary)
             and existing.backend_id != self._backend_id(primary)
+            and tag != CURSOR_SUBAGENT_TAG
             and (tag is None or tag == MAIN_TAG)
         ):
             # Uma sessão desviada para uma janela maior deve retornar ao
