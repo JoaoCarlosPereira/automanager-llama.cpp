@@ -178,6 +178,29 @@ class TestAffinityExtraction:
         assert k1 == k2
         assert k1.startswith("hash:")
 
+    def test_cursor_subagent_has_separate_stable_affinity(self, router):
+        parent = body_with(user="Suba tres agentes")
+        child = body_with(user="Suba tres agentes")
+        child["messages"].append({
+            "role": "user",
+            "content": (
+                "Escreva uma musica.\n<system_reminder>You are running as a "
+                "subagent under a parent agent. Do not spawn more.</system_reminder>"
+            ),
+        })
+
+        parent_key, parent_tag = router.extract_affinity(
+            {}, parent, "1.1.1.1", "cursor"
+        )
+        child_key, child_tag = router.extract_affinity(
+            {}, child, "1.1.1.1", "cursor"
+        )
+
+        assert parent_tag is None
+        assert child_tag == "cursor-subagent"
+        assert child_key.startswith("agent:cursor-subagent:")
+        assert child_key != parent_key
+
     def test_user_agent_changes_hash(self, router):
         k1, _ = router.extract_affinity({}, body_with(), "1.1.1.1", "cursor")
         k2, _ = router.extract_affinity({}, body_with(), "1.1.1.1", "cline")
@@ -593,6 +616,65 @@ class TestSelection:
         await router.release(decision.backend_port)
 
     @pytest.mark.asyncio
+    async def test_cursor_subagent_uses_local_and_leaves_codex_for_parent(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(
+            port=9100, backend_id="platform:codex", provider="codex"
+        )
+        local = make_instance(8086, AUX0_PATH)
+        status_holder["instances"] = [local, codex]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        parent_body = body_with(
+            user="Suba tres agentes", model="gpt-5.6-luna"
+        )
+        parent = await resolve(router, body=parent_body)
+
+        child_body = body_with(
+            user="Suba tres agentes", model="gpt-5.6-luna"
+        )
+        child_body["messages"].append({
+            "role": "user",
+            "content": (
+                "Escreva uma musica.\n<system_reminder>You are running as a "
+                "subagent under a parent agent.</system_reminder>"
+            ),
+        })
+        child = await resolve(router, body=child_body)
+
+        assert parent.backend_id == "platform:codex"
+        assert child.backend_id == router._backend_id(local)
+        assert child.reason == "cursor_subagent_local_preference"
+        assert child.affinity_key != parent.affinity_key
+        await router.release(child.backend_id)
+
+        child_again = await resolve(router, body=child_body)
+        assert child_again.backend_id == child.backend_id
+        assert child_again.reason == "sticky"
+        await router.release(child_again.backend_id)
+
+        continuation_body = dict(parent_body)
+        continuation_body["messages"] = [
+            *parent_body["messages"],
+            {"role": "assistant", "content": "Delegando."},
+            {
+                "role": "tool",
+                "content": "Subagent is running in the background.",
+            },
+        ]
+        continuation = await resolve(router, body=continuation_body)
+        assert continuation.backend_id == "platform:codex"
+        assert continuation.affinity_key == parent.affinity_key
+        assert continuation.reason == "sticky_origin_capacity"
+        await router.release(parent.backend_id)
+        await router.release(continuation.backend_id)
+
+    @pytest.mark.asyncio
     async def test_dynamic_primary_and_failover_use_each_models_context_limit(
         self, router, proxy_config, status_holder, monkeypatch
     ):
@@ -855,50 +937,95 @@ class TestSelection:
         assert again.backend_port != dead_port
 
     @pytest.mark.asyncio
-    async def test_sticky_session_returns_to_primary_when_free(self, router):
-        """Sessao sticky presa num secundario volta pro principal assim que
-        ele libera, em vez de continuar la enquanto durar o TTL."""
+    async def test_sticky_session_stays_on_its_origin_when_primary_frees(self, router):
+        """Liberar o principal não muda a origem de uma sessão já criada."""
         d_main = await resolve(router, body=body_with())  # ocupa principal
         decision = await resolve(router, body=body_with(tag="a1"))
         assert decision.backend_port != 8085
         await router.release(d_main.backend_port)  # principal libera
         await router.release(decision.backend_port)
         again = await resolve(router, body=body_with(tag="a1"))
-        assert again.reason == "sticky_return_primary"
-        assert again.backend_port == 8085
+        assert again.reason == "sticky"
+        assert again.backend_port == decision.backend_port
         await router.release(again.backend_port)
 
     @pytest.mark.asyncio
-    async def test_concurrent_same_hash_branches_across_backends(self, router):
-        """Subagentes sem tag e com prompts idênticos (mesma hash) em
-        paralelo devem ramificar para backends livres, não enfileirar."""
+    async def test_concurrent_same_hash_stays_on_origin(self, router):
+        """Continuações sem marcador não abandonam o backend de origem."""
         body = body_with()  # sem tag -> hash:
         d1 = await resolve(router, body=body)
-        d2 = await resolve(router, body=body)  # base ocupada -> ramo #2
-        d3 = await resolve(router, body=body)  # -> ramo #3
+        d2 = await resolve(router, body=body)
+        d3 = await resolve(router, body=body)
         ports = {d1.backend_port, d2.backend_port, d3.backend_port}
-        assert ports == {8085, 8086, 8087}
+        assert ports == {8085}
         assert d1.affinity_key.startswith("hash:")
-        assert d2.affinity_key == f"{d1.affinity_key}#2"
-        assert d3.affinity_key == f"{d1.affinity_key}#3"
-        assert d2.reason == "hash_branch"
+        assert d2.affinity_key == d1.affinity_key
+        assert d3.affinity_key == d1.affinity_key
+        assert d2.reason == "sticky_origin_capacity"
+        assert d3.reason == "sticky_origin_capacity"
         for d in (d1, d2, d3):
             await router.release(d.backend_port)
 
     @pytest.mark.asyncio
-    async def test_hash_branch_is_sticky_on_reuse(self, router):
+    async def test_hash_origin_is_sticky_on_reuse(self, router):
         body = body_with()
         d1 = await resolve(router, body=body)
         d2 = await resolve(router, body=body)
         await router.release(d2.backend_port)
-        # Base segue ocupada; nova requisição concorrente reusa o ramo #2
+        # Base segue ocupada; nova continuação conserva a mesma origem.
         d2_again = await resolve(router, body=body)
         assert d2_again.affinity_key == d2.affinity_key
         assert d2_again.backend_port == d2.backend_port
         assert d2_again.sticky_hit is True
-        assert d2_again.reason == "sticky_branch"
+        assert d2_again.reason == "sticky_origin_capacity"
         await router.release(d1.backend_port)
         await router.release(d2_again.backend_port)
+
+    @pytest.mark.asyncio
+    async def test_persisted_cloud_branch_migrates_to_free_local(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(
+            port=9100, backend_id="platform:codex", provider="codex"
+        )
+        ollama = make_platform_instance(
+            port=9101,
+            backend_id="platform:ollama-cloud:old-account",
+            model="gpt-oss:120b",
+            provider="ollama-cloud",
+        )
+        local = make_instance(8086, AUX0_PATH)
+        status_holder["instances"] = [local, codex, ollama]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:ollama-cloud", {"proxy_eligible": True}
+        )
+
+        body = body_with(tag="legacy-cloud-branch", model="gpt-5.6-luna")
+        primary = await resolve(router, body=body)
+        branch_key = f"{primary.affinity_key}#2"
+        router._register_session_locked(
+            branch_key,
+            ollama,
+            "gpt-5.6-luna",
+            None,
+            is_primary=False,
+        )
+
+        branch = await resolve(router, body=body)
+
+        assert branch.affinity_key == branch_key
+        assert branch.backend_port == 8086
+        assert branch.backend_type == "local"
+        assert branch.reason == "sticky_branch_local_preference"
+        assert router._sessions[branch_key].backend_type == "local"
+        await router.release(primary.backend_id)
+        await router.release(branch.backend_id)
 
     @pytest.mark.asyncio
     async def test_tagged_sessions_overflow_to_free_backend(self, router, status_holder):

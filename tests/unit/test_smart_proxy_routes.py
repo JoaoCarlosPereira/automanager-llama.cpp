@@ -214,6 +214,30 @@ class TestOllamaCloudPayload:
         assert "max_completion_tokens" not in normalized
 
 
+class TestBackendSpecificPayload:
+    def test_custom_tool_is_converted_for_local_backend(self):
+        payload = custom_tool_body()
+
+        normalized, conversions = llama_manager._normalize_payload_for_backend(
+            payload, make_instance(8085, MAIN_PATH)
+        )
+
+        assert conversions == 1
+        assert normalized["tools"][0]["type"] == "function"
+        assert payload["tools"][0]["type"] == "custom"
+
+    def test_custom_tool_remains_native_for_codex_platform(self):
+        payload = custom_tool_body(model="gpt-5.6-luna")
+
+        normalized, conversions = llama_manager._normalize_payload_for_backend(
+            payload, make_platform_instance()
+        )
+
+        assert conversions == 0
+        assert normalized is payload
+        assert normalized["tools"][0]["type"] == "custom"
+
+
 # ---------------------------------------------------------------------------
 # Task 04 — desvio /v1, filtro /v1/models, transparência não-stream
 # ---------------------------------------------------------------------------

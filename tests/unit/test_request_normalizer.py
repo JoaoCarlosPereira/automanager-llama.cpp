@@ -3,7 +3,9 @@
 import json
 
 from request_normalizer import (
+    CUSTOM_TOOL_INPUT_FIELD,
     RECOVERED_ARGUMENTS_FIELD,
+    normalize_custom_tools_for_local,
     normalize_tool_call_arguments,
 )
 
@@ -74,3 +76,45 @@ def test_user_content_and_top_level_tool_schema_are_not_modified():
     assert repairs == 1
     assert normalized["tools"] is original_tools
     assert normalized["messages"][0] is original_user
+
+
+def test_custom_tool_is_converted_for_local_without_mutating_input():
+    function_tool = {
+        "type": "function",
+        "function": {"name": "read", "parameters": {"type": "object"}},
+    }
+    custom_tool = {
+        "type": "custom",
+        "name": "ApplyPatch",
+        "description": "Apply a patch",
+        "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"},
+    }
+    payload = {
+        "messages": [{"role": "user", "content": "change it"}],
+        "tools": [function_tool, custom_tool],
+    }
+
+    normalized, conversions = normalize_custom_tools_for_local(payload)
+
+    converted = normalized["tools"][1]
+    assert conversions == 1
+    assert normalized is not payload
+    assert normalized["messages"] is payload["messages"]
+    assert normalized["tools"][0] is function_tool
+    assert converted["type"] == "function"
+    assert converted["function"]["name"] == "ApplyPatch"
+    assert "Custom input format:" in converted["function"]["description"]
+    assert converted["function"]["parameters"]["required"] == [
+        CUSTOM_TOOL_INPUT_FIELD
+    ]
+    assert payload["tools"][1] is custom_tool
+    assert payload["tools"][1]["type"] == "custom"
+
+
+def test_custom_tool_normalizer_is_noop_without_custom_tools():
+    payload = _payload('{"path":"ok"}')
+
+    normalized, conversions = normalize_custom_tools_for_local(payload)
+
+    assert normalized is payload
+    assert conversions == 0

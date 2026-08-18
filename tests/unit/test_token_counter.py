@@ -106,6 +106,33 @@ async def test_exact_count_uses_template_and_model_tokenizer():
 
 
 @pytest.mark.asyncio
+async def test_exact_count_converts_custom_tools_only_in_template_copy():
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[
+        _response({"prompt": "<tool>ApplyPatch</tool>"}),
+        _response({"tokens": list(range(321))}),
+    ])
+    counter = HybridTokenCounter(client)
+    body = {
+        "messages": [{"role": "user", "content": "change it"}],
+        "tools": [{
+            "type": "custom",
+            "name": "ApplyPatch",
+            "description": "Apply a patch",
+            "format": {"type": "grammar", "syntax": "lark"},
+        }],
+    }
+
+    budget = await counter.count(body, [_instance()], {}, exact_required=True)
+
+    assert budget.source == "exact"
+    assert budget.prompt_tokens == 321
+    template_call = client.post.await_args_list[0]
+    assert template_call.kwargs["json"]["tools"][0]["type"] == "function"
+    assert body["tools"][0]["type"] == "custom"
+
+
+@pytest.mark.asyncio
 async def test_exact_count_is_cached_without_storing_tokens_again():
     client = MagicMock()
     client.post = AsyncMock(side_effect=[

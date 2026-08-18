@@ -7,6 +7,75 @@ from typing import Any, Dict, Tuple
 
 
 RECOVERED_ARGUMENTS_FIELD = "_automanager_recovered_raw_arguments"
+CUSTOM_TOOL_INPUT_FIELD = "input"
+
+
+def _custom_tool_description(tool: Dict[str, Any]) -> str:
+    description = str(tool.get("description") or "").strip()
+    custom_format = tool.get("format")
+    if custom_format is None:
+        return description
+
+    try:
+        serialized_format = json.dumps(
+            custom_format, ensure_ascii=False, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        serialized_format = str(custom_format)
+
+    format_note = f"Custom input format: {serialized_format}"
+    return f"{description}\n\n{format_note}" if description else format_note
+
+
+def normalize_custom_tools_for_local(
+    payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], int]:
+    """Expose OpenAI custom tools as functions understood by llama.cpp.
+
+    Cursor currently declares ApplyPatch with ``type=custom``. llama.cpp's
+    chat-template endpoint rejects that OpenAI tool variant before either
+    tokenization or inference. Local models receive an equivalent function
+    taking one raw string field; platform requests remain untouched because
+    callers apply this conversion only to local backends.
+    """
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return payload, 0
+
+    normalized_payload = payload
+    normalized_tools = tools
+    conversions = 0
+
+    for tool_index, tool in enumerate(tools):
+        if not isinstance(tool, dict) or tool.get("type") != "custom":
+            continue
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+
+        if normalized_payload is payload:
+            normalized_payload = dict(payload)
+            normalized_tools = list(tools)
+            normalized_payload["tools"] = normalized_tools
+
+        normalized_tools[tool_index] = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": _custom_tool_description(tool),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        CUSTOM_TOOL_INPUT_FIELD: {"type": "string"},
+                    },
+                    "required": [CUSTOM_TOOL_INPUT_FIELD],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        conversions += 1
+
+    return normalized_payload, conversions
 
 
 def _normalized_arguments(value: Any) -> tuple[str, bool]:

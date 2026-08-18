@@ -46,6 +46,8 @@ from schemas import (
 logger = logging.getLogger("automanager")
 
 AGENT_TAG_RE = re.compile(r"\[AGENT:([A-Za-z0-9_-]+)\]")
+CURSOR_SUBAGENT_MARKER = "you are running as a subagent under a parent agent"
+CURSOR_SUBAGENT_TAG = "cursor-subagent"
 
 # Margem de segurança sobre a estimativa de tokens (chars//4) — TechSpec.
 TOKEN_ESTIMATE_MARGIN = 1.1
@@ -578,6 +580,9 @@ class ProxyRouter:
         """Retorna (affinity_key, detected_tag) na ordem de precedência do PRD."""
         lower_headers = {str(k).lower(): v for k, v in headers.items()}
         tag = self.detect_tag(body)
+        subagent_seed = self._cursor_subagent_seed(body)
+        if tag is None and subagent_seed:
+            tag = CURSOR_SUBAGENT_TAG
 
         session_id = lower_headers.get("x-automanager-session-id")
         if session_id:
@@ -593,10 +598,31 @@ class ProxyRouter:
             if metadata.get("agent_id"):
                 return f"aid:{metadata['agent_id']}", tag
 
-        digest = self._stable_hash(body, client_ip, user_agent)
+        if subagent_seed:
+            raw = "\x1f".join(
+                [subagent_seed, str(body.get("model") or ""), client_ip or "",
+                 user_agent or ""]
+            )
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        else:
+            digest = self._stable_hash(body, client_ip, user_agent)
         if tag:
             return f"agent:{tag}:{digest[:8]}", tag
         return f"hash:{digest[:16]}", tag
+
+    @staticmethod
+    def _cursor_subagent_seed(body: dict) -> str:
+        """Return Cursor's stable child-assignment message when present."""
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return ""
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            text = _content_text(message.get("content"))
+            if CURSOR_SUBAGENT_MARKER in text.lower():
+                return text
+        return ""
 
     @staticmethod
     def detect_tag(body: dict) -> Optional[str]:
@@ -1711,6 +1737,47 @@ class ProxyRouter:
                     continue
                 _, b_max = self._backend_flags(config, b_inst)
                 if self.in_flight_for(b_inst) < b_max:
+                    # Ramos persistidos podem ter sido criados no cloud quando
+                    # nenhum local cabia ou estava livre. Reavalie a camada de
+                    # custo antes de reutilizá-los: sticky preserva a conversa,
+                    # mas não deve perpetuar gasto de cloud depois que um local
+                    # compatível voltou a ficar disponível.
+                    if self._backend_type(b_inst) == "platform":
+                        local_candidates = [
+                            candidate
+                            for candidate in self._candidates(
+                                instances,
+                                config,
+                                primary_port,
+                                needed_ctx,
+                                ignore_capacity=False,
+                                external_model=external_model,
+                                configured_primary_backend_id=(
+                                    configured_primary_backend_id
+                                ),
+                            )
+                            if self._backend_type(candidate) != "platform"
+                        ]
+                        local_choice = self._pick_least_busy(
+                            local_candidates,
+                            primary_port,
+                            primary_backend_id,
+                        )
+                        if local_choice is not None:
+                            logger.info(
+                                "[proxy] migrating sticky cloud branch to local "
+                                "affinity_key=%s old_backend=%s new_backend=%s",
+                                branch_key,
+                                self._backend_id(b_inst),
+                                self._backend_id(local_choice),
+                            )
+                            return _commit(
+                                local_choice,
+                                False,
+                                "sticky_branch_local_preference",
+                                branch,
+                                key=branch_key,
+                            )
                     return _commit(
                         b_inst, True, "sticky_branch", branch, key=branch_key
                     )
@@ -2393,6 +2460,7 @@ class ProxyRouter:
             # sessões antigas quando o principal configurado está utilizável.
             if (
                 incompatible_session
+                and tag != CURSOR_SUBAGENT_TAG
                 and self._backend_available(primary)
                 and needed_ctx <= _context_limit(primary)
             ):
@@ -2410,38 +2478,19 @@ class ProxyRouter:
                     self._save_sessions()
                 existing = None
 
-        if existing is not None:
-            on_primary = (
-                existing.backend_id == primary_backend_id
-                if existing.backend_id else existing.backend_port == primary_port
-            )
-            if not on_primary and self._backend_available(primary):
-                # Principal liberou: sessao sticky volta pra ele em vez de
-                # continuar presa ao secundario onde foi parar (PRD F6 —
-                # principal tem prioridade sempre que estiver livre).
-                primary_ctx_ok = needed_ctx <= _context_limit(primary)
-                if primary_ctx_ok:
-                    _, primary_max = self._backend_flags(config, primary)
-                    if ignore_capacity or self.in_flight_for(primary) < primary_max:
-                        logger.info(
-                            "[proxy] sticky session returning to primary "
-                            "affinity_key=%s old_backend=%s",
-                            affinity_key, existing.backend_port,
-                        )
-                        existing.backend_port = primary["port"]
-                        existing.backend_model_path = primary.get("model_path") or ""
-                        existing.internal_model = self._internal_model(
-                            primary, existing.external_model, True
-                        )
-                        existing.backend_id = primary_backend_id
-                        existing.backend_type = self._backend_type(primary)
-                        existing.provider = primary.get("provider")
-                        if apply_side_effects:
-                            self._save_sessions()
-                        return _commit(
-                            primary, False, "sticky_return_primary", existing
-                        ), None
+        if (
+            existing is not None
+            and existing.external_model != external_model
+            and self._backend_available(primary)
+            and needed_ctx <= _context_limit(primary)
+        ):
+            # Uma troca explícita do campo model é uma nova origem solicitada
+            # pelo cliente, não um retorno automático provocado por capacidade.
+            return _commit(
+                primary, False, "requested_model_changed", existing
+            ), None
 
+        if existing is not None:
             inst = None
             context_mismatch = False
             if existing.backend_id:
@@ -2479,6 +2528,13 @@ class ProxyRouter:
                 if ignore_capacity:
                     return _decision(inst, True, "sticky"), None
                 if self.in_flight_for(inst) >= max_parallel:
+                    if tag is None or tag == MAIN_TAG:
+                        # A continuação principal mantém o backend de origem,
+                        # mesmo se a chamada anterior ainda estiver terminando.
+                        # Filhos do Cursor possuem afinidades próprias.
+                        return _commit(
+                            inst, True, "sticky_origin_capacity", existing
+                        ), None
                     # Backend sticky cheio: preserve a chave-base no backend
                     # original e direcione a chamada concorrente para um ramo
                     # sticky no próximo backend livre. Se todos estiverem cheios,
@@ -2618,6 +2674,37 @@ class ProxyRouter:
                     code="no_backend",
                 )
             return _commit(chosen, False, "least_busy", None), None
+
+        if tag == CURSOR_SUBAGENT_TAG:
+            # Cursor não envia um ID explícito para filhos, mas inclui um
+            # marcador estável no prompt. Esses trabalhos delegados devem
+            # consumir primeiro a capacidade local e preservar a plataforma
+            # solicitada para a continuação do agente pai.
+            local_candidates = [
+                candidate
+                for candidate in self._candidates(
+                    instances,
+                    config,
+                    primary_port,
+                    needed_ctx,
+                    ignore_capacity=ignore_capacity,
+                    external_model=external_model,
+                    configured_primary_backend_id=configured_backend_id,
+                )
+                if self._backend_type(candidate) != "platform"
+            ]
+            local_choice = self._pick_least_busy(
+                local_candidates,
+                primary_port,
+                primary_backend_id,
+            )
+            if local_choice is not None:
+                return _commit(
+                    local_choice,
+                    False,
+                    "cursor_subagent_local_preference",
+                    None,
+                ), None
 
         # Subagente: tenta o modelo principal primeiro (prioridade absoluta);
         # só se o primary estiver ocupado, escolhe o menos ocupado entre

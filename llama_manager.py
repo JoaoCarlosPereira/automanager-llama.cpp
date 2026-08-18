@@ -54,7 +54,10 @@ from context_optimizer import (
     resolve_model_limits,
 )
 from token_counter import HybridTokenCounter, RequestTokenBudget
-from request_normalizer import normalize_tool_call_arguments
+from request_normalizer import (
+    normalize_custom_tools_for_local,
+    normalize_tool_call_arguments,
+)
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
@@ -2136,6 +2139,17 @@ def _normalize_ollama_cloud_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_payload_for_backend(
+    payload: Dict[str, Any], target_instance: Dict[str, Any]
+) -> tuple[Dict[str, Any], int]:
+    """Apply only the compatibility transforms required by the destination."""
+    if target_instance.get("backend_type") != "platform":
+        return normalize_custom_tools_for_local(payload)
+    if str(target_instance.get("provider") or "").strip().lower() == "ollama-cloud":
+        return _normalize_ollama_cloud_payload(payload), 0
+    return payload, 0
+
+
 async def _resolve_forward_model(
     model_name: str,
     target_instance: Dict[str, Any],
@@ -2633,13 +2647,15 @@ async def _smart_proxy_forward(
             instances,
             route_headers,
         )
-        payload_to_forward = optimized_data
-        if (
-            decision.provider == "ollama-cloud"
-            or str(decision_instance.get("provider") or "").strip().lower()
-            == "ollama-cloud"
-        ):
-            payload_to_forward = _normalize_ollama_cloud_payload(optimized_data)
+        payload_to_forward, custom_tool_conversions = _normalize_payload_for_backend(
+            optimized_data, decision_instance
+        )
+        if custom_tool_conversions:
+            logger.info(
+                "[proxy] converted %s custom tool(s) for local backend=%s",
+                custom_tool_conversions,
+                decision.backend_id,
+            )
         forward_body = json.dumps(
             {**payload_to_forward, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
@@ -3136,7 +3152,16 @@ async def openai_proxy(
     forward_model = await _resolve_forward_model(
         str(requested_model or ""), target_instance, instances, route_headers
     )
-    if requested_model and forward_model != requested_model:
+    data, custom_tool_conversions = _normalize_payload_for_backend(
+        data, target_instance
+    )
+    if custom_tool_conversions:
+        logger.info(
+            "[proxy] converted %s custom tool(s) for direct local backend=%s",
+            custom_tool_conversions,
+            target_instance.get("backend_id") or target_instance.get("port"),
+        )
+    if custom_tool_conversions or (requested_model and forward_model != requested_model):
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 

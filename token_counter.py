@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 import httpx
 
+from request_normalizer import normalize_custom_tools_for_local
+
 
 DEFAULT_OUTPUT_RESERVE = 2048
 PROTOCOL_OVERHEAD = 512
@@ -163,7 +165,8 @@ class HybridTokenCounter:
             return cached, True
 
         port = int(instance["port"])
-        template_body = dict(body)
+        template_body, _ = normalize_custom_tools_for_local(body)
+        template_body = dict(template_body)
         template_body["model"] = instance.get("model") or body.get("model")
         request_headers = {
             name: value
