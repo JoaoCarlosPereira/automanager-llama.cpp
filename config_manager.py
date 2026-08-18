@@ -393,6 +393,7 @@ class ConfigManager:
             "mtp_draft_tokens": merged.get(
                 "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
             ),
+            "mtp_model_path": merged.get("mtp_model_path"),
             "pinned_fields": merged.get("pinned_fields") or {},
             "llama_server_bin": llama_server_bin,
             "turboquant_preset": turboquant_preset,

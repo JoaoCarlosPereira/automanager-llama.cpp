@@ -15,10 +15,11 @@ import {
     applyModelConfig, setDefaultModel,
     startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, configureLocalModelAlias, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
-    onMmprojChange, closeTab, startSmartCalibration,
+    openMtpImportModal, closeMtpImportModal, submitMtpImport,
+    onMmprojChange, onMtpModelChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart, setPlatformVisionEnabled,
-} from './models.js?v=4.2.26';
+} from './models.js?v=4.2.27';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
@@ -79,6 +80,10 @@ win.openVisionImportModal = openVisionImportModal;
 win.closeVisionImportModal = closeVisionImportModal;
 win.submitVisionImport = submitVisionImport;
 win.onMmprojChange = onMmprojChange;
+win.openMtpImportModal = openMtpImportModal;
+win.closeMtpImportModal = closeMtpImportModal;
+win.submitMtpImport = submitMtpImport;
+win.onMtpModelChange = onMtpModelChange;
 win.updateMetrics = updateMetrics;
 win.updateDownloads = updateDownloads;
 win.clearCompletedDownloads = clearCompletedDownloads;

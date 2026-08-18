@@ -38,7 +38,6 @@ from proxy_router import (
     ProxyRouter,
     StaleRoutePlan,
     DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
-    TOKEN_ESTIMATE_MARGIN,
     guard_sse_stream,
     repair_plain_json_tool_call_stream,
     rewrite_json_model,
@@ -54,6 +53,8 @@ from context_optimizer import (
     derive_target_capabilities,
     resolve_model_limits,
 )
+from token_counter import HybridTokenCounter, RequestTokenBudget
+from request_normalizer import normalize_tool_call_arguments
 from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
@@ -100,6 +101,7 @@ from schemas import (
     RenameRequest,
     SetDefaultRequest,
     SetMmprojRequest,
+    SetMtpModelRequest,
     SetThinkingRequest,
     SetLlamaBinRequest,
     ProxyConfigRequest,
@@ -121,7 +123,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.26"  # Checkbox Vision por integração de plataforma
+_DASHBOARD_JS_V = "4.2.27"  # Download e associação de draft MTP por modelo
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -295,10 +297,16 @@ def _local_context_limit(instance: Dict[str, Any]) -> Optional[int]:
 def _context_too_large_response(
     estimated_tokens: int,
     context_limit: int,
+    required_context: Optional[int] = None,
 ) -> JSONResponse:
+    required_detail = (
+        f"; necessario com reservas: {required_context}"
+        if required_context is not None else ""
+    )
     message = (
         "O contexto desta conversa excede o limite do modelo "
-        f"(estimado: {estimated_tokens} tokens; limite seguro: {context_limit}). "
+        f"(prompt: {estimated_tokens} tokens{required_detail}; "
+        f"limite seguro: {context_limit}). "
         "Reduza o historico, anexos ou ferramentas da conversa e tente novamente."
     )
     return JSONResponse(
@@ -721,6 +729,7 @@ proxy_router = ProxyRouter(
 )
 audit_recorder = AuditRecorder(log_dir=get_paths().audit_logs_dir)
 context_optimizer = ContextOptimizer(config_manager=config_manager, audit_recorder=audit_recorder)
+token_counter = HybridTokenCounter(client)
 
 oom_watchdog = OOMWatchdog(
     process_manager, config_manager, gpu_manager, log_manager
@@ -1089,6 +1098,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "thinking_enabled": req.thinking_enabled,
         "mtp_enabled": req.mtp_enabled,
         "mtp_draft_tokens": req.mtp_draft_tokens,
+        "mtp_model_path": req.mtp_model_path,
         "total_layers": total_layers if total_layers else 0,
         "pinned_fields": req.pinned_fields or {},
     }
@@ -1135,6 +1145,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         thinking_enabled=req.thinking_enabled,
         mtp_enabled=req.mtp_enabled,
         mtp_draft_tokens=req.mtp_draft_tokens,
+        mtp_model_path=req.mtp_model_path,
         total_layers=total_layers,
         cpu_enabled=req.cpu_enabled,
         port=req.port,
@@ -1553,7 +1564,12 @@ async def rename_model(req: RenameRequest, authenticated: bool = Depends(require
 async def start_download(req: DownloadRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    download_id = download_mgr.start_download(req.url, model_path=req.model_path)
+    download_id = download_mgr.start_download(
+        req.url,
+        filename=req.filename,
+        model_path=req.model_path,
+        asset_type=req.asset_type,
+    )
     return {"download_id": download_id}
 
 
@@ -1624,15 +1640,26 @@ async def ui_proxy(request: Request, port: int, path: str = ""):
                 html = _inject_ui_base_tag(resp.text, port)
                 return HTMLResponse(content=html, status_code=200)
 
-        resp = await client.request(
-            request.method,
-            target_url,
-            content=await request.body(),
-            headers=headers,
-            timeout=30.0,
+        resp = await client.send(
+            client.build_request(
+                request.method,
+                target_url,
+                content=await request.body(),
+                headers=headers,
+                timeout=None,
+            ),
+            stream=True,
         )
+
+        async def stream_generator(response=resp):
+            try:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+            finally:
+                await response.aclose()
+
         return StreamingResponse(
-            resp.aiter_bytes(),
+            stream_generator(),
             status_code=resp.status_code,
             headers=_filter_proxy_headers(dict(resp.headers)),
         )
@@ -1716,6 +1743,26 @@ async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(re
         raise HTTPException(status_code=401)
     config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled})
     return {"message": "Configuracao salva"}
+
+
+@app.post("/models/mtp")
+async def set_mtp_model(req: SetMtpModelRequest, authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    if req.mtp_model_path:
+        draft_path = os.path.realpath(req.mtp_model_path)
+        models_root = os.path.realpath(model_scanner.models_dir)
+        if not draft_path.startswith(models_root + os.sep):
+            raise HTTPException(status_code=403, detail="Draft MTP fora do diretório de modelos")
+        if not os.path.isfile(draft_path):
+            raise HTTPException(status_code=404, detail="Arquivo draft MTP não encontrado")
+        if not os.path.basename(draft_path).lower().startswith(("mtp-", "mtp_")):
+            raise HTTPException(status_code=400, detail="O arquivo selecionado não parece ser um draft MTP")
+        mtp_path = draft_path.replace("\\", "/")
+    else:
+        mtp_path = None
+    config_manager.update_model_settings(req.model_path, {"mtp_model_path": mtp_path})
+    return {"message": "Draft MTP salvo", "mtp_model_path": mtp_path}
 
 
 @app.post("/models/llama-bin")
@@ -2259,6 +2306,41 @@ async def _primary_only_models_response(
     return JSONResponse({"object": "list", "data": entries[:1]})
 
 
+async def _count_request_tokens(
+    data: Dict[str, Any],
+    instances: List[Dict[str, Any]],
+    headers: Dict[str, str],
+) -> RequestTokenBudget:
+    """Count once before routing; exact work is reserved for risky prompts."""
+    local_limits = [
+        limit
+        for instance in instances
+        if (limit := _local_context_limit(instance)) is not None
+    ]
+    conservative_required = token_counter.conservative_required_context(data)
+    exact_required = bool(
+        local_limits and conservative_required > min(local_limits)
+    )
+    budget = await token_counter.count(
+        data,
+        instances,
+        headers,
+        exact_required=exact_required,
+    )
+    logger.info(
+        "[tokens] source=%s prompt=%s output_reserve=%s media=%s "
+        "required=%s exact_backends=%s duration_ms=%.2f",
+        budget.source,
+        budget.prompt_tokens,
+        budget.output_tokens,
+        budget.media_tokens,
+        budget.required_context,
+        budget.exact_backends,
+        budget.duration_ms,
+    )
+    return budget
+
+
 async def _smart_proxy_forward(
     request: Request,
     path: str,
@@ -2280,6 +2362,8 @@ async def _smart_proxy_forward(
     # Antigravity (1M) so entra como redundancia para contextos maiores.
     await _fetch_platform_model_catalog()
 
+    token_budget = await _count_request_tokens(data, instances, route_headers)
+
     proxy_settings = config_manager.get_smart_proxy_settings()
     co_enabled = bool(
         proxy_settings.get("context_optimizer", {}).get("enabled", True)
@@ -2296,6 +2380,9 @@ async def _smart_proxy_forward(
                 body=data,
                 client_ip=client_ip,
                 user_agent=user_agent,
+                prompt_tokens=token_budget.prompt_tokens,
+                required_context=token_budget.required_context,
+                token_count_source=token_budget.source,
             )
         except ProxyError as exc:
             logger.warning(
@@ -2381,6 +2468,9 @@ async def _smart_proxy_forward(
                     user_agent=user_agent,
                     current_limit=limits.context_tokens or 0,
                     required_capabilities=req_caps,
+                    prompt_tokens=token_budget.prompt_tokens,
+                    required_context=token_budget.required_context,
+                    token_count_source=token_budget.source,
                     candidate_evaluator=_eval_cand,
                     fits_checker=_fits_cand,
                 )
@@ -2446,11 +2536,13 @@ async def _smart_proxy_forward(
         logger.info(
             "[proxy] route external_model=%s internal_model=%s backend=%s gpu=%s "
             "affinity_key=%s sticky_hit=%s reason=%s stream=%s "
-            "prompt_tokens_estimated=%s",
+            "prompt_tokens_estimated=%s required_context=%s token_count_source=%s",
             decision.external_model, decision.internal_model,
             decision.backend_port, decision.gpu, decision.affinity_key,
             decision.sticky_hit, decision.reason, is_stream,
             decision.prompt_tokens_estimated,
+            decision.required_context_tokens,
+            decision.token_count_source,
         )
         instances = _hybrid_status().get("instances", [])
         decision_instance = next(
@@ -2641,6 +2733,9 @@ async def _smart_proxy_forward(
                     decision.affinity_key,
                     exclude_backend_ids=failed_backend_ids,
                     reason="reassign_upstream_error",
+                    prompt_tokens=decision.prompt_tokens_estimated,
+                    required_context=decision.required_context_tokens,
+                    token_count_source=decision.token_count_source,
                 )
             except ProxyError as pe:
                 return JSONResponse(pe.payload(), status_code=pe.status_code)
@@ -2709,6 +2804,8 @@ async def _smart_proxy_forward(
                 prev_backend_key = new_backend_key
 
             new_decision.prompt_tokens_estimated = decision.prompt_tokens_estimated
+            new_decision.required_context_tokens = decision.required_context_tokens
+            new_decision.token_count_source = decision.token_count_source
             decision = new_decision
             return None
 
@@ -2968,6 +3065,16 @@ async def openai_proxy(
     # OpenAI-compatíveis (Cursor, etc.) validarem nomes de modelo na listagem.
     # O Modo Proxy Inteligente continua atuando apenas em POST /v1/chat/completions.
     path_norm = path.strip("/")
+    if request.method == "POST" and path_norm == "chat/completions" and data:
+        data, repaired_tool_calls = normalize_tool_call_arguments(data)
+        if repaired_tool_calls:
+            logger.warning(
+                "[proxy] repaired malformed historical tool-call arguments "
+                "count=%s",
+                repaired_tool_calls,
+            )
+            body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+
     if request.method == "GET" and path_norm.startswith("models"):
         list_headers = _filter_proxy_headers(dict(request.headers))
         list_headers.pop("host", None)
@@ -3040,16 +3147,23 @@ async def openai_proxy(
     if request.method == "POST" and path_norm == "chat/completions":
         context_limit = _local_context_limit(target_instance)
         if context_limit is not None:
-            estimated_tokens = ProxyRouter.estimate_prompt_tokens(data)
-            needed_context = int(estimated_tokens * TOKEN_ESTIMATE_MARGIN)
-            if needed_context > context_limit:
+            token_budget = await _count_request_tokens(
+                data, [target_instance], route_headers
+            )
+            if token_budget.required_context > context_limit:
                 logger.warning(
                     "[proxy] direct request rejected: context_too_large "
-                    "backend=%s estimated_tokens=%s needed_context=%s max_context=%s",
-                    target_instance.get("port"), estimated_tokens,
-                    needed_context, context_limit,
+                    "backend=%s prompt_tokens=%s required_context=%s "
+                    "max_context=%s source=%s",
+                    target_instance.get("port"), token_budget.prompt_tokens,
+                    token_budget.required_context, context_limit,
+                    token_budget.source,
                 )
-                return _context_too_large_response(estimated_tokens, context_limit)
+                return _context_too_large_response(
+                    token_budget.prompt_tokens,
+                    context_limit,
+                    token_budget.required_context,
+                )
 
     target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
     headers = dict(request.headers)
@@ -3496,6 +3610,38 @@ def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) ->
         'aria-label="Importar projetor de visão">'
         '<i class="fas fa-eye text-ui-label"></i></button>'
     )
+
+
+def _build_model_mtp_controls(model: dict, model_js: str, model_cfg: dict) -> str:
+    candidates = model.get("mtp_candidates") or []
+    import_btn = (
+        f'<button type="button" onclick="event.stopPropagation(); openMtpImportModal(\'{model_js}\')" '
+        'class="mtp-import-btn w-8 h-8 flex items-center justify-center rounded '
+        'bg-slate-800/50 text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-all" '
+        'title="Importar modelo draft MTP" aria-label="Importar modelo draft MTP">'
+        '<i class="fas fa-bolt text-ui-label"></i></button>'
+    )
+    if not candidates:
+        return import_btn
+    saved = model_cfg.get("mtp_model_path")
+    selected = saved if saved in candidates else candidates[0]
+    options = '<option value="">Sem MTP externo</option>'
+    for candidate in candidates:
+        name = html.escape(os.path.basename(candidate))
+        value = html.escape(candidate, quote=True)
+        selected_attr = " selected" if candidate == selected else ""
+        options += f'<option value="{value}"{selected_attr}>{name}</option>'
+    safe_js = _escape_js_attr(model_js)
+    return (
+        f"{import_btn}"
+        f'<select data-mtp-for="{html.escape(model_js, quote=True)}" '
+        'class="model-mtp-select bg-slate-900 border border-slate-700 text-slate-300 '
+        'rounded-lg px-2 py-1 text-ui-label font-bold max-w-[11rem]" '
+        'onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" '
+        f'onchange="onMtpModelChange(\'{safe_js}\', this)" '
+        'title="Draft MTP deste modelo" aria-label="Draft MTP deste modelo">'
+        f"{options}</select>"
+    )
     if not candidates:
         return import_btn
     selected = _resolved_mmproj_path(model, model_cfg)
@@ -3649,6 +3795,7 @@ async def index(request: Request):
         incapable_attr = 'true' if hardware_incapable else 'false'
 
         vision_controls = _build_model_vision_controls(m, m_js_js, m_cfg)
+        mtp_controls = _build_model_mtp_controls(m, m_js_js, m_cfg)
 
         model_items += f"""
         <div id="lib-{stable_id}" class="model-item-container group flex flex-col gap-3 p-3 mb-2 bg-slate-800/40 rounded-xl hover:bg-slate-700/60 transition-all border border-slate-700/50 hover:border-blue-500/50 shadow-sm {incapable_row_class}" data-path="{html.escape(m_js, quote=True)}" data-hardware-incapable="{incapable_attr}">
@@ -3667,6 +3814,7 @@ async def index(request: Request):
                     <button onclick="event.stopPropagation(); renameModel('{m_js_js}')" title="Renomear modelo" aria-label="Renomear modelo" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-blue-400 transition-all"><i class="fas fa-edit text-ui-label"></i></button>
                     <button onclick="event.stopPropagation(); deleteModel('{m_js_js}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800 text-slate-500 hover:text-red-400 transition-all"><i class="fas fa-trash-alt text-ui-label"></i></button>
                     {vision_controls}
+                    {mtp_controls}
                 </div>
                 <div class="flex items-center gap-2">
                     <span class="text-ui-label font-black text-slate-600 uppercase">Padrão</span>
@@ -3815,6 +3963,25 @@ def _build_html(
                         <input type="url" id="vision-import-url" required placeholder="https://..." class="w-full mt-2 px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-200 outline-none focus:ring-2 focus:ring-violet-500/50">
                     </div>
                     <button type="submit" class="w-full py-3 bg-violet-600 hover:bg-violet-500 text-white text-xs font-black rounded-xl transition-all uppercase">BAIXAR E VINCULAR</button>
+                </form>
+            </div>
+        </div>"""
+
+    mtp_import_modal = """
+        <div id="mtp-import-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true">
+            <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onclick="closeMtpImportModal()"></div>
+            <div class="relative glass w-full max-w-lg rounded-3xl border border-amber-500/30 shadow-2xl overflow-hidden">
+                <div class="p-6 md:p-8 border-b border-slate-800/60 bg-slate-900/40">
+                    <h2 class="text-lg font-bold text-white">Importar Draft MTP</h2>
+                    <p class="text-xs text-slate-500 mt-1">Baixe e vincule um GGUF MTP compatível somente ao modelo selecionado</p>
+                </div>
+                <form id="mtp-import-form" class="p-6 md:p-8 space-y-4" onsubmit="submitMtpImport(event)">
+                    <input type="hidden" id="mtp-import-model-path" value="">
+                    <div>
+                        <label class="text-ui-body-sm font-black text-slate-500 uppercase tracking-widest pl-1">URL do GGUF MTP</label>
+                        <input type="url" id="mtp-import-url" required placeholder="https://.../mtp-modelo-Q8_0.gguf" class="w-full mt-2 px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-500/50">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-black rounded-xl transition-all uppercase">BAIXAR E VINCULAR</button>
                 </form>
             </div>
         </div>"""
@@ -4056,7 +4223,8 @@ def _build_html(
 <body class="min-h-screen text-slate-200 selection:bg-blue-500/30 flex overflow-x-hidden">
     <script>window.modelConfigs = {{}}; window.activeTabs = [];</script>
     {login_overlay}
-    {vision_import_modal}
+        {vision_import_modal}
+        {mtp_import_modal}
     {version_update_modal}
     {cliproxy_auth_modal}
     <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
@@ -4880,6 +5048,7 @@ def _auto_start_default_model() -> None:
                 mtp_draft_tokens = saved_cfg.get(
                     "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
                 )
+                mtp_model_path = saved_cfg.get("mtp_model_path")
             else:
                 gpus = gpu_manager.detect_gpus()
                 weights = []
@@ -4905,6 +5074,7 @@ def _auto_start_default_model() -> None:
                 thinking_enabled = True
                 mtp_enabled = False
                 mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
+                mtp_model_path = None
 
             # Auto-allocate port for this model
             port = SERVER_PORT
@@ -4937,6 +5107,7 @@ def _auto_start_default_model() -> None:
                 thinking_enabled=thinking_enabled,
                 mtp_enabled=mtp_enabled,
                 mtp_draft_tokens=mtp_draft_tokens,
+                mtp_model_path=mtp_model_path,
                 total_layers=saved_cfg.get("total_layers", 0),
                 port=port,
                 llama_server_bin=saved_cfg.get("llama_server_bin"),

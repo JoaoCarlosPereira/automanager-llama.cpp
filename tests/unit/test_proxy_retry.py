@@ -26,6 +26,7 @@ from proxy_router import (
     infer_json_tool_call,
     repair_plain_json_tool_call_stream,
 )
+from token_counter import RequestTokenBudget
 
 client = TestClient(app)
 
@@ -102,6 +103,21 @@ def retry_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         llama_manager.process_manager, "get_status", lambda: holder
     )
+
+    async def legacy_test_budget(data, instances, headers):
+        prompt_tokens = ProxyRouter.estimate_prompt_tokens(data)
+        required = int(prompt_tokens * 1.1)
+        return RequestTokenBudget(
+            prompt_tokens=prompt_tokens,
+            output_tokens=0,
+            overhead_tokens=0,
+            media_tokens=0,
+            required_context=required,
+            source="test_estimated",
+            duration_ms=0.0,
+        )
+
+    monkeypatch.setattr(llama_manager, "_count_request_tokens", legacy_test_budget)
     return type("RetryEnv", (), {"cfg": cfg, "router": router, "holder": holder})()
 
 

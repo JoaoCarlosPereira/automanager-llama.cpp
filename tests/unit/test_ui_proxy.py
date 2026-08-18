@@ -58,8 +58,8 @@ def test_inject_ui_base_tag_rewrites_legacy_base_literal():
     assert 'base: "/ui/8090"' in out
 
 
-@patch("llama_manager.client.request", new_callable=AsyncMock)
-def test_ui_proxy_asset_omits_content_encoding(mock_request, test_client):
+@patch("llama_manager.client.send", new_callable=AsyncMock)
+def test_ui_proxy_asset_streams_and_omits_content_encoding(mock_send, test_client):
     upstream = MagicMock(spec=httpx.Response)
     upstream.status_code = 200
     upstream.headers = httpx.Headers(
@@ -74,14 +74,17 @@ def test_ui_proxy_asset_omits_content_encoding(mock_request, test_client):
         yield b"var chat = true;"
 
     upstream.aiter_bytes = MagicMock(return_value=_iter())
-    mock_request.return_value = upstream
+    upstream.aclose = AsyncMock()
+    mock_send.return_value = upstream
 
     resp = test_client.get("/ui/8085/_app/immutable/bundle.js")
 
+    assert mock_send.await_args.kwargs["stream"] is True
     assert resp.status_code == 200
     assert resp.content == b"var chat = true;"
     assert resp.headers.get("content-encoding") is None
     assert resp.headers.get("content-length") is None
+    upstream.aclose.assert_awaited_once()
 
 
 @patch("llama_manager.client.get", new_callable=AsyncMock)

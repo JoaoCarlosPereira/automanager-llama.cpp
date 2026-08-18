@@ -1127,6 +1127,7 @@ function applyPinnedFieldsToTab(tabId, pinnedFields) {
 export async function startSmartCalibration(path, tabId) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
+    const normalized = path.replace(/\\/g, '/');
 
     saveScreenSnapshot(path, tabId);
 
@@ -1170,6 +1171,7 @@ export async function startSmartCalibration(path, tabId) {
                 thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
                 mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
                 mtp_draft_tokens: getMtpDraftTokens(tabId),
+                mtp_model_path: getSelectedMtpForModel(normalized),
                 numa_enabled: tab.querySelector('.tab-numa-toggle').checked,
                 flash_attn_enabled: tab.querySelector('.tab-flash-attn-toggle').checked,
                 split_mode: tab.querySelector('.tab-split-mode').value,
@@ -1329,6 +1331,7 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
         thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
         mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
         mtp_draft_tokens: getMtpDraftTokens(tabId),
+        mtp_model_path: getSelectedMtpForModel(normalized),
     };
 }
 
@@ -1493,6 +1496,41 @@ export function getSelectedMmprojForModel(modelPath) {
     return cfg?.mmproj_path || null;
 }
 
+export function resolveMtpModelPath(model) {
+    const candidates = model.mtp_candidates || [];
+    const modelPath = model.path.replace(/\\/g, '/');
+    const cfg = window.modelConfigs[modelPath] || model.last_config || {};
+    if (cfg.mtp_model_path && candidates.includes(cfg.mtp_model_path)) {
+        return cfg.mtp_model_path;
+    }
+    return candidates[0] || null;
+}
+
+export function buildModelMtpControlsHtml(model, modelPath) {
+    const candidates = model.mtp_candidates || [];
+    const safePath = modelPath.replace(/'/g, "\\'");
+    const importBtn = `<button type="button" onclick="event.stopPropagation(); openMtpImportModal('${safePath}')" class="mtp-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-all" title="Importar modelo draft MTP" aria-label="Importar modelo draft MTP"><i class="fas fa-bolt text-ui-label"></i></button>`;
+    if (!candidates.length) return importBtn;
+
+    const selected = resolveMtpModelPath(model);
+    const options = [
+        '<option value="">Sem MTP externo</option>',
+        ...candidates.map(candidate => {
+            const selectedAttr = candidate === selected ? ' selected' : '';
+            return `<option value="${escapeHtml(candidate)}" class="bg-slate-900"${selectedAttr}>${escapeHtml(candidate.split('/').pop())}</option>`;
+        }),
+    ].join('');
+    return `${importBtn}<select data-mtp-for="${escapeHtml(modelPath)}" class="model-mtp-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation()" onchange="onMtpModelChange('${safePath}', this)" title="Draft MTP deste modelo" aria-label="Draft MTP deste modelo">${options}</select>`;
+}
+
+export function getSelectedMtpForModel(modelPath) {
+    const normalized = modelPath.replace(/\\/g, '/');
+    for (const select of document.querySelectorAll('select[data-mtp-for]')) {
+        if (select.getAttribute('data-mtp-for') === normalized) return select.value || null;
+    }
+    return window.modelConfigs[normalized]?.mtp_model_path || null;
+}
+
 function _isMmprojDisabledForModel(modelPath) {
     const cfg = window.modelConfigs[modelPath];
     return Boolean(cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__');
@@ -1547,6 +1585,55 @@ export async function submitVisionImport(event) {
     }
 }
 
+function onMtpModalKeydown(event) {
+    if (event.key === 'Escape') closeMtpImportModal();
+}
+
+export function openMtpImportModal(modelPath) {
+    const modal = document.getElementById('mtp-import-modal');
+    const pathInput = document.getElementById('mtp-import-model-path');
+    const urlInput = document.getElementById('mtp-import-url');
+    if (!modal || !pathInput || !urlInput) return;
+    pathInput.value = modelPath;
+    urlInput.value = '';
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    urlInput.focus();
+    document.addEventListener('keydown', onMtpModalKeydown);
+}
+
+export function closeMtpImportModal() {
+    const modal = document.getElementById('mtp-import-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    document.removeEventListener('keydown', onMtpModalKeydown);
+}
+
+export async function submitMtpImport(event) {
+    event.preventDefault();
+    const modelPath = document.getElementById('mtp-import-model-path')?.value.trim();
+    const url = document.getElementById('mtp-import-url')?.value.trim();
+    if (!modelPath || !url) return;
+    try {
+        const res = await apiFetch('/downloads', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url, model_path: modelPath, asset_type: 'mtp'}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast('Erro ao iniciar download MTP: ' + (err.detail || 'Erro desconhecido'), 'error');
+            return;
+        }
+        closeMtpImportModal();
+        window.updateDownloads();
+        window.updateModels();
+    } catch (e) {
+        showToast('Erro de rede ao iniciar download MTP.', 'error');
+    }
+}
+
 function mergeModelConfigFromServer(modelPath, lastConfig) {
     if (!lastConfig) return;
     const local = window.modelConfigs[modelPath] || {};
@@ -1555,7 +1642,7 @@ function mergeModelConfigFromServer(modelPath, lastConfig) {
 
 function isMmprojSelectFocused() {
     // Também evita re-render enquanto o usuário edita o limite de paralelismo
-    return document.activeElement?.matches?.('.model-mmproj-select, .proxy-max-parallel');
+    return document.activeElement?.matches?.('.model-mmproj-select, .model-mtp-select, .proxy-max-parallel');
 }
 
 function patchPlatformListItems(platforms, cfg) {
@@ -1737,6 +1824,7 @@ function buildModelListHtml(models, cfg, platforms = []) {
 
         const safePath = m_js.replace(/'/g, "\\'");
         const visionControls = buildModelVisionControlsHtml(m, m_js);
+        const mtpControls = buildModelMtpControlsHtml(m, m_js);
         return `
             <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
                  title="Clique para abrir · Ctrl+clique para nova aba"
@@ -1756,6 +1844,7 @@ function buildModelListHtml(models, cfg, platforms = []) {
                         <button onclick="event.stopPropagation(); configureLocalModelAlias('${safePath}')" title="${localAlias ? 'Editar alias' : 'Adicionar alias'}" aria-label="${localAlias ? 'Editar alias' : 'Adicionar alias'}" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-cyan-400"><i class="fas fa-tag text-ui-label"></i></button>
                         <button onclick="event.stopPropagation(); deleteModel('${safePath}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
                         ${visionControls}
+                        ${mtpControls}
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
@@ -1812,6 +1901,26 @@ export async function onMmprojChange(modelPath, selectEl) {
     const val = selectEl?.value;
     // Keep __no_vision__ as a sentinel so it persists in config
     await persistMmprojSelection(modelPath, val || null);
+}
+
+export async function onMtpModelChange(modelPath, selectEl) {
+    const normalized = (modelPath || '').replace(/\\/g, '/');
+    const mtpPath = selectEl?.value?.replace(/\\/g, '/') || null;
+    if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
+    window.modelConfigs[normalized].mtp_model_path = mtpPath;
+    try {
+        const res = await apiFetch('/models/mtp', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model_path: normalized, mtp_model_path: mtpPath}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar draft MTP');
+        }
+    } catch (e) {
+        showToast(e.message || 'Erro ao salvar draft MTP.', 'error');
+    }
 }
 
 export function formatRepoStorageLabel(storage) {

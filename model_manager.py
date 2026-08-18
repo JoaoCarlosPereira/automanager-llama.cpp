@@ -156,6 +156,36 @@ def _is_projector_filename(name_lower: str) -> bool:
     )
 
 
+def _is_mtp_filename(name_lower: str) -> bool:
+    """MTP draft GGUFs are auxiliary models, not chat backends."""
+    return name_lower.endswith(".gguf") and (
+        name_lower.startswith("mtp-") or name_lower.startswith("mtp_")
+    )
+
+
+_GGUF_QUANT_SUFFIX_RE = re.compile(
+    r"(?:-(?:ud-)?(?:bf16|f16|f32|q\d+(?:_[a-z0-9]+)*|iq\d+(?:_[a-z0-9]+)*))+$",
+    re.IGNORECASE,
+)
+
+
+def _mtp_compatibility_key(filename: str) -> str:
+    stem = re.sub(r"\.gguf$", "", os.path.basename(filename), flags=re.IGNORECASE)
+    stem = re.sub(r"^mtp[-_]", "", stem, flags=re.IGNORECASE)
+    stem = _GGUF_QUANT_SUFFIX_RE.sub("", stem)
+    stem = re.sub(r"-ud$", "", stem, flags=re.IGNORECASE)
+    return stem.lower().replace("_", "-")
+
+
+def _mtp_paths_for_model(model_path: str, drafts: List[dict]) -> List[str]:
+    model_key = _mtp_compatibility_key(model_path)
+    return sorted(
+        draft["path"]
+        for draft in drafts
+        if _mtp_compatibility_key(draft["path"]) == model_key
+    )
+
+
 def _projector_paths_for_model(model_path: str, projectors: List[dict]) -> List[str]:
     """Return projector paths in the same directory as the language model."""
     model_dir = os.path.dirname(model_path)
@@ -201,6 +231,7 @@ class ModelScanner:
     def scan(self) -> dict:
         models = []
         projectors = []
+        mtp_models = []
         try:
             for root, _dirs, files in os.walk(self.models_dir):
                 for f in files:
@@ -220,6 +251,8 @@ class ModelScanner:
                     }
                     if _is_projector_filename(name_lower):
                         projectors.append(item)
+                    elif _is_mtp_filename(name_lower):
+                        mtp_models.append(item)
                     elif name_lower.endswith(".gguf"):
                         models.append(item)
         except OSError as e:
@@ -236,10 +269,14 @@ class ModelScanner:
             candidates = _projector_paths_for_model(m["path"], projectors)
             m["mmproj_candidates"] = candidates
             m["auto_mmproj"] = candidates[0] if candidates else None
+            mtp_candidates = _mtp_paths_for_model(m["path"], mtp_models)
+            m["mtp_candidates"] = mtp_candidates
+            m["auto_mtp"] = mtp_candidates[0] if mtp_candidates else None
 
         return {
             "models": models,
             "projectors": projectors,
+            "mtp_models": mtp_models,
             "storage": get_repository_storage(self.models_dir),
         }
 
@@ -376,6 +413,7 @@ class DownloadManager:
         url: str,
         filename: Optional[str] = None,
         model_path: Optional[str] = None,
+        asset_type: str = "model",
     ) -> str:
         # SSRF prevention
         if not _validate_download_url(url):
@@ -395,7 +433,10 @@ class DownloadManager:
                 )
             if not filename:
                 filename = url.split("/")[-1].split("?")[0]
-                if not _is_projector_filename(filename.lower()):
+                if asset_type == "mtp":
+                    if not filename.lower().endswith(".gguf"):
+                        filename += ".gguf"
+                elif not _is_projector_filename(filename.lower()):
                     if filename.endswith(".gguf"):
                         filename = filename.replace(".gguf", ".mmproj")
                     else:
@@ -429,6 +470,7 @@ class DownloadManager:
                 "path": path,
                 "url": url,
                 "model_path": normalized_model.replace("\\", "/") if model_path else None,
+                "asset_type": asset_type,
                 "family": infer_model_family(filename, url) if not model_path else None,
                 "status": "downloading",
                 "progress": 0,

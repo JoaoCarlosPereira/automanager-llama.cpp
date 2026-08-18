@@ -394,7 +394,7 @@ class TestSelection:
         await router.release(overflow.backend_port)
 
     @pytest.mark.asyncio
-    async def test_platform_precedes_faster_secondary_local(
+    async def test_secondary_local_precedes_cloud(
         self, router, proxy_config, status_holder
     ):
         codex = make_platform_instance(backend_id="platform:codex")
@@ -412,15 +412,16 @@ class TestSelection:
         })
 
         primary = await resolve(router, body=body_with())
-        overflow = await resolve(router, body=body_with(tag="platform-first"))
+        overflow = await resolve(router, body=body_with(tag="local-first"))
 
         assert primary.backend_port == 8085
-        assert overflow.backend_id == "platform:codex"
+        assert overflow.backend_port == 8086
+        assert overflow.backend_type == "local"
         await router.release(primary.backend_id)
         await router.release(overflow.backend_id)
 
     @pytest.mark.asyncio
-    async def test_free_secondary_local_precedes_occupied_platform(
+    async def test_cloud_is_used_after_secondary_local_capacity(
         self, router, proxy_config, status_holder
     ):
         codex = make_platform_instance(backend_id="platform:codex")
@@ -432,14 +433,40 @@ class TestSelection:
         proxy_config.update_platform_settings(
             "platform:codex", {"proxy_eligible": True}
         )
+        primary = await resolve(router, body=body_with())
+        local = await resolve(router, body=body_with(tag="local"))
+        platform = await resolve(router, body=body_with(tag="cloud-after-local"))
+
+        assert local.backend_port == 8086
+        assert platform.backend_id == "platform:codex"
+        for decision in (primary, platform, local):
+            await router.release(decision.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_secondary_local_with_free_slot_precedes_idle_cloud(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(backend_id="platform:codex")
+        status_holder["instances"] = [
+            make_instance(8085, MAIN_PATH),
+            make_instance(8086, AUX0_PATH, slots=2),
+            codex,
+        ]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_model_settings(
+            AUX0_PATH, {"max_parallel_requests": 2}
+        )
 
         primary = await resolve(router, body=body_with())
-        platform = await resolve(router, body=body_with(tag="platform"))
-        local = await resolve(router, body=body_with(tag="local-while-platform-busy"))
+        local_first = await resolve(router, body=body_with(tag="local-1"))
+        local_second = await resolve(router, body=body_with(tag="local-2"))
 
-        assert platform.backend_id == "platform:codex"
-        assert local.backend_port == 8086
-        for decision in (primary, platform, local):
+        assert local_first.backend_port == 8086
+        assert local_second.backend_port == 8086
+        assert local_second.backend_type == "local"
+        for decision in (primary, local_first, local_second):
             await router.release(decision.backend_id)
 
     def test_snapshot_is_sorted_by_measured_speed_after_primary(self, router):
@@ -724,10 +751,10 @@ class TestSelection:
         await router.release(decision.backend_id)
 
     @pytest.mark.asyncio
-    async def test_platform_primary_overflow_prefers_next_platform(
+    async def test_platform_primary_overflow_prefers_secondary_local(
         self, router, proxy_config, status_holder
     ):
-        """Outra plataforma antecede locais mesmo compartilhando o sidecar."""
+        """Mesmo com principal cloud, secundários locais evitam outro cloud."""
         shared_port = 8317
         antigravity = make_platform_instance(
             port=shared_port, backend_id="platform:google-antigravity",
@@ -759,7 +786,8 @@ class TestSelection:
             router, body=body_with(tag="a1", model="antigravity-proagent.gguf")
         )
         assert d_main.backend_id == "platform:google-antigravity"
-        assert overflow.backend_id == "platform:codex"
+        assert overflow.backend_port == 8085
+        assert overflow.backend_type == "local"
         assert overflow.reason == "subagent_least_busy"
         await router.release(d_main.backend_id)
         await router.release(overflow.backend_id)
@@ -1069,11 +1097,10 @@ class TestSelection:
         await router.release(new_decision.backend_port)
 
     @pytest.mark.asyncio
-    async def test_failover_prefers_next_platform_over_local(
+    async def test_failover_prefers_local_then_cloud(
         self, router, proxy_config, status_holder
     ):
-        """Com o principal plataforma falhando, o failover vai para a próxima
-        plataforma disponível; locais só entram sem plataforma disponível."""
+        """Após falha, locais elegíveis antecedem plataformas secundárias."""
         shared_port = 8317
         codex = make_platform_instance(
             port=shared_port, backend_id="platform:codex", provider="codex",
@@ -1110,19 +1137,22 @@ class TestSelection:
             reason="reassign_upstream_error",
         )
         assert hop1 is not None
-        assert hop1.backend_id == "platform:google-antigravity"
-        assert hop1.backend_type == "platform"
-        assert hop1.internal_model == "antigravity-31prolow.gguf"
+        assert hop1.backend_type == "local"
 
+        local_backend_ids = {
+            router._backend_id(instance)
+            for instance in status_holder["instances"]
+            if instance.get("backend_type", "local") != "platform"
+        }
         hop2 = await router.reassign(
             decision.affinity_key,
-            exclude_backend_ids={
-                "platform:codex", "platform:google-antigravity",
-            },
+            exclude_backend_ids={"platform:codex", *local_backend_ids},
             reason="reassign_upstream_error",
         )
         assert hop2 is not None
-        assert hop2.backend_type == "local"
+        assert hop2.backend_id == "platform:google-antigravity"
+        assert hop2.backend_type == "platform"
+        assert hop2.internal_model == "antigravity-31prolow.gguf"
 
     @pytest.mark.asyncio
     async def test_release_accumulates_usage_tokens(self, router):
@@ -1220,6 +1250,60 @@ class TestSseRewrite:
 # ---------------------------------------------------------------------------
 
 class TestPlanAndCommit:
+    @pytest.mark.asyncio
+    async def test_required_context_includes_output_reserve(self, router):
+        with pytest.raises(ProxyError) as exc_info:
+            await router.plan_route(
+                headers={},
+                body=body_with(tag="reserved-output"),
+                client_ip="127.0.0.1",
+                user_agent="pytest",
+                prompt_tokens=60_000,
+                required_context=66_000,
+                token_count_source="exact",
+            )
+
+        assert exc_info.value.status_code == 413
+        assert exc_info.value.code == "context_too_large"
+
+    @pytest.mark.asyncio
+    async def test_exact_budget_is_preserved_in_decision(self, router):
+        plan = await router.plan_route(
+            headers={},
+            body=body_with(tag="exact-budget"),
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+            prompt_tokens=50_000,
+            required_context=53_536,
+            token_count_source="exact",
+        )
+
+        assert plan.decision.prompt_tokens_estimated == 50_000
+        assert plan.decision.required_context_tokens == 53_536
+        assert plan.decision.token_count_source == "exact"
+
+    @pytest.mark.asyncio
+    async def test_commit_revalidates_required_context(
+        self, router, status_holder
+    ):
+        plan = await router.plan_route(
+            headers={},
+            body=body_with(tag="shrink-after-plan"),
+            client_ip="127.0.0.1",
+            user_agent="pytest",
+            prompt_tokens=40_000,
+            required_context=50_000,
+            token_count_source="exact",
+        )
+        planned = next(
+            item for item in status_holder["instances"]
+            if item["port"] == plan.decision.backend_port
+        )
+        planned["config"]["context_size"] = 49_000
+
+        with pytest.raises(StaleRoutePlan):
+            await router.commit_route(plan)
+
     @pytest.mark.asyncio
     async def test_plan_route_has_no_side_effects(self, router, tmp_path):
         body = body_with(tag="test-plan")

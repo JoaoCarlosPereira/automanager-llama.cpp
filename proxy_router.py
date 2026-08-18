@@ -117,6 +117,8 @@ class RouteDecision:
     reason: str
     rewrite: bool
     prompt_tokens_estimated: int = 0
+    required_context_tokens: int = 0
+    token_count_source: str = "estimated"
     gpu: str = ""
     backend_id: str = ""
     backend_type: str = "local"
@@ -1525,10 +1527,10 @@ class ProxyRouter:
     ) -> Optional[Dict[str, Any]]:
         """Escolhe sem enfileirar enquanto houver algum backend livre.
 
-        Entre backends com o mesmo estado de ocupação, a ordem é: principal,
-        plataformas e, por último, locais secundários. Assim uma GPU local só
-        antecede uma plataforma quando ela é o backend principal. Benchmark e
-        afinidade apenas desempatarão candidatos da mesma classe.
+        A ordem de custo é: principal, locais secundários e, por último,
+        plataformas. Isso mantém clouds como fallback quando houver capacidade
+        local elegível, mesmo que o cloud esteja ocioso. Ocupação, benchmark e
+        afinidade desempatarão candidatos da mesma classe.
         """
         if not candidates:
             return None
@@ -1548,23 +1550,22 @@ class ProxyRouter:
             )
             if is_primary:
                 return 0
-            # Contas diferentes do mesmo provedor formam um unico pool
-            # logico. Esgote esse pool antes de atravessar para outra
-            # plataforma (especialmente Ollama Cloud multi-account).
+            if self._backend_type(instance) != "platform":
+                return 1
+            # Dentro da camada cloud, contas diferentes do mesmo provedor
+            # formam um unico pool logico antes de outra plataforma.
             if (
                 preferred_provider
                 and instance.get("provider") == preferred_provider
             ):
-                return 1
-            if self._backend_type(instance) == "platform":
                 return 2
             return 3
 
         return min(
             candidates,
             key=lambda i: (
-                0 if self.in_flight_for(i) == 0 else 1,
                 routing_priority(i),
+                0 if self.in_flight_for(i) == 0 else 1,
                 self.in_flight_for(i),
                 session_counts.get(self._backend_id(i), 0),
                 self._benchmark_latency(i) is None,
@@ -1613,7 +1614,7 @@ class ProxyRouter:
             routing_priority = (
                 0
                 if is_primary
-                else 1 if self._backend_type(instance) == "platform" else 2
+                else 1 if self._backend_type(instance) != "platform" else 2
             )
             return (
                 in_flight / max(1, initial_capacity),
@@ -1755,6 +1756,9 @@ class ProxyRouter:
         body: dict,
         client_ip: str,
         user_agent: str,
+        prompt_tokens: Optional[int] = None,
+        required_context: Optional[int] = None,
+        token_count_source: str = "estimated",
     ) -> RoutePlan:
         """Planeja o roteamento de forma livre de efeitos colaterais.
 
@@ -1774,6 +1778,9 @@ class ProxyRouter:
                     user_agent=user_agent,
                     apply_side_effects=False,
                     ignore_capacity=False,
+                    prompt_tokens=prompt_tokens,
+                    required_context=required_context,
+                    token_count_source=token_count_source,
                 )
                 if decision is not None:
                     return RoutePlan(
@@ -1798,6 +1805,9 @@ class ProxyRouter:
         user_agent: str,
         current_limit: int,
         required_capabilities: Any,
+        prompt_tokens: Optional[int] = None,
+        required_context: Optional[int] = None,
+        token_count_source: str = "estimated",
         candidate_evaluator: Optional[
             Callable[[Dict[str, Any]], Tuple[ModelLimits, FrozenSet[str]]]
         ] = None,
@@ -1890,7 +1900,11 @@ class ProxyRouter:
                     if not fits_checker(inst, limits.context_tokens):
                         continue
                 else:
-                    needed_ctx = int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
+                    needed_ctx = (
+                        int(required_context)
+                        if required_context is not None
+                        else int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
+                    )
                     if needed_ctx > limits.context_tokens:
                         continue
 
@@ -1933,7 +1947,15 @@ class ProxyRouter:
                     not chosen_is_primary
                     and self._backend_type(chosen) != "platform"
                 ),
-                prompt_tokens_estimated=self.estimate_prompt_tokens(body),
+                prompt_tokens_estimated=(
+                    int(prompt_tokens)
+                    if prompt_tokens is not None
+                    else self.estimate_prompt_tokens(body)
+                ),
+                required_context_tokens=(
+                    int(required_context) if required_context is not None else 0
+                ),
+                token_count_source=token_count_source,
                 gpu=gpu_label(chosen),
                 backend_id=self._backend_id(chosen),
                 backend_type=self._backend_type(chosen),
@@ -1978,7 +2000,11 @@ class ProxyRouter:
                 raise StaleRoutePlan(plan)
 
             # Revalidar capacidade de contexto do modelo
-            needed_ctx = int(decision.prompt_tokens_estimated * TOKEN_ESTIMATE_MARGIN)
+            needed_ctx = (
+                decision.required_context_tokens
+                if decision.required_context_tokens > 0
+                else int(decision.prompt_tokens_estimated * TOKEN_ESTIMATE_MARGIN)
+            )
             # O planejamento ja resolveu se a plataforma e primaria dinamica ou
             # secundaria e escolheu o modelo concreto. Recalcular isso apenas
             # contra o principal global pode trocar, no commit, Sol pelo modelo
@@ -2109,6 +2135,9 @@ class ProxyRouter:
         user_agent: str,
         apply_side_effects: bool = True,
         ignore_capacity: bool = False,
+        prompt_tokens: Optional[int] = None,
+        required_context: Optional[int] = None,
+        token_count_source: str = "estimated",
     ) -> Tuple[Optional[RouteDecision], Optional[str]]:
         """Uma tentativa de decisão sob o lock.
 
@@ -2117,8 +2146,16 @@ class ProxyRouter:
         """
         self._expire_locked()
         affinity_key, tag = self.extract_affinity(headers, body, client_ip, user_agent)
-        needed_ctx = int(self.estimate_prompt_tokens(body) * TOKEN_ESTIMATE_MARGIN)
-        est_tokens = self.estimate_prompt_tokens(body)
+        est_tokens = (
+            int(prompt_tokens)
+            if prompt_tokens is not None
+            else self.estimate_prompt_tokens(body)
+        )
+        needed_ctx = (
+            int(required_context)
+            if required_context is not None
+            else int(est_tokens * TOKEN_ESTIMATE_MARGIN)
+        )
 
         instances = self._routing_instances()
         config = self._config.get_config()
@@ -2181,12 +2218,12 @@ class ProxyRouter:
                 external_model=external_model,
                 configured_primary_backend_id=configured_backend_id,
             )
-            platform_fallback = [
+            local_fallback = [
                 instance for instance in fallback
-                if self._backend_type(instance) == "platform"
+                if self._backend_type(instance) != "platform"
             ]
             primary = self._pick_least_busy(
-                platform_fallback or fallback,
+                local_fallback or fallback,
                 primary_backend_id=configured_backend_id or None,
                 preferred_provider=(
                     configured_primary.get("provider")
@@ -2263,6 +2300,8 @@ class ProxyRouter:
                     and self._backend_type(instance) != "platform"
                 ),
                 prompt_tokens_estimated=est_tokens,
+                required_context_tokens=needed_ctx,
+                token_count_source=token_count_source,
                 gpu=gpu_label(instance),
                 backend_id=self._backend_id(instance),
                 backend_type=self._backend_type(instance),
@@ -2635,6 +2674,9 @@ class ProxyRouter:
         self, affinity_key: str, *, exclude_current: bool = False,
         exclude_backend_ids: Optional[set] = None,
         reason: str = "reassign_admin",
+        prompt_tokens: int = 0,
+        required_context: int = 0,
+        token_count_source: str = "estimated",
     ) -> Optional[RouteDecision]:
         """Força a sessão a migrar para o melhor backend disponível.
 
@@ -2666,46 +2708,71 @@ class ProxyRouter:
 
             chosen = None
             candidates = self._candidates(
-                instances, config, primary["port"] if primary else None, 0,
+                instances, config, primary["port"] if primary else None,
+                max(0, int(required_context)),
                 ignore_capacity=True,
                 exclude_backend_ids=excluded or None,
             )
-            # Em failover, esgote primeiro as contas do mesmo provedor da
-            # sessao. So atravesse para outra plataforma quando nenhuma conta
-            # daquele provedor continuar elegivel.
-            preferred_provider = session.provider
-            preferred_candidates = [
-                inst for inst in candidates
-                if preferred_provider
-                and inst.get("provider") == preferred_provider
-            ]
-            if preferred_candidates:
-                chosen = self._pick_for_dynamic_growth(
-                    preferred_candidates, config, primary_backend_id
-                )
-
-            if chosen is None and (
+            if (
                 primary is not None
                 and self._backend_available(primary)
                 and self._backend_id(primary) not in excluded
+                and (
+                    required_context <= 0
+                    or required_context
+                    <= self._ctx_per_slot(
+                        primary,
+                        self._internal_model(
+                            primary, session.external_model, True
+                        ),
+                    )
+                )
             ):
                 _, primary_max = self._backend_flags(config, primary)
                 if self.in_flight_for(primary) < primary_max:
                     chosen = primary
 
             if chosen is None:
-                # Plataformas primeiro: com o principal indisponível, a
-                # próxima integração de plataforma assume; backends locais
-                # só entram quando nenhuma plataforma está disponível.
-                platform_candidates = [
+                # Secundários locais primeiro para evitar custo de cloud.
+                local_candidates = [
                     inst for inst in candidates
-                    if self._backend_type(inst) == "platform"
+                    if self._backend_type(inst) != "platform"
+                ]
+                if local_candidates:
+                    chosen = self._pick_for_dynamic_growth(
+                        local_candidates, config, primary_backend_id,
+                    )
+            if chosen is None:
+                # Sem local elegível, mantenha afinidade de provedor dentro
+                # da camada cloud antes de atravessar para outra plataforma.
+                preferred_provider = session.provider
+                preferred_candidates = [
+                    inst for inst in candidates
+                    if preferred_provider
+                    and inst.get("provider") == preferred_provider
                 ]
                 chosen = self._pick_for_dynamic_growth(
-                    platform_candidates or candidates,
+                    preferred_candidates or candidates,
                     config, primary_backend_id,
                 )
             if chosen is None:
+                if required_context > 0:
+                    capacity_agnostic = self._candidates(
+                        instances,
+                        config,
+                        primary["port"] if primary else None,
+                        0,
+                        ignore_capacity=True,
+                        exclude_backend_ids=excluded or None,
+                        external_model=session.external_model,
+                        configured_primary_backend_id=primary_backend_id,
+                    )
+                    if capacity_agnostic:
+                        raise ProxyError(
+                            413,
+                            "O contexto excede o limite dos backends restantes",
+                            code="context_too_large",
+                        )
                 raise ProxyError(503, "Nenhum backend disponivel para reassign",
                                  code="no_backend")
             old_port = session.backend_port
@@ -2742,6 +2809,9 @@ class ProxyRouter:
                     not chosen_is_primary
                     and self._backend_type(chosen) != "platform"
                 ),
+                prompt_tokens_estimated=max(0, int(prompt_tokens)),
+                required_context_tokens=max(0, int(required_context)),
+                token_count_source=token_count_source,
                 gpu=gpu_label(chosen),
                 backend_id=self._backend_id(chosen),
                 backend_type=self._backend_type(chosen),

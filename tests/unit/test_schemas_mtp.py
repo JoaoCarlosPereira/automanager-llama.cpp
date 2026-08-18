@@ -29,9 +29,11 @@ def test_start_request_mtp_valid_values():
         gpu_weights=_minimal_gpu_weights(),
         mtp_enabled=True,
         mtp_draft_tokens=2,
+        mtp_model_path="/models/mtp-a.gguf",
     )
     assert req.mtp_enabled is True
     assert req.mtp_draft_tokens == 2
+    assert req.mtp_model_path == "/models/mtp-a.gguf"
 
 
 def test_start_request_mtp_draft_tokens_any_value_accepted():

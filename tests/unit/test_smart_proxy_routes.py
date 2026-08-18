@@ -15,6 +15,7 @@ import llama_manager
 from config_manager import ConfigManager
 from llama_manager import app, auth_manager
 from proxy_router import ProxyRouter
+from token_counter import RequestTokenBudget
 from platform_manager import (
     clear_platform_listing_registry,
     platform_model_listing_entry,
@@ -105,6 +106,23 @@ def smart_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         llama_manager.process_manager, "get_status", lambda: holder
     )
+
+    async def legacy_test_budget(data, instances, headers):
+        # Existing routing tests isolate the router from tokenizer HTTP calls.
+        # Exact/hybrid behavior has dedicated coverage in test_token_counter.py.
+        prompt_tokens = ProxyRouter.estimate_prompt_tokens(data)
+        required = int(prompt_tokens * 1.1)
+        return RequestTokenBudget(
+            prompt_tokens=prompt_tokens,
+            output_tokens=0,
+            overhead_tokens=0,
+            media_tokens=0,
+            required_context=required,
+            source="test_estimated",
+            duration_ms=0.0,
+        )
+
+    monkeypatch.setattr(llama_manager, "_count_request_tokens", legacy_test_budget)
     return SimpleNamespace(cfg=cfg, router=router, holder=holder)
 
 
@@ -201,6 +219,42 @@ class TestOllamaCloudPayload:
 # ---------------------------------------------------------------------------
 
 class TestSmartRouting:
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_malformed_historical_tool_arguments_are_repaired_before_forwarding(
+        self, mock_post, smart_env
+    ):
+        mock_post.return_value = _mock_response(
+            {"id": "chatcmpl-local", "model": "main.gguf"}
+        )
+        body = chat_body()
+        raw_arguments = '{"path":"truncated'
+        body["messages"].insert(1, {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "arguments": raw_arguments,
+                },
+            }],
+        })
+        body["messages"].insert(2, {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "interrupted",
+        })
+
+        response = client.post("/v1/chat/completions", json=body)
+
+        assert response.status_code == 200
+        sent_payload = json.loads(mock_post.await_args.kwargs["content"])
+        repaired = sent_payload["messages"][1]["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(repaired) == {
+            "_automanager_recovered_raw_arguments": raw_arguments
+        }
+
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_custom_tools_are_forwarded_to_local_backend(
         self, mock_post, smart_env

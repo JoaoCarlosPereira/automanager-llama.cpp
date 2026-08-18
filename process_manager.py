@@ -306,6 +306,7 @@ class ProcessManager:
                         "thinking_enabled": request.thinking_enabled,
                         "mtp_enabled": request.mtp_enabled,
                         "mtp_draft_tokens": request.mtp_draft_tokens,
+                        "mtp_model_path": request.mtp_model_path,
                         "gpu_weights": saved_weights,
                         "pinned_fields": request.pinned_fields or {},
                         "llama_server_bin": request.llama_server_bin,
@@ -340,6 +341,7 @@ class ProcessManager:
                         thinking_enabled=request.thinking_enabled,
                         mtp_enabled=request.mtp_enabled,
                         mtp_draft_tokens=request.mtp_draft_tokens,
+                        mtp_model_path=request.mtp_model_path,
                         total_layers=request.total_layers,
                         cpu_enabled=final_cpu_enabled,
                         port=self._auto_balance_port,
@@ -388,6 +390,8 @@ class ProcessManager:
                     "thinking_enabled": request.thinking_enabled,
                     "mtp_enabled": request.mtp_enabled,
                     "mtp_draft_tokens": request.mtp_draft_tokens,
+                    "mtp_model_path": request.mtp_model_path
+                    or existing.get("mtp_model_path"),
                     "gpu_weights": existing.get("gpu_weights")
                     or [w.model_dump() for w in request.gpu_weights],
                     "llama_server_bin": request.llama_server_bin
@@ -461,6 +465,7 @@ class ProcessManager:
         thinking_enabled: bool = True,
         mtp_enabled: bool = False,
         mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS,
+        mtp_model_path: Optional[str] = None,
         total_layers: int = 0,
         cpu_enabled: Optional[bool] = None,
         port: Optional[int] = None,
@@ -492,6 +497,11 @@ class ProcessManager:
             raise HTTPException(
                 status_code=400,
                 detail=f"Binário llama-server não encontrado: {llama_server_bin}",
+            )
+        if mtp_enabled and mtp_model_path and not os.path.isfile(mtp_model_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Modelo draft MTP não encontrado: {mtp_model_path}",
             )
         turbo_err = validate_turboquant_cache_types(cache_type_k, cache_type_v, llama_bin)
         if turbo_err:
@@ -582,7 +592,11 @@ class ProcessManager:
         cmd.extend(reasoning_args)
 
         mtp_args, mtp_applied, mtp_reason = mtp_cli_args(
-            mtp_enabled, mtp_draft_tokens, model_path, self.gpu_manager
+            mtp_enabled,
+            mtp_draft_tokens,
+            model_path,
+            self.gpu_manager,
+            mtp_model_path=mtp_model_path,
         )
         cmd.extend(mtp_args)
 
@@ -635,6 +649,7 @@ class ProcessManager:
                     thinking_enabled=thinking_enabled,
                     mtp_enabled=mtp_enabled,
                     mtp_draft_tokens=mtp_draft_tokens,
+                    mtp_model_path=mtp_model_path,
                     port=port,
                 )
             
@@ -854,6 +869,7 @@ class OOMWatchdog:
                 thinking_enabled=getattr(req, "thinking_enabled", True),
                 mtp_enabled=getattr(req, "mtp_enabled", False),
                 mtp_draft_tokens=getattr(req, "mtp_draft_tokens", 3),
+                mtp_model_path=getattr(req, "mtp_model_path", None),
                 port=port,
                 llama_server_bin=getattr(req, "llama_server_bin", None),
             )

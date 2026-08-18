@@ -79,6 +79,7 @@ class StartRequest(BaseModel):
     thinking_enabled: bool = True
     mtp_enabled: bool = DEFAULT_MTP_ENABLED
     mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS
+    mtp_model_path: Optional[str] = None
     total_layers: int = 0  # 0 = auto-detect from model file
     cpu_enabled: Optional[bool] = None  # None = proporção da UI; True/False = válvula LoadDistributor
     port: Optional[int] = None  # Porta específica para o modelo
@@ -98,6 +99,7 @@ class DownloadRequest(BaseModel):
     url: str
     filename: Optional[str] = None
     model_path: Optional[str] = None
+    asset_type: Literal["model", "mmproj", "mtp"] = "model"
 
 
 class DownloadCancelRequest(BaseModel):
@@ -110,6 +112,13 @@ class SetMmprojRequest(BaseModel):
     model_path: str
     mmproj_path: Optional[str] = None
     user_initiated: bool = False
+
+
+class SetMtpModelRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str
+    mtp_model_path: Optional[str] = None
 
 
 class SetThinkingRequest(BaseModel):

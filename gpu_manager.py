@@ -792,6 +792,12 @@ class GPUManager(GPUDetector):
                     env=env, timeout=15, stderr=subprocess.STDOUT,
                 ).decode(errors="replace")
             except Exception:
+                output = ""
+
+            # Some llama-server builds accept --model-info but emit no metadata.
+            # llama-gguf always exposes the key names, which is sufficient to
+            # identify an external *-assistant draft even when values are hidden.
+            if "nextn_predict_layers" not in output:
                 gguf_tool = os.path.join(bin_dir, "llama-gguf")
                 if os.path.exists(gguf_tool):
                     output = subprocess.check_output(
@@ -802,6 +808,8 @@ class GPUManager(GPUDetector):
             match = re.search(r"nextn_predict_layers\s*[=:]\s*(\d+)", output)
             if match:
                 result = int(match.group(1)) > 0
+            elif "nextn_predict_layers" in output:
+                result = True
         except Exception as exc:
             logger.warning(f"Could not detect MTP for {model_path}: {exc}")
 
@@ -815,7 +823,13 @@ def reasoning_cli_args(enabled: bool) -> List[str]:
     # Current best-practice for llama.cpp/DeepSeek
     return ["--reasoning-format", "deepseek"]
 
-def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: "GPUDetector") -> Tuple[List[str], bool, str]:
+def mtp_cli_args(
+    enabled: bool,
+    draft_tokens: int,
+    model_path: str,
+    detector: "GPUDetector",
+    mtp_model_path: Optional[str] = None,
+) -> Tuple[List[str], bool, str]:
     """Flags for Multi-Token Prediction (MTP). Returns (flags_list, applied_bool, reason_str)."""
     if not enabled:
         return [], False, ""
@@ -825,20 +839,27 @@ def mtp_cli_args(enabled: bool, draft_tokens: int, model_path: str, detector: "G
 
     tokens = int(draft_tokens)
     reason = ""
-    if not detector.detect_model_mtp(model_path):
+    detection_path = mtp_model_path or model_path
+    if not detector.detect_model_mtp(detection_path):
         logger.warning(
             "MTP ativado na UI para %s, mas model-info não detectou cabeças MTP; "
             "aplicando flags conforme configuração do usuário.",
-            model_path,
+            detection_path,
         )
         reason = "MTP ativado na UI (model-info inconclusivo)"
 
     token_str = str(tokens)
-    return [
+    flags = [
         "--spec-type", "draft-mtp",
         "--spec-draft-n-max", token_str,
         "--spec-draft-n-min", token_str,
-    ], True, reason
+    ]
+    if mtp_model_path:
+        flags[0:0] = [
+            "--spec-draft-model", mtp_model_path,
+            "--spec-draft-ngl", "all",
+        ]
+    return flags, True, reason
 
 def compute_server_ctx_size(context_size: int, parallel_slots: int) -> int:
     """Helper for context size calculation. Clamps to at least 1."""

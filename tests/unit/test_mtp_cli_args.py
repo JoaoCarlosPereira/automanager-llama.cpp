@@ -47,6 +47,30 @@ def test_mtp_cli_args_enabled_compatible():
     assert reason == ""
 
 
+def test_mtp_cli_args_external_draft_model():
+    mgr = MagicMock()
+    mgr.detect_model_mtp.return_value = True
+    flags, applied, reason = mtp_cli_args(
+        True,
+        3,
+        "/models/gemma-4-26b.gguf",
+        mgr,
+        mtp_model_path="/models/mtp-gemma-4-26b-Q8_0.gguf",
+    )
+    assert flags == [
+        "--spec-draft-model", "/models/mtp-gemma-4-26b-Q8_0.gguf",
+        "--spec-draft-ngl", "all",
+        "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", "3",
+        "--spec-draft-n-min", "3",
+    ]
+    mgr.detect_model_mtp.assert_called_once_with(
+        "/models/mtp-gemma-4-26b-Q8_0.gguf"
+    )
+    assert applied is True
+    assert reason == ""
+
+
 def test_mtp_cli_args_passes_through_draft_tokens():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = True

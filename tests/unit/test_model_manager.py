@@ -10,8 +10,28 @@ from model_manager import (
     DownloadManager,
     ModelScanner,
     _projector_paths_for_model,
+    _mtp_paths_for_model,
     infer_model_family,
 )
+
+
+def test_mtp_draft_matches_quantized_gemma_model():
+    model = "/models/gemma-4/gemma-4-26B-A4B-it-UD-Q3_K_M.gguf"
+    draft = "/models/mtp-gemma-4/mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+    assert _mtp_paths_for_model(model, [{"path": draft}]) == [draft]
+
+
+def test_scanner_separates_mtp_draft_from_chat_models(tmp_path):
+    model = tmp_path / "gemma-4-26B-A4B-it-UD-Q3_K_M.gguf"
+    draft = tmp_path / "mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
+    model.write_text("", encoding="utf-8")
+    draft.write_text("", encoding="utf-8")
+    config = MagicMock()
+    config.load.return_value = {"model_configs": {}}
+    result = ModelScanner(config, MagicMock(), models_dir=str(tmp_path)).scan()
+    assert [item["name"] for item in result["models"]] == [model.name]
+    assert [item["name"] for item in result["mtp_models"]] == [draft.name]
+    assert result["models"][0]["mtp_candidates"] == [str(draft)]
 
 
 class TestProjectorScoping:
@@ -86,6 +106,24 @@ class TestDownloadManagerVision:
             )
 
         assert exc.value.status_code == 404
+
+    def test_start_download_mtp_preserves_gguf_in_model_directory(self, tmp_path):
+        models_dir = tmp_path / "models"
+        model_dir = models_dir / "gemma-4"
+        model_dir.mkdir(parents=True)
+        model_path = model_dir / "gemma-4-26b.gguf"
+        model_path.write_text("", encoding="utf-8")
+        mgr = DownloadManager(models_dir=str(models_dir))
+        download_id = mgr.start_download(
+            "https://example.com/mtp-gemma-4-26b-Q8_0.gguf",
+            model_path=str(model_path),
+            asset_type="mtp",
+        )
+        with mgr._lock:
+            entry = mgr._downloads[download_id]
+        assert entry["filename"] == "mtp-gemma-4-26b-Q8_0.gguf"
+        assert entry["path"] == str(model_dir / entry["filename"])
+        assert entry["asset_type"] == "mtp"
 
 
 class TestModelScannerSameDirectory:
