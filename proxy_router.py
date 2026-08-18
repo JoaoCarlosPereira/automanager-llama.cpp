@@ -1290,7 +1290,13 @@ class ProxyRouter:
         required = cls._required_capability_set(required_capabilities)
         if not required:
             return True
-        return required.issubset(derive_target_capabilities(instance))
+        # Vision is the capability that must be proven before an image is
+        # forwarded. Platform catalogs do not consistently publish tools and
+        # structured-output flags, so those optional fields must not become a
+        # false-negative routing gate.
+        if "vision" not in required:
+            return True
+        return "vision" in derive_target_capabilities(instance)
 
     def _platform_default_model(self, instance: Dict[str, Any]) -> Optional[str]:
         """Modelo padrão configurado para a plataforma (usado quando secundária)."""
@@ -2316,16 +2322,6 @@ class ProxyRouter:
                         "Vision ativo esta disponivel",
                         code="vision_backend_unavailable",
                     )
-                if any_eligible_backend and (
-                    required_capability_set - {"text"}
-                ):
-                    raise ProxyError(
-                        422,
-                        "A requisicao contem capacidades que nenhum backend "
-                        "disponivel suporta",
-                        code="required_capability_unavailable",
-                    )
-
         # O modelo explicitamente invocado passa a ser o principal apenas
         # desta requisicao. A configuracao fixa e o fallback quando ``model``
         # nao identifica uma instancia online.

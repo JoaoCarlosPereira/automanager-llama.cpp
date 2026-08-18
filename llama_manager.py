@@ -2393,9 +2393,9 @@ async def _smart_proxy_forward(
     route_headers.pop("host", None)
     instances = _hybrid_status().get("instances", [])
     await _ensure_platform_listing_registry(instances, route_headers)
-    # O roteador usa estes limites por modelo para escolher o backend. Isso e
-    # separado da resposta /v1/models: Luna continua anunciando 372k, enquanto
-    # Antigravity (1M) so entra como redundancia para contextos maiores.
+    # O roteador usa limites por modelo para escolher o backend. Isso e
+    # separado da resposta /v1/models; os limites de plataforma vem do
+    # catalogo, com overrides oficiais quando a fonte compartilhada diverge.
     await _fetch_platform_model_catalog()
 
     token_budget = await _count_request_tokens(data, instances, route_headers)
@@ -3176,8 +3176,9 @@ async def openai_proxy(
     target_instance = _find_target_instance(instances, requested_model)
     direct_required_capabilities = derive_required_capabilities(data)
     direct_target_capabilities = derive_target_capabilities(target_instance)
-    if not direct_required_capabilities.as_set().issubset(
-        direct_target_capabilities
+    if (
+        direct_required_capabilities.vision
+        and "vision" not in direct_target_capabilities
     ):
         logger.warning(
             "[proxy] rejecting direct route backend=%s model=%s required=%s "
@@ -3187,21 +3188,12 @@ async def openai_proxy(
             sorted(direct_required_capabilities.as_set()),
             sorted(direct_target_capabilities),
         )
-        if direct_required_capabilities.vision:
-            return JSONResponse(
-                ProxyError(
-                    422,
-                    "A requisicao contem imagem, mas o modelo selecionado "
-                    "nao possui Vision ativo",
-                    code="vision_backend_unavailable",
-                ).payload(),
-                status_code=422,
-            )
         return JSONResponse(
             ProxyError(
                 422,
-                "O modelo selecionado nao suporta as capacidades exigidas",
-                code="required_capability_unavailable",
+                "A requisicao contem imagem, mas o modelo selecionado "
+                "nao possui Vision ativo",
+                code="vision_backend_unavailable",
             ).payload(),
             status_code=422,
         )
