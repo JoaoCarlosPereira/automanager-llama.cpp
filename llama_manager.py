@@ -650,27 +650,14 @@ async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]
 def _platform_model_context_limit(
     instance: Dict[str, Any], model_name: str
 ) -> Optional[int]:
-    """Return the catalog context limit for one concrete platform model."""
-    provider = str(instance.get("provider") or "").strip().lower()
-    bare_model = resolve_platform_listing_model(str(model_name or ""))
-    metadata = _platform_model_metadata(provider, bare_model)
-    if not isinstance(metadata, dict):
-        requested_provider = platform_provider_for_listing(str(model_name or ""))
-        return 0 if requested_provider and requested_provider != provider else None
-    source_meta = metadata.get("meta")
-    if not isinstance(source_meta, dict):
-        source_meta = {}
-    raw_limit = (
-        metadata.get("inputTokenLimit")
-        or metadata.get("context_length")
-        or source_meta.get("n_ctx")
-        or source_meta.get("context_length")
-    )
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError):
-        return None
-    return limit if limit > 0 else None
+    """Do not pre-reject cloud requests using advisory catalog limits.
+
+    Platform catalogs can describe a plan-specific allowance rather than the
+    effective limit of the authenticated account.  The upstream response is
+    authoritative for this decision, and HTTP failures already participate in
+    the normal retry/failover path.
+    """
+    return None
 
 
 def _requested_primary_instance(
@@ -2424,9 +2411,9 @@ async def _smart_proxy_forward(
     route_headers.pop("host", None)
     instances = _hybrid_status().get("instances", [])
     await _ensure_platform_listing_registry(instances, route_headers)
-    # O roteador usa limites por modelo para escolher o backend. Isso e
-    # separado da resposta /v1/models; os limites de plataforma vem do
-    # catalogo, com overrides oficiais quando a fonte compartilhada diverge.
+    # A resposta /v1/models e separada do catalogo de metadados. O catalogo
+    # continua sendo usado para exibicao/capacidades, mas seus limites cloud
+    # sao apenas informativos; o provedor decide o contexto efetivo.
     await _fetch_platform_model_catalog()
 
     token_budget = await _count_request_tokens(data, instances, route_headers)
@@ -2486,11 +2473,20 @@ async def _smart_proxy_forward(
                     str(planned_decision.internal_model or data.get("model") or ""),
                 )
 
+            # Cloud catalog limits are advisory and may be plan-specific. Do
+            # not let them cause local optimization, a 413, or a larger-window
+            # reroute before the provider has answered the request.
+            optimizer_model_metadata = (
+                None
+                if planned_decision.backend_type == "platform"
+                else model_metadata
+            )
+
             try:
                 opt_result = await context_optimizer.optimize(
                     payload=data,
                     backend_info=decision_instance,
-                    model_metadata=model_metadata,
+                    model_metadata=optimizer_model_metadata,
                     stage_limit="moderate",
                     cost_optimization=True,
                 )
@@ -2504,7 +2500,9 @@ async def _smart_proxy_forward(
 
             # Fallback para janela maior se o payload otimizado exceder o orçamento
             # do destino planejado.
-            limits = resolve_model_limits(decision_instance, model_metadata)
+            limits = resolve_model_limits(
+                decision_instance, optimizer_model_metadata
+            )
             if limits.is_known and limits.context_tokens:
                 decision_instance.setdefault("config", {})["context_size"] = limits.context_tokens
             req_caps = derive_required_capabilities(data)
@@ -2516,12 +2514,6 @@ async def _smart_proxy_forward(
             if limits.is_known and budget.input_budget is not None and opt_cost > budget.input_budget:
                 def _eval_cand(cand_inst: Dict[str, Any]):
                     cand_meta = None
-                    if cand_inst.get("backend_type") == "platform":
-                        prov = str(cand_inst.get("provider") or "").strip().lower()
-                        cand_meta = _platform_model_metadata(
-                            prov,
-                            str(cand_inst.get("model") or data.get("model") or ""),
-                        )
                     return resolve_model_limits(cand_inst, cand_meta), derive_target_capabilities(cand_inst, cand_meta)
 
                 def _fits_cand(cand_inst: Dict[str, Any], cand_ctx: int) -> bool:
@@ -2556,7 +2548,14 @@ async def _smart_proxy_forward(
                             provider,
                             str(planned_decision.internal_model or data.get("model") or ""),
                         )
-                    limits = resolve_model_limits(decision_instance, model_metadata)
+                    optimizer_model_metadata = (
+                        None
+                        if planned_decision.backend_type == "platform"
+                        else model_metadata
+                    )
+                    limits = resolve_model_limits(
+                        decision_instance, optimizer_model_metadata
+                    )
                     target_caps = derive_target_capabilities(decision_instance, model_metadata)
                     budget = calculate_target_budget(data, limits, target_caps)
                     logger.info(
@@ -2571,7 +2570,7 @@ async def _smart_proxy_forward(
                     opt_result = await context_optimizer.optimize(
                         payload=data,
                         backend_info=decision_instance,
-                        model_metadata=model_metadata,
+                        model_metadata=optimizer_model_metadata,
                         cost_optimization=True,
                     )
                     optimized_data = opt_result.safe_payload
@@ -2845,7 +2844,10 @@ async def _smart_proxy_forward(
                         new_opt = await context_optimizer.optimize(
                             payload=data,
                             backend_info=new_instance,
-                            model_metadata=model_metadata,
+                            # A cloud limit is advisory only.  Let the new
+                            # provider answer instead of rejecting during
+                            # failover re-optimization.
+                            model_metadata=None,
                             cost_optimization=True,
                         )
                         optimized_data = new_opt.safe_payload

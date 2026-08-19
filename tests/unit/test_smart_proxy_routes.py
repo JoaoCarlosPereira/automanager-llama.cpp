@@ -1117,7 +1117,7 @@ class TestHybridV1Availability:
         assert detail.json()["context_length"] == 372_000
         assert detail.json()["meta"]["n_ctx"] == 372_000
 
-    def test_codex_luna_context_override_is_used_for_routing(
+    def test_platform_catalog_context_is_not_used_for_routing(
         self, monkeypatch
     ):
         monkeypatch.setattr(
@@ -1138,12 +1138,12 @@ class TestHybridV1Availability:
             "config": {},
         }
 
-        assert (
-            llama_manager._platform_model_context_limit(
-                instance, "gpt-5.6-luna"
-            )
-            == 1_050_000
-        )
+        # The catalog override remains available for display metadata, but
+        # routing must wait for the provider's real response instead of using
+        # any plan-specific catalog limit.
+        assert llama_manager._platform_model_context_limit(
+            instance, "gpt-5.6-luna"
+        ) is None
         assert (
             llama_manager._platform_model_metadata(
                 "codex", "gpt-5.6-luna"
