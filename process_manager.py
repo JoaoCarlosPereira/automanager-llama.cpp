@@ -302,6 +302,8 @@ class ProcessManager:
                         "threads": request.threads,
                         "threads_batch": request.threads_batch,
                         "mmproj_path": request.mmproj_path,
+                        "mmproj_disabled": request.mmproj_disabled,
+                        "vision_enabled": request.vision_enabled,
                         "split_mode": request.split_mode,
                         "thinking_enabled": request.thinking_enabled,
                         "mtp_enabled": request.mtp_enabled,
@@ -328,6 +330,9 @@ class ProcessManager:
                         gpu_weights=gpu_weights,
                         context_size=request.context_size,
                         mmproj_path=request.mmproj_path,
+                        mmproj_disabled=request.mmproj_disabled
+                        or request.vision_enabled is False,
+                        vision_enabled=request.vision_enabled,
                         split_mode=request.split_mode,
                         parallel_slots=request.parallel_slots,
                         batch_size=request.batch_size,
@@ -386,6 +391,11 @@ class ProcessManager:
                     "threads_batch": request.threads_batch,
                     "mmproj_path": request.mmproj_path
                     or existing.get("mmproj_path"),
+                    "mmproj_disabled": request.mmproj_disabled
+                    or existing.get("mmproj_disabled", False),
+                    "vision_enabled": request.vision_enabled
+                    if request.vision_enabled is not None
+                    else existing.get("vision_enabled", True),
                     "split_mode": request.split_mode,
                     "thinking_enabled": request.thinking_enabled,
                     "mtp_enabled": request.mtp_enabled,
@@ -462,6 +472,7 @@ class ProcessManager:
         flash_attn_enabled: bool = True,
         threads: int = 0,
         threads_batch: int = 0,
+        vision_enabled: Optional[bool] = None,
         thinking_enabled: bool = True,
         mtp_enabled: bool = False,
         mtp_draft_tokens: int = DEFAULT_MTP_DRAFT_TOKENS,
@@ -472,6 +483,10 @@ class ProcessManager:
         llama_server_bin: Optional[str] = None,
       ) -> dict:
         """Start a llama-server instance."""
+        # Vision can be disabled independently of the remembered projector.
+        # Keep the projector in config for a future re-enable, but never pass
+        # it (or --mmproj-auto) to this process while disabled.
+        mmproj_disabled = mmproj_disabled or vision_enabled is False
         # Validate inputs before acquiring lock
         gpu_weights = self.gpu_manager.normalize_gpu_weights(gpu_weights)
         valid, err = self.gpu_manager.validate_gpu_weights(gpu_weights)
@@ -582,7 +597,7 @@ class ProcessManager:
         if supports_cli_flag("--kv-unified", llama_bin):
             cmd.append("--kv-unified")
 
-        if mmproj_path and os.path.exists(mmproj_path):
+        if mmproj_path and os.path.exists(mmproj_path) and not mmproj_disabled:
             cmd.extend(["--mmproj", mmproj_path])
         elif not mmproj_disabled:
             cmd.append("--mmproj-auto")
@@ -634,6 +649,7 @@ class ProcessManager:
                 self._requests[port] = StartRequest(
                     path=model_path,
                     mmproj_path=mmproj_path,
+                    mmproj_disabled=mmproj_disabled,
                     gpu_weights=gpu_weights,
                     context_size=context_size,
                     parallel_slots=parallel_slots,
@@ -645,6 +661,7 @@ class ProcessManager:
                     flash_attn_enabled=flash_attn_enabled,
                     threads=threads,
                     threads_batch=threads_batch,
+                    vision_enabled=vision_enabled,
                     split_mode=split_mode,
                     thinking_enabled=thinking_enabled,
                     mtp_enabled=mtp_enabled,
@@ -856,6 +873,8 @@ class OOMWatchdog:
                 gpu_weights=req.gpu_weights,
                 context_size=req.context_size,
                 mmproj_path=getattr(req, "mmproj_path", None),
+                mmproj_disabled=getattr(req, "mmproj_disabled", False),
+                vision_enabled=getattr(req, "vision_enabled", None),
                 split_mode=getattr(req, "split_mode", "layer"),
                 parallel_slots=getattr(req, "parallel_slots", 1),
                 batch_size=getattr(req, "batch_size", 2048),

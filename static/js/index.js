@@ -18,8 +18,8 @@ import {
     openMtpImportModal, closeMtpImportModal, submitMtpImport,
     onMmprojChange, onMtpModelChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
-    setPlatformAutoStart, setPlatformVisionEnabled,
-} from './models.js?v=4.2.27';
+    setPlatformAutoStart, setPlatformVisionEnabled, setLocalVisionEnabled,
+} from './models.js?v=4.2.28';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
@@ -57,6 +57,7 @@ win.deleteModel = deleteModel;
 win.setDefaultModel = setDefaultModel;
 win.setPlatformAutoStart = setPlatformAutoStart;
 win.setPlatformVisionEnabled = setPlatformVisionEnabled;
+win.setLocalVisionEnabled = setLocalVisionEnabled;
 win.selectModel = selectModel;
 win.selectModelFromEvent = selectModelFromEvent;
 win.selectPlatform = selectPlatform;

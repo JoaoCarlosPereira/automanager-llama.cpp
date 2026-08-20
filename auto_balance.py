@@ -3231,6 +3231,9 @@ class AutoBalanceProber:
                     gpu_weights=gpu_weights,
                     context_size=request.context_size,
                     mmproj_path=request.mmproj_path,
+                    mmproj_disabled=request.mmproj_disabled
+                    or request.vision_enabled is False,
+                    vision_enabled=request.vision_enabled,
                     split_mode=request.split_mode,
                     parallel_slots=request.parallel_slots,
                     batch_size=request.batch_size,

@@ -138,9 +138,21 @@ def test_running_instance_does_not_overwrite_pending_vision_preference(models_js
     assert "...(window.modelConfigs[path] || {})," in models_js
 
 
+def test_persisted_vision_opt_out_wins_running_instance_config(models_js: str):
+    assert "lastConfig.mmproj_disabled || lastConfig.mmproj_path === '__no_vision__'" in models_js
+    assert "merged.mmproj_path = lastConfig.mmproj_path" in models_js
+
+
 def test_model_list_refresh_never_persists_an_automatic_mmproj(models_js: str):
     assert "ensureMmprojSelectionsForModels" not in models_js
 
 
 def test_mmproj_update_is_marked_as_an_explicit_user_action(models_js: str):
     assert "user_initiated: true" in models_js
+
+
+def test_local_models_expose_persisted_vision_toggle(models_js: str):
+    assert 'class="model-vision-checkbox' in models_js
+    assert "export async function setLocalVisionEnabled" in models_js
+    assert "vision_enabled: enabled" in models_js
+    assert "mmproj_disabled: mmprojDisabled" in models_js

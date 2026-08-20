@@ -153,6 +153,26 @@ def test_mmproj_route_persists_explicit_no_vision(
     )
 
 
+def test_model_proxy_route_persists_local_vision_toggle(
+    monkeypatch, authenticated_client
+):
+    config_manager = MagicMock()
+    monkeypatch.setattr(llama_manager, "config_manager", config_manager)
+
+    response = authenticated_client.post(
+        "/models/proxy",
+        json={
+            "model_path": "/models/vision.gguf",
+            "vision_enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    config_manager.update_model_settings.assert_called_once_with(
+        "/models/vision.gguf", {"vision_enabled": False}
+    )
+
+
 def test_login_failure_returns_401_without_session_cookie(client):
     response = client.post(
         "/api/auth/login",

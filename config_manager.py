@@ -381,6 +381,9 @@ class ConfigManager:
             "threads_batch": merged.get("threads_batch", 0),
             "mmproj_path": merged.get("mmproj_path"),
             "mmproj_disabled": bool(merged.get("mmproj_disabled", False)),
+            # Existing model configs predate the local Vision toggle and keep
+            # the historical behaviour (Vision enabled by default).
+            "vision_enabled": bool(merged.get("vision_enabled", True)),
             "gpu_weights": merged.get("gpu_weights"),
             "split_mode": merged.get("split_mode", "layer"),
             "auto_balance": merged.get("auto_balance", False),

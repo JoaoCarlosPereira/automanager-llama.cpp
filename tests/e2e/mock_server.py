@@ -341,8 +341,26 @@ async def mock_set_mmproj(request: Request):
     mmproj_path = body.get("mmproj_path")
     entry = _model_configs.setdefault(model_path, {})
     entry["mmproj_path"] = mmproj_path
+    if body.get("user_initiated"):
+        entry["mmproj_disabled"] = mmproj_path == "__no_vision__"
     _sync_mmproj_candidates()
-    return {"status": "ok", "mmproj_path": mmproj_path}
+    return {
+        "status": "ok",
+        "mmproj_path": mmproj_path,
+        "mmproj_disabled": entry.get("mmproj_disabled", False),
+    }
+
+
+@mock_api.post("/models/proxy")
+async def mock_set_model_proxy(request: Request):
+    body = await request.json()
+    model_path = body.get("model_path")
+    if not model_path or body.get("vision_enabled") is None:
+        raise HTTPException(status_code=400, detail="model_path e vision_enabled obrigatorios")
+    entry = _model_configs.setdefault(model_path, {})
+    entry["vision_enabled"] = bool(body["vision_enabled"])
+    _sync_mmproj_candidates()
+    return {"message": "Configuracao salva"}
 
 
 @mock_api.get("/logs")

@@ -178,6 +178,17 @@ def test_derive_target_capabilities_local():
     caps2 = derive_target_capabilities(b_vision)
     assert caps2 == frozenset({"text", "vision", "tools", "structured_output", "files"})
 
+    b_disabled = {
+        "backend_type": "local",
+        "config": {
+            "mmproj_path": "/path/mmproj.gguf",
+            "mmproj_disabled": False,
+            "vision_enabled": False,
+        },
+    }
+    caps3 = derive_target_capabilities(b_disabled)
+    assert caps3 == frozenset({"text", "tools", "structured_output", "files"})
+
 
 def test_derive_target_capabilities_platform():
     b_platform = {"backend_type": "platform"}

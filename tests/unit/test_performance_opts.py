@@ -188,6 +188,40 @@ def test_process_manager_omits_mmproj_flags_when_vision_disabled(mock_exists, mo
         assert "--mmproj" not in args
         assert "--mmproj-auto" not in args
 
+
+@patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
+@patch("process_manager.os.path.exists", return_value=True)
+def test_process_manager_omits_mmproj_flags_when_local_vision_toggle_is_off(mock_exists, mock_bin):
+    config_mgr = MagicMock()
+    token_mgr = MagicMock()
+    token_mgr.get_or_create.return_value = "test-token"
+    gpu_mgr = MagicMock()
+    gpu_mgr.normalize_gpu_weights.return_value = [{"index": 0, "weight": 100, "active": True, "name": "GPU0"}]
+    gpu_mgr.validate_gpu_weights.return_value = (True, "")
+    gpu_mgr.get_visible_devices.return_value = "0"
+    gpu_mgr.detect_model_layers.return_value = 32
+    cpu_info = MagicMock()
+    cpu_info.physical_cores = 8
+    gpu_mgr.detect_cpu_info.return_value = cpu_info
+    plan = MagicMock()
+    plan.tensor_split = ["1.0"]
+    plan.n_gpu_layers = 32
+    gpu_mgr.compute_offload_plan.return_value = plan
+    gpu_mgr.resolve_main_gpu_index.return_value = "0"
+    pm = ProcessManager(config_mgr, token_mgr, gpu_mgr, MagicMock())
+
+    with patch("process_manager.subprocess.Popen") as mock_popen:
+        pm.start(
+            model_path="/models/test.gguf",
+            gpu_weights=[{"index": 0, "weight": 100, "name": "GPU0", "active": True, "is_main": True}],
+            context_size=65536,
+            mmproj_path="/models/test-mmproj.gguf",
+            vision_enabled=False,
+        )
+        args = mock_popen.call_args[0][0]
+        assert "--mmproj" not in args
+        assert "--mmproj-auto" not in args
+
 @patch("process_manager.resolve_llama_server_bin", return_value="/usr/bin/llama-server")
 @patch("process_manager.os.path.exists", return_value=True)
 def test_process_manager_numa_distribute_for_multi_gpu(mock_exists, mock_bin):

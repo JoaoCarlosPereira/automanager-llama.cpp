@@ -721,7 +721,11 @@ def derive_target_capabilities(
             caps.add("structured_output")
     else:
         config = backend_info.get("config") or {}
-        if config.get("mmproj_path") and not config.get("mmproj_disabled"):
+        if (
+            config.get("vision_enabled", True) is not False
+            and config.get("mmproj_path")
+            and not config.get("mmproj_disabled")
+        ):
             caps.add("vision")
         caps.add("tools")
         caps.add("structured_output")

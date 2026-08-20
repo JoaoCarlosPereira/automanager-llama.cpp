@@ -93,7 +93,7 @@ test('modal de importacao envia model_path no download', async ({ page }) => {
   await expect(mistralItem.locator('.model-mmproj-select')).toContainText('mistral-mmproj.gguf');
 });
 
-test('alterar combobox persiste via models/mmproj', async ({ page }) => {
+test('Sem visão persiste após atualizar a página', async ({ page }) => {
   await loginAsAdmin(page);
   await waitForModelsLoaded(page);
 
@@ -109,14 +109,43 @@ test('alterar combobox persiste via models/mmproj', async ({ page }) => {
       resp.request().method() === 'POST' &&
       resp.ok(),
   );
-  await select.selectOption({ index: 0 });
+  await select.selectOption('__no_vision__');
   const response = await mmprojResponse;
   const body = response.request().postDataJSON() as {
     model_path: string;
     mmproj_path: string;
   };
   expect(body.model_path).toBe(DEFAULT_MODEL_PATH);
-  expect(body.mmproj_path).toBe('/models/llama/llama-3.1-8b-mmproj.gguf');
+  expect(body.mmproj_path).toBe('__no_vision__');
+  await expect(select).toHaveValue('__no_vision__');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForModelsLoaded(page);
+  const refreshedItem = page.locator('.model-item-container').filter({
+    has: page.locator('.model-name', { hasText: 'llama-3.1-8b.gguf' }),
+  });
+  await expect(refreshedItem.locator('.model-mmproj-select')).toHaveValue('__no_vision__');
+});
+
+test('checkbox Vision local oculta o combo e persiste', async ({ page }) => {
+  await loginAsAdmin(page);
+  await waitForModelsLoaded(page);
+
+  const llamaItem = page.locator('.model-item-container').filter({
+    has: page.locator('.model-name', { hasText: 'llama-3.1-8b.gguf' }),
+  });
+  const visionCheckbox = llamaItem.locator('.model-vision-checkbox');
+  await expect(visionCheckbox).toBeChecked();
+  await visionCheckbox.uncheck();
+  await expect(llamaItem.locator('.model-mmproj-control')).toBeHidden();
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForModelsLoaded(page);
+  const refreshedItem = page.locator('.model-item-container').filter({
+    has: page.locator('.model-name', { hasText: 'llama-3.1-8b.gguf' }),
+  });
+  await expect(refreshedItem.locator('.model-vision-checkbox')).not.toBeChecked();
+  await expect(refreshedItem.locator('.model-mmproj-control')).toBeHidden();
 });
 
 test('start envia mmproj_path selecionado no item do modelo', async ({ page }) => {

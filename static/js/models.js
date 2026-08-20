@@ -1306,11 +1306,16 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
 
     const cacheTypes = getEffectiveCacheTypes(tabId);
     const mmprojDisabled = _isMmprojDisabledForModel(normalized);
+    const visionEnabled = window.modelConfigs[normalized]?.vision_enabled !== false;
 
     return {
         path: normalized,
         mmproj_path: getSelectedMmprojForModel(normalized) || null,
+        // This flag represents the explicit "Sem visão" selection. The
+        // checkbox is sent separately and is combined by /start only for the
+        // running llama-server process.
         mmproj_disabled: mmprojDisabled,
+        vision_enabled: visionEnabled,
         gpu_weights: collectDeviceWeightsFromUI(tabId),
         context_size: contextSize,
         parallel_slots: parseInt(tab.querySelector('.tab-parallel-slots').value, 10) || 1,
@@ -1459,11 +1464,13 @@ export function resolveMmprojPath(model) {
     return candidates[0];
 }
 
-export function buildModelVisionControlsHtml(model, modelJs) {
+export function buildModelVisionControlsHtml(model, modelJs, visionEnabled = true) {
     const candidates = model.mmproj_candidates || [];
     const safePath = modelJs.replace(/'/g, "\\'");
+    const safeModelPath = jsString(modelJs);
     const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${safePath}')" class="vision-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 transition-all" title="Importar projetor de visão" aria-label="Importar projetor de visão"><i class="fas fa-eye text-ui-label"></i></button>`;
-    if (!candidates.length) return importBtn;
+    const visionCheckbox = `<label class="flex items-center gap-1 cursor-pointer shrink-0" onclick="event.stopPropagation()" title="Permitir visão neste modelo local"><span class="text-ui-label font-black text-slate-600 uppercase">Vision</span><input type="checkbox" class="model-vision-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-cyan-600" ${visionEnabled ? 'checked' : ''} onclick="setLocalVisionEnabled(this, '${safeModelPath}')"></label>`;
+    if (!candidates.length) return `${visionCheckbox}${importBtn}`;
 
     const selected = resolveMmprojPath(model);
     let options = '';
@@ -1479,7 +1486,9 @@ export function buildModelVisionControlsHtml(model, modelJs) {
     options += optionsList;
 
     const selectAttrs = MMproj_SELECT_ATTRS.replace('__PATH__', safePath);
-    return `${importBtn}<select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" ${selectAttrs} title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select>`;
+    const hiddenClass = visionEnabled ? '' : ' hidden';
+    const selectWrap = `<span class="model-mmproj-control${hiddenClass}"><select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" ${selectAttrs} title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select></span>`;
+    return `${visionCheckbox}${importBtn}${selectWrap}`;
 }
 
 export function getSelectedMmprojForModel(modelPath) {
@@ -1533,7 +1542,7 @@ export function getSelectedMtpForModel(modelPath) {
 
 function _isMmprojDisabledForModel(modelPath) {
     const cfg = window.modelConfigs[modelPath];
-    return Boolean(cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__');
+    return Boolean(cfg?.vision_enabled === false || cfg?.mmproj_disabled || cfg?.mmproj_path === '__no_vision__');
 }
 
 function onVisionModalKeydown(event) {
@@ -1637,7 +1646,18 @@ export async function submitMtpImport(event) {
 function mergeModelConfigFromServer(modelPath, lastConfig) {
     if (!lastConfig) return;
     const local = window.modelConfigs[modelPath] || {};
-    window.modelConfigs[modelPath] = { ...lastConfig, ...local };
+    const merged = { ...lastConfig, ...local };
+    // A running instance can report the projector it was started with before
+    // the persisted preference is loaded. Explicit Vision opt-outs from the
+    // server must win that transient runtime value after a page reload.
+    if (lastConfig.mmproj_disabled || lastConfig.mmproj_path === '__no_vision__') {
+        merged.mmproj_path = lastConfig.mmproj_path;
+        merged.mmproj_disabled = lastConfig.mmproj_disabled;
+    }
+    if (lastConfig.vision_enabled === false) {
+        merged.vision_enabled = false;
+    }
+    window.modelConfigs[modelPath] = merged;
 }
 
 function isMmprojSelectFocused() {
@@ -1715,6 +1735,14 @@ function patchModelListItems(models, cfg) {
             primaryCb.checked = (cfg.smart_proxy || {}).primary_model_path === mJs;
         }
         const mCfg = (cfg.model_configs || {})[mJs] || {};
+        const effectiveCfg = window.modelConfigs[mJs] || mCfg;
+        const visionCb = el.querySelector('.model-vision-checkbox');
+        const visionEnabled = effectiveCfg.vision_enabled !== false;
+        if (visionCb && document.activeElement !== visionCb) {
+            visionCb.checked = visionEnabled;
+        }
+        const mmprojControl = el.querySelector('.model-mmproj-control');
+        if (mmprojControl) mmprojControl.classList.toggle('hidden', !visionEnabled);
         const eligibleCb = el.querySelector('.proxy-eligible-checkbox');
         if (eligibleCb && document.activeElement !== eligibleCb) {
             eligibleCb.checked = mCfg.proxy_eligible !== false;
@@ -1823,7 +1851,11 @@ function buildModelListHtml(models, cfg, platforms = []) {
         const proxyMaxParallel = mCfg.max_parallel_requests || 1;
 
         const safePath = m_js.replace(/'/g, "\\'");
-        const visionControls = buildModelVisionControlsHtml(m, m_js);
+        const visionControls = buildModelVisionControlsHtml(
+            m,
+            m_js,
+            (window.modelConfigs[m_js] || mCfg).vision_enabled !== false,
+        );
         const mtpControls = buildModelMtpControlsHtml(m, m_js);
         return `
             <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
@@ -2211,6 +2243,35 @@ export async function setPlatformVisionEnabled(checkbox, backendId) {
         };
     } catch (e) {
         checkbox.checked = !checkbox.checked;
+        showToast(e.message || 'Erro ao salvar Vision.', 'error');
+    }
+}
+
+export async function setLocalVisionEnabled(checkbox, modelPath) {
+    const normalized = (modelPath || '').replace(/\\/g, '/');
+    if (!normalized || !checkbox) return;
+    const enabled = checkbox.checked;
+    try {
+        const res = await apiFetch('/models/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                model_path: normalized,
+                vision_enabled: enabled,
+            }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar Vision');
+        }
+        if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
+        window.modelConfigs[normalized].vision_enabled = enabled;
+        document.querySelectorAll('select[data-mmproj-for]').forEach((select) => {
+            if (select.getAttribute('data-mmproj-for') !== normalized) return;
+            select.closest('.model-mmproj-control')?.classList.toggle('hidden', !enabled);
+        });
+    } catch (e) {
+        checkbox.checked = !enabled;
         showToast(e.message || 'Erro ao salvar Vision.', 'error');
     }
 }

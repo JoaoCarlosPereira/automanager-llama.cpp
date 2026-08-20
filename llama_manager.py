@@ -126,7 +126,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.27"  # Download e associação de draft MTP por modelo
+_DASHBOARD_JS_V = "4.2.28"  # Vision por modelo local e persistência do seletor
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -803,6 +803,17 @@ def _local_instance_view(instance: Dict[str, Any]) -> Dict[str, Any]:
     port = view.get("port")
     if port is not None:
         view.setdefault("backend_id", f"local:{port}")
+    model_path = view.get("model_path")
+    if model_path:
+        # A local Vision/Proxy toggle may be changed while the process is
+        # running. Overlay only the Vision fields so routing sees the new
+        # preference immediately without replacing runtime limits/settings.
+        saved = config_manager.get_model_settings(model_path)
+        runtime_config = dict(view.get("config") or {})
+        for key in ("vision_enabled", "mmproj_path", "mmproj_disabled"):
+            if key in saved:
+                runtime_config[key] = saved[key]
+        view["config"] = runtime_config
     return view
 
 
@@ -1114,6 +1125,8 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "total_layers": total_layers if total_layers else 0,
         "pinned_fields": req.pinned_fields or {},
     }
+    if req.vision_enabled is not None:
+        base_settings["vision_enabled"] = req.vision_enabled
     if req.llama_server_bin:
         base_settings["llama_server_bin"] = req.llama_server_bin
     if req.turboquant_preset:
@@ -1143,7 +1156,8 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         gpu_weights=req.gpu_weights,
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
-        mmproj_disabled=req.mmproj_disabled,
+        mmproj_disabled=req.mmproj_disabled or req.vision_enabled is False,
+        vision_enabled=req.vision_enabled,
         split_mode=req.split_mode,
         parallel_slots=req.parallel_slots,
         batch_size=req.batch_size,
@@ -3476,11 +3490,6 @@ async def set_model_proxy(
     if req.proxy_eligible is not None:
         settings["proxy_eligible"] = req.proxy_eligible
     if req.vision_enabled is not None:
-        if not req.backend_id:
-            raise HTTPException(
-                status_code=400,
-                detail="vision_enabled so e valido para plataformas (backend_id)",
-            )
         settings["vision_enabled"] = req.vision_enabled
     if req.max_parallel_requests is not None:
         settings["max_parallel_requests"] = req.max_parallel_requests
@@ -3707,6 +3716,16 @@ def _resolved_mmproj_path(model: dict, model_cfg: dict) -> Optional[str]:
 
 def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) -> str:
     candidates = model.get("mmproj_candidates") or []
+    vision_enabled = model_cfg.get("vision_enabled", True) is not False
+    safe_js = _escape_js_attr(model_js)
+    vision_checkbox = (
+        '<label class="flex items-center gap-1 cursor-pointer shrink-0" '
+        'onclick="event.stopPropagation()" title="Permitir visão neste modelo local">'
+        '<span class="text-ui-label font-black text-slate-600 uppercase">Vision</span>'
+        f'<input type="checkbox" class="model-vision-checkbox w-3 h-3 bg-slate-900 '
+        f'border-slate-700 rounded text-cyan-600" {"checked" if vision_enabled else ""} '
+        f'onclick="setLocalVisionEnabled(this, \'{safe_js}\')"></label>'
+    )
     import_btn = (
         f'<button type="button" onclick="event.stopPropagation(); '
         f"openVisionImportModal('{model_js}')\" "
@@ -3715,6 +3734,36 @@ def _build_model_vision_controls(model: dict, model_js: str, model_cfg: dict) ->
         'transition-all" title="Importar projetor de visão" '
         'aria-label="Importar projetor de visão">'
         '<i class="fas fa-eye text-ui-label"></i></button>'
+    )
+
+    if not candidates:
+        return vision_checkbox + import_btn
+    selected = _resolved_mmproj_path(model, model_cfg)
+    options = '<option value="__no_vision__"{}>Sem visão</option>'.format(
+        " selected" if selected is None else ""
+    )
+    for candidate in candidates:
+        name = html.escape(os.path.basename(candidate))
+        value = html.escape(candidate, quote=True)
+        selected_attr = " selected" if candidate == selected else ""
+        options += (
+            f'<option value="{value}" class="bg-slate-900"{selected_attr}>'
+            f"{name}</option>"
+        )
+    hidden_attr = " hidden" if not vision_enabled else ""
+    return (
+        f"{vision_checkbox}{import_btn}"
+        f'<span class="model-mmproj-control{hidden_attr}">'
+        f'<select data-mmproj-for="{html.escape(model_js, quote=True)}" '
+        'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
+        'rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 '
+        'outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" '
+        f'onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" '
+        f'onclick="event.stopPropagation()" '
+        f'onchange="onMmprojChange(\'{safe_js}\', this)" '
+        'title="Projetor de visão para este modelo" '
+        'aria-label="Projetor de visão para este modelo">'
+        f"{options}</select></span>"
     )
 
 
@@ -3746,36 +3795,6 @@ def _build_model_mtp_controls(model: dict, model_js: str, model_cfg: dict) -> st
         'onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" '
         f'onchange="onMtpModelChange(\'{safe_js}\', this)" '
         'title="Draft MTP deste modelo" aria-label="Draft MTP deste modelo">'
-        f"{options}</select>"
-    )
-    if not candidates:
-        return import_btn
-    selected = _resolved_mmproj_path(model, model_cfg)
-    options = ''
-    # "Sem visão" option at the top
-    no_vision_selected = " selected" if selected is None else ""
-    options += (
-        f'<option value="__no_vision__"{no_vision_selected}>Sem visão</option>'
-    )
-    for candidate in candidates:
-        name = html.escape(os.path.basename(candidate))
-        value = html.escape(candidate, quote=True)
-        selected_attr = " selected" if candidate == selected else ""
-        options += (
-            f'<option value="{value}" class="bg-slate-900"{selected_attr}>{name}</option>'
-        )
-    safe_js = _escape_js_attr(model_js)
-    return (
-        f"{import_btn}"
-        f'<select data-mmproj-for="{html.escape(model_js, quote=True)}" '
-        'class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 '
-        'rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 '
-        'outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" '
-        f"onmousedown=\"event.stopPropagation()\" onpointerdown=\"event.stopPropagation()\" "
-        f"onclick=\"event.stopPropagation()\" "
-        f"onchange=\"onMmprojChange('{safe_js}', this)\" "
-        'title="Projetor de visão para este modelo" '
-        'aria-label="Projetor de visão para este modelo">'
         f"{options}</select>"
     )
 
@@ -5148,6 +5167,7 @@ def _auto_start_default_model() -> None:
                 batch_size = saved_cfg.get("batch_size", DEFAULT_BATCH_SIZE)
                 mmproj_path = saved_cfg.get("mmproj_path")
                 mmproj_disabled = saved_cfg.get("mmproj_disabled", False)
+                vision_enabled = saved_cfg.get("vision_enabled", True)
                 split_mode = saved_cfg.get("split_mode", "layer")
                 thinking_enabled = saved_cfg.get("thinking_enabled", True)
                 mtp_enabled = saved_cfg.get("mtp_enabled", False)
@@ -5176,6 +5196,7 @@ def _auto_start_default_model() -> None:
                 batch_size = DEFAULT_BATCH_SIZE
                 mmproj_path = None
                 mmproj_disabled = False
+                vision_enabled = True
                 split_mode = "layer"
                 thinking_enabled = True
                 mtp_enabled = False
@@ -5197,7 +5218,8 @@ def _auto_start_default_model() -> None:
                 gpu_weights=weights,
                 context_size=context_size,
                 mmproj_path=mmproj_path,
-                mmproj_disabled=mmproj_disabled,
+                mmproj_disabled=mmproj_disabled or vision_enabled is False,
+                vision_enabled=vision_enabled,
                 split_mode=split_mode,
                 parallel_slots=parallel_slots,
                 batch_size=batch_size,
