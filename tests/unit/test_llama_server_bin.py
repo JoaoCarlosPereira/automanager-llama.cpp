@@ -132,6 +132,15 @@ def test_get_bin_version_info_parses_output():
     assert info["commit"] == "d403f00ec"
 
 
+def test_get_bin_version_info_parses_dev_output():
+    with patch("llama_server_bin.subprocess.run") as run:
+        run.return_value.stdout = "version: 0.3.0-dev (build 10665, commit e9b087580)\n"
+        run.return_value.stderr = ""
+        info = lsb.get_bin_version_info("/tmp/llama-server")
+    assert info["build"] == "10665"
+    assert info["commit"] == "e9b087580"
+
+
 def test_is_turboquant_bin_detects_turbo_help(tmp_path):
     exe_name = "llama-server.exe" if platform.system() == "Windows" else "llama-server"
     bin_path = tmp_path / exe_name

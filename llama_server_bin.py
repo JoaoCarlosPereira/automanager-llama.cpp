@@ -194,6 +194,12 @@ def get_bin_version_info(bin_path: str) -> Dict[str, Optional[str]]:
     build = None
     commit = None
     match = re.search(r"version:\s*(\d+)\s*\(([a-f0-9]+)\)", output, re.IGNORECASE)
+    if not match:
+        match = re.search(
+            r"version:.*?\(build\s+(\d+),\s*commit\s+([a-f0-9]+)\)",
+            output,
+            re.IGNORECASE,
+        )
     if match:
         build = match.group(1)
         commit = match.group(2)
