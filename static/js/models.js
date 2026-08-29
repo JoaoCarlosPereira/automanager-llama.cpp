@@ -689,7 +689,7 @@ async function saveModelAlias(alias, target, tab) {
             renderPlatformCursorAliases(tab, data);
         }
         if (target) {
-            showToast(`Alias "${alias}" → "${target}". No Cursor, selecione "${alias}".`, 'success');
+            showToast(`Alias "${alias}" → "${target}". Selecione "${alias}" no cliente.`, 'success');
         } else {
             showToast(`Alias "${alias}" removido.`, 'success');
         }
@@ -1332,6 +1332,9 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
         turboquant_preset: getTurboquantPreset(tabId),
         auto_balance: false,
         auto_balance_profile: autoBalanceProfile,
+        // A normal start is an explicit user launch.  OOM recovery must not
+        // rewrite the user's GPU percentages and persist a different layout.
+        manual_gpu_override: !autoBalanceProfile,
         pinned_fields: collectPinnedFieldsFromTab(tabId),
         thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
         mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,

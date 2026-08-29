@@ -127,6 +127,40 @@ class TestSmartAutoBalance:
         proposal = prober._generate_smart_proposal(req, weights)
         assert proposal["cache_type_k"] == "q4_0"
 
+    @patch("auto_balance.AutoBalancePlanner.estimate_model_vram_mb")
+    def test_smart_proposal_does_not_increase_untested_memory_settings(self, mock_est):
+        prober, _ = self._prober()
+        prober.gpu_manager.detect_gpus.return_value = THREE_GPU_HARDWARE
+        prober.gpu_manager.detect_cpu_info.return_value.physical_cores = 8
+        mock_est.return_value = {
+            "weights_mb": 1000,
+            "kv_cache_mb": 100,
+            "total_mb": 1100,
+        }
+        weights = [
+            GPUWeight(index=2, weight=100, name="3090", active=True, is_main=True)
+        ]
+        req = _make_request(
+            weights,
+            context_size=131072,
+            batch_size=2048,
+            cache_type_k="q4_0",
+            cache_type_v="q4_0",
+            smart_calibration=True,
+            pinned_fields={
+                "context_size": False,
+                "batch_size": False,
+                "cache_type": False,
+            },
+        )
+
+        proposal = prober._generate_smart_proposal(req, weights)
+
+        assert proposal["context_size"] == 131072
+        assert proposal["batch_size"] == 2048
+        assert proposal["cache_type_k"] == "q4_0"
+        assert proposal["cache_type_v"] == "q4_0"
+
     @patch("auto_balance.AutoBalanceProber._discover_empirical")
     @patch("auto_balance.AutoBalanceProber._generate_smart_proposal")
     def test_discover_returns_tuple_with_proposal(self, mock_gen, mock_disc):
@@ -140,7 +174,8 @@ class TestSmartAutoBalance:
         
         assert ok is True
         assert result_data["proposal"] == {
-            "batch_size": 4096,
+            "batch_size": 2048,
+            "ubatch_size": 512,
             "context_size": 8192,
             "cache_type_k": "f16",
             "cache_type_v": "f16",
@@ -171,7 +206,12 @@ class TestSmartAutoBalance:
             cache_type_k="q4_0",
             cache_type_v="q4_0",
             smart_calibration=True,
-            pinned_fields={"context_size": False, "cache_type": False},
+            pinned_fields={
+                "context_size": False,
+                "cache_type": False,
+                "batch_size": True,
+                "ubatch_size": True,
+            },
         )
 
         ok, _, message, result = prober.discover(req)
@@ -202,7 +242,12 @@ class TestSmartAutoBalance:
             cache_type_k="q4_0",
             cache_type_v="q4_0",
             smart_calibration=True,
-            pinned_fields={"context_size": True, "cache_type": True},
+            pinned_fields={
+                "context_size": True,
+                "cache_type": True,
+                "batch_size": True,
+                "ubatch_size": True,
+            },
         )
 
         ok, _, _, _ = prober.discover(req)

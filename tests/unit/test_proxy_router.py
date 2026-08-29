@@ -594,7 +594,7 @@ class TestSelection:
         await router.release(decision.backend_port)
 
     @pytest.mark.asyncio
-    async def test_platform_primary_routes_through_sidecar_when_eligible(
+    async def test_platform_primary_prefers_local_when_available(
         self, router, proxy_config, status_holder
     ):
         status_holder["instances"] = [
@@ -608,15 +608,16 @@ class TestSelection:
             "platform:codex", {"proxy_eligible": True}
         )
         decision = await resolve(router, body=body_with(model="codex-pro"))
-        assert decision.backend_port == 9100
-        assert decision.internal_model == "codex-pro"
+        assert decision.backend_port == 8085
+        assert decision.internal_model == "main.gguf"
         assert decision.external_model == "codex-pro"
-        assert decision.backend_type == "platform"
-        assert decision.rewrite is False
+        assert decision.backend_type == "local"
+        assert decision.reason == "local_preference"
+        assert decision.rewrite is True
         await router.release(decision.backend_port)
 
     @pytest.mark.asyncio
-    async def test_cursor_subagent_uses_local_and_leaves_codex_for_parent(
+    async def test_explicit_platform_model_pins_parent_but_routes_child(
         self, router, proxy_config, status_holder
     ):
         codex = make_platform_instance(
@@ -633,7 +634,6 @@ class TestSelection:
         parent_body = body_with(
             user="Suba tres agentes", model="gpt-5.6-luna"
         )
-        parent = await resolve(router, body=parent_body)
 
         child_body = body_with(
             user="Suba tres agentes", model="gpt-5.6-luna"
@@ -645,9 +645,15 @@ class TestSelection:
                 "subagent under a parent agent.</system_reminder>"
             ),
         })
-        child = await resolve(router, body=child_body)
 
+        router._requested_primary_resolver = lambda instances, model: codex
+
+        parent = await resolve(router, body=parent_body)
         assert parent.backend_id == "platform:codex"
+        assert parent.reason == "main_preference"
+        await router.release(parent.backend_id)
+
+        child = await resolve(router, body=child_body)
         assert child.backend_id == router._backend_id(local)
         assert child.reason == "cursor_subagent_local_preference"
         assert child.affinity_key != parent.affinity_key
@@ -670,9 +676,39 @@ class TestSelection:
         continuation = await resolve(router, body=continuation_body)
         assert continuation.backend_id == "platform:codex"
         assert continuation.affinity_key == parent.affinity_key
-        assert continuation.reason == "sticky_origin_capacity"
-        await router.release(parent.backend_id)
+        assert continuation.reason == "sticky"
         await router.release(continuation.backend_id)
+
+    @pytest.mark.asyncio
+    async def test_explicit_model_returns_from_fallback_when_available(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(
+            port=9100, backend_id="platform:codex", provider="codex"
+        )
+        local = make_instance(8086, AUX0_PATH)
+        status_holder["instances"] = [local, codex]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        router._requested_primary_resolver = lambda instances, model: codex
+        headers = {"X-Automanager-Session-Id": "explicit-luna"}
+        body = body_with(model="gpt-5.6-luna")
+
+        await router.acquire(codex["backend_id"])
+        fallback = await resolve(router, headers=headers, body=body)
+        assert fallback.backend_id == router._backend_id(local)
+        assert fallback.reason == "primary_busy_overflow"
+        await router.release(codex["backend_id"])
+        await router.release(fallback.backend_id)
+
+        requested = await resolve(router, headers=headers, body=body)
+        assert requested.backend_id == "platform:codex"
+        assert requested.reason == "requested_model_available"
+        await router.release(requested.backend_id)
 
     @pytest.mark.asyncio
     async def test_new_long_context_subagent_uses_next_provider_when_codex_busy(
@@ -914,10 +950,10 @@ class TestSelection:
         await router.release(decision.backend_id)
 
     @pytest.mark.asyncio
-    async def test_platform_primary_overflow_prefers_secondary_local(
+    async def test_explicit_platform_model_precedes_local_order(
         self, router, proxy_config, status_holder
     ):
-        """Mesmo com principal cloud, secundários locais evitam outro cloud."""
+        """Um modelo cloud explicito precede a preferencia geral por locais."""
         shared_port = 8317
         antigravity = make_platform_instance(
             port=shared_port, backend_id="platform:google-antigravity",
@@ -948,10 +984,12 @@ class TestSelection:
         overflow = await resolve(
             router, body=body_with(tag="a1", model="antigravity-proagent.gguf")
         )
-        assert d_main.backend_id == "platform:google-antigravity"
+        assert d_main.backend_port == shared_port
+        assert d_main.backend_type == "platform"
+        assert d_main.reason == "main_preference"
         assert overflow.backend_port == 8085
         assert overflow.backend_type == "local"
-        assert overflow.reason == "subagent_least_busy"
+        assert overflow.reason == "subagent_local_preference"
         await router.release(d_main.backend_id)
         await router.release(overflow.backend_id)
 
@@ -1018,8 +1056,8 @@ class TestSelection:
         assert again.backend_port != dead_port
 
     @pytest.mark.asyncio
-    async def test_sticky_session_stays_on_its_origin_when_primary_frees(self, router):
-        """Liberar o principal não muda a origem de uma sessão já criada."""
+    async def test_subagent_stays_on_routed_backend_when_primary_frees(self, router):
+        """Somente o pai volta à origem; o filho mantém sua afinidade roteada."""
         d_main = await resolve(router, body=body_with())  # ocupa principal
         decision = await resolve(router, body=body_with(tag="a1"))
         assert decision.backend_port != 8085
@@ -1063,6 +1101,53 @@ class TestSelection:
         await router.release(d2_again.backend_port)
 
     @pytest.mark.asyncio
+    async def test_local_base_session_ignores_stale_cloud_branch_when_free(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(
+            port=9100, backend_id="platform:codex", provider="codex"
+        )
+        ollama = make_platform_instance(
+            port=9101,
+            backend_id="platform:ollama-cloud:old-account",
+            model="gpt-oss:120b",
+            provider="ollama-cloud",
+        )
+        local = make_instance(8086, AUX0_PATH)
+        local_free = make_instance(8087, AUX1_PATH)
+        status_holder["instances"] = [local, local_free, codex, ollama]
+        proxy_config.update_smart_proxy_settings(
+            {"primary_backend_id": "platform:codex"}
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:ollama-cloud", {"proxy_eligible": True}
+        )
+
+        body = body_with(tag="legacy-cloud-branch", model="gpt-5.6-luna")
+        primary = await resolve(router, body=body)
+        branch_key = f"{primary.affinity_key}#2"
+        await router.release(primary.backend_id)
+        router._register_session_locked(
+            branch_key,
+            ollama,
+            "gpt-5.6-luna",
+            None,
+            is_primary=False,
+        )
+
+        decision = await resolve(router, body=body)
+
+        assert decision.affinity_key == primary.affinity_key
+        assert decision.backend_port == 8086
+        assert decision.backend_type == "local"
+        assert decision.reason == "sticky"
+        assert router._sessions[branch_key].backend_type == "platform"
+        await router.release(decision.backend_id)
+
+    @pytest.mark.asyncio
     async def test_persisted_cloud_branch_migrates_to_free_local(
         self, router, proxy_config, status_holder
     ):
@@ -1076,7 +1161,8 @@ class TestSelection:
             provider="ollama-cloud",
         )
         local = make_instance(8086, AUX0_PATH)
-        status_holder["instances"] = [local, codex, ollama]
+        local_free = make_instance(8087, AUX1_PATH)
+        status_holder["instances"] = [local, local_free, codex, ollama]
         proxy_config.update_smart_proxy_settings(
             {"primary_backend_id": "platform:codex"}
         )
@@ -1101,7 +1187,7 @@ class TestSelection:
         branch = await resolve(router, body=body)
 
         assert branch.affinity_key == branch_key
-        assert branch.backend_port == 8086
+        assert branch.backend_port == 8087
         assert branch.backend_type == "local"
         assert branch.reason == "sticky_branch_local_preference"
         assert router._sessions[branch_key].backend_type == "local"
@@ -1337,11 +1423,12 @@ class TestSelection:
         )
         decision = await resolve(router, body=body_with(model="codex-56sol.gguf"))
         assert decision.backend_id == "platform:codex"
+        assert decision.backend_type == "platform"
         await router.release(decision.backend_id)
 
         hop1 = await router.reassign(
             decision.affinity_key,
-            exclude_backend_ids={"platform:codex"},
+            exclude_backend_ids={decision.backend_id},
             reason="reassign_upstream_error",
         )
         assert hop1 is not None
@@ -1354,13 +1441,13 @@ class TestSelection:
         }
         hop2 = await router.reassign(
             decision.affinity_key,
-            exclude_backend_ids={"platform:codex", *local_backend_ids},
+            exclude_backend_ids={*local_backend_ids},
             reason="reassign_upstream_error",
         )
         assert hop2 is not None
-        assert hop2.backend_id == "platform:google-antigravity"
+        assert hop2.backend_id == "platform:codex"
         assert hop2.backend_type == "platform"
-        assert hop2.internal_model == "antigravity-31prolow.gguf"
+        assert hop2.internal_model == "codex-56sol.gguf"
 
     @pytest.mark.asyncio
     async def test_release_accumulates_usage_tokens(self, router):

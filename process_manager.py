@@ -315,6 +315,7 @@ class ProcessManager:
                         "turboquant_preset": request.turboquant_preset,
                         "auto_balance": False,
                         "auto_balance_profile": True,
+                        "manual_gpu_override": False,
                         "hardware_incapable": False,
                         "hardware_incapable_message": None,
                     },
@@ -481,6 +482,7 @@ class ProcessManager:
         cpu_enabled: Optional[bool] = None,
         port: Optional[int] = None,
         llama_server_bin: Optional[str] = None,
+        manual_gpu_override: bool = False,
       ) -> dict:
         """Start a llama-server instance."""
         # Vision can be disabled independently of the remembered projector.
@@ -499,6 +501,24 @@ class ProcessManager:
         if not total_layers or total_layers <= 0:
             total_layers = self.gpu_manager.detect_model_layers(model_path)
         total_layers = max(1, total_layers)
+
+        if cpu_enabled is True:
+            try:
+                from auto_balance import AutoBalancePlanner
+
+                est = AutoBalancePlanner.estimate_model_vram_mb(
+                    model_path,
+                    context_size,
+                    parallel_slots,
+                    cache_type_k=cache_type_k,
+                    cache_type_v=cache_type_v,
+                )
+                self.gpu_manager._cached_model_vram_mb = est["weights_mb"]
+            except Exception as exc:
+                logger.warning(
+                    "Não foi possível estimar VRAM do modelo para CPU offload: %s",
+                    exc,
+                )
 
         plan = self.gpu_manager.compute_offload_plan(
             gpu_weights, total_layers, cpu_enabled
@@ -667,6 +687,7 @@ class ProcessManager:
                     mtp_enabled=mtp_enabled,
                     mtp_draft_tokens=mtp_draft_tokens,
                     mtp_model_path=mtp_model_path,
+                    manual_gpu_override=manual_gpu_override,
                     port=port,
                 )
             
@@ -713,6 +734,9 @@ class OOMWatchdog:
     OOM_PATTERNS = re.compile(
         r"(?i)(out of memory|cuda error|failed to allocate|malloc failed|c10\.Error)"
     )
+    READY_PATTERNS = re.compile(
+        r"(?i)(model loaded|server is listening|listening on http://)"
+    )
 
     def __init__(
         self,
@@ -731,6 +755,9 @@ class OOMWatchdog:
         self._last_oom_time = 0
         self._oom_cooldown = 30  # seconds
         self._log_offsets: Dict[int, int] = {}
+        self._ready_ports = set()
+        self._pending_oom_ports = set()
+        self._process_identities: Dict[int, object] = {}
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name="oom-watchdog")
@@ -775,18 +802,68 @@ class OOMWatchdog:
                 with self.pm._lock:
                     active_ports = [p for p, proc in self.pm.processes.items()
                                     if proc is not None and proc.poll() is None]
+                    known_ports = [p for p, proc in self.pm.processes.items()
+                                   if proc is not None]
+                    process_identities = {
+                        p: getattr(proc, "pid", None) or id(proc)
+                        for p, proc in self.pm.processes.items()
+                        if proc is not None
+                    }
+
+                # A reused port is a new server instance.  Do not carry the
+                # previous instance's readiness/OOM state into its log scan.
+                for port, identity in process_identities.items():
+                    if self._process_identities.get(port) != identity:
+                        self._process_identities[port] = identity
+                        self._log_offsets.pop(port, None)
+                        self._ready_ports.discard(port)
+                        self._pending_oom_ports.discard(port)
 
                 # Drop offsets for ports that are no longer running so a
                 # restarted instance on the same port re-scans from the top.
                 for stale in [p for p in self._log_offsets if p not in active_ports]:
                     self._log_offsets.pop(stale, None)
+                for stale in [p for p in self._ready_ports if p not in known_ports]:
+                    self._ready_ports.discard(stale)
+                for stale in [p for p in self._pending_oom_ports if p not in known_ports]:
+                    self._pending_oom_ports.discard(stale)
+                for stale in [p for p in self._process_identities if p not in known_ports]:
+                    self._process_identities.pop(stale, None)
+
+                # An OOM before readiness can be recoverable: llama.cpp may
+                # retry buffer allocation without pipeline parallelism and
+                # continue loading.  Only handle it if that process later
+                # exits; this avoids killing a server that successfully
+                # reached its listening state.
+                for port in list(self._pending_oom_ports):
+                    with self.pm._lock:
+                        proc = self.pm.processes.get(port)
+                    if proc is not None and proc.poll() is not None:
+                        self._pending_oom_ports.discard(port)
+                        logger.warning(
+                            "OOM-affected llama-server on port %s exited before "
+                            "becoming ready", port
+                        )
+                        self._handle_oom(port)
 
                 for port in active_ports:
                     try:
                         chunk = self._read_new_log(port)
+                        if chunk and self.READY_PATTERNS.search(chunk):
+                            self._ready_ports.add(port)
+                            self._pending_oom_ports.discard(port)
+
                         if chunk and self.OOM_PATTERNS.search(chunk):
                             logger.warning(f"OOM detected on port {port} from server log")
-                            self._handle_oom(port)
+                            if port in self._ready_ports:
+                                self._handle_oom(port)
+                            else:
+                                self._pending_oom_ports.add(port)
+                                logger.info(
+                                    "Deferring OOM recovery on port %s until "
+                                    "llama-server readiness is known",
+                                    port,
+                                )
                     except Exception:
                         logger.exception("Watchdog OOM scan error on port %s", port)
             except Exception:
@@ -817,6 +894,26 @@ class OOMWatchdog:
             return
 
         logger.warning(f"OOM detected on port {port}! Consecutive: {self._consecutive_oom}")
+
+        # A manually selected split is an explicit user contract.  Automatic
+        # recovery used to rewrite it (and persist the rewritten values), so
+        # the next launch appeared with GPUs swapped or with a different
+        # distribution.  Leave manual layouts untouched and let the UI/log
+        # report the real OOM so the user can choose a new split/context.
+        if getattr(req, "manual_gpu_override", False):
+            logger.error(
+                "OOM on port %s with manual GPU split; preserving configured "
+                "weights and not restarting automatically",
+                port,
+            )
+            self.pm.stop(port)
+            if self.config:
+                self.config.update_model_settings(req.path, {
+                    "last_failure": "OOM",
+                    "last_failure_time": now,
+                })
+            return
+
         self.pm.stop(port)
 
         # Recovery logic
@@ -889,6 +986,7 @@ class OOMWatchdog:
                 mtp_enabled=getattr(req, "mtp_enabled", False),
                 mtp_draft_tokens=getattr(req, "mtp_draft_tokens", 3),
                 mtp_model_path=getattr(req, "mtp_model_path", None),
+                manual_gpu_override=getattr(req, "manual_gpu_override", False),
                 port=port,
                 llama_server_bin=getattr(req, "llama_server_bin", None),
             )

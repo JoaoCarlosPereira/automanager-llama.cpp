@@ -455,12 +455,21 @@ class GPUManager(GPUDetector):
 
     @staticmethod
     def active_gpus_with_weight(gpu_weights: List[GPUWeight]) -> List[GPUWeight]:
-        """Active GPU entries with weight > 0, preserving request order."""
-        return [
+        """Active GPU entries with weight > 0 in physical-index order.
+
+        ``--tensor-split`` is positional: its first value belongs to the
+        first device exposed to llama.cpp.  Requests can arrive in a
+        different order after a recovery, a config migration, or a UI
+        refresh, so using the request order here can silently swap two GPU
+        percentages.  The visible-device list and tensor split are both
+        derived from this canonical order.
+        """
+        active = [
             w
             for w in gpu_weights
             if w.active and w.device == "gpu" and w.weight > 0
         ]
+        return sorted(active, key=lambda w: int(w.index))
 
     @staticmethod
     def sum_active_weight(
@@ -498,6 +507,25 @@ class GPUManager(GPUDetector):
             return []
         total = sum(w.weight for w in active) or 1.0
         return [f"{w.weight / total:.4f}" for w in active]
+
+    @staticmethod
+    def _tensor_split_from_gpu_map(
+        active_gpus: List[GPUWeight],
+        gpu_weight_map: Dict[int, int],
+    ) -> List[str]:
+        """Relative split for the currently visible GPUs from resolved weights."""
+        if not active_gpus:
+            return []
+        total = sum(
+            max(0, gpu_weight_map.get(int(w.index), 0))
+            for w in active_gpus
+        )
+        if total <= 0:
+            return []
+        return [
+            f"{max(0, gpu_weight_map.get(int(w.index), 0)) / total:.4f}"
+            for w in active_gpus
+        ]
 
     def compute_offload_plan(
         self, gpu_weights: List[GPUWeight], total_layers: int = 32, cpu_enabled: Optional[bool] = None
@@ -612,8 +640,7 @@ class GPUManager(GPUDetector):
                 vram_by_index[idx] = 0
         vram_dict = {
             int(w.index): vram_by_index.get(int(w.index), 0)
-            for w in gpu_weights
-            if w.device == "gpu"
+            for w in active_gpus
         }
 
         model_vram_mb = 0
@@ -637,10 +664,14 @@ class GPUManager(GPUDetector):
             final_gpu_pct = float(sum(gpu_weight_dict.values()) or 100)
             final_cpu_pct = 0.0
         elif result.is_feasible and cpu_enabled:
-            n_gpu_layers = LoadDistributor.compute_n_gpu_layers(
-                total_layers, result.total_gpu_pct
-            )
-            n_cpu_layers = total_layers - n_gpu_layers
+            if result.cpu_weight <= 0 and result.total_gpu_pct >= 100:
+                n_gpu_layers = ALL_GPU_LAYERS
+                n_cpu_layers = 0
+            else:
+                n_gpu_layers = LoadDistributor.compute_n_gpu_layers(
+                    total_layers, result.total_gpu_pct
+                )
+                n_cpu_layers = total_layers - n_gpu_layers
             final_gpu_pct = float(result.total_gpu_pct)
             final_cpu_pct = float(result.cpu_weight)
         else:
@@ -654,7 +685,9 @@ class GPUManager(GPUDetector):
             n_cpu_layers=n_cpu_layers,
             gpu_pct=final_gpu_pct,
             cpu_pct=final_cpu_pct,
-            tensor_split=self.compute_tensor_split(gpu_weights),
+            tensor_split=self._tensor_split_from_gpu_map(
+                active_gpus, result.gpu_weights
+            ),
             is_feasible=result.is_feasible,
         )
 

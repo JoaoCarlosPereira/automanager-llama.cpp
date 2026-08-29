@@ -353,6 +353,24 @@ def test_start_respects_gpu_tensor_split_and_cpu_ngl(pm):
     assert _tensor_split_from_cmd(cmd) == ["0.7143", "0.2857"]
 
 
+def test_start_cpu_valve_uses_vram_first_not_ui_cpu_weight(pm):
+    """CPU ligada como válvula: 99/1 não deve forçar 1% na CPU se cabe na GPU."""
+    weights = [
+        GPUWeight(index=0, weight=99, name="GPU0", active=True, device="gpu"),
+        GPUWeight(index=-1, weight=1, name="CPU", active=True, device="cpu"),
+    ]
+    pm.gpu_manager.get_metrics = lambda: {
+        "gpus": [{"index": 0, "mem_total": "24000"}]
+    }
+    with patch(
+        "auto_balance.AutoBalancePlanner.estimate_model_vram_mb",
+        return_value={"weights_mb": 12000, "kv_cache_mb": 0, "total_mb": 12000},
+    ):
+        cmd = _capture_start_cmd(pm, weights, total_layers=80, cpu_enabled=True)
+    assert _ngl_from_cmd(cmd) == ALL_GPU_LAYERS
+    assert _tensor_split_from_cmd(cmd) == ["1.0000"]
+
+
 def test_start_gpu_only_tensor_split_matches_user_percentages(pm):
     weights = [
         GPUWeight(index=0, weight=60, name="GPU0", active=True, device="gpu"),

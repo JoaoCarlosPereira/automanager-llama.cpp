@@ -388,6 +388,14 @@ class ConfigManager:
             "split_mode": merged.get("split_mode", "layer"),
             "auto_balance": merged.get("auto_balance", False),
             "auto_balance_profile": merged.get("auto_balance_profile", False),
+            # Configs created before this flag represent an explicit dashboard
+            # layout unless they were produced by auto-balance.
+            "manual_gpu_override": bool(
+                merged.get(
+                    "manual_gpu_override",
+                    not bool(merged.get("auto_balance_profile", False)),
+                )
+            ),
             "hardware_incapable": merged.get("hardware_incapable", False),
             "thinking_enabled": merged.get(
                 "thinking_enabled", DEFAULT_THINKING_ENABLED

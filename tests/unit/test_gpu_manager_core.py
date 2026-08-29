@@ -224,6 +224,27 @@ def test_validate_gpu_weights_multiple_gpus_sum_100(gpu_mgr):
     assert ok is True
 
 
+def test_tensor_split_and_visible_devices_use_physical_index_order(gpu_mgr):
+    """A reordered request must not swap percentages between GPU indices."""
+    weights = [
+        GPUWeight(index=1, weight=30, name="B", device="gpu"),
+        GPUWeight(index=0, weight=70, name="A", device="gpu"),
+    ]
+
+    assert gpu_mgr.get_visible_devices(weights) == "0,1"
+    assert gpu_mgr.compute_tensor_split(weights) == ["0.7000", "0.3000"]
+
+
+def test_main_gpu_is_resolved_in_canonical_device_order(gpu_mgr):
+    weights = [
+        GPUWeight(index=1, weight=30, name="B", device="gpu", is_main=True),
+        GPUWeight(index=0, weight=70, name="A", device="gpu"),
+    ]
+
+    # CUDA_VISIBLE_DEVICES is 0,1, therefore physical GPU 1 is local index 1.
+    assert gpu_mgr.resolve_main_gpu_index(weights) == "1"
+
+
 def test_validate_gpu_weights_three_gpus_plus_cpu(gpu_mgr):
     weights = [
         GPUWeight(index=0, weight=40, name="A", device="gpu"),
@@ -271,7 +292,31 @@ def test_offload_plan_cascata_modelo_cabe_na_principal(gpu_mgr):
     plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
     assert plan.is_feasible
     assert plan.cpu_pct == 0.0
-    assert plan.n_gpu_layers == 80  # 100% das camadas na GPU
+    assert plan.n_gpu_layers == ALL_GPU_LAYERS  # llama.cpp clampa para tudo na GPU
+
+
+def test_offload_plan_cascata_tensor_split_uses_resolved_weights(gpu_mgr):
+    """Modelo que cabe na principal não deve manter split manual 50/50."""
+    _mgr_with_hw(gpu_mgr, {0: 24000, 1: 16000}, model_vram_mb=20000)
+    weights = [
+        GPUWeight(index=0, weight=50, name="3090", device="gpu", is_main=True),
+        GPUWeight(index=1, weight=50, name="P100", device="gpu"),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    assert plan.tensor_split == ["1.0000", "0.0000"]
+
+
+def test_offload_plan_cascata_ignores_inactive_gpus(gpu_mgr):
+    """GPU inativa não pode entrar como capacidade extra no LoadDistributor."""
+    _mgr_with_hw(gpu_mgr, {0: 12000, 1: 24000}, model_vram_mb=20000)
+    weights = [
+        GPUWeight(index=0, weight=100, name="GPU0", device="gpu", active=True),
+        GPUWeight(index=1, weight=100, name="GPU1", device="gpu", active=False),
+    ]
+    plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
+    assert plan.tensor_split == ["1.0000"]
+    assert plan.cpu_pct > 0
+    assert plan.n_gpu_layers < 80
 
 
 def test_offload_plan_cascata_transborda_para_cpu(gpu_mgr):
@@ -319,7 +364,7 @@ def test_offload_plan_reads_mem_total_key_not_all_cpu(gpu_mgr):
     plan = gpu_mgr.compute_offload_plan(weights, total_layers=80, cpu_enabled=True)
     assert plan.cpu_pct == 0.0          # nada na CPU
     assert plan.gpu_pct == 100.0        # tudo nas GPUs
-    assert plan.n_gpu_layers == 80
+    assert plan.n_gpu_layers == ALL_GPU_LAYERS
 
 
 def test_offload_plan_maxes_gpus_then_spills_remainder_to_cpu(gpu_mgr):

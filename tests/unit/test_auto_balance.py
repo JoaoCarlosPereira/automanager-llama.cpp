@@ -920,6 +920,54 @@ class TestDeviceBudgetInvariants:
         assert new_cpu == CPU_OFFLOAD_STEP
         assert sum(new_map.values()) == DEVICE_BUDGET_TOTAL - CPU_OFFLOAD_STEP
 
+    def test_cpu_fallback_balances_gpu_budget_before_more_cpu(self):
+        """CPU spill must also test a balanced GPU split.
+
+        A priority cascade such as 71/29 can OOM on the main GPU while the
+        same model fits at 45/45/10 across two equal GPUs plus CPU.
+        """
+        process_manager = MagicMock()
+        process_manager.auto_balance_cancel_requested = False
+        prober = AutoBalanceProber(
+            process_manager, MagicMock(), MagicMock(), MagicMock()
+        )
+        request = _make_request(
+            [
+                GPUWeight(index=0, weight=50, name="P100", active=True),
+                GPUWeight(index=1, weight=50, name="P100", active=True, is_main=True),
+                GPUWeight(index=-1, weight=0, name="CPU", active=True, device="cpu"),
+            ]
+        )
+        vram = {0: 16384, 1: 16384}
+        cpu_config = {"enabled": True, "pinned": False, "weight": 0}
+
+        def probe(_request, weight_map, *_args, **kwargs):
+            return (
+                "ready"
+                if weight_map == {1: 45, 0: 45} and kwargs.get("cpu_weight") == 10
+                else "oom"
+            )
+
+        with patch.object(prober, "_probe_start", side_effect=probe):
+            feasible, _, cpu_weight = prober._escalate_cpu_until_feasible(
+                request,
+                [
+                    {"index": 0, "name": "P100", "vram": 16384},
+                    {"index": 1, "name": "P100", "vram": 16384},
+                ],
+                1,
+                [1, 0],
+                vram,
+                {},
+                [0, 1],
+                0,
+                cpu_config,
+                estimated_model_mb=1,
+            )
+
+        assert feasible == {1: 45, 0: 45}
+        assert cpu_weight == 10
+
 
 def test_prober_raises_when_cancel_requested():
     process_manager = MagicMock()

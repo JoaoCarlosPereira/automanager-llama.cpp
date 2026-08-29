@@ -1124,6 +1124,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         "mtp_model_path": req.mtp_model_path,
         "total_layers": total_layers if total_layers else 0,
         "pinned_fields": req.pinned_fields or {},
+        "manual_gpu_override": req.manual_gpu_override,
     }
     if req.vision_enabled is not None:
         base_settings["vision_enabled"] = req.vision_enabled
@@ -1176,6 +1177,7 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
         cpu_enabled=req.cpu_enabled,
         port=req.port,
         llama_server_bin=req.llama_server_bin,
+        manual_gpu_override=req.manual_gpu_override,
     )
     _invalidate_models_cache()
     return result
@@ -3194,10 +3196,14 @@ async def openai_proxy(
 
     if proxy_enabled and request.method == "POST" and requested_model:
         alias_requested = external_model_name is not None
-        # Principal dinamico: o modelo explicitamente invocado pelo cliente
-        # define a primeira escolha. A configuracao global continua servindo
-        # para chamadas sem um modelo reconhecivel e para a visao administrativa.
+        # O Smart Proxy atua sobre o modelo principal exposto, aliases,
+        # plataformas e modelos locais explicitamente requisitados. Nesse
+        # ultimo caso, o modelo pedido vira o primary da requisicao: ele e
+        # tentado primeiro e so transborda em ocupado/erro.
         configured_primary = _find_primary_instance(instances, proxy_settings)
+        requested_instance = _requested_primary_instance(
+            instances, str(requested_model)
+        )
         requested_provider = platform_provider_for_listing(str(requested_model))
         if (
             (
@@ -3206,8 +3212,7 @@ async def openai_proxy(
             )
             or
             alias_requested
-            or
-            _requested_primary_instance(instances, str(requested_model)) is not None
+            or requested_instance is not None
             or _is_primary_model_request(
                 str(requested_model), proxy_settings, configured_primary, instances
             )
@@ -4602,13 +4607,13 @@ def _build_html(
 
                     <div class="local-cursor-alias-panel glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
                         <div>
-                            <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso no Cursor</p>
-                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Escolha um nome compatível com o Cursor para expor este modelo local via BYOK.</p>
+                            <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
+                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Escolha um nome compatível com clientes BYOK para expor este modelo local.</p>
                         </div>
                         <ul class="local-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
                             <label class="space-y-1">
-                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome no Cursor</span>
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome do alias</span>
                                 <select class="local-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
                             </label>
                             <button type="button" class="local-cursor-save-alias px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase tracking-widest hover:bg-cyan-600/30 transition-all">Salvar alias</button>
@@ -4900,7 +4905,7 @@ def _build_html(
                             <div class="flex gap-4 items-start text-red-500/80">
                                 <i class="fas fa-microchip mt-1"></i>
                                 <div class="flex-1">
-                                    <p class="text-ui-body-sm font-black uppercase tracking-widest mb-1">Capacidade do Hardware Excedida</p>
+                                    <p class="text-ui-body-sm font-black uppercase tracking-widest mb-1">Configuração Atual Não Coube</p>
                                     <p class="tab-auto-balance-msg text-xs leading-relaxed"></p>
                                     <ul class="tab-auto-balance-details mt-3 text-ui-body-sm text-slate-500 space-y-1 font-mono"></ul>
                                 </div>
@@ -4999,12 +5004,12 @@ def _build_html(
                     </div>
 
                     <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
-                        <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso no Cursor</p>
-                        <p class="text-sm text-slate-400 leading-relaxed">No Cursor BYOK, use alias do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …) ou o ID opaco gerado na listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Nomes com <span class="font-mono">gemini</span>/<span class="font-mono">claude</span> são bloqueados pelo Cursor.</p>
+                        <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
+                        <p class="text-sm text-slate-400 leading-relaxed">Use alias do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …) ou o ID opaco gerado na listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Alguns clientes BYOK bloqueiam nomes de provedor como <span class="font-mono">gemini</span>/<span class="font-mono">claude</span>.</p>
                         <ul class="platform-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
                             <label class="space-y-1">
-                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome no Cursor</span>
+                                <span class="text-ui-label font-black text-slate-600 uppercase">Nome do alias</span>
                                 <select class="platform-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
                             </label>
                             <label class="space-y-1 flex-1 min-w-[12rem]">
@@ -5175,6 +5180,7 @@ def _auto_start_default_model() -> None:
                     "mtp_draft_tokens", DEFAULT_MTP_DRAFT_TOKENS
                 )
                 mtp_model_path = saved_cfg.get("mtp_model_path")
+                manual_gpu_override = saved_cfg.get("manual_gpu_override", False)
             else:
                 gpus = gpu_manager.detect_gpus()
                 weights = []
@@ -5202,6 +5208,7 @@ def _auto_start_default_model() -> None:
                 mtp_enabled = False
                 mtp_draft_tokens = DEFAULT_MTP_DRAFT_TOKENS
                 mtp_model_path = None
+                manual_gpu_override = False
 
             # Auto-allocate port for this model
             port = SERVER_PORT
@@ -5238,6 +5245,7 @@ def _auto_start_default_model() -> None:
                 mtp_model_path=mtp_model_path,
                 total_layers=saved_cfg.get("total_layers", 0),
                 port=port,
+                manual_gpu_override=manual_gpu_override,
                 llama_server_bin=saved_cfg.get("llama_server_bin"),
             )
             logger.info(f"Auto-start: {model_path} started on port {port} (result: {start_result})")

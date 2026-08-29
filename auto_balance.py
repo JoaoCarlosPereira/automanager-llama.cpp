@@ -1074,7 +1074,8 @@ class AutoBalanceProber:
 
         message = (
             f'Não foi possível carregar "{model_name}" em nenhuma divisão testada '
-            f"entre as GPUs selecionadas. O modelo excede a capacidade do hardware "
+            f"entre as GPUs selecionadas. A configuração atual excede a capacidade "
+            f"disponível do hardware "
             f"atual (~{total_gb:.1f} GB de VRAM em {len(active_indices)} GPU(s)) "
             f"com contexto {request.context_size} e {request.parallel_slots} slot(s)."
         )
@@ -1376,6 +1377,37 @@ class AutoBalanceProber:
         )
         return new_map, new_cpu
 
+    def _balanced_gpu_map_for_cpu(
+        self,
+        spill_order: List[int],
+        active_indices: List[int],
+        vram_by_index: Dict[int, int],
+        pinned_map: Dict[int, int],
+        cpu_weight: int,
+    ) -> Optional[Dict[int, int]]:
+        """Build a VRAM-proportional GPU split for a CPU spill amount.
+
+        The strict cascade is useful for GPU-only loading, but it can leave
+        the main GPU overloaded once KV/compute buffers and a CPU share are
+        involved.  In that situation the old empirical behaviour was to
+        balance the remaining GPU budget by VRAM.  Keep pins intact and use
+        that layout as a fallback probe before increasing CPU again.
+        """
+        gpu_target = self._gpu_budget(cpu_weight)
+        if gpu_target <= 0 or not active_indices:
+            return None
+        unpinned = [idx for idx in active_indices if idx not in pinned_map]
+        candidate = self.planner.distribute_unpinned(
+            pinned_map,
+            unpinned,
+            vram_by_index,
+            spill_order,
+            target_total=gpu_target,
+        )
+        if candidate is None or sum(candidate.values()) != gpu_target:
+            return None
+        return candidate
+
     @staticmethod
     def _gpu_budget(cpu_weight: int) -> int:
         return max(0, 100 - cpu_weight)
@@ -1614,7 +1646,7 @@ class AutoBalanceProber:
             )
 
             # Smart calibration may change every field that is not pinned. If
-            # the exact request does not fit, retry safer cache/context choices
+            # the exact request does not fit, retry safer cache/batch/context choices
             # before declaring the hardware incapable. The first successful
             # candidate is the largest context actually proven by a real probe.
             if (
@@ -1626,10 +1658,12 @@ class AutoBalanceProber:
                 for candidate in self._smart_fallback_requests(request):
                     self._raise_if_cancelled()
                     _auto_balance_log(
-                        "SMART FALLBACK: tentando contexto=%d cache=%s/%s",
+                        "SMART FALLBACK: contexto=%d cache=%s/%s batch=%d ubatch=%d",
                         candidate.context_size,
                         candidate.cache_type_k,
                         candidate.cache_type_v,
+                        candidate.batch_size,
+                        candidate.ubatch_size,
                         level="warn",
                     )
                     success, weights, message, failure = self._discover_empirical(
@@ -1640,7 +1674,9 @@ class AutoBalanceProber:
                         message = (
                             f"{message} Configuração Smart viável em contexto "
                             f"{candidate.context_size} com cache "
-                            f"{candidate.cache_type_k}/{candidate.cache_type_v}."
+                            f"{candidate.cache_type_k}/{candidate.cache_type_v}, "
+                            f"batch {candidate.batch_size} e ubatch "
+                            f"{candidate.ubatch_size}."
                         )
                         break
 
@@ -1655,6 +1691,8 @@ class AutoBalanceProber:
                 proposal["context_size"] = calibrated_request.context_size
                 proposal["cache_type_k"] = calibrated_request.cache_type_k
                 proposal["cache_type_v"] = calibrated_request.cache_type_v
+                proposal["batch_size"] = calibrated_request.batch_size
+                proposal["ubatch_size"] = calibrated_request.ubatch_size
                 result_data["proposal"] = proposal
 
             return success, weights, message, result_data
@@ -1670,14 +1708,17 @@ class AutoBalanceProber:
         """Safer unpinned configurations, ordered by expected performance."""
         pinned = request.pinned_fields or {}
         candidates: List[Any] = []
-        seen: Set[Tuple[int, str, str]] = set()
+        seen: Set[Tuple[int, str, str, int, int]] = set()
 
-        def add(context_size: int, cache_k: str, cache_v: str) -> None:
-            key = (context_size, cache_k, cache_v)
+        def add(context_size: int, cache_k: str, cache_v: str,
+                batch_size: int, ubatch_size: int) -> None:
+            key = (context_size, cache_k, cache_v, batch_size, ubatch_size)
             original = (
                 request.context_size,
                 request.cache_type_k,
                 request.cache_type_v,
+                request.batch_size,
+                request.ubatch_size,
             )
             if key == original or key in seen:
                 return
@@ -1686,22 +1727,43 @@ class AutoBalanceProber:
             candidate.context_size = context_size
             candidate.cache_type_k = cache_k
             candidate.cache_type_v = cache_v
+            candidate.batch_size = batch_size
+            candidate.ubatch_size = ubatch_size
             candidates.append(candidate)
 
         cache_mutable = not pinned.get("cache_type")
         context_mutable = not pinned.get("context_size")
+        batch_mutable = not pinned.get("batch_size")
+        ubatch_mutable = not pinned.get("ubatch_size")
         safe_k = "q4_0" if cache_mutable else request.cache_type_k
         safe_v = "q4_0" if cache_mutable else request.cache_type_v
 
         # Quantizing KV at the requested context preserves the user's desired
         # context and is therefore preferable to reducing the context window.
         if cache_mutable:
-            add(request.context_size, safe_k, safe_v)
+            add(request.context_size, safe_k, safe_v,
+                request.batch_size, request.ubatch_size)
+
+        # Compute buffers can fail even when weights plus KV nominally fit.
+        # Reduce micro-batch first to preserve the user-selected context.
+        if ubatch_mutable:
+            for ubatch_size in (512, 256):
+                if ubatch_size < request.ubatch_size:
+                    add(request.context_size, safe_k, safe_v,
+                        request.batch_size, ubatch_size)
+        if batch_mutable and request.batch_size > 1024:
+            add(request.context_size, safe_k, safe_v, 1024,
+                min(request.ubatch_size, 512))
 
         if context_mutable:
             for context_size in SMART_CONTEXT_FALLBACKS:
                 if context_size < request.context_size:
-                    add(context_size, safe_k, safe_v)
+                    add(
+                        context_size, safe_k, safe_v,
+                        1024 if batch_mutable else request.batch_size,
+                        min(request.ubatch_size, 512)
+                        if ubatch_mutable else request.ubatch_size,
+                    )
 
         return candidates
 
@@ -1752,20 +1814,20 @@ class AutoBalanceProber:
             "split_mode": request.split_mode,
         }
 
-        # Heurística de Cache
+        # A proposta é aplicada depois que a sondagem empírica termina.  Logo,
+        # ela só pode manter os parâmetros que foram realmente carregados ou
+        # torná-los mais conservadores. Aumentar cache, batch ou contexto aqui
+        # transforma um probe READY em uma configuração final nunca testada.
+
+        # Heurística de Cache (somente redução de consumo)
         if not pinned.get("cache_type"):
             if free_mb < 500 and request.cache_type_k == "f16":
                 proposal["cache_type_k"] = "q4_0"
                 proposal["cache_type_v"] = "q4_0"
-            elif free_mb > 4000 and request.cache_type_k != "f16":
-                proposal["cache_type_k"] = "f16"
-                proposal["cache_type_v"] = "f16"
 
-        # Heurística de Batch
+        # Heurística de Batch (nunca subir acima do valor sondado)
         if not pinned.get("batch_size"):
-            if free_mb > 2048:
-                proposal["batch_size"] = 4096
-            elif free_mb < 512:
+            if free_mb < 512:
                 proposal["batch_size"] = 1024
 
         # Heurística de U-Batch
@@ -1779,10 +1841,6 @@ class AutoBalanceProber:
             if cpu_info.physical_cores > 0:
                 proposal["threads"] = cpu_info.physical_cores
                 proposal["threads_batch"] = cpu_info.physical_cores
-
-        # Heurística de Contexto (Aumentar se sobrar MUITA VRAM)
-        if not pinned.get("context_size") and free_mb > 8000:
-            proposal["context_size"] = request.context_size * 2
 
         return proposal
 
@@ -2542,6 +2600,8 @@ class AutoBalanceProber:
             return None, attempt, cpu_weight
 
         # Primeira tentativa CPU já com +10% (não repetir probe GPU-only).
+        # Preserve the priority layout as the first choice; if it OOMs, the
+        # loop below retries the same CPU budget with a balanced GPU layout.
         weight_map, cpu_weight = self._escalate_cpu_offload(
             weight_map,
             cpu_weight,
@@ -2562,6 +2622,7 @@ class AutoBalanceProber:
             ) if estimated_model_mb <= 0 else {"total_mb": estimated_model_mb}
         total_mb = est.get("total_mb", 0)
         max_attempts = max(90 // CPU_OFFLOAD_STEP + 5, 20)
+        balanced_attempted = False
         while attempt < max_attempts and cpu_weight < 90:
             self._raise_if_cancelled()
             attempt += 1
@@ -2639,6 +2700,28 @@ class AutoBalanceProber:
                     return dict(weight_map), attempt, cpu_weight
 
             if outcome in ("oom", "timeout", "crashed"):
+                if not balanced_attempted:
+                    balanced_map = self._balanced_gpu_map_for_cpu(
+                        spill_order,
+                        active_indices,
+                        vram_by_index,
+                        pinned_map,
+                        cpu_weight,
+                    )
+                    if balanced_map is not None and balanced_map != weight_map:
+                        _auto_balance_log(
+                            "Fase 1 — layout prioritário %s → %s; "
+                            "testando GPU balanceada no mesmo CPU=%d%%",
+                            outcome.upper(),
+                            self.planner.format_weights(balanced_map, spill_order),
+                            cpu_weight,
+                            level="warn",
+                        )
+                        weight_map = balanced_map
+                        balanced_attempted = True
+                        continue
+
+                new_cpu = min(cpu_weight + CPU_OFFLOAD_STEP, 90)
                 new_map, new_cpu = self._escalate_cpu_offload(
                     weight_map,
                     cpu_weight,
@@ -2663,6 +2746,7 @@ class AutoBalanceProber:
                 )
                 weight_map = new_map
                 cpu_weight = new_cpu
+                balanced_attempted = False
                 continue
 
             return None, attempt, cpu_weight

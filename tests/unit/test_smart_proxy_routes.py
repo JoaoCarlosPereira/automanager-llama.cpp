@@ -446,7 +446,7 @@ class TestSmartRouting:
         assert sent["extra_body"] == {"custom": 1}
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
-    def test_requested_local_model_becomes_dynamic_primary(
+    def test_requested_local_model_uses_requested_backend_first(
         self, mock_post, smart_env
     ):
         mock_post.return_value = _mock_response({"id": "x", "model": "aux0.gguf"})
@@ -456,13 +456,56 @@ class TestSmartRouting:
         assert response.status_code == 200
         url = mock_post.call_args.args[0]
         assert "8086" in url
-        # O modelo invocado vira principal, sem reescrita do nome externo.
         assert response.json()["model"] == "aux0.gguf"
         assert response.headers["x-automanager-backend"] == "8086"
-        assert response.headers["x-automanager-backend-id"] == (
-            "local:/path/to/aux0.gguf"
-        )
         assert next(iter(smart_env.router._sessions.values())).backend_port == 8086
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_requested_local_model_overflows_only_when_busy(
+        self, mock_post, smart_env
+    ):
+        import asyncio
+
+        asyncio.run(smart_env.router.acquire(8086))
+        try:
+            mock_post.return_value = _mock_response(
+                {"id": "x", "model": "aux0.gguf"}
+            )
+            response = client.post(
+                "/v1/chat/completions", json=chat_body(model="aux0.gguf")
+            )
+        finally:
+            asyncio.run(smart_env.router.release(8086))
+
+        assert response.status_code == 200
+        assert mock_post.call_args.args[0] != (
+            "http://127.0.0.1:8086/v1/chat/completions"
+        )
+        assert response.headers["x-automanager-backend"] in ("8085", "8087")
+
+    @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_requested_local_model_fails_over_after_error(
+        self, mock_post, mock_sleep, smart_env
+    ):
+        ok = _mock_response({"id": "x", "model": "main.gguf"})
+        mock_post.side_effect = [
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            ok,
+        ]
+
+        response = client.post(
+            "/v1/chat/completions", json=chat_body(model="aux0.gguf")
+        )
+
+        assert response.status_code == 200
+        urls = [call.args[0] for call in mock_post.call_args_list]
+        assert urls[:3] == [
+            "http://127.0.0.1:8086/v1/chat/completions",
+        ] * 3
+        assert urls[3] != urls[0]
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_sticky_across_requests_through_handler(self, mock_post, smart_env):

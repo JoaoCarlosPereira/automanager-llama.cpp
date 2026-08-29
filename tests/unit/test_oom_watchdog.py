@@ -175,3 +175,28 @@ def test_fallback_after_three_consecutive_ooms_sets_active_gpus_to_50():
     assert final_weights[0]["weight"] == 50.0
     assert final_weights[1]["weight"] == 50.0
     assert final_weights[2]["weight"] == 0.0
+
+
+def test_manual_gpu_override_preserves_weights_and_does_not_restart():
+    process_manager = MagicMock()
+    config_manager = MagicMock()
+    watchdog = _make_watchdog(process_manager, config_manager)
+    request = _make_request(
+        [
+            GPUWeight(index=0, weight=70.0, name="GPU0", active=True),
+            GPUWeight(index=1, weight=30.0, name="GPU1", active=True),
+        ]
+    )
+    request.manual_gpu_override = True
+    process_manager._requests = {SERVER_PORT: request}
+    process_manager._processes = {SERVER_PORT: MagicMock()}
+
+    with patch("process_manager.time.time", return_value=1000.0):
+        watchdog._handle_oom(SERVER_PORT)
+
+    assert [w.weight for w in request.gpu_weights] == [70.0, 30.0]
+    process_manager.start.assert_not_called()
+    config_manager.update_model_settings.assert_called_once_with(
+        request.path,
+        {"last_failure": "OOM", "last_failure_time": 1000.0},
+    )

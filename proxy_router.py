@@ -1604,9 +1604,9 @@ class ProxyRouter:
     ) -> Optional[Dict[str, Any]]:
         """Escolhe sem enfileirar enquanto houver algum backend livre.
 
-        A ordem de custo é: principal, locais secundários, Ollama Cloud e
-        outras plataformas. Isso mantém clouds como fallback quando houver
-        capacidade local elegível e prioriza Ollama antes de outras clouds.
+        A ordem de custo é: locais primeiro (principal local antes dos demais),
+        depois o principal de plataforma, Ollama Cloud e outras plataformas.
+        Isso mantém clouds como fallback quando houver capacidade local elegível.
         Ocupação, benchmark e afinidade desempatarão candidatos da mesma classe.
         """
         if not candidates:
@@ -1626,19 +1626,19 @@ class ProxyRouter:
                 )
             )
             if is_primary:
-                return 0
+                return 0 if self._backend_type(instance) != "platform" else 2
             if self._backend_type(instance) != "platform":
                 return 1
             if instance.get("provider") == "ollama-cloud":
-                return 2
+                return 3
             # Dentro da camada cloud, o provedor solicitado ainda tem
-            # preferência sobre outras plataformas, depois do Ollama.
+            # preferência sobre outras plataformas, depois dos locais.
             if (
                 preferred_provider
                 and instance.get("provider") == preferred_provider
             ):
-                return 3
-            return 4
+                return 4
+            return 5
 
         return min(
             candidates,
@@ -1672,9 +1672,8 @@ class ProxyRouter:
         """Escolhe onde abrir capacidade adicional quando todos estão cheios.
 
         ``max_parallel_requests`` é a capacidade inicial (soft limit), não um
-        teto. A carga relativa preserva a proporção configurada entre backends;
-        em empate o principal, normalmente o modelo mais forte, recebe
-        prioridade. Depois vêm os secundários menos carregados.
+        teto. A classe do backend vem primeiro para manter a preferência por
+        modelos locais; a carga relativa desempata dentro da mesma classe.
         """
         if not candidates:
             return None
@@ -1692,16 +1691,16 @@ class ProxyRouter:
             )
             routing_priority = (
                 0
-                if is_primary
-                else 1
                 if self._backend_type(instance) != "platform"
+                else 1
+                if is_primary
                 else 2
                 if instance.get("provider") == "ollama-cloud"
                 else 3
             )
             return (
-                in_flight / max(1, initial_capacity),
                 routing_priority,
+                in_flight / max(1, initial_capacity),
                 self._benchmark_latency(instance) is None,
                 self._benchmark_latency(instance) or float("inf"),
                 in_flight,
@@ -2532,6 +2531,10 @@ class ProxyRouter:
         by_port = {inst["port"]: inst for inst in instances}
         by_backend_id = {self._backend_id(inst): inst for inst in instances}
         existing = self._sessions.get(affinity_key)
+        # Apenas a conversa principal fica vinculada ao modelo explicitamente
+        # pedido pelo cliente. Filhos/subagentes repetem esse campo por heranca
+        # do payload, mas devem voltar a entrar na politica normal de roteamento.
+        is_main = tag is None or tag == MAIN_TAG
 
         if existing is not None:
             # Uma sessão persistida não pode atravessar famílias/provedores.
@@ -2553,9 +2556,10 @@ class ProxyRouter:
             )
             primary_type = self._backend_type(primary)
             incompatible_session = (
-                (session_type == "platform") != (primary_type == "platform")
+                (session_type == "platform" and primary_type != "platform")
                 or (
                     session_type == "platform"
+                    and primary_type == "platform"
                     and session_provider != primary.get("provider")
                 )
             )
@@ -2585,6 +2589,7 @@ class ProxyRouter:
         if (
             existing is not None
             and existing.external_model != external_model
+            and is_main
             and self._backend_available(primary)
             and needed_ctx <= _context_limit(primary)
         ):
@@ -2593,6 +2598,29 @@ class ProxyRouter:
             return _commit(
                 primary, False, "requested_model_changed", existing
             ), None
+
+        if (
+            existing is not None
+            and dynamic_primary
+            and is_main
+            and existing.backend_id != primary_backend_id
+            and self._backend_available(primary)
+            and self._supports_required_capabilities(
+                primary, required_capability_set
+            )
+            and needed_ctx <= _context_limit(primary)
+        ):
+            _, primary_max_parallel = self._backend_flags(config, primary)
+            if (
+                ignore_capacity
+                or self.in_flight_for(primary) < primary_max_parallel
+            ):
+                # Uma escolha explicita sempre volta ao modelo pedido quando
+                # ele esta saudavel e livre. O sticky alternativo so persiste
+                # enquanto o modelo solicitado estiver ocupado ou em falha.
+                return _commit(
+                    primary, False, "requested_model_available", existing
+                ), None
 
         if (
             existing is not None
@@ -2635,6 +2663,7 @@ class ProxyRouter:
                 primary, required_capability_set
             )
             and needed_ctx <= _context_limit(primary)
+            and self._backend_type(primary) != "platform"
             and existing.backend_id != self._backend_id(primary)
             and tag != CURSOR_SUBAGENT_TAG
             and (tag is None or tag == MAIN_TAG)
@@ -2792,12 +2821,41 @@ class ProxyRouter:
             return _commit(new_inst, False, reassign_reason, existing), None
 
         # ---------------- Nova sessão ----------------
-        is_main = tag is None or tag == MAIN_TAG
-
         primary_backend_id = self._backend_id(primary)
 
         if is_main:
-            # Conversa principal prefere o principal (PRD F6)
+            # Conversa principal prefere locais; se o principal tambem for
+            # local, ele continua sendo a primeira escolha. Um modelo
+            # explicitamente pedido, porem, sempre e tentado antes.
+            if (
+                self._backend_type(primary) == "platform"
+                and not dynamic_primary
+            ):
+                local_candidates = [
+                    candidate
+                    for candidate in self._candidates(
+                        instances,
+                        config,
+                        primary_port,
+                        needed_ctx,
+                        ignore_capacity=ignore_capacity,
+                        exclude_backend_ids={primary_backend_id},
+                        external_model=external_model,
+                        configured_primary_backend_id=configured_backend_id,
+                        required_capabilities=required_capability_set,
+                    )
+                    if self._backend_type(candidate) != "platform"
+                ]
+                local_choice = self._pick_least_busy(
+                    local_candidates,
+                    primary_port,
+                    primary_backend_id,
+                    preferred_provider=primary.get("provider"),
+                )
+                if local_choice is not None:
+                    return _commit(
+                        local_choice, False, "local_preference", None
+                    ), None
             if (
                 self._backend_available(primary)
                 and self._supports_required_capabilities(
@@ -2930,9 +2988,38 @@ class ProxyRouter:
                     None,
                 ), None
 
-        # Subagente: tenta o modelo principal primeiro (prioridade absoluta);
-        # só se o primary estiver ocupado, escolhe o menos ocupado entre
-        # secundários (PRD F6 — main-first para conversas principais e subagentes).
+        # Subagente segue a mesma prioridade local-first. Se o principal for
+        # local, ele ainda e tentado antes dos secundarios locais.
+        if (
+            self._backend_type(primary) == "platform"
+            and not is_main
+        ):
+            local_candidates = [
+                candidate
+                for candidate in self._candidates(
+                    instances,
+                    config,
+                    primary_port,
+                    needed_ctx,
+                    ignore_capacity=ignore_capacity,
+                    exclude_backend_ids={primary_backend_id},
+                    external_model=external_model,
+                    configured_primary_backend_id=configured_backend_id,
+                    required_capabilities=required_capability_set,
+                )
+                if self._backend_type(candidate) != "platform"
+            ]
+            local_choice = self._pick_least_busy(
+                local_candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
+            )
+            if local_choice is not None:
+                return _commit(
+                    local_choice, False, "subagent_local_preference", None
+                ), None
+
         if (
             self._backend_available(primary)
             and self._supports_required_capabilities(
@@ -3036,8 +3123,19 @@ class ProxyRouter:
                 exclude_backend_ids=excluded or None,
                 required_capabilities=required_capability_set,
             )
+            if primary is not None and self._backend_type(primary) == "platform":
+                local_candidates = [
+                    inst for inst in candidates
+                    if self._backend_type(inst) != "platform"
+                ]
+                if local_candidates:
+                    chosen = self._pick_for_dynamic_growth(
+                        local_candidates, config, primary_backend_id,
+                    )
             if (
-                primary is not None
+                chosen is None
+                and primary is not None
+                and self._backend_type(primary) != "platform"
                 and self._backend_available(primary)
                 and self._supports_required_capabilities(
                     primary, required_capability_set
