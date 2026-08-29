@@ -215,8 +215,9 @@ function backendCard(backend) {
     const priorityLabel = backend.role === 'primary'
         ? 'Prioridade principal'
         : (backend.speed_rank ? `Prioridade #${backend.speed_rank}` : 'Sem ranking');
+    const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
     return `
-    <div class="p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}">
+    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-grab active:cursor-grabbing" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}>
         <div class="flex items-center justify-between gap-2">
             <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
             <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[state] || backend.state)}</span>
@@ -263,6 +264,83 @@ function sessionRow(session) {
     </div>`;
 }
 
+
+function bindDragEvents() {
+    const list = document.getElementById('proxy-backends-list');
+    if (!list) return;
+    const cards = list.querySelectorAll('.proxy-backend-card');
+    let draggedItem = null;
+
+    cards.forEach(card => {
+        card.addEventListener('dragstart', function(e) {
+            draggedItem = this;
+            setTimeout(() => this.classList.add('opacity-50'), 0);
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        card.addEventListener('dragend', function() {
+            draggedItem = null;
+            this.classList.remove('opacity-50');
+            cards.forEach(c => c.classList.remove('border-t-2', 'border-violet-500'));
+        });
+
+        card.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            if (this !== draggedItem) {
+                this.classList.add('border-t-2', 'border-violet-500');
+            }
+        });
+
+        card.addEventListener('dragleave', function() {
+            this.classList.remove('border-t-2', 'border-violet-500');
+        });
+
+        card.addEventListener('drop', async function(e) {
+            e.preventDefault();
+            this.classList.remove('border-t-2', 'border-violet-500');
+            if (this !== draggedItem) {
+                const allCards = [...list.querySelectorAll('.proxy-backend-card')];
+                const fromIndex = allCards.indexOf(draggedItem);
+                const toIndex = allCards.indexOf(this);
+                
+                if (fromIndex < toIndex) {
+                    this.parentNode.insertBefore(draggedItem, this.nextSibling);
+                } else {
+                    this.parentNode.insertBefore(draggedItem, this);
+                }
+                
+                await savePriorityOrder();
+            }
+        });
+    });
+}
+
+async function savePriorityOrder() {
+    const list = document.getElementById('proxy-backends-list');
+    if (!list) return;
+    const cards = list.querySelectorAll('.proxy-backend-card');
+    const custom_priority = Array.from(cards).flatMap(c => {
+        if (c.dataset.backendIds) {
+            return c.dataset.backendIds.split(',');
+        }
+        return [c.dataset.backendId || c.dataset.proxyBackend];
+    }).filter(Boolean);
+    
+    try {
+        const res = await apiFetch('/proxy/config', {
+            method: 'POST',
+            body: JSON.stringify({ custom_priority })
+        });
+        if (res.ok) {
+            showToast('Prioridade atualizada', 'success');
+        } else {
+            showToast('Falha ao atualizar prioridade', 'error');
+        }
+    } catch (e) {
+        showToast('Erro ao atualizar prioridade', 'error');
+    }
+}
+
 function bindSessionActions() {
     document.querySelectorAll('.proxy-session-delete').forEach((btn) => {
         btn.onclick = () => proxyDeleteSession(btn.dataset.key);
@@ -270,6 +348,67 @@ function bindSessionActions() {
     document.querySelectorAll('.proxy-session-reassign').forEach((btn) => {
         btn.onclick = () => proxyReassignSession(btn.dataset.key);
     });
+}
+
+function groupBackends(backends) {
+    if (!backends) return [];
+    const grouped = [];
+    const groups = new Map();
+
+    for (const b of backends) {
+        if (b.backend_type === 'platform' && b.model) {
+            const key = `platform:${b.model}`;
+            if (groups.has(key)) {
+                const group = groups.get(key);
+                group.in_flight += b.in_flight;
+                group.max_parallel += b.max_parallel;
+                group.effective_parallel += (b.effective_parallel || b.max_parallel);
+                group.grouped_ids.push(b.backend_id);
+                // Status logic for groups
+                if (!b.is_rate_limited) {
+                    group.all_rate_limited = false;
+                }
+                
+                // Keep track of lowest startup_latency_ms if present
+                if (b.startup_latency_ms != null) {
+                    if (group.startup_latency_ms == null) {
+                        group.startup_latency_ms = b.startup_latency_ms;
+                    } else {
+                        group.startup_latency_ms = Math.min(group.startup_latency_ms, b.startup_latency_ms);
+                    }
+                }
+                
+                if (b.role === 'primary') {
+                    group.role = 'primary';
+                }
+            } else {
+                const newGroup = { ...b, grouped_ids: [b.backend_id], all_rate_limited: !!b.is_rate_limited, port: "múltiplas" };
+                groups.set(key, newGroup);
+                grouped.push(newGroup);
+            }
+        } else {
+            grouped.push(b);
+        }
+    }
+
+    // Resolve state for grouped platforms
+    for (const b of grouped) {
+        if (b.grouped_ids && b.grouped_ids.length > 1) {
+            if (b.all_rate_limited) {
+                b.state = 'rate_limited';
+                b.is_rate_limited = true;
+            } else {
+                b.is_rate_limited = false;
+                if (b.in_flight >= b.effective_parallel) {
+                    b.state = 'busy';
+                } else {
+                    b.state = 'online';
+                }
+            }
+        }
+    }
+
+    return grouped;
 }
 
 function render(status, sessions) {
@@ -280,7 +419,8 @@ function render(status, sessions) {
 
     const backendsEl = document.getElementById('proxy-backends-list');
     if (backendsEl) {
-        backendsEl.innerHTML = (status.backends || []).map(backendCard).join('')
+        const grouped = groupBackends(status.backends);
+        backendsEl.innerHTML = grouped.map(backendCard).join('')
             || '<p class="text-ui-label text-slate-600">Nenhuma instância online.</p>';
     }
     const countEl = document.getElementById('proxy-sessions-count');
@@ -299,8 +439,10 @@ function render(status, sessions) {
         sessionsEl.innerHTML = sessions.map(sessionRow).join('')
             || '<p class="text-ui-label text-slate-600">Nenhuma sessão ativa.</p>';
         bindSessionActions();
+        bindDragEvents();
     }
 }
+
 
 export async function proxyDeleteSession(affinityKey) {
     const ok = await showConfirm(

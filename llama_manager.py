@@ -69,6 +69,7 @@ from platform_manager import (
     PlatformIntegrationError,
     PlatformIntegrationManager,
     clear_platform_listing_registry,
+    clear_platform_listings_for_provider,
     filter_models_for_provider,
     is_platform_listing_id,
     lookup_platform_bare_id,
@@ -88,6 +89,11 @@ from platform_ollama_cloud import (
     OllamaCloudAccountManager,
     OllamaCloudCatalog,
     OllamaCloudProvider,
+)
+from platform_generic_openai import (
+    GenericOpenAIAccountManager,
+    GenericOpenAICatalog,
+    GenericOpenAIProvider,
 )
 from version_manager import check_for_updates
 from schemas import (
@@ -112,6 +118,8 @@ from schemas import (
     CLIProxyAuthStartRequest,
     CLIProxyAuthCallbackRequest,
     ModelAliasRequest,
+    GenericOpenAIAddAccountRequest,
+    GenericOpenAIUpdateAccountRequest,
     DEFAULT_CONTEXT_SIZE,
     DEFAULT_PARALLEL_SLOTS,
     DEFAULT_BATCH_SIZE,
@@ -734,10 +742,16 @@ model_scanner = ModelScanner(config_manager, process_manager)
 # Ollama Cloud — direct HTTP platform without a local CLI or sidecar.
 _ollama_cloud_catalog = OllamaCloudCatalog()
 ollama_cloud_manager = OllamaCloudAccountManager(config_manager, _ollama_cloud_catalog)
+generic_openai_catalog = GenericOpenAICatalog()
+generic_openai_manager = GenericOpenAIAccountManager(
+    config_manager, generic_openai_catalog
+)
 platform_manager = PlatformIntegrationManager(
     config_manager,
     ollama_cloud_account_manager=ollama_cloud_manager,
     ollama_cloud_catalog=_ollama_cloud_catalog,
+    generic_openai_account_manager=generic_openai_manager,
+    generic_openai_catalog=generic_openai_catalog,
 )
 cliproxy_sidecar = CLIProxySidecarManager(platform_manager, log_manager=log_manager)
 cliproxy_auth_manager = CLIProxyAuthManager(platform_manager)
@@ -964,6 +978,146 @@ async def _ensure_ollama_cloud_model_registry(
             register_platform_bare_model(model_id, provider="ollama-cloud")
             register_platform_model_listings(model_id, provider="ollama-cloud")
         _ollama_cloud_model_catalog_loaded_at = time.monotonic()
+
+
+
+async def _generic_openai_models_for_listing(instances: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    runtime_states = getattr(platform_manager, "runtime_states", None)
+    if callable(runtime_states):
+        state = next(
+            (
+                item for item in runtime_states()
+                if item.get("backend_id") == "platform:generic-openai"
+            ),
+            {},
+        )
+    else:
+        runtime_state = getattr(platform_manager, "runtime_state", None)
+        state = (
+            runtime_state("platform:generic-openai")
+            if callable(runtime_state)
+            else {}
+        )
+    if not state.get("active") or state.get("status") not in ("running", "available"):
+        clear_platform_listings_for_provider("generic-openai")
+        return []
+    if not generic_openai_catalog.all_models:
+        await generic_openai_manager.refresh_catalog()
+    clear_platform_listings_for_provider("generic-openai")
+    entries = []
+    local_ids = _local_model_ids(instances)
+    for model in generic_openai_catalog.all_models:
+        model_id = model.id
+        from platform_manager import register_platform_model_listings
+        listing_id = register_platform_model_listings(model_id, provider="generic-openai")
+        if listing_id in local_ids:
+            continue
+
+        entry = {
+            "id": listing_id,
+            "object": "model",
+            "owned_by": "generic-openai",
+            "created": int(time.time()),
+            "meta": {
+                "backend_id": model.backend_id,
+                "account_id": model.account_id,
+                "account_ids": generic_openai_catalog.get_model_accounts(model.id),
+                "context_length": model.context_length,
+                "max_completion_tokens": model.output_token_limit,
+            },
+        }
+        entries.append(entry)
+    return entries
+
+
+def _generic_openai_requested(
+    requested_model: Optional[str],
+) -> bool:
+    if not requested_model:
+        return False
+    bare = resolve_platform_listing_model(str(requested_model))
+    return bool(generic_openai_catalog.get_model_accounts(bare))
+
+
+async def _forward_generic_openai(
+    request: Request,
+    path: str,
+    payload: Dict[str, Any],
+    requested_model: str,
+):
+    """Forward generic OpenAI requests directly, without a local port."""
+    if path.strip("/") != "chat/completions":
+        raise HTTPException(
+            status_code=404,
+            detail="A plataforma genérica suporta apenas chat/completions",
+        )
+    bare_model = resolve_platform_listing_model(requested_model)
+    account = generic_openai_manager.resolve_for_model(bare_model)
+    if account is None:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": f"Nenhuma conta disponível para o modelo '{requested_model}'",
+                    "type": "upstream_unavailable",
+                    "code": "generic_openai_account_unavailable",
+                }
+            },
+            status_code=503,
+        )
+    provider = GenericOpenAIProvider(account)
+    forwarded = dict(payload)
+    forwarded["model"] = bare_model
+    try:
+        if request.method == "POST" and bool(forwarded.get("stream")):
+            upstream = provider.stream_chat_completion(forwarded)
+            try:
+                response = await upstream.__aenter__()
+            except BaseException:
+                await provider.close()
+                raise
+
+            async def stream_body():
+                try:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+                finally:
+                    await upstream.__aexit__(None, None, None)
+                    await provider.close()
+
+            return StreamingResponse(
+                stream_body(),
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type")
+                or "text/event-stream",
+                headers=_filter_proxy_headers(dict(response.headers)),
+            )
+        response = await provider.chat_completion(forwarded)
+        content = await response.aread()
+        return Response(
+            content=content,
+            status_code=response.status_code,
+            headers=_filter_proxy_headers(dict(response.headers)),
+            media_type=response.headers.get("content-type"),
+        )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "[generic-openai] upstream unavailable account=%s: %s",
+            account.id,
+            exc,
+        )
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Erro ao conectar à conta OpenAI genérica",
+                    "type": "upstream_error",
+                    "code": "generic_openai_upstream_unavailable",
+                }
+            },
+            status_code=502,
+        )
+    finally:
+        if not bool(payload.get("stream")):
+            await provider.close()
 
 
 async def _ollama_cloud_models_for_listing(
@@ -1454,6 +1608,102 @@ async def refresh_ollama_cloud_catalog(authenticated: bool = Depends(require_aut
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Catalog refresh failed: {exc}")
+
+
+@app.get("/platforms/generic-openai/accounts")
+async def get_generic_openai_accounts(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    return {"accounts": config_manager.get_generic_openai_accounts()}
+
+
+@app.post("/platforms/generic-openai/accounts", status_code=201)
+async def add_generic_openai_account(
+    req: GenericOpenAIAddAccountRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        account = generic_openai_manager.add_account(
+            req.name, req.base_url, req.api_key
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": account.id,
+        "name": account.name,
+        "base_url": account.base_url,
+        "api_key": mask_api_key(account.api_key),
+        "status": account.status,
+    }
+
+
+@app.delete("/platforms/generic-openai/accounts/{account_id}")
+async def delete_generic_openai_account(
+    account_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        generic_openai_manager.remove_account(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    clear_platform_listings_for_provider("generic-openai")
+    for model in generic_openai_catalog.all_models:
+        register_platform_model_listings(model.id, provider="generic-openai")
+    return {"message": "Conta removida"}
+
+
+@app.patch("/platforms/generic-openai/accounts/{account_id}")
+async def update_generic_openai_account(
+    account_id: str,
+    req: GenericOpenAIUpdateAccountRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        updated = config_manager.update_generic_openai_account(
+            account_id, req.model_dump(exclude_unset=True)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return updated
+
+
+@app.post("/platforms/generic-openai/accounts/{account_id}/validate")
+async def validate_generic_openai_account(
+    account_id: str, authenticated: bool = Depends(require_auth)
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    target = next(
+        (account for account in generic_openai_manager.get_accounts()
+         if account.id == account_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    success = await generic_openai_manager.validate_connection(target)
+    return {"valid": success, "status": target.status}
+
+
+@app.post("/platforms/generic-openai/catalog/refresh")
+async def refresh_generic_openai_catalog(authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    await generic_openai_manager.refresh_catalog()
+    clear_platform_listings_for_provider("generic-openai")
+    for model in generic_openai_catalog.all_models:
+        register_platform_model_listings(model.id, provider="generic-openai")
+    return {
+        "message": "Catalog refresh completed",
+        "status": generic_openai_catalog.catalog_status,
+        "models_count": len(generic_openai_catalog.all_models),
+    }
 
 
 @app.get("/cliproxy/auth")
@@ -1947,6 +2197,12 @@ async def _aggregate_models_response(
                 continue
             seen_ids.add(model_id)
             merged.append(model)
+    for model in await _generic_openai_models_for_listing(instances):
+        model_id = model.get("id")
+        if model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        merged.append(model)
     for model in await _ollama_cloud_models_for_listing(instances):
         model_id = model.get("id")
         if model_id in seen_ids:
@@ -3119,6 +3375,34 @@ async def openai_proxy(
 
     instances = _hybrid_status().get("instances", [])
     has_ollama_cloud = bool(ollama_cloud_manager.get_accounts())
+    runtime_states = getattr(platform_manager, "runtime_states", None)
+    if callable(runtime_states):
+        generic_state = next(
+            (
+                item for item in runtime_states()
+                if item.get("backend_id") == "platform:generic-openai"
+            ),
+            {},
+        )
+    else:
+        runtime_state = getattr(platform_manager, "runtime_state", None)
+        generic_state = (
+            runtime_state("platform:generic-openai")
+            if callable(runtime_state)
+            else {}
+        )
+    if generic_state.get("active") and not generic_openai_catalog.all_models:
+        await generic_openai_manager.refresh_catalog()
+    generic_model_requested = _generic_openai_requested(
+        str(requested_model) if requested_model else None
+    )
+    if generic_model_requested:
+        return await _forward_generic_openai(
+            request,
+            path,
+            data,
+            str(requested_model),
+        )
     if has_ollama_cloud:
         # Register bare provider IDs before model aliases and routing are
         # resolved (e.g. ``gemma4:31b`` must select Ollama Cloud, not Codex).
@@ -4101,6 +4385,63 @@ def _build_html(
                 <div id="version-commits-list" class="custom-scroll flex-1 overflow-y-auto p-6 md:p-8 space-y-4 font-mono text-xs"></div>
                 <div class="p-6 md:p-8 border-t border-slate-800/60 bg-slate-900/40">
                     <button onclick="dismissVersionModal()" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl uppercase">ENTENDI</button>
+                </div>
+            </div>
+        </div>"""
+
+
+    generic_openai_auth_modal = """
+        <div id="generic-openai-auth-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-3 sm:p-4 overflow-y-auto" role="dialog" aria-modal="true">
+            <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onclick="closeGenericOpenAIAuthModal()"></div>
+            <div class="relative glass w-full max-w-xl max-h-[min(90vh,720px)] flex flex-col rounded-2xl sm:rounded-3xl border border-amber-500/30 shadow-2xl overflow-hidden my-auto">
+                <div class="shrink-0 p-4 sm:p-6 border-b border-slate-800/60 bg-slate-900/40">
+                    <h2 id="generic-openai-auth-title" class="text-base sm:text-lg font-bold text-white">Plataformas Genéricas</h2>
+                    <p class="text-xs text-slate-500 mt-1">Gerencie contas para plataformas compatíveis com a API OpenAI</p>
+                </div>
+                <div class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 sm:p-6 space-y-4">
+                    <!-- List of accounts -->
+                    <div id="generic-openai-accounts-list" class="space-y-2">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+
+                    <!-- Add / Edit Form -->
+                    <div id="generic-openai-form-container" class="mt-4 pt-4 border-t border-slate-700/50 hidden">
+                        <h3 id="generic-openai-form-title" class="text-sm font-bold text-white mb-3">Adicionar Nova Conta</h3>
+                        <form id="generic-openai-form" onsubmit="saveGenericOpenAIAccount(event)" class="space-y-3">
+                            <input type="hidden" id="generic-openai-id" value="">
+
+                            <div>
+                                <label for="generic-openai-name" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Nome</label>
+                                <input type="text" id="generic-openai-name" required placeholder="Ex: Minha API Local" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
+                            </div>
+
+                            <div>
+                                <label for="generic-openai-baseurl" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">URL Base</label>
+                                <input type="url" id="generic-openai-baseurl" required placeholder="https://api.openai.com/v1" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
+                                <p class="text-[10px] text-slate-500 mt-1">Vazio para usar o padrão da OpenAI.</p>
+                            </div>
+
+                            <div>
+                                <label for="generic-openai-apikey" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">API Key</label>
+                                <input type="password" id="generic-openai-apikey" placeholder="sk-..." class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
+                                <p id="generic-openai-apikey-hint" class="text-[10px] text-slate-500 mt-1 hidden">Deixe em branco para manter a chave existente.</p>
+                            </div>
+
+                            <div class="flex justify-end gap-2 pt-2">
+                                <button type="button" onclick="cancelGenericOpenAIForm()" class="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs text-slate-300 font-medium transition-colors">Cancelar</button>
+                                <button type="submit" class="px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-xs text-amber-300 font-bold transition-colors">Salvar Conta</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div id="generic-openai-add-btn-container" class="mt-2 text-center">
+                        <button type="button" onclick="showGenericOpenAIForm()" class="px-4 py-2 rounded-lg border border-dashed border-amber-500/40 text-amber-400 hover:bg-amber-500/10 text-xs font-bold uppercase tracking-wider transition-colors w-full">
+                            <i class="fas fa-plus mr-1"></i> Adicionar Nova Conta
+                        </button>
+                    </div>
+                </div>
+                <div class="shrink-0 p-4 sm:p-6 border-t border-slate-800/60 bg-slate-900/40 flex">
+                    <button type="button" onclick="closeGenericOpenAIAuthModal()" class="flex-1 py-2.5 sm:py-3 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-xl uppercase transition-colors">Fechar</button>
                 </div>
             </div>
         </div>"""

@@ -10,6 +10,7 @@ import uuid as uuid_mod
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -66,6 +67,7 @@ DEFAULT_SMART_PROXY = {
     "ttl_minutes": DEFAULT_PROXY_TTL_MINUTES,
     "max_wait_seconds": DEFAULT_PROXY_MAX_WAIT_SECONDS,
     "context_optimizer": DEFAULT_CONTEXT_OPTIMIZER,
+    "custom_priority": [],
 }
 
 DEFAULT_PLATFORM_BACKEND_IDS = (
@@ -495,6 +497,8 @@ class ConfigManager:
         primary_model_updated = "primary_model_path" in partial
         primary_backend_updated = "primary_backend_id" in partial
         merged = {**stored, **partial}
+        if "custom_priority" in partial:
+            merged["custom_priority"] = partial["custom_priority"]
         context_partial = partial.get("context_optimizer")
         if isinstance(context_partial, dict):
             existing_context = stored.get("context_optimizer")
@@ -761,6 +765,125 @@ class ConfigManager:
                 "id": acc["id"],
                 "api_key": self._mask_api_key(acc.get("api_key", "")),
                 "label": acc.get("label", ""),
+                "created_at": acc.get("created_at"),
+            }
+        return None
+
+
+
+    # ------------------------------------------------------------------ generic_openai_accounts
+    def get_generic_openai_accounts(self) -> list[dict]:
+        config = self.load()
+        accounts = config.get("generic_openai_accounts")
+        if not isinstance(accounts, list):
+            return []
+        return [
+            {
+                "id": acc["id"],
+                "name": acc.get("name", ""),
+                "base_url": acc.get("base_url", ""),
+                "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "status": acc.get("status", "available"),
+                "cooldown_until": acc.get("cooldown_until"),
+                "rate_limited_until": acc.get("rate_limited_until"),
+                "created_at": acc.get("created_at"),
+            }
+            for acc in accounts
+        ]
+
+    def get_generic_openai_accounts_raw(self) -> list[dict]:
+        config = self.load()
+        accounts = config.get("generic_openai_accounts")
+        if not isinstance(accounts, list):
+            return []
+        return [dict(acc) for acc in accounts if isinstance(acc, dict)]
+
+    def add_generic_openai_account(self, name: str, base_url: str, api_key: str) -> dict:
+        if not name or not base_url or not api_key:
+            raise ValueError("name, base_url and api_key are required")
+
+        # Normalize base_url
+        base_url = base_url.strip()
+        parsed_url = urlparse(base_url)
+        if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+            raise ValueError("base_url must be a usable HTTP(S) URL")
+        base_url = base_url.rstrip("/")
+
+        config = self.load()
+        accounts: list = config.get("generic_openai_accounts")
+        if not isinstance(accounts, list):
+            accounts = []
+        account = {
+            "id": str(uuid_mod.uuid4()),
+            "name": name,
+            "base_url": base_url,
+            "api_key": api_key,
+            "status": "available",
+            "cooldown_until": None,
+            "rate_limited_until": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        accounts.append(account)
+        config["generic_openai_accounts"] = accounts
+        self.save(config)
+        return {
+            "id": account["id"],
+            "name": account["name"],
+            "base_url": account["base_url"],
+            "api_key": self._mask_api_key(api_key),
+            "status": account["status"],
+            "cooldown_until": account["cooldown_until"],
+            "rate_limited_until": account["rate_limited_until"],
+            "created_at": account["created_at"],
+        }
+
+    def remove_generic_openai_account(self, account_id: str) -> bool:
+        config = self.load()
+        accounts: list = config.get("generic_openai_accounts")
+        if not isinstance(accounts, list):
+            return False
+        before = len(accounts)
+        accounts = [acc for acc in accounts if acc.get("id") != account_id]
+        if len(accounts) == before:
+            return False
+        config["generic_openai_accounts"] = accounts
+        self.save(config)
+        return True
+
+    def update_generic_openai_account(self, account_id: str, updates: dict) -> Optional[dict]:
+        config = self.load()
+        accounts: list = config.get("generic_openai_accounts")
+        if not isinstance(accounts, list):
+            return None
+        for acc in accounts:
+            if acc.get("id") != account_id:
+                continue
+            if "name" in updates and updates["name"]:
+                acc["name"] = updates["name"]
+            if "base_url" in updates:
+                base_url = str(updates["base_url"] or "").strip()
+                parsed_url = urlparse(base_url)
+                if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+                    raise ValueError("base_url must be a usable HTTP(S) URL")
+                base_url = base_url.rstrip("/")
+                acc["base_url"] = base_url
+            if "api_key" in updates and updates["api_key"]:
+                acc["api_key"] = updates["api_key"]
+            if "created_at" in updates:
+                acc["created_at"] = updates["created_at"]
+            for runtime_field in ("status", "cooldown_until", "rate_limited_until"):
+                if runtime_field in updates:
+                    acc[runtime_field] = updates[runtime_field]
+            config["generic_openai_accounts"] = accounts
+            self.save(config)
+            return {
+                "id": acc["id"],
+                "name": acc.get("name", ""),
+                "base_url": acc.get("base_url", ""),
+                "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "status": acc.get("status", "available"),
+                "cooldown_until": acc.get("cooldown_until"),
+                "rate_limited_until": acc.get("rate_limited_until"),
                 "created_at": acc.get("created_at"),
             }
         return None

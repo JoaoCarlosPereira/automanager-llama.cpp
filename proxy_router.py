@@ -1260,8 +1260,36 @@ class ProxyRouter:
             config.get("model_configs", {}), instance.get("model_path") or ""
         )
 
-    @staticmethod
+    def _routing_priority(
+        self, instance: Dict[str, Any], primary_backend_id: Optional[str] = None
+    ) -> int:
+        backend_id = self._backend_id(instance)
+        config_id = self._config_backend_id(instance)
+
+        is_primary = bool(
+            primary_backend_id
+            and (
+                backend_id == primary_backend_id
+                or config_id == primary_backend_id
+            )
+        )
+        if is_primary:
+            return 0
+
+        custom_priority = self._settings().get("custom_priority") or []
+
+        if backend_id in custom_priority:
+            return 1 + custom_priority.index(backend_id)
+        if config_id in custom_priority:
+            return 1 + custom_priority.index(config_id)
+
+        offset = len(custom_priority) + 1
+        if self._backend_type(instance) != "platform":
+            return offset + 1
+        return offset + 2
+
     def _required_capability_set(
+        self,
         required_capabilities: Any = None,
         body: Optional[dict] = None,
     ) -> FrozenSet[str]:
@@ -1281,13 +1309,12 @@ class ProxyRouter:
             return frozenset(str(value) for value in required_capabilities)
         return frozenset()
 
-    @classmethod
     def _supports_required_capabilities(
-        cls,
+        self,
         instance: Dict[str, Any],
         required_capabilities: Any = None,
     ) -> bool:
-        required = cls._required_capability_set(required_capabilities)
+        required = self._required_capability_set(required_capabilities)
         if not required:
             return True
         # Vision is the capability that must be proven before an image is
@@ -1478,6 +1505,7 @@ class ProxyRouter:
                 "model_path": model_path,
                 "backend_id": backend_id,
                 "backend_type": backend_type,
+                "config_backend_id": self._config_backend_id(inst),
                 "provider": inst.get("provider"),
                 "gpu": gpu_label(inst),
                 "role": "primary" if is_primary else "secondary",
@@ -1505,6 +1533,7 @@ class ProxyRouter:
             })
         snapshot.sort(
             key=lambda backend: (
+                self._routing_priority(backend, primary_backend_id),
                 0 if backend["role"] == "primary" else 1,
                 backend["startup_latency_ms"] is None,
                 backend["startup_latency_ms"] or float("inf"),
@@ -1617,28 +1646,7 @@ class ProxyRouter:
             session_counts[sid] = session_counts.get(sid, 0) + 1
 
         def routing_priority(instance: Dict[str, Any]) -> int:
-            backend_id = self._backend_id(instance)
-            is_primary = bool(
-                primary_backend_id
-                and (
-                    backend_id == primary_backend_id
-                    or self._config_backend_id(instance) == primary_backend_id
-                )
-            )
-            if is_primary:
-                return 0
-            if self._backend_type(instance) != "platform":
-                return 1
-            if instance.get("provider") == "ollama-cloud":
-                return 2
-            # Dentro da camada cloud, o provedor solicitado ainda tem
-            # preferência sobre outras plataformas, depois do Ollama.
-            if (
-                preferred_provider
-                and instance.get("provider") == preferred_provider
-            ):
-                return 3
-            return 4
+            return self._routing_priority(instance, primary_backend_id)
 
         return min(
             candidates,
