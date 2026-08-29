@@ -54,6 +54,14 @@ class ExecutableDetection:
 # Platforms without a local CLI executable (e.g. Ollama Cloud)
 # ---------------------------------------------------------------------------
 
+DEFAULT_GENERIC_OPENAI_DEFINITION = PlatformDefinition(
+    backend_id="platform:generic-openai",
+    provider="generic-openai",
+    display_name="Generic OpenAI",
+    command_candidates=(),  # no CLI
+    has_cli=False,
+)
+
 DEFAULT_OLLAMA_CLOUD_DEFINITION = PlatformDefinition(
     backend_id="platform:ollama-cloud",
     provider="ollama-cloud",
@@ -82,6 +90,7 @@ DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         command_candidates=("agy", "antigravity", "antigravity.cmd", "antigravity.exe"),
     ),
     DEFAULT_OLLAMA_CLOUD_DEFINITION,
+    DEFAULT_GENERIC_OPENAI_DEFINITION,
 )
 
 DEFAULT_CLIPROXY_CANDIDATES = (
@@ -170,6 +179,22 @@ def clear_platform_listing_registry() -> None:
     with _PLATFORM_LISTING_REGISTRY_LOCK:
         _PLATFORM_LISTING_REGISTRY.clear()
         _PLATFORM_LISTING_PROVIDER_REGISTRY.clear()
+
+
+def clear_platform_listings_for_provider(provider: str) -> None:
+    """Remove listings owned exclusively by one provider."""
+    provider = (provider or "").strip().lower()
+    if not provider:
+        return
+    with _PLATFORM_LISTING_REGISTRY_LOCK:
+        listing_ids = [
+            listing_id
+            for listing_id, owner in _PLATFORM_LISTING_PROVIDER_REGISTRY.items()
+            if owner == provider
+        ]
+        for listing_id in listing_ids:
+            _PLATFORM_LISTING_REGISTRY.pop(listing_id, None)
+            _PLATFORM_LISTING_PROVIDER_REGISTRY.pop(listing_id, None)
 
 
 def register_platform_listing(
@@ -749,6 +774,8 @@ class PlatformIntegrationManager:
         cliproxy_candidates: Iterable[str] = DEFAULT_CLIPROXY_CANDIDATES,
         ollama_cloud_account_manager=None,
         ollama_cloud_catalog=None,
+        generic_openai_account_manager=None,
+        generic_openai_catalog=None,
     ) -> None:
         self._config = config_manager
         self._resolver = executable_resolver or default_executable_resolver
@@ -775,6 +802,8 @@ class PlatformIntegrationManager:
         # Non-CLI platform managers
         self._ollama_cloud_account_manager = ollama_cloud_account_manager
         self._ollama_cloud_catalog = ollama_cloud_catalog
+        self._generic_openai_account_manager = generic_openai_account_manager
+        self._generic_openai_catalog = generic_openai_catalog
 
         self._runtime: Dict[str, dict] = {}
         self._runtime_lock = threading.Lock()
@@ -900,6 +929,29 @@ class PlatformIntegrationManager:
 
     def _start_non_cli_backend(self, backend_id: str, item: dict) -> dict:
         """Start a non-CLI platform by validating connection via AccountManager."""
+        if backend_id == "platform:generic-openai" and self._generic_openai_account_manager is not None:
+            accounts = self._generic_openai_account_manager.get_accounts()
+            if not accounts:
+                self._set_runtime_error(backend_id, "error", "No accounts configured")
+                raise PlatformIntegrationError(502, "Generic OpenAI connection validation failed")
+            any_error = True
+            for acc in accounts:
+                try:
+                    import asyncio
+                    result = asyncio.run(
+                        self._generic_openai_account_manager.validate_connection(acc)
+                    )
+                    if result:
+                        any_error = False
+                except Exception as exc:
+                    logger.warning(
+                        "Generic OpenAI account validation failed id=%s: %s",
+                        getattr(acc, "id", "unknown"),
+                        exc,
+                    )
+            if any_error:
+                self._set_runtime_error(backend_id, "error", "Connection validation failed for all accounts")
+                raise PlatformIntegrationError(502, "Generic OpenAI connection validation failed")
         if backend_id == "platform:ollama-cloud" and self._ollama_cloud_account_manager is not None:
             # Validate connection against each account
             accounts = self._ollama_cloud_account_manager.get_accounts()
@@ -1032,7 +1084,39 @@ class PlatformIntegrationManager:
         catalog_status_val: str = "stale"
         last_catalog_update: Optional[float] = None
 
-        if self._ollama_cloud_account_manager is not None:
+        if self._generic_openai_account_manager is not None and definition.backend_id == "platform:generic-openai":
+            accounts = self._generic_openai_account_manager.get_accounts()
+            account_count = len(accounts)
+            for acc in accounts:
+                acc_info = {
+                    "id": acc.id,
+                    "label": acc.name,
+                    "status": acc.status,
+                }
+                if acc.cooldown_until:
+                    acc_info["cooldown_until"] = acc.cooldown_until
+                if acc.rate_limited_until:
+                    acc_info["rate_limited_until"] = acc.rate_limited_until
+                accounts_status.append(acc_info)
+            now = time.time()
+            any_available = any(
+                a.status == "available"
+                and not (a.cooldown_until and a.cooldown_until > now)
+                and not (a.rate_limited_until and a.rate_limited_until > now)
+                for a in accounts
+            )
+            if accounts:
+                status = "available" if any_available else "error"
+            else:
+                status = "missing"
+
+        if self._generic_openai_catalog is not None and definition.backend_id == "platform:generic-openai":
+            catalog_status_val = self._generic_openai_catalog.catalog_status
+            last_catalog_update = self._generic_openai_catalog.last_refresh
+        if (
+            self._ollama_cloud_account_manager is not None
+            and definition.backend_id == "platform:ollama-cloud"
+        ):
             accounts = self._ollama_cloud_account_manager.get_accounts()
             account_count = len(accounts)
             for acc in accounts:
@@ -1060,7 +1144,10 @@ class PlatformIntegrationManager:
             else:
                 status = "missing"
 
-        if self._ollama_cloud_catalog is not None:
+        if (
+            self._ollama_cloud_catalog is not None
+            and definition.backend_id == "platform:ollama-cloud"
+        ):
             catalog_status_val = self._ollama_cloud_catalog.catalog_status
             last_catalog_update = self._ollama_cloud_catalog.last_refresh
 

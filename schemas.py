@@ -1,6 +1,7 @@
 """Shared request/response schemas."""
 from typing import Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, constr
+from urllib.parse import urlparse
+from pydantic import BaseModel, ConfigDict, Field, constr, field_validator
 DEFAULT_CONTEXT_SIZE = 65536
 DEFAULT_PARALLEL_SLOTS = 1
 DEFAULT_BATCH_SIZE = 2048
@@ -174,6 +175,7 @@ class ProxyConfigRequest(BaseModel):
     ttl_minutes: Optional[int] = Field(default=None, ge=1)
     max_wait_seconds: Optional[int] = Field(default=None, ge=1)
     context_optimizer: Optional[ContextOptimizerConfig] = None
+    custom_priority: Optional[List[str]] = None
 
 
 class SetModelProxyRequest(BaseModel):
@@ -279,3 +281,53 @@ class StatusMetrics(BaseModel):
     used_vram: int = 0
     tokenizer_estimates: int = 0
     optimizer_audit_entries: int = 0
+
+
+class GenericOpenAIAddAccountRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    base_url: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1)
+
+    @field_validator("name", "base_url", "api_key")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("campo obrigatório")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("base_url deve ser uma URL HTTP(S) utilizável")
+        return value.rstrip("/")
+
+class GenericOpenAIUpdateAccountRequest(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    status: Optional[str] = None
+    cooldown_until: Optional[float] = None
+    rate_limited_until: Optional[float] = None
+
+    @field_validator("name", "base_url", "api_key")
+    @classmethod
+    def validate_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("não é permitido valor vazio")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_optional_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("base_url deve ser uma URL HTTP(S) utilizável")
+        return value.rstrip("/")

@@ -31,6 +31,7 @@ class TestSmartProxySettings:
             "primary_backend_id": None,
             "ttl_minutes": 180,
             "max_wait_seconds": 30,
+            "custom_priority": [],
             "context_optimizer": {
                 "enabled": True,
                 "audit_enabled": True,

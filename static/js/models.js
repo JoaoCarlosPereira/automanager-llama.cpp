@@ -186,6 +186,10 @@ const PLATFORM_STATUS_LABELS = {
 
 function platformAuthSummary(platform) {
     const auth = platform.cliproxy_auth || {};
+    if (platform.provider === 'generic-openai') {
+        const count = (auth.accounts || []).length;
+        return count > 0 ? `Autenticado (${count} contas)` : 'Nao configurado';
+    }
     if (platform.provider !== 'ollama-cloud' && (!platform.detected || platform.cliproxy_detected === false)) return '';
     if (auth.authenticated) {
         const count = (auth.accounts || []).length;
@@ -203,13 +207,23 @@ function platformAuthClass(platform) {
 }
 
 function buildPlatformAuthButton(platform, safeBackendId) {
-    if (platform.provider !== 'ollama-cloud' && (!platform.detected || platform.cliproxy_detected === false)) return '';
+    if (platform.provider !== 'generic-openai' && platform.provider !== 'ollama-cloud' && (!platform.detected || platform.cliproxy_detected === false)) return '';
     const auth = platform.cliproxy_auth || {};
     const provider = platform.provider || '';
-    const label = auth.authenticated ? 'Reautenticar' : 'Autenticar';
+    const label = auth.authenticated || (provider === 'generic-openai' && (auth.accounts || []).length > 0) ? 'Gerenciar Contas' : 'Autenticar';
     const displayName = platform.display_name || platform.name || provider;
-    const action = provider === 'ollama-cloud' ? 'manageOllamaCloudAuth' : 'startCliproxyAuth';
-    const args = provider === 'ollama-cloud' ? `'${safeBackendId}', '${jsString(displayName)}'` : `'${safeBackendId}', '${jsString(provider)}', '${jsString(displayName)}'`;
+
+    let action = 'startCliproxyAuth';
+    let args = `'${safeBackendId}', '${jsString(provider)}', '${jsString(displayName)}'`;
+
+    if (provider === 'ollama-cloud') {
+        action = 'manageOllamaCloudAuth';
+        args = `'${safeBackendId}', '${jsString(displayName)}'`;
+    } else if (provider === 'generic-openai') {
+        action = 'manageGenericOpenAIAuth';
+        args = `'${safeBackendId}', '${jsString(displayName)}'`;
+    }
+
     return `<button type="button" onclick="event.stopPropagation(); ${action}(${args})" title="${label}" aria-label="${label}" class="w-8 h-8 flex items-center justify-center rounded bg-amber-600/10 text-amber-300 hover:bg-amber-600/20"><i class="fas fa-key text-ui-label"></i></button>`;
 }
 
@@ -484,7 +498,9 @@ function bindPlatformTabListeners(tabId, backendId) {
             (state.lastPlatformList || []).find(p => p.backend_id === backendId) || { backend_id: backendId }
         );
         const displayName = platform.display_name || platform.name || backendId;
-        if (platform.provider === 'ollama-cloud') {
+        if (platform.provider === 'generic-openai') {
+            manageGenericOpenAIAuth(backendId, displayName);
+        } else if (platform.provider === 'ollama-cloud') {
             manageOllamaCloudAuth(backendId, displayName);
         } else {
             startCliproxyAuth(backendId, platform.provider || '', displayName);
@@ -867,7 +883,7 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
     const safeId = jsString(backendId);
     const provider = jsString(platform.provider || '');
     const displayName = jsString(platform.display_name || platform.name || backendId);
-    const authAction = platform.provider === 'ollama-cloud' ? `manageOllamaCloudAuth('${safeId}', '${displayName}')` : `startCliproxyAuth('${safeId}', '${provider}', '${displayName}')`;
+    const authAction = platform.provider === 'generic-openai' ? `manageGenericOpenAIAuth('${safeId}', '${displayName}')` : (platform.provider === 'ollama-cloud' ? `manageOllamaCloudAuth('${safeId}', '${displayName}')` : `startCliproxyAuth('${safeId}', '${provider}', '${displayName}')`);
     if (isRunning) {
         return `
             <button type="button" onclick="stopPlatform('${safeId}')" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-500 border border-red-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
@@ -2855,3 +2871,223 @@ export async function stopModel(port = null) {
         }
     } catch (e) {}
 }
+
+
+// --- Generic OpenAI Auth ---
+
+let currentGenericOpenAIBackendId = null;
+
+export async function manageGenericOpenAIAuth(backendId, displayName) {
+    currentGenericOpenAIBackendId = backendId;
+    const modal = document.getElementById('generic-openai-auth-modal');
+    if (!modal) return;
+
+    document.getElementById('generic-openai-auth-title').textContent = displayName || 'Plataformas Genéricas';
+
+    await loadGenericOpenAIAccounts();
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+window.manageGenericOpenAIAuth = manageGenericOpenAIAuth;
+
+export function closeGenericOpenAIAuthModal() {
+    const modal = document.getElementById('generic-openai-auth-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+    cancelGenericOpenAIForm();
+}
+
+window.closeGenericOpenAIAuthModal = closeGenericOpenAIAuthModal;
+
+async function loadGenericOpenAIAccounts() {
+    const listContainer = document.getElementById('generic-openai-accounts-list');
+    if (!listContainer) return;
+    listContainer.innerHTML = '<div class="text-center text-slate-400 text-sm py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Carregando contas...</div>';
+
+    try {
+        const resp = await apiFetch('/platforms/generic-openai/accounts');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const accounts = Array.isArray(data) ? data : (Array.isArray(data?.accounts) ? data.accounts : []);
+
+        if (accounts.length === 0) {
+            listContainer.innerHTML = '<div class="text-center text-slate-500 text-sm py-6 bg-slate-900/50 rounded-xl border border-slate-800">Nenhuma conta cadastrada.</div>';
+            return;
+        }
+
+        let html = '';
+        accounts.forEach(acc => {
+            html += `
+                <div class="flex items-center justify-between p-3 rounded-xl border border-slate-700 bg-slate-800/50 hover:border-amber-500/30 transition-colors group">
+                    <div class="flex-1 min-w-0 pr-4">
+                        <div class="font-bold text-white text-sm truncate">${escapeHtml(acc.name)}</div>
+                        <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(acc.base_url || 'Endpoint não configurado')}</div>
+                        ${acc.is_valid ?
+                            '<div class="text-[10px] text-emerald-400 font-bold uppercase mt-1"><i class="fas fa-check-circle mr-1"></i>Válida</div>' :
+                            '<div class="text-[10px] text-amber-400 font-bold uppercase mt-1"><i class="fas fa-exclamation-triangle mr-1"></i>Não validada</div>'}
+                    </div>
+                    <div class="flex items-center gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                        <button type="button" data-generic-openai-action="validate" data-account-id="${escapeHtml(acc.id)}" class="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 flex items-center justify-center transition-colors" title="Validar Conta">
+                            <i class="fas fa-sync-alt text-xs"></i>
+                        </button>
+                        <button type="button" data-generic-openai-action="edit" data-account-id="${escapeHtml(acc.id)}" class="w-8 h-8 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 flex items-center justify-center transition-colors" title="Editar">
+                            <i class="fas fa-pen text-xs"></i>
+                        </button>
+                        <button type="button" data-generic-openai-action="delete" data-account-id="${escapeHtml(acc.id)}" class="w-8 h-8 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center transition-colors" title="Excluir">
+                            <i class="fas fa-trash text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+
+        listContainer.innerHTML = html;
+        listContainer.querySelectorAll('[data-generic-openai-action]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const account = accounts.find(acc => String(acc.id) === button.dataset.accountId);
+                if (!account) return;
+                if (button.dataset.genericOpenaiAction === 'validate') {
+                    validateGenericOpenAIAccount(account.id);
+                } else if (button.dataset.genericOpenaiAction === 'edit') {
+                    editGenericOpenAIAccount(account.id, account.name, account.base_url || '');
+                } else if (button.dataset.genericOpenaiAction === 'delete') {
+                    deleteGenericOpenAIAccount(account.id, account.name);
+                }
+            });
+        });
+    } catch (e) {
+        console.error('Failed to load generic openai accounts:', e);
+        listContainer.innerHTML = `<div class="text-center text-red-400 text-sm py-4 bg-red-500/10 rounded-xl border border-red-500/20"><i class="fas fa-exclamation-circle mr-2"></i>Erro ao carregar contas: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+window.showGenericOpenAIForm = function() {
+    document.getElementById('generic-openai-id').value = '';
+    document.getElementById('generic-openai-name').value = '';
+    document.getElementById('generic-openai-baseurl').value = '';
+    document.getElementById('generic-openai-apikey').value = '';
+    document.getElementById('generic-openai-apikey').required = true;
+    document.getElementById('generic-openai-apikey-hint').classList.add('hidden');
+    document.getElementById('generic-openai-form-title').textContent = 'Adicionar Nova Conta';
+
+    document.getElementById('generic-openai-add-btn-container').classList.add('hidden');
+    document.getElementById('generic-openai-form-container').classList.remove('hidden');
+};
+
+window.cancelGenericOpenAIForm = function() {
+    document.getElementById('generic-openai-form-container').classList.add('hidden');
+    document.getElementById('generic-openai-add-btn-container').classList.remove('hidden');
+};
+
+window.editGenericOpenAIAccount = function(id, name, baseUrl) {
+    document.getElementById('generic-openai-id').value = id;
+    document.getElementById('generic-openai-name').value = name;
+    document.getElementById('generic-openai-baseurl').value = baseUrl;
+    document.getElementById('generic-openai-apikey').value = '';
+    document.getElementById('generic-openai-apikey').required = false;
+    document.getElementById('generic-openai-apikey-hint').classList.remove('hidden');
+    document.getElementById('generic-openai-form-title').textContent = 'Editar Conta';
+
+    document.getElementById('generic-openai-add-btn-container').classList.add('hidden');
+    document.getElementById('generic-openai-form-container').classList.remove('hidden');
+};
+
+window.saveGenericOpenAIAccount = async function(event) {
+    event.preventDefault();
+
+    const id = document.getElementById('generic-openai-id').value;
+    const name = document.getElementById('generic-openai-name').value;
+    const baseUrl = document.getElementById('generic-openai-baseurl').value;
+    const apiKey = document.getElementById('generic-openai-apikey').value;
+
+    const payload = {
+        name: name,
+        base_url: baseUrl.trim()
+    };
+
+    if (apiKey) {
+        payload.api_key = apiKey;
+    }
+
+    const method = id ? 'PATCH' : 'POST';
+    const url = id ? `/platforms/generic-openai/accounts/${encodeURIComponent(id)}` : '/platforms/generic-openai/accounts';
+
+    const btn = event.target.querySelector('button[type="submit"]');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    btn.disabled = true;
+
+    try {
+        const resp = await apiFetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Erro HTTP ${resp.status}`);
+        }
+
+        cancelGenericOpenAIForm();
+        await loadGenericOpenAIAccounts();
+        await updateModels();
+        await window.updateStatus?.();
+        showToast('Conta salva com sucesso.', 'success');
+    } catch (e) {
+        showToast(`Erro ao salvar conta: ${e.message}`, 'error');
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+};
+
+window.deleteGenericOpenAIAccount = async function(id, name) {
+    if (!await showConfirm(`Tem certeza que deseja excluir a conta "${name}"?`, { confirmLabel: 'Excluir' })) return;
+
+    try {
+        const resp = await apiFetch(`/platforms/generic-openai/accounts/${encodeURIComponent(id)}`, {
+            method: 'DELETE'
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Erro HTTP ${resp.status}`);
+        }
+
+        await loadGenericOpenAIAccounts();
+        await updateModels();
+        await window.updateStatus?.();
+        showToast('Conta excluída com sucesso.', 'success');
+    } catch (e) {
+        showToast(`Erro ao excluir conta: ${e.message}`, 'error');
+    }
+};
+
+window.validateGenericOpenAIAccount = async function(id) {
+    try {
+        const resp = await apiFetch(`/platforms/generic-openai/accounts/${encodeURIComponent(id)}/validate`, {
+            method: 'POST'
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Erro HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        if (data.status === 'ok' || data.is_valid) {
+            showToast('Conta validada com sucesso! Conexão estabelecida.', 'success');
+        } else {
+            showToast(`Falha ao validar conta: ${data.message || 'Erro desconhecido'}`, 'error');
+        }
+
+        await loadGenericOpenAIAccounts();
+        await updateModels();
+        await window.updateStatus?.();
+    } catch (e) {
+        showToast(`Erro na validação: ${e.message}`, 'error');
+    }
+};

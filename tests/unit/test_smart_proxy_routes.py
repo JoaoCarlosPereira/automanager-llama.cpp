@@ -993,6 +993,28 @@ class TestProxyDisabled:
 
 
 class TestHybridV1Availability:
+    @pytest.mark.asyncio
+    async def test_generic_models_listing_supports_runtime_states_only(
+        self, monkeypatch
+    ):
+        class RuntimeStatesOnly:
+            def runtime_states(self):
+                return [{
+                    "backend_id": "platform:generic-openai",
+                    "active": False,
+                    "status": "missing",
+                }]
+
+        monkeypatch.setattr(llama_manager, "platform_manager", RuntimeStatesOnly())
+        monkeypatch.setattr(llama_manager.generic_openai_catalog, "_models_by_account", {})
+        monkeypatch.setattr(
+            llama_manager.generic_openai_manager,
+            "refresh_catalog",
+            AsyncMock(),
+        )
+
+        assert await llama_manager._generic_openai_models_for_listing([]) == []
+
     @patch("llama_manager.client.get", new_callable=AsyncMock)
     def test_operator_flow_start_platform_exposes_sidecar_model(
         self, mock_get, smart_env, monkeypatch
