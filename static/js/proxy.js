@@ -217,8 +217,9 @@ function backendCard(backend, index) {
     const priorityRank = index + 1;
     const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
     const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
+    const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
     return `
-    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath} title="Clique para abrir a aba · Arraste para alterar a prioridade">
+    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath} title="Clique para abrir a aba · Arraste para alterar a prioridade">
         <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-2 min-w-0">
                 <span class="proxy-priority-rank shrink-0 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-violet-500/15 border border-violet-500/40 text-violet-300 text-sm font-black" title="Prioridade de roteamento">${priorityRank}º</span>
@@ -331,7 +332,7 @@ function bindDragEvents() {
 
         card.addEventListener('click', function() {
             if (pointerMoved || priorityDragActive || this.dataset.suppressOpen === 'true') return;
-            const backendId = this.dataset.backendId || '';
+            const backendId = this.dataset.navigationBackendId || this.dataset.backendId || '';
             if (this.dataset.backendType === 'platform') {
                 if (backendId) window.selectPlatform?.(backendId);
                 return;

@@ -347,6 +347,32 @@ class ConfigManager:
         self.save(config)
         return entry
 
+    def remove_platform_settings(self, backend_id: str) -> bool:
+        """Remove per-platform settings and Smart Proxy references."""
+        backend_id = normalize_backend_id(backend_id)
+        if not backend_id:
+            return False
+        config = self.load()
+        changed = False
+        platform_configs = config.get("platform_configs")
+        if isinstance(platform_configs, dict) and backend_id in platform_configs:
+            platform_configs.pop(backend_id, None)
+            config["platform_configs"] = platform_configs
+            changed = True
+        smart_proxy = config.get("smart_proxy")
+        if isinstance(smart_proxy, dict):
+            if normalize_backend_id(smart_proxy.get("primary_backend_id")) == backend_id:
+                smart_proxy["primary_backend_id"] = None
+                changed = True
+            priority = smart_proxy.get("custom_priority")
+            if isinstance(priority, list) and backend_id in priority:
+                smart_proxy["custom_priority"] = [item for item in priority if item != backend_id]
+                changed = True
+            config["smart_proxy"] = smart_proxy
+        if changed:
+            self.save(config)
+        return changed
+
     def update_model_settings(self, model_path: str, settings: dict) -> None:
         config = self.load()
         if "model_configs" not in config:

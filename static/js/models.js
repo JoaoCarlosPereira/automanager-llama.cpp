@@ -883,6 +883,9 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
     const safeId = jsString(backendId);
     const provider = jsString(platform.provider || '');
     const displayName = jsString(platform.display_name || platform.name || backendId);
+    const deleteAction = platform.provider === 'generic-openai' && platform.account_id
+        ? `<button type="button" onclick="deleteGenericOpenAIAccount('${jsString(platform.account_id)}', '${displayName}', '${jsString(tabId)}')" class="px-5 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95"><i class="fas fa-trash-alt"></i> Excluir API</button>`
+        : '';
     const authAction = platform.provider === 'generic-openai' ? `manageGenericOpenAIAuth('${safeId}', '${displayName}')` : (platform.provider === 'ollama-cloud' ? `manageOllamaCloudAuth('${safeId}', '${displayName}')` : `startCliproxyAuth('${safeId}', '${provider}', '${displayName}')`);
     if (isRunning) {
         return `
@@ -891,7 +894,8 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
             </button>
             <button type="button" onclick="${authAction}" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
                 <i class="fas fa-key"></i> Conta
-            </button>`;
+            </button>
+            ${deleteAction}`;
     }
     const canStart = platform.detected && platform.status !== 'not_ready' && platform.status !== 'missing';
     return `
@@ -900,7 +904,8 @@ export function getPlatformTabActionsHtml(backendId, tabId, isRunning, platform 
         </button>
         <button type="button" onclick="${authAction}" class="px-5 py-2.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-300 border border-amber-500/20 text-ui-body-sm font-black rounded-xl transition-all uppercase tracking-widest active:scale-95">
             <i class="fas fa-key"></i> Autenticar
-        </button>`;
+        </button>
+        ${deleteAction}`;
 }
 
 function refreshPlatformTabStatus(tabId, platform, port) {
@@ -3079,7 +3084,7 @@ window.saveGenericOpenAIAccount = async function(event) {
     }
 };
 
-window.deleteGenericOpenAIAccount = async function(id, name) {
+window.deleteGenericOpenAIAccount = async function(id, name, tabId = '') {
     if (!await showConfirm(`Tem certeza que deseja excluir a conta "${name}"?`, { confirmLabel: 'Excluir' })) return;
 
     try {
@@ -3093,6 +3098,7 @@ window.deleteGenericOpenAIAccount = async function(id, name) {
         }
 
         await loadGenericOpenAIAccounts();
+        if (tabId) closeTab(tabId);
         await updateModels();
         await window.updateStatus?.();
         showToast('Conta excluída com sucesso.', 'success');

@@ -318,6 +318,7 @@ def test_generic_openai_form_uses_default_url_and_validation_contract(html):
     assert "platform.provider === 'generic-openai' && !platform.account_id" in js
     assert "Number(aIsGenericCreator) - Number(bIsGenericCreator)" in js
     assert "manageGenericOpenAIAccount" in js
+    assert "Excluir API" in js
 
 
 def test_generic_openai_uses_shared_platform_routing_and_failover():
@@ -345,6 +346,8 @@ def test_static_proxy_controls_send_backend_id_payloads():
     assert "data-model-path" in js
     assert "distance > 5" in js
     assert "pointerMoved || priorityDragActive" in js
+    assert "data-navigation-backend-id" in js
+    assert "this.dataset.navigationBackendId" in js
 
 
 def test_html_contains_proxy_monitor_panel(html):

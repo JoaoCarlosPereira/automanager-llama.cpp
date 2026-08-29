@@ -19,12 +19,12 @@ import {
     onMmprojChange, onMtpModelChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart, setPlatformVisionEnabled, setLocalVisionEnabled,
-} from './models.js?v=4.2.33';
+} from './models.js?v=4.2.37';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
-} from './proxy.js?v=4.2.36';
+} from './proxy.js?v=4.2.37';
 
 window.modelConfigs = window.modelConfigs || {};
 

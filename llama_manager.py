@@ -134,7 +134,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.36"  # Distingue clique isolado de arraste no Proxy
+_DASHBOARD_JS_V = "4.2.37"  # Exclusão completa de API genérica pela aba
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1683,6 +1683,9 @@ async def delete_generic_openai_account(
         generic_openai_manager.remove_account(account_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    config_manager.remove_platform_settings(
+        f"platform:generic-openai:{account_id}"
+    )
     clear_platform_listings_for_provider("generic-openai")
     for model in generic_openai_catalog.all_models:
         register_platform_model_listings(model.id, provider="generic-openai")
