@@ -1266,6 +1266,15 @@ class ProxyRouter:
         backend_id = self._backend_id(instance)
         config_id = self._config_backend_id(instance)
 
+        # Uma ordem definida pelo usuário é soberana, inclusive sobre o papel
+        # de principal. O principal só é o primeiro fallback quando ainda não
+        # existe uma ordem personalizada para este backend.
+        custom_priority = self._settings().get("custom_priority") or []
+        if backend_id in custom_priority:
+            return custom_priority.index(backend_id)
+        if config_id in custom_priority:
+            return custom_priority.index(config_id)
+
         is_primary = bool(
             primary_backend_id
             and (
@@ -1274,14 +1283,7 @@ class ProxyRouter:
             )
         )
         if is_primary:
-            return 0
-
-        custom_priority = self._settings().get("custom_priority") or []
-
-        if backend_id in custom_priority:
-            return 1 + custom_priority.index(backend_id)
-        if config_id in custom_priority:
-            return 1 + custom_priority.index(config_id)
+            return len(custom_priority)
 
         offset = len(custom_priority) + 1
         if self._backend_type(instance) != "platform":
@@ -1689,23 +1691,30 @@ class ProxyRouter:
         def load_key(instance: Dict[str, Any]) -> tuple:
             _, initial_capacity = self._backend_flags(config, instance)
             in_flight = self.in_flight_for(instance)
-            backend_id = self._backend_id(instance)
-            is_primary = bool(
-                primary_backend_id
-                and (
-                    backend_id == primary_backend_id
-                    or self._config_backend_id(instance) == primary_backend_id
+            custom_priority = self._settings().get("custom_priority") or []
+            if custom_priority:
+                routing_priority = self._routing_priority(
+                    instance, primary_backend_id
                 )
-            )
-            routing_priority = (
-                0
-                if self._backend_type(instance) != "platform"
-                else 1
-                if is_primary
-                else 2
-                if instance.get("provider") == "ollama-cloud"
-                else 3
-            )
+            else:
+                backend_id = self._backend_id(instance)
+                is_primary = bool(
+                    primary_backend_id
+                    and (
+                        backend_id == primary_backend_id
+                        or self._config_backend_id(instance)
+                        == primary_backend_id
+                    )
+                )
+                routing_priority = (
+                    0
+                    if self._backend_type(instance) != "platform"
+                    else 1
+                    if is_primary
+                    else 2
+                    if instance.get("provider") == "ollama-cloud"
+                    else 3
+                )
             return (
                 routing_priority,
                 in_flight / max(1, initial_capacity),
@@ -2830,6 +2839,40 @@ class ProxyRouter:
 
         # ---------------- Nova sessão ----------------
         primary_backend_id = self._backend_id(primary)
+
+        # Quando o administrador ordenou os cards, essa lista passa a ser a
+        # política explícita para novas sessões. Requisições que nomeiam um
+        # modelo específico continuam fora desta regra e tentam esse modelo.
+        custom_priority = self._settings().get("custom_priority") or []
+        requested_overrides_configured = bool(
+            dynamic_primary
+            and (
+                configured_primary is None
+                or self._backend_id(primary)
+                != self._backend_id(configured_primary)
+            )
+        )
+        if custom_priority and not requested_overrides_configured:
+            ordered_candidates = self._candidates(
+                instances,
+                config,
+                primary_port,
+                needed_ctx,
+                ignore_capacity=ignore_capacity,
+                external_model=external_model,
+                configured_primary_backend_id=configured_backend_id,
+                required_capabilities=required_capability_set,
+            )
+            ordered_choice = self._pick_least_busy(
+                ordered_candidates,
+                primary_port,
+                primary_backend_id,
+                preferred_provider=primary.get("provider"),
+            )
+            if ordered_choice is not None:
+                return _commit(
+                    ordered_choice, False, "custom_priority", None
+                ), None
 
         if is_main:
             # Conversa principal prefere locais; se o principal tambem for

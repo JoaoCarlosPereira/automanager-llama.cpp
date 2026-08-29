@@ -134,7 +134,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.28"  # Vision por modelo local e persistência do seletor
+_DASHBOARD_JS_V = "4.2.36"  # Distingue clique isolado de arraste no Proxy
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -341,6 +341,7 @@ async def _proxy_post_with_retry(
             resp = await client.post(url, content=content, headers=headers, timeout=None)
             if (
                 _is_retryable_upstream_status(resp.status_code)
+                and resp.status_code != 413
                 and (resp.status_code != 429 or retry_rate_limits)
                 and attempt < _PROXY_MAX_ATTEMPTS - 1
             ):
@@ -395,6 +396,7 @@ async def _proxy_open_stream_with_retry(
             )
             if (
                 _is_retryable_upstream_status(upstream.status_code)
+                and upstream.status_code != 413
                 and (upstream.status_code != 429 or retry_rate_limits)
                 and attempt < _PROXY_MAX_ATTEMPTS - 1
             ):
@@ -985,7 +987,7 @@ async def _generic_openai_models_for_listing(instances: List[Dict[str, Any]]) ->
         state = next(
             (
                 item for item in runtime_states()
-                if item.get("backend_id") == "platform:generic-openai"
+                if item.get("provider") == "generic-openai" and item.get("active")
             ),
             {},
         )
@@ -1146,11 +1148,17 @@ def _model_catalog_response() -> Dict[str, Any]:
     for item in platform_manager.catalog():
         entry = dict(item)
         provider = entry.get("provider")
-        entry["cliproxy_auth"] = (
-            _ollama_cloud_auth_status()
-            if provider == "ollama-cloud"
-            else auth_status.get(provider or "", {})
-        )
+        if provider == "ollama-cloud":
+            entry["cliproxy_auth"] = _ollama_cloud_auth_status()
+        elif provider == "generic-openai":
+            account_rows = entry.get("accounts") or []
+            entry["cliproxy_auth"] = {
+                "authenticated": bool(account_rows),
+                "accounts": [row.get("label") or row.get("id") for row in account_rows],
+                "account_details": account_rows,
+            }
+        else:
+            entry["cliproxy_auth"] = auth_status.get(provider or "", {})
         platforms.append(entry)
     result["platforms"] = platforms
     return result
@@ -1370,6 +1378,13 @@ def _platform_detail_payload(backend_id: str) -> Dict[str, Any]:
     auth_status = cliproxy_auth_manager.list_status().get(provider, {})
     if provider == "ollama-cloud":
         auth_status = _ollama_cloud_auth_status()
+    elif provider == "generic-openai":
+        account_rows = item.get("accounts") or []
+        auth_status = {
+            "authenticated": bool(account_rows),
+            "accounts": [row.get("label") or row.get("id") for row in account_rows],
+            "account_details": account_rows,
+        }
     platform_configs = config_manager.get_platform_configs()
     p_cfg = platform_configs.get(backend_id, {})
     sidecar = {} if provider == "ollama-cloud" else cliproxy_sidecar.status()
@@ -1421,6 +1436,22 @@ async def get_platform_detail(
         payload["available_models"] = [
             merge_platform_model_metadata(model, provider, platform_catalog)
             for model in cloud_models
+        ]
+        payload["cursor_model_ids"] = [
+            platform_model_listing_entry(model, provider=provider)["id"]
+            for model in payload["available_models"]
+        ]
+    elif provider == "generic-openai" and payload.get("account_id"):
+        await generic_openai_manager.refresh_catalog()
+        generic_models = generic_openai_catalog.get_models_for_account(payload["account_id"])
+        platform_catalog = await _fetch_platform_model_catalog()
+        payload["available_models"] = [
+            merge_platform_model_metadata({
+                "id": model.id,
+                "context_length": model.context_length,
+                "max_completion_tokens": model.output_token_limit,
+            }, provider, platform_catalog)
+            for model in generic_models
         ]
         payload["cursor_model_ids"] = [
             platform_model_listing_entry(model, provider=provider)["id"]
@@ -2989,6 +3020,7 @@ async def _smart_proxy_forward(
         headers.pop("host", None)
         headers.pop("content-length", None)
         cloud_account = None
+        generic_account = None
         if decision.provider == "ollama-cloud":
             account_id = str(decision.backend_id or "").rsplit(":", 1)[-1]
             cloud_account = next(
@@ -3012,6 +3044,32 @@ async def _smart_proxy_forward(
                 )
             headers["authorization"] = f"Bearer {cloud_account.api_key}"
             target_url = f"https://ollama.com/v1/{path}"
+        elif decision.provider == "generic-openai":
+            account_id = str(decision.backend_id or "").rsplit(":", 1)[-1]
+            generic_account = next(
+                (
+                    account for account in generic_openai_manager.get_accounts()
+                    if account.id == account_id
+                ),
+                None,
+            )
+            if generic_account is None:
+                await proxy_router.release(
+                    decision.backend_id, affinity_key=decision.affinity_key
+                )
+                return JSONResponse(
+                    ProxyError(
+                        502,
+                        "Conta OpenAI genérica selecionada não está disponível",
+                        code="backend_unreachable",
+                    ).payload(),
+                    status_code=502,
+                )
+            if generic_account.api_key:
+                headers["authorization"] = f"Bearer {generic_account.api_key}"
+            target_url = (
+                f"{generic_account.base_url.rstrip('/')}/{path.lstrip('/')}"
+            )
         else:
             target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
         backend_label = (
@@ -3398,7 +3456,7 @@ async def openai_proxy(
         generic_state = next(
             (
                 item for item in runtime_states()
-                if item.get("backend_id") == "platform:generic-openai"
+                if item.get("provider") == "generic-openai" and item.get("active")
             ),
             {},
         )
@@ -3411,16 +3469,6 @@ async def openai_proxy(
         )
     if generic_state.get("active") and not generic_openai_catalog.all_models:
         await generic_openai_manager.refresh_catalog()
-    generic_model_requested = _generic_openai_requested(
-        str(requested_model) if requested_model else None
-    )
-    if generic_model_requested:
-        return await _forward_generic_openai(
-            request,
-            path,
-            data,
-            str(requested_model),
-        )
     if has_ollama_cloud:
         # Register bare provider IDs before model aliases and routing are
         # resolved (e.g. ``gemma4:31b`` must select Ollama Cloud, not Codex).
@@ -3574,12 +3622,34 @@ async def openai_proxy(
                     token_budget.required_context,
                 )
 
-    target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
     headers = dict(request.headers)
     headers.pop("host", None)
     # O corpo pode ter sido re-serializado (alias/forward_model); o
     # content-length original do cliente fica inválido — httpx recalcula.
     headers.pop("content-length", None)
+    if target_instance.get("provider") == "generic-openai":
+        account_id = str(target_instance.get("account_id") or "")
+        generic_account = next(
+            (
+                account for account in generic_openai_manager.get_accounts()
+                if account.id == account_id
+            ),
+            None,
+        )
+        if generic_account is None:
+            return JSONResponse(
+                ProxyError(
+                    502,
+                    "Conta OpenAI genérica selecionada não está disponível",
+                    code="backend_unreachable",
+                ).payload(),
+                status_code=502,
+            )
+        if generic_account.api_key:
+            headers["authorization"] = f"Bearer {generic_account.api_key}"
+        target_url = f"{generic_account.base_url.rstrip('/')}/{path.lstrip('/')}"
+    else:
+        target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
 
     backend_label = (
         f"platform:{target_instance.get('provider') or target_instance.get('port')}"
@@ -4443,7 +4513,7 @@ def _build_html(
 
                             <div>
                                 <label for="generic-openai-baseurl" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">URL Base</label>
-                                <input type="url" id="generic-openai-baseurl" required placeholder="https://api.openai.com/v1" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
+                                <input type="url" id="generic-openai-baseurl" placeholder="https://api.openai.com/v1" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
                                 <p class="text-[10px] text-slate-500 mt-1">Vazio para usar o padrão da OpenAI.</p>
                             </div>
 
@@ -4698,6 +4768,7 @@ def _build_html(
         {mtp_import_modal}
     {version_update_modal}
     {cliproxy_auth_modal}
+    {generic_openai_auth_modal}
     <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <!-- SIDEBAR (MENU RETRATIL) -->

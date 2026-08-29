@@ -359,4 +359,4 @@ async def test_request_subsequente_menor_retorna_ao_principal(router):
 
     # Retorna ao principal (8085) imediatamente
     assert decision.backend_port == 8085
-    assert decision.reason == "sticky_return_primary"
+    assert decision.reason == "requested_model_available"

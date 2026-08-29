@@ -186,7 +186,7 @@ const PLATFORM_STATUS_LABELS = {
 
 function platformAuthSummary(platform) {
     const auth = platform.cliproxy_auth || {};
-    if (platform.provider === 'generic-openai') {
+    if (platform.provider === 'generic-openai' && !platform.account_id) {
         const count = (auth.accounts || []).length;
         return count > 0 ? `Autenticado (${count} contas)` : 'Nao configurado';
     }
@@ -1776,6 +1776,9 @@ function patchModelListItems(models, cfg) {
 
 function buildPlatformCardHtml(rawPlatform, cfg) {
     const platform = platformDisplayState(rawPlatform);
+    if (platform.provider === 'generic-openai' && !platform.account_id) {
+        return buildGenericOpenAICardsHtml(platform);
+    }
     const backendId = platform.backend_id;
     const safeBackendId = jsString(backendId);
     const status = platform.status || (platform.detected ? 'detected' : 'missing');
@@ -1845,6 +1848,26 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                     </label>
                 </div>
             </div>`;
+}
+
+function buildGenericOpenAICardsHtml(platform) {
+    const creatorCard = `
+        <div class="model-item-container platform-card group p-3 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 transition-all cursor-pointer hover:bg-amber-500/10"
+             data-generic-openai-creator="true"
+             title="Cadastrar uma API compatível com OpenAI"
+             onclick="manageGenericOpenAIAuth('platform:generic-openai', 'Cadastrar API Genérica')">
+            <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                    <p class="model-name text-ui-body font-bold text-slate-100 truncate">Cadastrar API Genérica</p>
+                    <p class="text-ui-label text-slate-400 mt-0.5">Adicione um endpoint compatível com OpenAI</p>
+                </div>
+                <span class="w-9 h-9 shrink-0 rounded-lg bg-amber-500/15 text-amber-300 flex items-center justify-center">
+                    <i class="fas fa-plus"></i>
+                </span>
+            </div>
+        </div>`;
+
+    return creatorCard;
 }
 
 function buildModelListHtml(models, cfg, platforms = []) {
@@ -1918,7 +1941,12 @@ function buildModelListHtml(models, cfg, platforms = []) {
                 </div>
             </div>`;
     }).join('');
-    const platformHtml = (platforms || []).map(p => buildPlatformCardHtml(p, cfg)).join('');
+    const orderedPlatforms = [...(platforms || [])].sort((a, b) => {
+        const aIsGenericCreator = a.provider === 'generic-openai' && !a.account_id;
+        const bIsGenericCreator = b.provider === 'generic-openai' && !b.account_id;
+        return Number(aIsGenericCreator) - Number(bIsGenericCreator);
+    });
+    const platformHtml = orderedPlatforms.map(p => buildPlatformCardHtml(p, cfg)).join('');
     return localHtml + platformHtml;
 }
 
@@ -2892,6 +2920,11 @@ export async function manageGenericOpenAIAuth(backendId, displayName) {
 
 window.manageGenericOpenAIAuth = manageGenericOpenAIAuth;
 
+window.manageGenericOpenAIAccount = async function(id, name, baseUrl) {
+    await manageGenericOpenAIAuth('platform:generic-openai', name || 'API Genérica');
+    editGenericOpenAIAccount(id, name, baseUrl);
+};
+
 export function closeGenericOpenAIAuthModal() {
     const modal = document.getElementById('generic-openai-auth-modal');
     if (modal) {
@@ -2968,7 +3001,7 @@ async function loadGenericOpenAIAccounts() {
 window.showGenericOpenAIForm = function() {
     document.getElementById('generic-openai-id').value = '';
     document.getElementById('generic-openai-name').value = '';
-    document.getElementById('generic-openai-baseurl').value = '';
+    document.getElementById('generic-openai-baseurl').value = 'https://api.openai.com/v1';
     document.getElementById('generic-openai-apikey').value = '';
     document.getElementById('generic-openai-apikey').required = true;
     document.getElementById('generic-openai-apikey-hint').classList.add('hidden');
@@ -3006,7 +3039,7 @@ window.saveGenericOpenAIAccount = async function(event) {
 
     const payload = {
         name: name,
-        base_url: baseUrl.trim()
+        base_url: baseUrl.trim() || 'https://api.openai.com/v1'
     };
 
     if (apiKey) {
@@ -3078,7 +3111,7 @@ window.validateGenericOpenAIAccount = async function(id) {
             throw new Error(err.detail || `Erro HTTP ${resp.status}`);
         }
         const data = await resp.json();
-        if (data.status === 'ok' || data.is_valid) {
+        if (data.valid === true) {
             showToast('Conta validada com sucesso! Conexão estabelecida.', 'success');
         } else {
             showToast(`Falha ao validar conta: ${data.message || 'Erro desconhecido'}`, 'error');

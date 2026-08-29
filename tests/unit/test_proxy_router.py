@@ -509,6 +509,23 @@ class TestSelection:
         )
 
     @pytest.mark.asyncio
+    async def test_custom_priority_overrides_primary_for_new_session(
+        self, router, proxy_config
+    ):
+        aux1_id = f"local:{normalize_model_path(AUX1_PATH)}"
+        main_id = f"local:{normalize_model_path(MAIN_PATH)}"
+        proxy_config.update_smart_proxy_settings(
+            {"custom_priority": [aux1_id, main_id]}
+        )
+
+        snapshot = router.backends_snapshot()
+        decision = await resolve(router, body=body_with())
+
+        assert [backend["port"] for backend in snapshot[:2]] == [8087, 8085]
+        assert decision.backend_port == 8087
+        assert decision.reason == "custom_priority"
+
+    @pytest.mark.asyncio
     async def test_sticky_hit_ignores_load(self, router):
         d1 = await resolve(router, body=body_with(tag="sql-reviewer"))
         await router.release(d1.backend_port)

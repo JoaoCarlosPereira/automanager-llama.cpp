@@ -186,6 +186,25 @@ async def test_direct_ollama_stream_429_is_not_retried_on_same_account(monkeypat
     send.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_stream_413_is_logged_and_failed_over_without_same_backend_retry(monkeypatch):
+    response = _sse_upstream([b'{"error":"context too large"}'], status=413)
+    send = AsyncMock(return_value=response)
+    monkeypatch.setattr(llama_manager.client, "send", send)
+
+    result, iterator = await llama_manager._proxy_open_stream_with_retry(
+        "https://api.groq.com/openai/v1/chat/completions",
+        content=b"{}",
+        headers={},
+        backend_label="platform:generic-openai",
+        retry_rate_limits=False,
+    )
+
+    assert result.status_code == 413
+    assert iterator is None
+    send.assert_awaited_once()
+
+
 def chat_body(tag=None, user="Oi", model="main.gguf", stream=False):
     system = f"[AGENT:{tag}] Voce ajuda." if tag else "Voce ajuda."
     body = {

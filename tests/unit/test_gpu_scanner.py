@@ -345,6 +345,7 @@ class TestModelScannerScan:
         assert result == {
             "models": [],
             "projectors": [],
+            "mtp_models": [],
             "storage": get_repository_storage(str(tmp_path)),
         }
 

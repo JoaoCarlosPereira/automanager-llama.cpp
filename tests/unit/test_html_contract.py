@@ -304,6 +304,33 @@ def test_static_js_contains_platform_card_contract():
     assert "setProxyEligible(this, null, '${safeBackendId}')" in js
 
 
+def test_generic_openai_form_uses_default_url_and_validation_contract(html):
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    with open(os.path.join(root, "static", "js", "models.js"), encoding="utf-8") as f:
+        js = f.read()
+
+    base_url_input = html.split('id="generic-openai-baseurl"', 1)[1].split(">", 1)[0]
+    assert " required" not in base_url_input
+    assert "baseUrl.trim() || 'https://api.openai.com/v1'" in js
+    assert "data.valid === true" in js
+    assert "buildGenericOpenAICardsHtml(platform)" in js
+    assert 'data-generic-openai-creator="true"' in js
+    assert "platform.provider === 'generic-openai' && !platform.account_id" in js
+    assert "Number(aIsGenericCreator) - Number(bIsGenericCreator)" in js
+    assert "manageGenericOpenAIAccount" in js
+
+
+def test_generic_openai_uses_shared_platform_routing_and_failover():
+    root = os.path.join(os.path.dirname(__file__), "..", "..")
+    with open(os.path.join(root, "llama_manager.py"), encoding="utf-8") as f:
+        source = f.read()
+
+    assert 'elif decision.provider == "generic-openai":' in source
+    assert "generic_account.base_url.rstrip('/')" in source
+    openai_proxy = source.split("async def openai_proxy(", 1)[1]
+    assert "return await _forward_generic_openai(" not in openai_proxy
+
+
 def test_static_proxy_controls_send_backend_id_payloads():
     root = os.path.join(os.path.dirname(__file__), "..", "..")
     with open(os.path.join(root, "static", "js", "proxy.js"), encoding="utf-8") as f:
@@ -312,7 +339,12 @@ def test_static_proxy_controls_send_backend_id_payloads():
     assert "backend_id: backendId" in js
     assert "updateBackendConfigCache(path, backendId" in js
     assert "startup_latency_ms" in js
-    assert "Prioridade #" in js
+    assert "Prioridade de roteamento" in js
+    assert "window.selectPlatform?.(backendId)" in js
+    assert "window.selectModel?.(modelPath, '')" in js
+    assert "data-model-path" in js
+    assert "distance > 5" in js
+    assert "pointerMoved || priorityDragActive" in js
 
 
 def test_html_contains_proxy_monitor_panel(html):

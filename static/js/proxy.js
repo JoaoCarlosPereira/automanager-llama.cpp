@@ -7,6 +7,8 @@ import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.3';
 const POLL_EVERY_TICKS = 3;
 let tick = 0;
 let updating = false;
+let priorityDragActive = false;
+let prioritySavePending = false;
 
 function esc(value) {
     return String(value ?? '')
@@ -196,7 +198,7 @@ function renderOff() {
     if (body) body.classList.add('hidden');
 }
 
-function backendCard(backend) {
+function backendCard(backend, index) {
     // Rate-limited platform backends: show "ESGOTADO" regardless of state
     let state = backend.state;
     if (backend.backend_type === 'platform' && backend.is_rate_limited) {
@@ -212,14 +214,17 @@ function backendCard(backend) {
     const latencyLabel = measured
         ? `${latency >= 1000 ? `${(latency / 1000).toFixed(2)} s` : `${Math.round(latency)} ms`}`
         : 'medição pendente';
-    const priorityLabel = backend.role === 'primary'
-        ? 'Prioridade principal'
-        : (backend.speed_rank ? `Prioridade #${backend.speed_rank}` : 'Sem ranking');
+    const priorityRank = index + 1;
     const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
+    const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
     return `
-    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-grab active:cursor-grabbing" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}>
+    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath} title="Clique para abrir a aba · Arraste para alterar a prioridade">
         <div class="flex items-center justify-between gap-2">
-            <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="proxy-priority-rank shrink-0 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-violet-500/15 border border-violet-500/40 text-violet-300 text-sm font-black" title="Prioridade de roteamento">${priorityRank}º</span>
+                <i class="fas fa-grip-vertical text-slate-600" aria-hidden="true"></i>
+                <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
+            </div>
             <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[state] || backend.state)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
@@ -231,7 +236,7 @@ function backendCard(backend) {
             <span class="font-mono">ctx/slot ${esc(backend.ctx_per_slot)}</span>
         </div>
         <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${esc(priorityLabel)}</span>
+            <span class="proxy-priority-label">Prioridade de roteamento: ${priorityRank}º</span>
             <span class="font-mono">startup ${esc(latencyLabel)}</span>
         </div>
     </div>`;
@@ -270,47 +275,115 @@ function bindDragEvents() {
     if (!list) return;
     const cards = list.querySelectorAll('.proxy-backend-card');
     let draggedItem = null;
+    let orderChanged = false;
+
+    const clearDropStyles = () => {
+        cards.forEach(c => c.classList.remove(
+            'opacity-50', 'ring-2', 'ring-violet-500', 'scale-[1.01]'
+        ));
+    };
+
+    const refreshVisibleRanks = () => {
+        list.querySelectorAll('.proxy-backend-card').forEach((item, index) => {
+            const rank = `${index + 1}º`;
+            const badge = item.querySelector('.proxy-priority-rank');
+            if (badge) badge.textContent = rank;
+            const label = item.querySelector('.proxy-priority-label');
+            if (label) label.textContent = `Prioridade de roteamento: ${rank}`;
+        });
+    };
 
     cards.forEach(card => {
-        card.addEventListener('dragstart', function(e) {
-            draggedItem = this;
-            setTimeout(() => this.classList.add('opacity-50'), 0);
-            e.dataTransfer.effectAllowed = 'move';
+        let pointerStart = null;
+        let pointerMoved = false;
+
+        card.addEventListener('pointerdown', function(e) {
+            if (e.button !== 0) return;
+            pointerStart = { x: e.clientX, y: e.clientY };
+            pointerMoved = false;
         });
 
-        card.addEventListener('dragend', function() {
+        card.addEventListener('pointermove', function(e) {
+            if (!pointerStart) return;
+            const distance = Math.hypot(
+                e.clientX - pointerStart.x,
+                e.clientY - pointerStart.y,
+            );
+            if (distance > 5) {
+                pointerMoved = true;
+                this.dataset.suppressOpen = 'true';
+            }
+        });
+
+        card.addEventListener('pointerup', function() {
+            pointerStart = null;
+            if (pointerMoved) {
+                setTimeout(() => { this.dataset.suppressOpen = 'false'; }, 0);
+            }
+        });
+
+        card.addEventListener('pointercancel', function() {
+            pointerStart = null;
+            pointerMoved = true;
+            this.dataset.suppressOpen = 'true';
+            setTimeout(() => { this.dataset.suppressOpen = 'false'; }, 0);
+        });
+
+        card.addEventListener('click', function() {
+            if (pointerMoved || priorityDragActive || this.dataset.suppressOpen === 'true') return;
+            const backendId = this.dataset.backendId || '';
+            if (this.dataset.backendType === 'platform') {
+                if (backendId) window.selectPlatform?.(backendId);
+                return;
+            }
+            const modelPath = this.dataset.modelPath || '';
+            if (modelPath) window.selectModel?.(modelPath, '');
+        });
+
+        card.addEventListener('dragstart', function(e) {
+            draggedItem = this;
+            orderChanged = false;
+            priorityDragActive = true;
+            this.dataset.suppressOpen = 'true';
+            setTimeout(() => this.classList.add('opacity-50'), 0);
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.dataset.backendId || 'backend');
+        });
+
+        card.addEventListener('dragend', async function() {
+            const shouldSave = orderChanged;
             draggedItem = null;
-            this.classList.remove('opacity-50');
-            cards.forEach(c => c.classList.remove('border-t-2', 'border-violet-500'));
+            priorityDragActive = false;
+            clearDropStyles();
+            if (shouldSave) await savePriorityOrder();
+            setTimeout(() => {
+                this.dataset.suppressOpen = 'false';
+                pointerMoved = false;
+            }, 0);
         });
 
         card.addEventListener('dragover', function(e) {
             e.preventDefault();
             if (this !== draggedItem) {
-                this.classList.add('border-t-2', 'border-violet-500');
+                this.classList.add('ring-2', 'ring-violet-500', 'scale-[1.01]');
+                const rect = this.getBoundingClientRect();
+                const horizontal = rect.width > rect.height;
+                const after = horizontal
+                    ? e.clientX > rect.left + rect.width / 2
+                    : e.clientY > rect.top + rect.height / 2;
+                list.insertBefore(draggedItem, after ? this.nextSibling : this);
+                orderChanged = true;
+                refreshVisibleRanks();
             }
         });
 
         card.addEventListener('dragleave', function() {
-            this.classList.remove('border-t-2', 'border-violet-500');
+            this.classList.remove('ring-2', 'ring-violet-500', 'scale-[1.01]');
         });
 
-        card.addEventListener('drop', async function(e) {
+        card.addEventListener('drop', function(e) {
             e.preventDefault();
-            this.classList.remove('border-t-2', 'border-violet-500');
-            if (this !== draggedItem) {
-                const allCards = [...list.querySelectorAll('.proxy-backend-card')];
-                const fromIndex = allCards.indexOf(draggedItem);
-                const toIndex = allCards.indexOf(this);
-                
-                if (fromIndex < toIndex) {
-                    this.parentNode.insertBefore(draggedItem, this.nextSibling);
-                } else {
-                    this.parentNode.insertBefore(draggedItem, this);
-                }
-                
-                await savePriorityOrder();
-            }
+            this.classList.remove('ring-2', 'ring-violet-500', 'scale-[1.01]');
         });
     });
 }
@@ -326,19 +399,28 @@ async function savePriorityOrder() {
         return [c.dataset.backendId || c.dataset.proxyBackend];
     }).filter(Boolean);
     
+    prioritySavePending = true;
+    let saved = false;
     try {
         const res = await apiFetch('/proxy/config', {
             method: 'POST',
+            headers: jsonHeaders(),
             body: JSON.stringify({ custom_priority })
         });
         if (res.ok) {
             showToast('Prioridade atualizada', 'success');
+            tick = 0;
+            saved = true;
         } else {
-            showToast('Falha ao atualizar prioridade', 'error');
+            const detail = await res.json().catch(() => ({}));
+            throw new Error(detail.detail || `HTTP ${res.status}`);
         }
     } catch (e) {
         showToast('Erro ao atualizar prioridade', 'error');
+    } finally {
+        prioritySavePending = false;
     }
+    if (!saved) updateProxyPanel(true);
 }
 
 function bindSessionActions() {
@@ -420,7 +502,7 @@ function render(status, sessions) {
     const backendsEl = document.getElementById('proxy-backends-list');
     if (backendsEl) {
         const grouped = groupBackends(status.backends);
-        backendsEl.innerHTML = grouped.map(backendCard).join('')
+        backendsEl.innerHTML = grouped.map((backend, index) => backendCard(backend, index)).join('')
             || '<p class="text-ui-label text-slate-600">Nenhuma instância online.</p>';
     }
     const countEl = document.getElementById('proxy-sessions-count');
@@ -439,8 +521,8 @@ function render(status, sessions) {
         sessionsEl.innerHTML = sessions.map(sessionRow).join('')
             || '<p class="text-ui-label text-slate-600">Nenhuma sessão ativa.</p>';
         bindSessionActions();
-        bindDragEvents();
     }
+    bindDragEvents();
 }
 
 
@@ -505,6 +587,7 @@ export async function updateProxyPanel(force = false) {
         renderOff();
         return;
     }
+    if (priorityDragActive || prioritySavePending) return;
     if (!force && (tick++ % POLL_EVERY_TICKS) !== 0) return;
     if (updating) return;
     updating = true;
@@ -553,4 +636,3 @@ export async function toggleOptimizerEnabled(checkbox) {
         showToast('Falha ao alternar Context Optimizer', 'error');
     }
 }
-

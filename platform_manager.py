@@ -817,10 +817,35 @@ class PlatformIntegrationManager:
 
     def catalog(self) -> list[dict]:
         platform_configs = self._config.get_platform_configs()
-        return [
+        entries = [
             self._catalog_entry(definition, platform_configs.get(definition.backend_id, {}))
             for definition in self._definitions
         ]
+        if self._generic_openai_account_manager is not None:
+            for account in self._generic_openai_account_manager.get_accounts():
+                backend_id = f"platform:generic-openai:{account.id}"
+                account_config = platform_configs.get(backend_id, {})
+                entries.append({
+                    "backend_id": backend_id,
+                    "backend_type": "platform",
+                    "provider": "generic-openai",
+                    "name": account.name,
+                    "display_name": account.name,
+                    "detected": True,
+                    "has_cli": False,
+                    "status": account.status,
+                    "reason": None,
+                    "account_id": account.id,
+                    "base_url": account.base_url,
+                    "accounts": [{"id": account.id, "label": account.name,
+                                  "base_url": account.base_url, "status": account.status}],
+                    "account_count": 1,
+                    "proxy_eligible": bool(account_config.get("proxy_eligible", False)),
+                    "vision_enabled": bool(account_config.get("vision_enabled", True)),
+                    "max_parallel_requests": int(account_config.get("max_parallel_requests", 1) or 1),
+                    "auto_start": bool(account_config.get("auto_start", False)),
+                })
+        return entries
 
     def get(self, backend_id: str) -> Optional[dict]:
         for item in self.catalog():
@@ -863,14 +888,23 @@ class PlatformIntegrationManager:
         for state in self.runtime_states():
             if not state.get("active") or state.get("status") != "running":
                 continue
+            port = state.get("sidecar_port")
+            if port is None and state.get("provider") == "generic-openai":
+                # Direct HTTP backends have no listening localhost port.  The
+                # proxy still needs a stable numeric identity for sessions,
+                # counters and its administrative cards.
+                digest = hashlib.sha256(state["backend_id"].encode("utf-8")).digest()
+                port = -(int.from_bytes(digest[:4], "big") % (10**9)) - 1
             instances.append({
-                "port": state.get("sidecar_port"),
+                "port": port,
                 "status": "running",
                 "model": state.get("display_name") or state.get("name"),
                 "model_path": None,
                 "backend_id": state["backend_id"],
                 "backend_type": "platform",
                 "provider": state.get("provider"),
+                "account_id": state.get("account_id"),
+                "base_url": state.get("base_url"),
                 "start_time": state.get("start_time"),
                 "config": {
                     "backend_id": state["backend_id"],
@@ -886,6 +920,8 @@ class PlatformIntegrationManager:
 
     def _is_non_cli_backend(self, backend_id: str) -> bool:
         """Return True if *backend_id* belongs to a non-CLI platform."""
+        if backend_id.startswith("platform:generic-openai:"):
+            return True
         for bid in self._non_cli_defs:
             if bid == backend_id:
                 return True
@@ -929,8 +965,11 @@ class PlatformIntegrationManager:
 
     def _start_non_cli_backend(self, backend_id: str, item: dict) -> dict:
         """Start a non-CLI platform by validating connection via AccountManager."""
-        if backend_id == "platform:generic-openai" and self._generic_openai_account_manager is not None:
+        if backend_id.startswith("platform:generic-openai") and self._generic_openai_account_manager is not None:
             accounts = self._generic_openai_account_manager.get_accounts()
+            account_id = item.get("account_id")
+            if account_id:
+                accounts = [account for account in accounts if account.id == account_id]
             if not accounts:
                 self._set_runtime_error(backend_id, "error", "No accounts configured")
                 raise PlatformIntegrationError(502, "Generic OpenAI connection validation failed")
@@ -1091,6 +1130,7 @@ class PlatformIntegrationManager:
                 acc_info = {
                     "id": acc.id,
                     "label": acc.name,
+                    "base_url": acc.base_url,
                     "status": acc.status,
                 }
                 if acc.cooldown_until:

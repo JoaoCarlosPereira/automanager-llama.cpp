@@ -9,6 +9,7 @@ from platform_generic_openai import (
     GenericOpenAIAccountManager,
 )
 from config_manager import ConfigManager
+from platform_manager import PlatformIntegrationManager
 
 @pytest.fixture
 def tmp_config_manager(tmp_path):
@@ -24,6 +25,51 @@ def test_account_dataclass():
     assert acc.completions_url == "http://localhost:8000/v1/chat/completions"
     assert acc.models_url == "http://localhost:8000/v1/models"
     assert acc.status == "available"
+
+
+def test_each_account_is_exposed_as_a_platform_backend(tmp_config_manager):
+    catalog = GenericOpenAICatalog()
+    account_manager = GenericOpenAIAccountManager(tmp_config_manager, catalog)
+    account = account_manager.add_account(
+        "Minha API", "https://example.test/v1", "sk-test"
+    )
+    platforms = PlatformIntegrationManager(
+        tmp_config_manager,
+        executable_resolver=lambda _command: None,
+        generic_openai_account_manager=account_manager,
+        generic_openai_catalog=catalog,
+    )
+
+    backend = platforms.get(f"platform:generic-openai:{account.id}")
+
+    assert backend is not None
+    assert backend["display_name"] == "Minha API"
+    assert backend["account_id"] == account.id
+    assert backend["base_url"] == "https://example.test/v1"
+    assert backend["provider"] == "generic-openai"
+
+
+def test_running_account_has_stable_virtual_port_for_proxy(tmp_config_manager):
+    catalog = GenericOpenAICatalog()
+    account_manager = GenericOpenAIAccountManager(tmp_config_manager, catalog)
+    account = account_manager.add_account(
+        "Minha API", "https://example.test/v1", "sk-test"
+    )
+    platforms = PlatformIntegrationManager(
+        tmp_config_manager,
+        executable_resolver=lambda _command: None,
+        generic_openai_account_manager=account_manager,
+        generic_openai_catalog=catalog,
+    )
+    backend_id = f"platform:generic-openai:{account.id}"
+    platforms._runtime[backend_id] = {"active": True, "status": "running"}
+
+    first = next(i for i in platforms.active_instances() if i["backend_id"] == backend_id)
+    second = next(i for i in platforms.active_instances() if i["backend_id"] == backend_id)
+
+    assert first["port"] < 0
+    assert first["port"] == second["port"]
+    assert first["backend_type"] == "platform"
 
 @pytest.mark.asyncio
 async def test_account_manager_crud(tmp_config_manager):
