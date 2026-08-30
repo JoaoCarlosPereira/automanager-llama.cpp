@@ -716,6 +716,29 @@ def _requested_primary_instance(
         None,
     )
 
+
+def _instance_is_proxy_eligible(instance: Dict[str, Any]) -> bool:
+    """Indica se um backend explicitamente pedido participa do Smart Proxy."""
+    if instance.get("backend_type") == "platform" or str(
+        instance.get("backend_id") or ""
+    ).startswith("platform:"):
+        backend_id = str(
+            instance.get("backend_id")
+            or f"platform:{instance.get('provider') or ''}"
+        )
+        if instance.get("provider") == "ollama-cloud":
+            backend_id = "platform:ollama-cloud"
+        return bool(
+            config_manager.get_platform_settings(backend_id).get(
+                "proxy_eligible", False
+            )
+        )
+
+    settings = config_manager.get_model_settings(
+        str(instance.get("model_path") or "")
+    )
+    return bool(settings.get("proxy_eligible", True))
+
 config_manager = ConfigManager()
 log_manager = LogManager()
 gpu_manager = GPUManager()
@@ -3531,25 +3554,27 @@ async def openai_proxy(
 
     if proxy_enabled and request.method == "POST" and requested_model:
         alias_requested = external_model_name is not None
-        # O Smart Proxy atua sobre o modelo principal exposto, aliases,
-        # plataformas e modelos locais explicitamente requisitados. Nesse
-        # ultimo caso, o modelo pedido vira o primary da requisicao: ele e
-        # tentado primeiro e so transborda em ocupado/erro.
+        # Um backend fora do proxy deve permanecer uma rota direta em toda a
+        # cadeia (inclusive subagentes), sem overflow por ocupacao ou erro.
+        # Apenas modelos elegiveis entram na politica do Smart Proxy.
         configured_primary = _find_primary_instance(instances, proxy_settings)
         requested_instance = _requested_primary_instance(
             instances, str(requested_model)
         )
+        requested_outside_proxy = (
+            requested_instance is not None
+            and not _instance_is_proxy_eligible(requested_instance)
+        )
         requested_provider = platform_provider_for_listing(str(requested_model))
         if (
-            (
-                requested_provider == "ollama-cloud"
-                and has_ollama_cloud
-            )
-            or
-            alias_requested
-            or requested_instance is not None
-            or _is_primary_model_request(
-                str(requested_model), proxy_settings, configured_primary, instances
+            not requested_outside_proxy
+            and (
+                (requested_provider == "ollama-cloud" and has_ollama_cloud)
+                or alias_requested
+                or requested_instance is not None
+                or _is_primary_model_request(
+                    str(requested_model), proxy_settings, configured_primary, instances
+                )
             )
         ):
             return await _smart_proxy_forward(

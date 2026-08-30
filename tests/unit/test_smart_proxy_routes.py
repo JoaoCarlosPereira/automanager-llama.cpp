@@ -483,6 +483,38 @@ class TestSmartRouting:
         )
         assert response.headers["x-automanager-backend"] in ("8085", "8087")
 
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_model_outside_proxy_keeps_subrequests_on_requested_backend_when_busy(
+        self, mock_post, smart_env
+    ):
+        import asyncio
+
+        smart_env.cfg.update_model_settings(
+            AUX0_PATH, {"proxy_eligible": False}
+        )
+        asyncio.run(smart_env.router.acquire(8086))
+        try:
+            mock_post.return_value = _mock_response(
+                {"id": "x", "model": "aux0.gguf"}
+            )
+            main = client.post(
+                "/v1/chat/completions", json=chat_body(model="aux0.gguf")
+            )
+            subrequest = client.post(
+                "/v1/chat/completions",
+                json=chat_body(model="aux0.gguf", tag="sql-reviewer"),
+            )
+        finally:
+            asyncio.run(smart_env.router.release(8086))
+
+        assert main.status_code == 200
+        assert subrequest.status_code == 200
+        assert [call.args[0] for call in mock_post.call_args_list] == [
+            "http://127.0.0.1:8086/v1/chat/completions",
+            "http://127.0.0.1:8086/v1/chat/completions",
+        ]
+        assert smart_env.router._sessions == {}
+
     @patch("llama_manager.asyncio.sleep", new_callable=AsyncMock)
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_requested_local_model_fails_over_after_error(
