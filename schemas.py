@@ -60,6 +60,7 @@ class GPUWeight(BaseModel):
 
 class StartRequest(BaseModel):
     path: str
+    card_id: Optional[str] = None
     mmproj_path: Optional[str] = None
     gpu_weights: List[GPUWeight]
     context_size: int = DEFAULT_CONTEXT_SIZE
@@ -93,6 +94,12 @@ class StartRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     path: str
+    card_id: Optional[str] = None
+
+
+class DuplicateModelCardRequest(BaseModel):
+    path: str
+    card_id: Optional[str] = None
 
 
 class DownloadRequest(BaseModel):
@@ -114,6 +121,7 @@ class SetMmprojRequest(BaseModel):
     model_path: str
     mmproj_path: Optional[str] = None
     user_initiated: bool = False
+    card_id: Optional[str] = None
 
 
 class SetMtpModelRequest(BaseModel):
@@ -121,6 +129,7 @@ class SetMtpModelRequest(BaseModel):
 
     model_path: str
     mtp_model_path: Optional[str] = None
+    card_id: Optional[str] = None
 
 
 class SetThinkingRequest(BaseModel):
@@ -128,6 +137,7 @@ class SetThinkingRequest(BaseModel):
 
     model_path: str
     thinking_enabled: bool
+    card_id: Optional[str] = None
 
 
 class SetLlamaBinRequest(BaseModel):
@@ -138,11 +148,13 @@ class SetLlamaBinRequest(BaseModel):
     cache_type_k: Optional[str] = None
     cache_type_v: Optional[str] = None
     turboquant_preset: Optional[str] = None
+    card_id: Optional[str] = None
 
 
 class SetDefaultRequest(BaseModel):
     path: Optional[str] = None
     add: bool = True
+    card_id: Optional[str] = None
 
 
 class TokenizerReference(BaseModel):
@@ -183,12 +195,14 @@ class SetModelProxyRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_path: Optional[str] = None
+    card_id: Optional[str] = None
     backend_id: Optional[str] = None
     proxy_eligible: Optional[bool] = None
     vision_enabled: Optional[bool] = None
     max_parallel_requests: Optional[int] = Field(default=None, ge=1)
     auto_start: Optional[bool] = None
     default_model: Optional[str] = None
+    fallback_model: Optional[str] = None
 
 
 class RenameRequest(BaseModel):

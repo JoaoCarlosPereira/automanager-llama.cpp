@@ -6,8 +6,8 @@ import {
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
 } from './gpu.js?v=4.2.3';
-import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.26';
-import { updateProxyPanel } from './proxy.js?v=4.2.22';
+import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.41';
+import { updateProxyPanel } from './proxy.js?v=4.2.41';
 
 export async function updateStatus() {
     try {
@@ -51,7 +51,7 @@ export async function updateStatus() {
         state.activeTabs.forEach(tab => {
             if (tab.kind === 'platform') return;
             const path = tab.path;
-            const inst = state.activeInstances.find(i => (i.model_path || '').replace(/\\/g, '/') === path);
+            const inst = findInstanceForTab(tab);
             const tabEl = document.getElementById(tab.id);
             if (!tabEl) return;
 
@@ -212,6 +212,21 @@ export async function updateStatus() {
 
 function normalizePath(p) {
     return (p || '').replace(/\\/g, '/');
+}
+
+function findInstanceForTab(tab) {
+    if (!tab) return null;
+    if (tab.cardId) {
+        const exact = state.activeInstances.find(i => i.card_id === tab.cardId);
+        if (exact) return exact;
+        const catalogCard = (state.lastModelsList || []).find(model => model.card_id === tab.cardId);
+        // A legacy process has no card_id. It may represent only the physical
+        // card, never one of its logical clones.
+        if (catalogCard?.is_clone) return null;
+    }
+    return state.activeInstances.find(
+        i => !i.card_id && normalizePath(i.model_path) === normalizePath(tab.path)
+    ) || null;
 }
 
 function findRecoveryTab(recovery) {
@@ -394,10 +409,8 @@ export function attachTabLogs(tabId, portOverride = null, { force = false, sessi
     if (backendId) {
         inst = state.activeInstances.find(i => i.backend_id === backendId);
     } else {
-        const path = normalizePath(tab.dataset.path);
-        inst = state.activeInstances.find(
-            i => normalizePath(i.model_path) === path
-        );
+        const stateTab = state.activeTabs.find(item => item.id === tabId);
+        inst = findInstanceForTab(stateTab);
     }
 
     let port = portOverride ?? inst?.port;

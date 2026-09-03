@@ -1791,7 +1791,10 @@ class AutoBalanceProber:
         )
         weights_mb = est["weights_mb"]
         kv_mb = est["kv_cache_mb"]
-        total_used = weights_mb + kv_mb
+        draft_mb = 0
+        if request.mtp_enabled and request.mtp_model_path:
+            draft_mb = self.planner.model_weights_mb_from_disk(request.mtp_model_path) or 0
+        total_used = weights_mb + kv_mb + draft_mb
         
         free_mb = total_vram_mb - total_used
         pinned = request.pinned_fields or {}

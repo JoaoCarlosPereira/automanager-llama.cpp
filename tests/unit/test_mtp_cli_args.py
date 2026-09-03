@@ -71,6 +71,32 @@ def test_mtp_cli_args_external_draft_model():
     assert reason == ""
 
 
+def test_mtp_cli_args_external_dflash_model():
+    mgr = MagicMock()
+    mgr.detect_draft_type.return_value = "dflash"
+    flags, applied, reason = mtp_cli_args(
+        True,
+        15,
+        "/models/Muse-Glimmer-30B.gguf",
+        mgr,
+        mtp_model_path="/models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf",
+    )
+    assert flags == [
+        "--spec-draft-model", "/models/dflash-Muse-Glimmer-30B-Q4_K_M.gguf",
+        "--spec-draft-ngl", "all",
+        "--spec-type", "draft-dflash",
+        "--spec-draft-n-max", "15",
+    ]
+    mgr.detect_model_mtp.assert_not_called()
+    assert applied is True
+    assert reason == ""
+
+
+def test_detect_draft_type_from_filename(gpu_mgr):
+    assert gpu_mgr.detect_draft_type("/models/dflash-kquant.gguf") == "dflash"
+    assert gpu_mgr.detect_draft_type("/models/mtp-gemma.gguf") == "mtp"
+
+
 def test_mtp_cli_args_passes_through_draft_tokens():
     mgr = MagicMock()
     mgr.detect_model_mtp.return_value = True

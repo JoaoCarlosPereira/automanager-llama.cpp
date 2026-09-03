@@ -3,6 +3,7 @@
 Segue o padrão de tests/unit/test_multi_model_proxy.py: TestClient(app),
 dependency_overrides para auth e patch do cliente httpx compartilhado.
 """
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1470,6 +1471,116 @@ class TestHybridV1Availability:
         assert json.loads(mock_post.call_args.kwargs["content"])["model"] == (
             "antigravity-default"
         )
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_platform_rate_limit_tries_configured_model_fallback_first(
+        self, mock_post, mock_get, smart_env
+    ):
+        """429 troca o modelo na mesma plataforma antes de abrir o circuito."""
+        llama_manager.clear_platform_listing_registry()
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+        )
+        antigravity["provider"] = "antigravity"
+        antigravity["config"].update({
+            "backend_id": "platform:google-antigravity",
+            "provider": "antigravity",
+        })
+        smart_env.holder["instances"] = [antigravity]
+        smart_env.cfg.update_platform_settings(
+            "platform:google-antigravity",
+            {
+                "proxy_eligible": True,
+                "default_model": "gemini-primary",
+                "fallback_model": "claude-fallback",
+            },
+        )
+        smart_env.cfg.update_smart_proxy_settings(
+            {
+                "enabled": True,
+                "primary_backend_id": "platform:google-antigravity",
+            }
+        )
+        mock_get.return_value = _models_response(
+            ["gemini-primary", "claude-fallback"]
+        )
+        mock_post.side_effect = [
+            _mock_response({"error": "rate_limit"}, status=429),
+            _mock_response({"id": "chatcmpl-1", "model": "claude-fallback"}),
+        ]
+
+        response = client.post(
+            "/v1/chat/completions",
+            json=chat_body(
+                model=platform_model_listing_id(
+                    "gemini-primary", "antigravity"
+                )
+            ),
+        )
+
+        assert response.status_code == 200
+        assert [
+            json.loads(call.kwargs["content"])["model"]
+            for call in mock_post.call_args_list
+        ] == ["gemini-primary", "claude-fallback"]
+        backend = next(
+            item for item in smart_env.router.backends_snapshot()
+            if item["backend_id"] == "platform:google-antigravity"
+        )
+        assert backend["is_rate_limited"] is False
+
+    @patch("llama_manager.client.get", new_callable=AsyncMock)
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_exhausted_platform_queues_on_busy_local_last_resort(
+        self, mock_post, mock_get, smart_env
+    ):
+        """Sem cloud restante, um local ocupado recebe a requisição na fila."""
+        llama_manager.clear_platform_listing_registry()
+        local = make_instance(8085, MAIN_PATH)
+        antigravity = make_platform_instance(
+            port=8317,
+            backend_id="platform:google-antigravity",
+            model="Google Antigravity",
+        )
+        antigravity["provider"] = "antigravity"
+        antigravity["config"].update({
+            "backend_id": "platform:google-antigravity",
+            "provider": "antigravity",
+        })
+        smart_env.holder["instances"] = [local, antigravity]
+        smart_env.cfg.update_platform_settings(
+            "platform:google-antigravity", {"proxy_eligible": True}
+        )
+        smart_env.cfg.update_smart_proxy_settings({
+            "enabled": True,
+            "primary_model_path": None,
+            "primary_backend_id": "platform:google-antigravity",
+        })
+        asyncio.run(smart_env.router.acquire(local["port"]))
+        mock_get.return_value = _models_response(["gemini-primary"])
+        mock_post.side_effect = [
+            _mock_response({"error": "rate_limit"}, status=429),
+            _mock_response({"id": "chatcmpl-local", "model": "local"}),
+        ]
+        try:
+            response = client.post(
+                "/v1/chat/completions",
+                json=chat_body(
+                    model=platform_model_listing_id(
+                        "gemini-primary", "antigravity"
+                    )
+                ),
+            )
+        finally:
+            asyncio.run(smart_env.router.release(local["port"]))
+
+        assert response.status_code == 200
+        assert mock_post.call_count == 2
+        assert response.headers["x-automanager-backend-type"] == "local"
+        assert response.headers["x-automanager-backend"] == "8085"
 
     @patch("llama_manager.client.post", new_callable=AsyncMock)
     def test_oversized_context_is_rejected_before_backend(self, mock_post, smart_env):

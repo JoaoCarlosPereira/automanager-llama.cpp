@@ -1193,6 +1193,9 @@ class ProxyRouter:
             return backend_id
         if self._backend_type(instance) == "platform":
             return f"platform:{instance.get('port')}"
+        card_id = str(instance.get("card_id") or "").strip()
+        if card_id:
+            return f"local-card:{card_id}"
         model_path = instance.get("model_path") or ""
         if model_path:
             return f"local:{normalize_model_path(model_path)}"
@@ -1209,6 +1212,9 @@ class ProxyRouter:
         """Identidade estavel usada pelo ranking entre reinicializacoes."""
         if self._backend_type(instance) == "platform":
             return self._backend_id(instance)
+        card_id = str(instance.get("card_id") or "").strip()
+        if card_id:
+            return f"local-card:{card_id}"
         model_path = instance.get("model_path") or ""
         if model_path:
             return f"local:{normalize_model_path(model_path)}"
@@ -1256,9 +1262,14 @@ class ProxyRouter:
             if not isinstance(max_parallel, int) or max_parallel < 1:
                 max_parallel = DEFAULT_MAX_PARALLEL_REQUESTS
             return bool(eligible), max_parallel
-        return self._model_flags(
-            config.get("model_configs", {}), instance.get("model_path") or ""
-        )
+        card_id = str(instance.get("card_id") or "").strip()
+        if card_id and card_id in config.get("model_card_configs", {}):
+            cfg = config["model_card_configs"][card_id]
+            return (
+                bool(cfg.get("proxy_eligible", True)),
+                max(1, int(cfg.get("max_parallel_requests", 1) or 1)),
+            )
+        return self._model_flags(config.get("model_configs", {}), instance.get("model_path") or "")
 
     def _routing_priority(
         self, instance: Dict[str, Any], primary_backend_id: Optional[str] = None
@@ -1505,6 +1516,7 @@ class ProxyRouter:
                 "port": port,
                 "model": inst.get("model"),
                 "model_path": model_path,
+                "card_id": inst.get("card_id"),
                 "backend_id": backend_id,
                 "backend_type": backend_type,
                 "config_backend_id": self._config_backend_id(inst),
@@ -2844,10 +2856,14 @@ class ProxyRouter:
         # política explícita para novas sessões. Requisições que nomeiam um
         # modelo específico continuam fora desta regra e tentam esse modelo.
         custom_priority = self._settings().get("custom_priority") or []
+        # O campo ``model`` e uma instrucao explicita da requisicao. Mesmo
+        # quando ele aponta para o principal configurado, a ordenacao visual
+        # dos cards nao pode redireciona-lo silenciosamente para outro modelo.
         requested_overrides_configured = bool(
             dynamic_primary
             and (
-                configured_primary is None
+                self._backend_type(primary) == "platform"
+                or configured_primary is None
                 or self._backend_id(primary)
                 != self._backend_id(configured_primary)
             )
@@ -3292,4 +3308,93 @@ class ProxyRouter:
                 backend_id=self._backend_id(chosen),
                 backend_type=self._backend_type(chosen),
                 provider=chosen.get("provider"),
+            )
+
+    async def reassign_to_local_last_resort(
+        self,
+        affinity_key: str,
+        *,
+        prompt_tokens: int = 0,
+        required_context: int = 0,
+        token_count_source: str = "estimated",
+        required_capabilities: Any = None,
+    ) -> Optional[RouteDecision]:
+        """Enfileira no melhor local saudável quando o failover se esgota.
+
+        Este caminho ignora participação no Smart Proxy e capacidade ocupada,
+        mas preserva os requisitos de contexto e capacidades da requisição.
+        """
+        async with self._lock:
+            session = self._sessions.get(affinity_key)
+            if session is None:
+                return None
+            required = self._required_capability_set(required_capabilities)
+            needed_ctx = max(0, int(required_context))
+            local_candidates = []
+            for instance in self._routing_instances():
+                if self._backend_type(instance) == "platform":
+                    continue
+                if not self._backend_available(instance):
+                    continue
+                if not self._supports_required_capabilities(instance, required):
+                    continue
+                internal_model = self._internal_model(
+                    instance, session.external_model, False
+                )
+                if needed_ctx > self._ctx_per_slot(instance, internal_model):
+                    continue
+                local_candidates.append(instance)
+            if not local_candidates:
+                return None
+
+            config = self._config.get_config()
+            settings = self._settings()
+            primary_backend_id = normalize_backend_id(
+                settings.get("primary_backend_id")
+            )
+            if not primary_backend_id and settings.get("primary_model_path"):
+                primary_backend_id = (
+                    f"local:{normalize_model_path(settings['primary_model_path'])}"
+                )
+            chosen = self._pick_for_dynamic_growth(
+                local_candidates, config, primary_backend_id
+            )
+            if chosen is None:
+                return None
+
+            old_port = session.backend_port
+            session.backend_port = chosen["port"]
+            session.backend_model_path = chosen.get("model_path") or ""
+            session.internal_model = self._internal_model(
+                chosen, session.external_model, False
+            )
+            session.backend_id = self._backend_id(chosen)
+            session.backend_type = "local"
+            session.provider = None
+            session.last_used_at = _iso(self._now())
+            self._save_sessions()
+            logger.warning(
+                "[proxy] local last resort affinity_key=%s old_backend=%s "
+                "new_backend=%s in_flight=%s",
+                affinity_key,
+                old_port,
+                chosen["port"],
+                self.in_flight_for(chosen),
+            )
+            return RouteDecision(
+                backend_port=chosen["port"],
+                internal_model=session.internal_model,
+                external_model=session.external_model,
+                affinity_key=affinity_key,
+                detected_tag=session.detected_tag,
+                sticky_hit=False,
+                reason="local_last_resort_queue",
+                rewrite=True,
+                prompt_tokens_estimated=max(0, int(prompt_tokens)),
+                required_context_tokens=needed_ctx,
+                token_count_source=token_count_source,
+                gpu=gpu_label(chosen),
+                backend_id=self._backend_id(chosen),
+                backend_type="local",
+                provider=None,
             )

@@ -9,22 +9,22 @@ import {
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, copyApiToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload, refreshApiToken,
-} from './metrics.js?v=4.2.22';
+} from './metrics.js?v=4.2.41';
 import {
     initDashboard, selectModel, selectModelFromEvent, selectPlatform, selectPlatformFromEvent,
     applyModelConfig, setDefaultModel,
-    startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, configureLocalModelAlias, downloadModel, updateModels,
+    startModel, stopModel, startPlatform, stopPlatform, renameModel, deleteModel, duplicateModelCard, configureLocalModelAlias, downloadModel, updateModels,
     saveModelsDir, openVisionImportModal, closeVisionImportModal, submitVisionImport,
     openMtpImportModal, closeMtpImportModal, submitMtpImport,
     onMmprojChange, onMtpModelChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart, setPlatformVisionEnabled, setLocalVisionEnabled,
-} from './models.js?v=4.2.37';
+} from './models.js?v=4.2.41';
 import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.22';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
-} from './proxy.js?v=4.2.37';
+} from './proxy.js?v=4.2.41';
 
 window.modelConfigs = window.modelConfigs || {};
 
@@ -54,6 +54,7 @@ win.submitCliproxyAuthCallback = submitCliproxyAuthCallback;
 win.renameModel = renameModel;
 win.configureLocalModelAlias = configureLocalModelAlias;
 win.deleteModel = deleteModel;
+win.duplicateModelCard = duplicateModelCard;
 win.setDefaultModel = setDefaultModel;
 win.setPlatformAutoStart = setPlatformAutoStart;
 win.setPlatformVisionEnabled = setPlatformVisionEnabled;

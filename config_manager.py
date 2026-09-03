@@ -82,6 +82,7 @@ DEFAULT_PLATFORM_CONFIG = {
     "max_parallel_requests": DEFAULT_MAX_PARALLEL_REQUESTS,
     "auto_start": False,
     "default_model": None,
+    "fallback_model": None,
 }
 
 # Nomes aceitos pelo Cursor em BYOK (validação server-side do editor).
@@ -318,6 +319,11 @@ class ConfigManager:
             default_model = default_model.strip() or None
         elif default_model is not None:
             default_model = None
+        fallback_model = merged.get("fallback_model")
+        if isinstance(fallback_model, str):
+            fallback_model = fallback_model.strip() or None
+        elif fallback_model is not None:
+            fallback_model = None
         entry = {
             **{
                 k: v
@@ -328,6 +334,7 @@ class ConfigManager:
                     "max_parallel_requests",
                     "auto_start",
                     "default_model",
+                    "fallback_model",
                 }
             },
             "proxy_eligible": bool(
@@ -341,6 +348,7 @@ class ConfigManager:
                 merged.get("auto_start", DEFAULT_PLATFORM_CONFIG["auto_start"])
             ),
             "default_model": default_model,
+            "fallback_model": fallback_model,
         }
         platform_configs[backend_id] = entry
         config["platform_configs"] = platform_configs
@@ -373,16 +381,20 @@ class ConfigManager:
             self.save(config)
         return changed
 
-    def update_model_settings(self, model_path: str, settings: dict) -> None:
+    def update_model_settings(self, model_path: str, settings: dict, card_id: Optional[str] = None) -> None:
         config = self.load()
-        if "model_configs" not in config:
-            config["model_configs"] = {}
-        model_configs = config["model_configs"]
+        collection_key = "model_card_configs" if card_id else "model_configs"
+        if collection_key not in config:
+            config[collection_key] = {}
+        model_configs = config[collection_key]
         norm = normalize_model_path(model_path)
+        storage_key = str(card_id) if card_id else norm
         prev = {}
         legacy_key = None
-        if norm in model_configs:
-            prev = model_configs[norm]
+        if storage_key in model_configs:
+            prev = model_configs[storage_key]
+        elif card_id:
+            prev = lookup_model_config(config.get("model_configs", {}), norm)
         else:
             for key in list(model_configs.keys()):
                 if normalize_model_path(key) == norm:
@@ -440,6 +452,7 @@ class ConfigManager:
             "max_parallel_requests": merged.get(
                 "max_parallel_requests", DEFAULT_MAX_PARALLEL_REQUESTS
             ),
+            "auto_start": bool(merged.get("auto_start", False)),
             "last_started": datetime.now(timezone.utc).isoformat(),
         }
         if "hardware_incapable_message" in merged:
@@ -448,7 +461,7 @@ class ConfigManager:
             entry["hardware_incapable_message"] = None
         if legacy_key and legacy_key != norm:
             del model_configs[legacy_key]
-        model_configs[norm] = entry
+        model_configs[storage_key] = entry
         self.save(config)
 
     def set_default_model(self, path: Optional[str], add: bool = True) -> None:

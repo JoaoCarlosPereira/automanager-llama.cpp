@@ -112,10 +112,10 @@ export async function setProxyPrimary(checkbox, path, backendId = null) {
     }
 }
 
-export async function setProxyEligible(checkbox, path, backendId = null) {
+export async function setProxyEligible(checkbox, path, backendId = null, cardId = null) {
     const payload = backendId
         ? { backend_id: backendId, proxy_eligible: checkbox.checked }
-        : { model_path: path, proxy_eligible: checkbox.checked };
+        : { model_path: path, card_id: cardId, proxy_eligible: checkbox.checked };
     try {
         const res = await apiFetch('/models/proxy', {
             method: 'POST',
@@ -132,7 +132,7 @@ export async function setProxyEligible(checkbox, path, backendId = null) {
     }
 }
 
-export async function setProxyMaxParallel(input, path, backendId = null) {
+export async function setProxyMaxParallel(input, path, backendId = null, cardId = null) {
     const value = parseInt(input.value, 10);
     if (!Number.isFinite(value) || value < 1) {
         input.value = 1;
@@ -141,7 +141,7 @@ export async function setProxyMaxParallel(input, path, backendId = null) {
     try {
         const payload = backendId
             ? { backend_id: backendId, max_parallel_requests: value }
-            : { model_path: path, max_parallel_requests: value };
+            : { model_path: path, card_id: cardId, max_parallel_requests: value };
         const res = await apiFetch('/models/proxy', {
             method: 'POST',
             headers: jsonHeaders(),
@@ -217,9 +217,10 @@ function backendCard(backend, index) {
     const priorityRank = index + 1;
     const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
     const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
+    const dataCardId = backend.card_id ? ` data-card-id="${esc(backend.card_id)}"` : '';
     const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
     return `
-    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath} title="Clique para abrir a aba · Arraste para alterar a prioridade">
+    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
         <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-2 min-w-0">
                 <span class="proxy-priority-rank shrink-0 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-violet-500/15 border border-violet-500/40 text-violet-300 text-sm font-black" title="Prioridade de roteamento">${priorityRank}º</span>
@@ -338,7 +339,8 @@ function bindDragEvents() {
                 return;
             }
             const modelPath = this.dataset.modelPath || '';
-            if (modelPath) window.selectModel?.(modelPath, '');
+            const cardId = this.dataset.cardId || '';
+            if (modelPath) window.selectModel?.(modelPath, cardId);
         });
 
         card.addEventListener('dragstart', function(e) {

@@ -34,7 +34,7 @@ let cliproxyAuthSessionId = null;
 
 const MMproj_SELECT_ATTRS =
     'onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" '
-    + 'onclick="event.stopPropagation()" onchange="onMmprojChange(\'__PATH__\', this)"';
+    + 'onclick="event.stopPropagation()" onchange="onMmprojChange(\'__PATH__\', this, \'__CARD__\')"';
 
 function syncTabLogPanelHeight(tabId) {
     const tab = document.getElementById(tabId);
@@ -117,10 +117,10 @@ function refreshTabLabelsForPath(path) {
     });
 }
 
-function findTabForModel(path, { forceNew = false } = {}) {
+function findTabForModel(path, { forceNew = false, cardId = null } = {}) {
     const normalized = path.replace(/\\/g, '/');
     if (forceNew) return null;
-    return state.activeTabs.find(t => t.path === normalized && document.getElementById(t.id)) || null;
+    return state.activeTabs.find(t => t.path === normalized && (!cardId || t.cardId === cardId) && document.getElementById(t.id)) || null;
 }
 
 function findTabForBackend(backendId, { forceNew = false } = {}) {
@@ -316,7 +316,9 @@ export function renderNoTabShortcuts(models = null, cfg = null) {
         const meta = [
             contextLabel ? `Ctx ${contextLabel}` : null,
             saved.parallel_slots ? `${saved.parallel_slots} slot${saved.parallel_slots === 1 ? '' : 's'}` : null,
-            saved.mtp_enabled ? `MTP ${saved.mtp_draft_tokens || 3}` : null,
+            saved.mtp_enabled
+                ? `${/[/\\]dflash[-_]/i.test(saved.mtp_model_path || '') ? 'DFlash' : 'MTP'} ${saved.mtp_draft_tokens || 3}`
+                : null,
         ].filter(Boolean).join(' · ');
 
         return `
@@ -354,11 +356,12 @@ export function toggleSidebar(forceOpen = null) {
     }
 }
 
-export function createModelTab(path, name, id, activate = true, forceNew = false) {
+export function createModelTab(path, name, id, activate = true, forceNew = false, cardId = null) {
     const m_js = path.replace(/\\/g, '/');
     const modelId = id || fallbackModelId(m_js);
 
-    const existing = findTabForModel(m_js, { forceNew });
+    cardId = cardId || modelId;
+    const existing = findTabForModel(m_js, { forceNew, cardId });
     if (existing) {
         if (activate) switchTab(existing.id);
         return existing.id;
@@ -388,6 +391,8 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     const tabDiv = content.querySelector('.tab-content');
     tabDiv.id = tabId;
     tabDiv.dataset.path = m_js;
+    tabDiv.dataset.cardId = cardId;
+    tabDiv.dataset.configKey = `card:${cardId}`;
     
     // Customize inner elements
     tabDiv.querySelector('.model-tab-name').innerText = name;
@@ -401,7 +406,7 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     populateLlamaBinSelect(tabId);
 
     // 3. Register state
-    state.activeTabs.push({ id: tabId, path: m_js, name, modelId });
+    state.activeTabs.push({ id: tabId, path: m_js, name, modelId, cardId });
 
     refreshTabLabelsForPath(m_js);
     
@@ -409,16 +414,16 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     if (activate) switchTab(tabId);
     
     // 5. Load Configs
-    const listed = state.lastModelsList?.find(m => m.path.replace(/\\/g, '/') === m_js);
+    const listed = state.lastModelsList?.find(m => m.id === cardId);
     if (listed?.last_config) {
-        mergeModelConfigFromServer(m_js, listed.last_config);
+        window.modelConfigs[`card:${cardId}`] = {...listed.last_config};
     }
 
-    if (window.modelConfigs[m_js]) {
+    if (window.modelConfigs[`card:${cardId}`]) {
         applyModelConfig(m_js, tabId);
     } else {
         syncTurboquantPanelVisibility(tabId);
-        persistLlamaBinSettings(m_js, tabId, { silent: true });
+        persistLlamaBinSettings(m_js, tabId, { silent: true, cardId });
     }
     
     // 6. Bind Listeners for this tab
@@ -537,6 +542,9 @@ function bindPlatformTabListeners(tabId, backendId) {
     tab.querySelector('.platform-proxy-default-model')?.addEventListener('change', (e) => {
         setPlatformDefaultModel(e.target, backendId);
     });
+    tab.querySelector('.platform-proxy-fallback-model')?.addEventListener('change', (e) => {
+        setPlatformFallbackModel(e.target, backendId);
+    });
 
     const clearLogsBtn = tab.querySelector('.tab-clear-logs-btn');
     if (clearLogsBtn) {
@@ -603,6 +611,25 @@ function populatePlatformDefaultModelSelect(tab, models, currentValue) {
         options.push(
             `<option value="${escapeHtml(currentValue)}">${escapeHtml(currentValue)}</option>`
         );
+    }
+    if (document.activeElement === select) return;
+    select.innerHTML = options.join('');
+    select.value = currentValue || '';
+    select.dataset.prevValue = currentValue || '';
+}
+
+function populatePlatformFallbackModelSelect(tab, models, currentValue) {
+    const select = tab.querySelector('.platform-proxy-fallback-model');
+    if (!select) return;
+    const options = ['<option value="">— Nenhum fallback —</option>'];
+    (models || []).forEach((model) => {
+        const value = model.cursor_id || model.id;
+        if (!value) return;
+        const label = model.id || model.name || value;
+        options.push(`<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`);
+    });
+    if (currentValue && !(models || []).some(m => (m.cursor_id || m.id) === currentValue)) {
+        options.push(`<option value="${escapeHtml(currentValue)}">${escapeHtml(currentValue)}</option>`);
     }
     if (document.activeElement === select) return;
     select.innerHTML = options.join('');
@@ -874,6 +901,7 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
         }));
         renderPlatformModelsList(tab, models);
         populatePlatformDefaultModelSelect(tab, models, pCfg.default_model || '');
+        populatePlatformFallbackModelSelect(tab, models, pCfg.fallback_model || '');
     }
 
     refreshPlatformTabStatus(tabId, platform, port);
@@ -995,21 +1023,22 @@ function bindTabListeners(tabId) {
     if (!tab) return;
     
     const path = tab.dataset.path;
+    const cardId = tab.dataset.cardId || null;
     
-    tab.querySelector('.tab-thinking-toggle')?.addEventListener('change', (e) => persistThinkingEnabled(path, e.target.checked));
+    tab.querySelector('.tab-thinking-toggle')?.addEventListener('change', (e) => persistThinkingEnabled(path, e.target.checked, cardId));
     tab.querySelector('.tab-mtp-toggle')?.addEventListener('change', () => syncMtpDraftTokensState(tabId));
     tab.querySelector('.tab-context-size')?.addEventListener('change', () => syncContextSizeCustomVisibility(tabId));
     tab.querySelector('.tab-context-size-custom')?.addEventListener('input', () => updateTotal(tabId));
 
     tab.querySelector('.tab-llama-bin')?.addEventListener('change', () => {
         syncTurboquantPanelVisibility(tabId);
-        persistLlamaBinSettings(path, tabId);
+        persistLlamaBinSettings(path, tabId, {cardId});
     });
     tab.querySelector('.tab-turboquant-preset')?.addEventListener('change', (e) => {
         if (e.target.value !== 'custom') {
             applyTurboquantPreset(tabId, e.target.value);
         }
-        persistLlamaBinSettings(path, tabId);
+        persistLlamaBinSettings(path, tabId, {cardId});
     });
     tab.querySelector('.tab-turbo-cache-k')?.addEventListener('change', () => {
         syncTurboquantToCacheFields(tabId);
@@ -1019,7 +1048,7 @@ function bindTabListeners(tabId) {
             const v = tab.querySelector('.tab-turbo-cache-v')?.value;
             presetEl.value = detectTurboquantPreset(k, v);
         }
-        persistLlamaBinSettings(path, tabId);
+        persistLlamaBinSettings(path, tabId, {cardId});
     });
     tab.querySelector('.tab-turbo-cache-v')?.addEventListener('change', () => {
         syncTurboquantToCacheFields(tabId);
@@ -1029,19 +1058,19 @@ function bindTabListeners(tabId) {
             const v = tab.querySelector('.tab-turbo-cache-v')?.value;
             presetEl.value = detectTurboquantPreset(k, v);
         }
-        persistLlamaBinSettings(path, tabId);
+        persistLlamaBinSettings(path, tabId, {cardId});
     });
 
     tab.querySelector('.tab-cache-type-k')?.addEventListener('change', () => {
         if (isTurboquantBin(getSelectedLlamaBin(tabId))) {
             syncMainCacheToTurboFields(tabId);
-            persistLlamaBinSettings(path, tabId);
+            persistLlamaBinSettings(path, tabId, {cardId});
         }
     });
     tab.querySelector('.tab-cache-type-v')?.addEventListener('change', () => {
         if (isTurboquantBin(getSelectedLlamaBin(tabId))) {
             syncMainCacheToTurboFields(tabId);
-            persistLlamaBinSettings(path, tabId);
+            persistLlamaBinSettings(path, tabId, {cardId});
         }
     });
     
@@ -1326,12 +1355,15 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
     if (contextSize === null) return null;
 
     const cacheTypes = getEffectiveCacheTypes(tabId);
-    const mmprojDisabled = _isMmprojDisabledForModel(normalized);
-    const visionEnabled = window.modelConfigs[normalized]?.vision_enabled !== false;
+    const configKey = tab.dataset.configKey || normalized;
+    const cardConfig = window.modelConfigs[configKey] || window.modelConfigs[normalized] || {};
+    const mmprojDisabled = Boolean(cardConfig.vision_enabled === false || cardConfig.mmproj_disabled || cardConfig.mmproj_path === '__no_vision__');
+    const visionEnabled = cardConfig.vision_enabled !== false;
 
     return {
         path: normalized,
-        mmproj_path: getSelectedMmprojForModel(normalized) || null,
+        card_id: tab.dataset.cardId || null,
+        mmproj_path: cardConfig.mmproj_path || getSelectedMmprojForModel(normalized) || null,
         // This flag represents the explicit "Sem visão" selection. The
         // checkbox is sent separately and is combined by /start only for the
         // running llama-server process.
@@ -1360,7 +1392,7 @@ function collectStartPayloadFromTab(path, tabId, { autoBalanceProfile = false } 
         thinking_enabled: tab.querySelector('.tab-thinking-toggle').checked,
         mtp_enabled: tab.querySelector('.tab-mtp-toggle').checked,
         mtp_draft_tokens: getMtpDraftTokens(tabId),
-        mtp_model_path: getSelectedMtpForModel(normalized),
+        mtp_model_path: cardConfig.mtp_model_path || getSelectedMtpForModel(normalized),
     };
 }
 
@@ -1480,7 +1512,7 @@ export function resolveMmprojPath(model) {
     const candidates = model.mmproj_candidates || [];
     if (!candidates.length) return null;
     const modelJs = model.path.replace(/\\/g, '/');
-    const cfg = window.modelConfigs[modelJs] || model.last_config || {};
+    const cfg = (model.is_clone ? model.last_config : window.modelConfigs[modelJs]) || model.last_config || {};
     const saved = cfg.mmproj_path;
     // Preserve both the persisted flag and the legacy sentinel.
     if (cfg.mmproj_disabled || saved === '__no_vision__') return null;
@@ -1488,12 +1520,12 @@ export function resolveMmprojPath(model) {
     return candidates[0];
 }
 
-export function buildModelVisionControlsHtml(model, modelJs, visionEnabled = true) {
+export function buildModelVisionControlsHtml(model, modelJs, visionEnabled = true, cardId = null) {
     const candidates = model.mmproj_candidates || [];
     const safePath = modelJs.replace(/'/g, "\\'");
     const safeModelPath = jsString(modelJs);
     const importBtn = `<button type="button" onclick="event.stopPropagation(); openVisionImportModal('${safePath}')" class="vision-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-violet-400 hover:bg-violet-500/20 transition-all" title="Importar projetor de visão" aria-label="Importar projetor de visão"><i class="fas fa-eye text-ui-label"></i></button>`;
-    const visionCheckbox = `<label class="flex items-center gap-1 cursor-pointer shrink-0" onclick="event.stopPropagation()" title="Permitir visão neste modelo local"><span class="text-ui-label font-black text-slate-600 uppercase">Vision</span><input type="checkbox" class="model-vision-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-cyan-600" ${visionEnabled ? 'checked' : ''} onclick="setLocalVisionEnabled(this, '${safeModelPath}')"></label>`;
+    const visionCheckbox = `<label class="flex items-center gap-1 cursor-pointer shrink-0" onclick="event.stopPropagation()" title="Permitir visão neste modelo local"><span class="text-ui-label font-black text-slate-600 uppercase">Vision</span><input type="checkbox" class="model-vision-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-cyan-600" ${visionEnabled ? 'checked' : ''} onclick="setLocalVisionEnabled(this, '${safeModelPath}', '${jsString(cardId || '')}')"></label>`;
     if (!candidates.length) return `${visionCheckbox}${importBtn}`;
 
     const selected = resolveMmprojPath(model);
@@ -1509,7 +1541,9 @@ export function buildModelVisionControlsHtml(model, modelJs, visionEnabled = tru
     }).join('');
     options += optionsList;
 
-    const selectAttrs = MMproj_SELECT_ATTRS.replace('__PATH__', safePath);
+    const selectAttrs = MMproj_SELECT_ATTRS
+        .replace('__PATH__', safePath)
+        .replace('__CARD__', jsString(cardId || ''));
     const hiddenClass = visionEnabled ? '' : ' hidden';
     const selectWrap = `<span class="model-mmproj-control${hiddenClass}"><select data-mmproj-for="${escapeHtml(modelJs)}" class="model-mmproj-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-violet-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" ${selectAttrs} title="Projetor de visão para este modelo" aria-label="Projetor de visão para este modelo">${options}</select></span>`;
     return `${visionCheckbox}${importBtn}${selectWrap}`;
@@ -1532,28 +1566,28 @@ export function getSelectedMmprojForModel(modelPath) {
 export function resolveMtpModelPath(model) {
     const candidates = model.mtp_candidates || [];
     const modelPath = model.path.replace(/\\/g, '/');
-    const cfg = window.modelConfigs[modelPath] || model.last_config || {};
+    const cfg = (model.is_clone ? model.last_config : window.modelConfigs[modelPath]) || model.last_config || {};
     if (cfg.mtp_model_path && candidates.includes(cfg.mtp_model_path)) {
         return cfg.mtp_model_path;
     }
     return candidates[0] || null;
 }
 
-export function buildModelMtpControlsHtml(model, modelPath) {
+export function buildModelMtpControlsHtml(model, modelPath, cardId = null) {
     const candidates = model.mtp_candidates || [];
     const safePath = modelPath.replace(/'/g, "\\'");
-    const importBtn = `<button type="button" onclick="event.stopPropagation(); openMtpImportModal('${safePath}')" class="mtp-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-all" title="Importar modelo draft MTP" aria-label="Importar modelo draft MTP"><i class="fas fa-bolt text-ui-label"></i></button>`;
+    const importBtn = `<button type="button" onclick="event.stopPropagation(); openMtpImportModal('${safePath}')" class="mtp-import-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-all" title="Importar draft MTP ou DFlash" aria-label="Importar draft MTP ou DFlash"><i class="fas fa-bolt text-ui-label"></i></button>`;
     if (!candidates.length) return importBtn;
 
     const selected = resolveMtpModelPath(model);
     const options = [
-        '<option value="">Sem MTP externo</option>',
+        '<option value="">Sem draft externo</option>',
         ...candidates.map(candidate => {
             const selectedAttr = candidate === selected ? ' selected' : '';
             return `<option value="${escapeHtml(candidate)}" class="bg-slate-900"${selectedAttr}>${escapeHtml(candidate.split('/').pop())}</option>`;
         }),
     ].join('');
-    return `${importBtn}<select data-mtp-for="${escapeHtml(modelPath)}" class="model-mtp-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation()" onchange="onMtpModelChange('${safePath}', this)" title="Draft MTP deste modelo" aria-label="Draft MTP deste modelo">${options}</select>`;
+    return `${importBtn}<select data-mtp-for="${escapeHtml(modelPath)}" class="model-mtp-select bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1 text-ui-label font-bold focus:ring-2 focus:ring-amber-500/50 outline-none transition-all cursor-pointer min-w-[7rem] max-w-[11rem]" onmousedown="event.stopPropagation()" onpointerdown="event.stopPropagation()" onclick="event.stopPropagation()" onchange="onMtpModelChange('${safePath}', this, '${jsString(cardId || '')}')" title="Draft MTP ou DFlash deste modelo" aria-label="Draft MTP ou DFlash deste modelo">${options}</select>`;
 }
 
 export function getSelectedMtpForModel(modelPath) {
@@ -1656,14 +1690,14 @@ export async function submitMtpImport(event) {
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            showToast('Erro ao iniciar download MTP: ' + (err.detail || 'Erro desconhecido'), 'error');
+            showToast('Erro ao iniciar download do draft: ' + (err.detail || 'Erro desconhecido'), 'error');
             return;
         }
         closeMtpImportModal();
         window.updateDownloads();
         window.updateModels();
     } catch (e) {
-        showToast('Erro de rede ao iniciar download MTP.', 'error');
+        showToast('Erro de rede ao iniciar download do draft.', 'error');
     }
 }
 
@@ -1733,8 +1767,10 @@ function patchModelListItems(models, cfg) {
 
         const isDefault = (cfg.default_models || []).includes(mJs) || cfg.default_model === mJs;
         const status = (state.activeInstances || []).find(
-            i => (i.model_path || '').replace(/\\/g, '/') === mJs
-        );
+            i => i.card_id === model.card_id
+        ) || (!model.is_clone && (state.activeInstances || []).find(
+            i => !i.card_id && (i.model_path || '').replace(/\\/g, '/') === mJs
+        ));
         el.classList.remove(
             'border-emerald-500/50', 'bg-emerald-500/5',
             'border-slate-700/50', 'bg-slate-800/40',
@@ -1878,22 +1914,28 @@ function buildGenericOpenAICardsHtml(platform) {
 function buildModelListHtml(models, cfg, platforms = []) {
     const localHtml = models.map(m => {
         const m_js = m.path.replace(/\\/g, '/');
-        if (m.last_config && !tabHasPendingProposal(m_js)) {
+        if (!m.is_clone && m.last_config && !tabHasPendingProposal(m_js)) {
             mergeModelConfigFromServer(m_js, m.last_config);
         }
 
-        const isDefault = (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
-        const status = (state.activeInstances || []).find(i => (i.model_path || '').replace(/\\/g, '/') === m_js);
+        const mCfg = m.last_config || (cfg.model_configs || {})[m_js] || {};
+        const isDefault = m.is_clone
+            ? mCfg.auto_start === true
+            : (cfg.default_models || []).includes(m_js) || cfg.default_model === m_js;
+        const status = (state.activeInstances || []).find(i => i.card_id === m.card_id)
+            || (!m.is_clone && (state.activeInstances || []).find(i => !i.card_id && (i.model_path || '').replace(/\\/g, '/') === m_js));
         const runningClass = status ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-700/50 bg-slate-800/40';
         const selectedClass = state.currentSelectedModel === m_js ? 'active-selection' : '';
 
-        const mCfg = (cfg.model_configs || {})[m_js] || {};
+        window.modelConfigs[`card:${m.card_id}`] = {...mCfg};
         const localAlias = Object.entries(cfg.model_aliases || {}).find(([, target]) => {
             const normalizedTarget = String(target || '').replace(/\\/g, '/');
             return normalizedTarget === m_js
                 || normalizedTarget.split('/').pop() === m_js.split('/').pop();
         })?.[0] || '';
-        const isProxyPrimary = (cfg.smart_proxy || {}).primary_model_path === m_js;
+        const cardBackendId = `local-card:${m.card_id}`;
+        const isProxyPrimary = (cfg.smart_proxy || {}).primary_backend_id === cardBackendId
+            || (!m.is_clone && !(cfg.smart_proxy || {}).primary_backend_id && (cfg.smart_proxy || {}).primary_model_path === m_js);
         const isProxyEligible = mCfg.proxy_eligible !== false;
         const proxyMaxParallel = mCfg.max_parallel_requests || 1;
 
@@ -1901,9 +1943,10 @@ function buildModelListHtml(models, cfg, platforms = []) {
         const visionControls = buildModelVisionControlsHtml(
             m,
             m_js,
-            (window.modelConfigs[m_js] || mCfg).vision_enabled !== false,
+            mCfg.vision_enabled !== false,
+            m.card_id,
         );
-        const mtpControls = buildModelMtpControlsHtml(m, m_js);
+        const mtpControls = buildModelMtpControlsHtml(m, m_js, m.card_id);
         return `
             <div id="lib-${m.id}" class="model-item-container group p-3 rounded-xl border transition-all cursor-pointer ${runningClass} ${selectedClass}" 
                  title="Clique para abrir · Ctrl+clique para nova aba"
@@ -1921,27 +1964,28 @@ function buildModelListHtml(models, cfg, platforms = []) {
                     <div class="flex items-center gap-1 flex-wrap">
                         <button onclick="event.stopPropagation(); renameModel('${safePath}')" title="Renomear modelo" aria-label="Renomear modelo" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-blue-400"><i class="fas fa-edit text-ui-label"></i></button>
                         <button onclick="event.stopPropagation(); configureLocalModelAlias('${safePath}')" title="${localAlias ? 'Editar alias' : 'Adicionar alias'}" aria-label="${localAlias ? 'Editar alias' : 'Adicionar alias'}" class="rename-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-cyan-400"><i class="fas fa-tag text-ui-label"></i></button>
-                        <button onclick="event.stopPropagation(); deleteModel('${safePath}')" title="Excluir modelo" aria-label="Excluir modelo" class="w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
+                        <button onclick="event.stopPropagation(); deleteModel('${safePath}', '${m.card_id}')" title="Excluir card" aria-label="Excluir card" class="delete-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-red-400"><i class="fas fa-trash-alt text-ui-label"></i></button>
                         ${visionControls}
                         ${mtpControls}
+                        <button onclick="event.stopPropagation(); duplicateModelCard('${safePath}', '${m.card_id}')" title="Criar outra instância deste modelo" aria-label="Duplicar card do modelo" class="duplicate-btn w-8 h-8 flex items-center justify-center rounded bg-slate-800/50 text-slate-500 hover:text-emerald-400"><i class="fas fa-copy text-ui-label"></i></button>
                     </div>
                     <label class="flex items-center gap-1.5 cursor-pointer" onclick="event.stopPropagation()">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Auto-Start</span>
-                        <input type="checkbox" class="autostart-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}')">
+                        <input type="checkbox" class="autostart-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-blue-600" ${isDefault ? 'checked' : ''} onclick="setDefaultModel(this, '${safePath}', '${m.card_id}')">
                     </label>
                 </div>
                 <div class="proxy-model-controls flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 pt-2 border-t border-slate-700/30 min-w-0" onclick="event.stopPropagation()">
                     <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Modelo principal exposto pela API no Modo Proxy Inteligente (apenas um por vez)">
                         <span class="text-ui-label font-black text-violet-400/80 uppercase">Principal</span>
-                        <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-path="${escapeHtml(m_js)}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, '${safePath}')">
+                        <input type="checkbox" class="proxy-primary-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" data-path="${escapeHtml(m_js)}" data-card-id="${m.card_id}" ${isProxyPrimary ? 'checked' : ''} onclick="setProxyPrimary(this, '${safePath}', '${cardBackendId}')">
                     </label>
                     <label class="flex items-center gap-1 cursor-pointer shrink-0" title="Usar como backend secundário no proxy inteligente">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Proxy</span>
-                        <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}')">
+                        <input type="checkbox" class="proxy-eligible-checkbox w-3 h-3 bg-slate-900 border-slate-700 rounded text-violet-600" ${isProxyEligible ? 'checked' : ''} onclick="setProxyEligible(this, '${safePath}', null, '${m.card_id}')">
                     </label>
                     <label class="flex items-center gap-1 shrink-0 ml-auto" title="Capacidade paralela inicial; cresce automaticamente sob pressão">
                         <span class="text-ui-label font-black text-slate-600 uppercase">Paralelo</span>
-                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, '${safePath}')">
+                        <input type="number" min="1" max="16" value="${proxyMaxParallel}" class="proxy-max-parallel w-9 px-0.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-ui-label text-slate-300 text-center outline-none" onchange="setProxyMaxParallel(this, '${safePath}', null, '${m.card_id}')">
                     </label>
                 </div>
             </div>`;
@@ -1959,7 +2003,7 @@ async function renderModelList(container, models, cfg, platforms = []) {
     container.innerHTML = buildModelListHtml(models, cfg, platforms);
 }
 
-export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false } = {}) {
+export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false, cardId = null } = {}) {
     const normalized = (modelPath || '').replace(/\\/g, '/');
     if (!normalized) return;
     const mmproj = mmprojPath ? mmprojPath.replace(/\\/g, '/') : null;
@@ -1974,6 +2018,7 @@ export async function persistMmprojSelection(modelPath, mmprojPath, { silent = f
                 model_path: normalized,
                 mmproj_path: mmproj,
                 user_initiated: true,
+                card_id: cardId || null,
             }),
         });
     } catch (e) {
@@ -1981,13 +2026,13 @@ export async function persistMmprojSelection(modelPath, mmprojPath, { silent = f
     }
 }
 
-export async function onMmprojChange(modelPath, selectEl) {
+export async function onMmprojChange(modelPath, selectEl, cardId = null) {
     const val = selectEl?.value;
     // Keep __no_vision__ as a sentinel so it persists in config
-    await persistMmprojSelection(modelPath, val || null);
+    await persistMmprojSelection(modelPath, val || null, {cardId});
 }
 
-export async function onMtpModelChange(modelPath, selectEl) {
+export async function onMtpModelChange(modelPath, selectEl, cardId = null) {
     const normalized = (modelPath || '').replace(/\\/g, '/');
     const mtpPath = selectEl?.value?.replace(/\\/g, '/') || null;
     if (!window.modelConfigs[normalized]) window.modelConfigs[normalized] = {};
@@ -1996,14 +2041,14 @@ export async function onMtpModelChange(modelPath, selectEl) {
         const res = await apiFetch('/models/mtp', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model_path: normalized, mtp_model_path: mtpPath}),
+            body: JSON.stringify({model_path: normalized, mtp_model_path: mtpPath, card_id: cardId || null}),
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || 'Falha ao salvar draft MTP');
+            throw new Error(err.detail || 'Falha ao salvar draft');
         }
     } catch (e) {
-        showToast(e.message || 'Erro ao salvar draft MTP.', 'error');
+        showToast(e.message || 'Erro ao salvar draft.', 'error');
     }
 }
 
@@ -2016,7 +2061,7 @@ export function formatRepoStorageLabel(storage) {
     return `${used} / ${total} GB`;
 }
 
-async function persistThinkingEnabled(modelPath, enabled) {
+async function persistThinkingEnabled(modelPath, enabled, cardId = null) {
     if (!modelPath) return;
     if (!window.modelConfigs[modelPath]) window.modelConfigs[modelPath] = {};
     window.modelConfigs[modelPath].thinking_enabled = enabled;
@@ -2024,14 +2069,14 @@ async function persistThinkingEnabled(modelPath, enabled) {
         await apiFetch('/models/thinking', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model_path: modelPath, thinking_enabled: enabled}),
+            body: JSON.stringify({model_path: modelPath, thinking_enabled: enabled, card_id: cardId}),
         });
     } catch (e) {
         console.error('Erro ao salvar thinking_enabled:', e);
     }
 }
 
-export async function persistLlamaBinSettings(modelPath, tabId, { silent = false } = {}) {
+export async function persistLlamaBinSettings(modelPath, tabId, { silent = false, cardId = null } = {}) {
     const normalized = (modelPath || '').replace(/\\/g, '/');
     if (!normalized) return;
 
@@ -2041,6 +2086,7 @@ export async function persistLlamaBinSettings(modelPath, tabId, { silent = false
     const tab = document.getElementById(tabId);
     const payload = {
         model_path: normalized,
+        card_id: cardId,
         llama_server_bin: bin,
     };
 
@@ -2094,9 +2140,9 @@ export async function syncRunningModelTabsOnLoad() {
             const path = (inst.model_path || '').replace(/\\/g, '/');
             if (!path) continue;
 
-            const model = modelsData.models.find(
-                m => m.path.replace(/\\/g, '/') === path
-            );
+            const model = modelsData.models.find(m => inst.card_id && m.card_id === inst.card_id)
+                || modelsData.models.find(m => !m.is_clone && m.path.replace(/\\/g, '/') === path)
+                || modelsData.models.find(m => m.path.replace(/\\/g, '/') === path);
             const id = model?.id || fallbackModelId(path);
             const name = model?.name || inst.model || path.split('/').pop();
             if (inst.config) {
@@ -2107,8 +2153,8 @@ export async function syncRunningModelTabsOnLoad() {
                     ...(window.modelConfigs[path] || {}),
                 };
             }
-            const existing = state.activeTabs.find(t => t.path === path);
-            const tabId = existing?.id || createModelTab(path, name, id, false);
+            const existing = state.activeTabs.find(t => t.cardId === (inst.card_id || id));
+            const tabId = existing?.id || createModelTab(path, name, id, false, false, inst.card_id || id);
             if (!firstTabId) firstTabId = tabId;
         }
 
@@ -2158,7 +2204,7 @@ export function selectModel(path, elementId, forceNew = false) {
     const name = container?.querySelector('.model-name')?.innerText
         || path.split('/').pop()?.replace(/\.gguf$/i, '')
         || 'Modelo';
-    createModelTab(path, name, elementId, true, forceNew);
+    createModelTab(path, name, elementId, true, forceNew, elementId);
     
     // Visual feedback in sidebar
     document.querySelectorAll('.model-item-container').forEach(el => el.classList.remove('active-selection'));
@@ -2193,8 +2239,8 @@ export function selectPlatformFromEvent(event, backendId) {
 }
 
 export function applyModelConfig(path, tabId) {
-    const cfg = window.modelConfigs[path];
     const tab = document.getElementById(tabId);
+    const cfg = window.modelConfigs[tab?.dataset.configKey] || window.modelConfigs[path];
     if (!cfg || !tab) return;
     
     if (cfg.context_size) setContextSize(cfg.context_size, tabId);
@@ -2237,12 +2283,12 @@ export function applyModelConfig(path, tabId) {
     updateTotal(tabId);
 }
 
-export async function setDefaultModel(checkbox, path) {
+export async function setDefaultModel(checkbox, path, cardId = null) {
     try {
         await apiFetch('/set_default', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ path, add: checkbox.checked }),
+            body: JSON.stringify({ path, add: checkbox.checked, card_id: cardId }),
         });
     } catch (e) {
         showToast("Erro ao salvar configuração.", 'error');
@@ -2299,7 +2345,7 @@ export async function setPlatformVisionEnabled(checkbox, backendId) {
     }
 }
 
-export async function setLocalVisionEnabled(checkbox, modelPath) {
+export async function setLocalVisionEnabled(checkbox, modelPath, cardId = null) {
     const normalized = (modelPath || '').replace(/\\/g, '/');
     if (!normalized || !checkbox) return;
     const enabled = checkbox.checked;
@@ -2310,6 +2356,7 @@ export async function setLocalVisionEnabled(checkbox, modelPath) {
             body: JSON.stringify({
                 model_path: normalized,
                 vision_enabled: enabled,
+                card_id: cardId || null,
             }),
         });
         if (!res.ok) {
@@ -2357,6 +2404,32 @@ export async function setPlatformDefaultModel(select, backendId) {
     } catch (e) {
         select.value = previous;
         showToast(e.message || 'Erro ao salvar modelo padrão.', 'error');
+    }
+}
+
+export async function setPlatformFallbackModel(select, backendId) {
+    const value = select.value || '';
+    const previous = select.dataset.prevValue || '';
+    try {
+        const res = await apiFetch('/models/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({backend_id: backendId, fallback_model: value}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Falha ao salvar modelo fallback');
+        }
+        select.dataset.prevValue = value;
+        window.platformConfigs = window.platformConfigs || {};
+        window.platformConfigs[backendId] = {
+            ...(window.platformConfigs[backendId] || {}),
+            fallback_model: value || null,
+        };
+        showToast(value ? 'Modelo fallback salvo' : 'Modelo fallback removido', 'success');
+    } catch (e) {
+        select.value = previous;
+        showToast(e.message || 'Erro ao salvar modelo fallback.', 'error');
     }
 }
 
@@ -2803,14 +2876,37 @@ export async function renameModel(path) {
     }
 }
 
-export async function deleteModel(path) {
-    if (!await showConfirm('Excluir este modelo permanentemente? O arquivo .gguf será removido do disco.', { confirmLabel: 'Excluir' })) return;
+export async function duplicateModelCard(path, cardId) {
+    try {
+        const res = await apiFetch('/models/duplicate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path, card_id: cardId}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || 'Falha ao duplicar card');
+        showToast('Nova instância criada sem duplicar o arquivo.', 'success');
+        await updateModels();
+    } catch (e) {
+        showToast(e.message || 'Erro de rede ao duplicar card.', 'error');
+    }
+}
+
+export async function deleteModel(path, cardId = null) {
     const normalized = path.replace(/\\/g, '/');
+    const cardsForFile = (state.lastModelsList || []).filter(
+        model => (model.path || '').replace(/\\/g, '/') === normalized
+    );
+    const removesFile = cardsForFile.length <= 1;
+    const message = removesFile
+        ? 'Este é o último card. Excluir também o arquivo .gguf do disco?'
+        : 'Remover somente este card? O arquivo do modelo continuará no disco.';
+    if (!await showConfirm(message, { confirmLabel: removesFile ? 'Excluir arquivo' : 'Remover card' })) return;
     try {
         const res = await apiFetch('/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path}),
+            body: JSON.stringify({path, card_id: cardId}),
         });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
@@ -2818,8 +2914,9 @@ export async function deleteModel(path) {
             return;
         }
 
-        [...state.activeTabs.filter(t => t.path === normalized)].forEach(t => closeTab(t.id));
-        delete window.modelConfigs[normalized];
+        [...state.activeTabs.filter(t => cardId ? t.cardId === cardId : t.path === normalized)].forEach(t => closeTab(t.id));
+        if (cardId) delete window.modelConfigs[`card:${cardId}`];
+        if (removesFile) delete window.modelConfigs[normalized];
         await updateModels();
     } catch (e) {
         showToast('Erro de rede ao excluir modelo.', 'error');
@@ -2872,7 +2969,8 @@ export async function startModel(path, tabId) {
 
         await window.updateStatus();
         const inst = (state.activeInstances || []).find(
-            i => (i.model_path || '').replace(/\\/g, '/') === path.replace(/\\/g, '/')
+            i => i.card_id === (tab.dataset.cardId || null)
+                || (!i.card_id && (i.model_path || '').replace(/\\/g, '/') === path.replace(/\\/g, '/'))
         );
         if (!inst || inst.status !== 'running') {
             showToast('O servidor encerrou logo após iniciar. Verifique os logs abaixo.', 'error');

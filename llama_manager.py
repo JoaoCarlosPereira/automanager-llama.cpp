@@ -11,6 +11,7 @@ import glob
 import logging
 import html
 import statistics
+import uuid
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from urllib.parse import unquote
@@ -62,6 +63,7 @@ from log_manager import LogManager, logger
 from llama_server_bin import get_llama_server_bin, list_llama_server_bins
 from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager, _is_projector_filename
+from schemas import DuplicateModelCardRequest
 from cliproxy_auth import CLIProxyAuthManager
 from platform_manager import (
     CLIProxySidecarError,
@@ -134,7 +136,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.37"  # Exclusão completa de API genérica pela aba
+_DASHBOARD_JS_V = "4.2.41"  # Auto-start e roteamento independentes por card_id
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1166,6 +1168,42 @@ async def _ollama_cloud_models_for_listing(
 
 def _model_catalog_response() -> Dict[str, Any]:
     result = dict(model_scanner.scan() or {})
+    config = config_manager.get_config()
+    clones = config.get("model_card_clones", [])
+    card_configs = config.get("model_card_configs", {})
+    hidden = {normalize_model_path(p) for p in config.get("hidden_model_cards", []) if p}
+    physical = result.get("models", [])
+    by_path: Dict[str, dict] = {}
+    expanded = []
+    for raw in physical:
+        item = dict(raw)
+        path = normalize_model_path(item.get("path", ""))
+        item["card_id"] = str(item.get("id") or "")
+        item["is_clone"] = False
+        by_path[path] = item
+        if path not in hidden:
+            expanded.append(item)
+    sequence: Dict[str, int] = {}
+    for stored in clones if isinstance(clones, list) else []:
+        if not isinstance(stored, dict):
+            continue
+        path = normalize_model_path(stored.get("path", ""))
+        source = by_path.get(path)
+        card_id = str(stored.get("id") or "")
+        if not source or not card_id:
+            continue
+        sequence[path] = sequence.get(path, 1) + 1
+        clone = dict(source)
+        clone.update({
+            "id": card_id,
+            "card_id": card_id,
+            "is_clone": True,
+            "instance_number": sequence[path],
+            "name": f'{source.get("name", "Modelo")} (Instância {sequence[path]})',
+            "last_config": card_configs.get(card_id) or source.get("last_config"),
+        })
+        expanded.append(clone)
+    result["models"] = expanded
     auth_status = cliproxy_auth_manager.list_status()
     platforms = []
     for item in platform_manager.catalog():
@@ -1185,6 +1223,17 @@ def _model_catalog_response() -> Dict[str, Any]:
         platforms.append(entry)
     result["platforms"] = platforms
     return result
+
+
+def _clone_config_id(card_id: Optional[str]) -> Optional[str]:
+    """Return card_id only when it identifies a persisted clone."""
+    if not card_id:
+        return None
+    clones = config_manager.get_config().get("model_card_clones", [])
+    return card_id if any(
+        isinstance(item, dict) and str(item.get("id")) == card_id
+        for item in clones
+    ) else None
 
 
 @app.post("/api/auth/login")
@@ -1281,6 +1330,28 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
     if not authenticated:
         raise HTTPException(status_code=401)
 
+    # A freshly imported DFlash can be the only compatible external draft but
+    # older clients may still submit mtp_model_path=null until their model list
+    # is refreshed. Muse Glimmer has no embedded MTP, so resolve that unique
+    # companion here instead of incorrectly launching it as draft-mtp.
+    if req.mtp_enabled and not req.mtp_model_path:
+        normalized_target = os.path.normpath(req.path)
+        scanned = model_scanner.scan()
+        model_entry = next(
+            (
+                item for item in scanned.get("models", [])
+                if os.path.normpath(item.get("path", "")) == normalized_target
+            ),
+            None,
+        )
+        dflash_candidates = [
+            path for path in (model_entry or {}).get("mtp_candidates", [])
+            if os.path.basename(path).lower().startswith(("dflash-", "dflash_"))
+        ]
+        if len(dflash_candidates) == 1 and not gpu_manager.detect_model_mtp(req.path):
+            req.mtp_model_path = dflash_candidates[0]
+            logger.info("Auto-selected unique DFlash draft for %s: %s", req.path, req.mtp_model_path)
+
     try:
         total_layers = req.total_layers
         if not total_layers:
@@ -1336,10 +1407,12 @@ async def start_model(req: StartRequest, authenticated: bool = Depends(require_a
                 else False
             ),
         },
+        card_id=_clone_config_id(req.card_id),
     )
     result = process_manager.start(
         model_path=req.path,
         gpu_weights=req.gpu_weights,
+        card_id=req.card_id,
         context_size=req.context_size,
         mmproj_path=req.mmproj_path,
         mmproj_disabled=req.mmproj_disabled or req.vision_enabled is False,
@@ -1879,10 +1952,63 @@ async def cancel_auto_balance(authenticated: bool = Depends(require_auth)):
 async def delete_model(req: DeleteRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
+    if req.card_id:
+        config = config_manager.load()
+        path = normalize_model_path(req.path)
+        clones = config.get("model_card_clones", [])
+        clones = clones if isinstance(clones, list) else []
+        hidden = [normalize_model_path(p) for p in config.get("hidden_model_cards", []) if p]
+        physical_id = hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
+        same = [item for item in clones if normalize_model_path(item.get("path", "")) == path]
+        is_clone = any(str(item.get("id")) == req.card_id for item in same)
+        if not is_clone and req.card_id != physical_id:
+            raise HTTPException(status_code=404, detail="Card de modelo não encontrado")
+        visible_count = len(same) + (0 if path in hidden else 1)
+        if visible_count > 1:
+            for inst in process_manager.get_status().get("instances", []):
+                if inst.get("card_id") == req.card_id and inst.get("status") == "running":
+                    await asyncio.to_thread(process_manager.stop, inst.get("port"))
+            if is_clone:
+                config["model_card_clones"] = [item for item in clones if str(item.get("id")) != req.card_id]
+                config.setdefault("model_card_configs", {}).pop(req.card_id, None)
+            elif path not in hidden:
+                config["hidden_model_cards"] = hidden + [path]
+            config_manager.save(config)
+            _invalidate_models_cache()
+            return {"message": "Card removido", "file_deleted": False}
+        config["model_card_clones"] = [item for item in clones if normalize_model_path(item.get("path", "")) != path]
+        for item in same:
+            config.setdefault("model_card_configs", {}).pop(str(item.get("id")), None)
+        config["hidden_model_cards"] = [item for item in hidden if item != path]
+        config_manager.save(config)
     model_scanner.delete_model(req.path)
     config_manager.replace_model_alias_target(req.path, None)
     _invalidate_models_cache()
-    return {"message": "Excluido"}
+    return {"message": "Excluido", "file_deleted": True}
+
+
+@app.post("/models/duplicate")
+async def duplicate_model_card(req: DuplicateModelCardRequest, authenticated: bool = Depends(require_auth)):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    path = normalize_model_path(req.path)
+    root = os.path.realpath(model_scanner.models_dir)
+    real_path = os.path.realpath(path)
+    if not real_path.startswith(root + os.sep):
+        raise HTTPException(status_code=403, detail="Modelo fora do diretório configurado")
+    if not os.path.isfile(real_path) or not real_path.lower().endswith(".gguf"):
+        raise HTTPException(status_code=404, detail="Arquivo de modelo não encontrado")
+    config = config_manager.load()
+    card_id = uuid.uuid4().hex[:12]
+    config.setdefault("model_card_clones", []).append({"id": card_id, "path": path})
+    source_cfg = config.get("model_card_configs", {}).get(req.card_id or "")
+    if source_cfg is None:
+        source_cfg = config_manager.get_model_settings(path)
+    config.setdefault("model_card_configs", {})[card_id] = dict(source_cfg or {})
+    config_manager.save(config)
+    _invalidate_models_cache()
+    logger.info("Duplicated model card %s for %s", card_id, path)
+    return {"message": "Card duplicado", "card_id": card_id, "path": path}
 
 
 @app.post("/rename")
@@ -1891,6 +2017,23 @@ async def rename_model(req: RenameRequest, authenticated: bool = Depends(require
         raise HTTPException(status_code=401)
     new_path = model_scanner.rename_model(req.path, req.new_name)
     config_manager.replace_model_alias_target(req.path, new_path)
+    config = config_manager.load()
+    old_norm = normalize_model_path(req.path)
+    changed = False
+    for item in config.get("model_card_clones", []):
+        if normalize_model_path(item.get("path", "")) == old_norm:
+            item["path"] = new_path
+            changed = True
+    hidden = config.get("hidden_model_cards", [])
+    updated_hidden = [
+        new_path if normalize_model_path(path) == old_norm else path
+        for path in hidden
+    ]
+    if updated_hidden != hidden:
+        config["hidden_model_cards"] = updated_hidden
+        changed = True
+    if changed:
+        config_manager.save(config)
     _invalidate_models_cache()
     return {"message": "Renomeado", "new_path": new_path}
 
@@ -2037,7 +2180,11 @@ async def ui_proxy(request: Request, port: int, path: str = ""):
 async def set_default_model(req: SetDefaultRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    config_manager.set_default_model(req.path, req.add)
+    clone_id = _clone_config_id(req.card_id)
+    if clone_id and req.path:
+        config_manager.update_model_settings(req.path, {"auto_start": req.add}, card_id=clone_id)
+    else:
+        config_manager.set_default_model(req.path, req.add)
     return {"message": "Configuracao salva"}
 
 
@@ -2095,7 +2242,7 @@ async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(requir
         settings["mmproj_disabled"] = True
     elif req.mmproj_path is None or (req.mmproj_path and req.mmproj_path != "__no_vision__"):
         settings["mmproj_disabled"] = False
-    config_manager.update_model_settings(req.model_path, settings)
+    config_manager.update_model_settings(req.model_path, settings, card_id=_clone_config_id(req.card_id))
     return {
         "status": "ok",
         "mmproj_path": req.mmproj_path,
@@ -2107,7 +2254,7 @@ async def set_mmproj(req: SetMmprojRequest, authenticated: bool = Depends(requir
 async def set_thinking(req: SetThinkingRequest, authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled})
+    config_manager.update_model_settings(req.model_path, {"thinking_enabled": req.thinking_enabled}, card_id=_clone_config_id(req.card_id))
     return {"message": "Configuracao salva"}
 
 
@@ -2119,16 +2266,17 @@ async def set_mtp_model(req: SetMtpModelRequest, authenticated: bool = Depends(r
         draft_path = os.path.realpath(req.mtp_model_path)
         models_root = os.path.realpath(model_scanner.models_dir)
         if not draft_path.startswith(models_root + os.sep):
-            raise HTTPException(status_code=403, detail="Draft MTP fora do diretório de modelos")
+            raise HTTPException(status_code=403, detail="Draft fora do diretório de modelos")
         if not os.path.isfile(draft_path):
-            raise HTTPException(status_code=404, detail="Arquivo draft MTP não encontrado")
-        if not os.path.basename(draft_path).lower().startswith(("mtp-", "mtp_")):
-            raise HTTPException(status_code=400, detail="O arquivo selecionado não parece ser um draft MTP")
+            raise HTTPException(status_code=404, detail="Arquivo draft não encontrado")
+        if not os.path.basename(draft_path).lower().startswith(("mtp-", "mtp_", "dflash-", "dflash_")):
+            raise HTTPException(status_code=400, detail="O arquivo selecionado não parece ser um draft MTP ou DFlash")
         mtp_path = draft_path.replace("\\", "/")
     else:
         mtp_path = None
-    config_manager.update_model_settings(req.model_path, {"mtp_model_path": mtp_path})
-    return {"message": "Draft MTP salvo", "mtp_model_path": mtp_path}
+    config_manager.update_model_settings(req.model_path, {"mtp_model_path": mtp_path}, card_id=_clone_config_id(req.card_id))
+    draft_type = gpu_manager.detect_draft_type(mtp_path) if mtp_path else None
+    return {"message": "Draft salvo", "mtp_model_path": mtp_path, "draft_type": draft_type}
 
 
 @app.post("/models/llama-bin")
@@ -2146,7 +2294,7 @@ async def set_llama_bin(req: SetLlamaBinRequest, authenticated: bool = Depends(r
         settings["turboquant_preset"] = req.turboquant_preset
     if not settings:
         raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
-    config_manager.update_model_settings(req.model_path, settings)
+    config_manager.update_model_settings(req.model_path, settings, card_id=_clone_config_id(req.card_id))
     return {"message": "Configuracao salva", **settings}
 
 
@@ -2740,6 +2888,26 @@ async def _smart_proxy_forward(
     route_headers.pop("host", None)
     instances = _hybrid_status().get("instances", [])
     await _ensure_platform_listing_registry(instances, route_headers)
+    requested_for_routing = str(data.get("model") or "")
+    if (
+        requested_for_routing
+        and platform_provider_for_listing(requested_for_routing) is None
+        and not any(
+            instance.get("backend_type") != "platform"
+            and requested_for_routing in {
+                str(instance.get("model") or ""),
+                str(instance.get("model_path") or ""),
+            }
+            for instance in instances
+        )
+    ):
+        # The registry may have been marked populated by another provider
+        # before this platform finished starting. Refresh once so an explicit
+        # bare model (for example gpt-5.6-sol) cannot be mistaken for a free
+        # alias and redirected by custom priority.
+        await _ensure_platform_listing_registry(
+            instances, route_headers, force=True
+        )
     # A resposta /v1/models e separada do catalogo de metadados. O catalogo
     # continua sendo usado para exibicao/capacidades, mas seus limites cloud
     # sao apenas informativos; o provedor decide o contexto efetivo.
@@ -2925,7 +3093,9 @@ async def _smart_proxy_forward(
             return JSONResponse(exc.payload(), status_code=exc.status_code)
 
     failed_backend_ids: set = set()
+    attempted_platform_models: set[tuple[str, str]] = set()
     failover_hops = 0
+    local_last_resort_used = False
     prev_backend_key: str = decision.backend_id or f"port:{decision.backend_port}"
     transport_failover = False
     while True:
@@ -3030,6 +3200,18 @@ async def _smart_proxy_forward(
             instances,
             route_headers,
         )
+        attempted_platform_models.add((str(decision.backend_id), forward_model))
+
+        def configured_quota_fallback() -> Optional[str]:
+            if decision.backend_type != "platform":
+                return None
+            settings = config_manager.get_platform_settings(decision.backend_id)
+            candidate = str(settings.get("fallback_model") or "").strip()
+            if not candidate or candidate == forward_model:
+                return None
+            if (str(decision.backend_id), candidate) in attempted_platform_models:
+                return None
+            return candidate
         payload_to_forward, custom_tool_conversions = _normalize_payload_for_backend(
             optimized_data, decision_instance
         )
@@ -3120,9 +3302,31 @@ async def _smart_proxy_forward(
         ):
             nonlocal decision, failover_hops, optimized_data, forward_body
             nonlocal prev_backend_key, transport_failover
+            nonlocal local_last_resort_used
             failed_backend_ids.add(current_id)
             failover_hops += 1
+
+            async def use_local_last_resort() -> bool:
+                nonlocal decision, local_last_resort_used
+                if local_last_resort_used:
+                    return False
+                replacement = await proxy_router.reassign_to_local_last_resort(
+                    decision.affinity_key,
+                    prompt_tokens=decision.prompt_tokens_estimated,
+                    required_context=decision.required_context_tokens,
+                    token_count_source=decision.token_count_source,
+                    required_capabilities=required_capabilities,
+                )
+                if replacement is None:
+                    return False
+                local_last_resort_used = True
+                await proxy_router.acquire(replacement.backend_id)
+                decision = replacement
+                return True
+
             if failover_hops > _PROXY_MAX_FAILOVER_HOPS:
+                if await use_local_last_resort():
+                    return None
                 return JSONResponse(
                     ProxyError(
                         502, "Erro ao conectar na instancia do modelo",
@@ -3165,8 +3369,12 @@ async def _smart_proxy_forward(
                     required_capabilities=required_capabilities,
                 )
             except ProxyError as pe:
+                if await use_local_last_resort():
+                    return None
                 return JSONResponse(pe.payload(), status_code=pe.status_code)
             if new_decision is None:
+                if await use_local_last_resort():
+                    return None
                 return JSONResponse(
                     ProxyError(
                         502, "Erro ao conectar na instancia do modelo",
@@ -3299,6 +3507,23 @@ async def _smart_proxy_forward(
                     await proxy_router.release(
                         decision.backend_id, affinity_key=decision.affinity_key
                     )
+                    quota_fallback = (
+                        configured_quota_fallback() if status == 429 else None
+                    )
+                    if quota_fallback:
+                        logger.warning(
+                            "[proxy] platform model=%s rate limited; retrying "
+                            "same backend=%s with configured fallback=%s",
+                            forward_model,
+                            decision.backend_id,
+                            quota_fallback,
+                        )
+                        attempted_platform_models.add(
+                            (str(decision.backend_id), quota_fallback)
+                        )
+                        decision.internal_model = quota_fallback
+                        await proxy_router.acquire(decision.backend_id)
+                        continue
                     err = await _failover(
                         f"HTTP {status}",
                         status_code=status,
@@ -3365,6 +3590,7 @@ async def _smart_proxy_forward(
             failover_cause: Optional[str] = None
             failover_status: Optional[int] = None
             failover_mark_unavailable = True
+            quota_fallback: Optional[str] = None
             try:
                 resp = await _proxy_post_with_retry(
                     target_url,
@@ -3403,6 +3629,8 @@ async def _smart_proxy_forward(
                 elif _is_retryable_upstream_status(resp.status_code):
                     failover_cause = f"HTTP {resp.status_code}"
                     failover_status = resp.status_code
+                    if resp.status_code == 429:
+                        quota_fallback = configured_quota_fallback()
                 else:
                     content = resp.content
                     content, usage = rewrite_json_model(
@@ -3423,6 +3651,20 @@ async def _smart_proxy_forward(
                     usage=usage,
                 )
             if failover_cause:
+                if quota_fallback:
+                    logger.warning(
+                        "[proxy] platform model=%s rate limited; retrying "
+                        "same backend=%s with configured fallback=%s",
+                        forward_model,
+                        decision.backend_id,
+                        quota_fallback,
+                    )
+                    attempted_platform_models.add(
+                        (str(decision.backend_id), quota_fallback)
+                    )
+                    decision.internal_model = quota_fallback
+                    await proxy_router.acquire(decision.backend_id)
+                    continue
                 err = await _failover(
                     failover_cause,
                     status_code=failover_status,
@@ -3829,6 +4071,13 @@ def _known_backend_id(backend_id: str) -> bool:
         return False
     if platform_manager.get(backend_id) is not None:
         return True
+    if backend_id.startswith("local-card:"):
+        card_id = backend_id.split(":", 1)[1]
+        if any(
+            str(model.get("card_id") or "") == card_id
+            for model in _model_catalog_response().get("models", [])
+        ):
+            return True
     return any(
         inst.get("backend_id") == backend_id
         for inst in _hybrid_status().get("instances", [])
@@ -3889,12 +4138,19 @@ async def set_model_proxy(
                 detail="default_model so e valido para plataformas (backend_id)",
             )
         settings["default_model"] = req.default_model
+    if req.fallback_model is not None:
+        if not req.backend_id:
+            raise HTTPException(
+                status_code=400,
+                detail="fallback_model so e valido para plataformas (backend_id)",
+            )
+        settings["fallback_model"] = req.fallback_model
     if not settings:
         raise HTTPException(status_code=400, detail="Nenhuma configuracao informada")
     if req.backend_id:
         config_manager.update_platform_settings(req.backend_id, settings)
     else:
-        config_manager.update_model_settings(req.model_path, settings)
+        config_manager.update_model_settings(req.model_path, settings, card_id=_clone_config_id(req.card_id))
     return {"message": "Configuracao salva"}
 
 
@@ -4160,14 +4416,14 @@ def _build_model_mtp_controls(model: dict, model_js: str, model_cfg: dict) -> st
         f'<button type="button" onclick="event.stopPropagation(); openMtpImportModal(\'{model_js}\')" '
         'class="mtp-import-btn w-8 h-8 flex items-center justify-center rounded '
         'bg-slate-800/50 text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-all" '
-        'title="Importar modelo draft MTP" aria-label="Importar modelo draft MTP">'
+        'title="Importar draft MTP ou DFlash" aria-label="Importar draft MTP ou DFlash">'
         '<i class="fas fa-bolt text-ui-label"></i></button>'
     )
     if not candidates:
         return import_btn
     saved = model_cfg.get("mtp_model_path")
     selected = saved if saved in candidates else candidates[0]
-    options = '<option value="">Sem MTP externo</option>'
+    options = '<option value="">Sem draft externo</option>'
     for candidate in candidates:
         name = html.escape(os.path.basename(candidate))
         value = html.escape(candidate, quote=True)
@@ -4181,7 +4437,7 @@ def _build_model_mtp_controls(model: dict, model_js: str, model_cfg: dict) -> st
         'rounded-lg px-2 py-1 text-ui-label font-bold max-w-[11rem]" '
         'onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" '
         f'onchange="onMtpModelChange(\'{safe_js}\', this)" '
-        'title="Draft MTP deste modelo" aria-label="Draft MTP deste modelo">'
+        'title="Draft MTP ou DFlash deste modelo" aria-label="Draft MTP ou DFlash deste modelo">'
         f"{options}</select>"
     )
 
@@ -4484,14 +4740,14 @@ def _build_html(
             <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onclick="closeMtpImportModal()"></div>
             <div class="relative glass w-full max-w-lg rounded-3xl border border-amber-500/30 shadow-2xl overflow-hidden">
                 <div class="p-6 md:p-8 border-b border-slate-800/60 bg-slate-900/40">
-                    <h2 class="text-lg font-bold text-white">Importar Draft MTP</h2>
-                    <p class="text-xs text-slate-500 mt-1">Baixe e vincule um GGUF MTP compatível somente ao modelo selecionado</p>
+                    <h2 class="text-lg font-bold text-white">Importar Draft MTP/DFlash</h2>
+                    <p class="text-xs text-slate-500 mt-1">Baixe e vincule um GGUF de draft compatível somente ao modelo selecionado</p>
                 </div>
                 <form id="mtp-import-form" class="p-6 md:p-8 space-y-4" onsubmit="submitMtpImport(event)">
                     <input type="hidden" id="mtp-import-model-path" value="">
                     <div>
-                        <label class="text-ui-body-sm font-black text-slate-500 uppercase tracking-widest pl-1">URL do GGUF MTP</label>
-                        <input type="url" id="mtp-import-url" required placeholder="https://.../mtp-modelo-Q8_0.gguf" class="w-full mt-2 px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-500/50">
+                        <label class="text-ui-body-sm font-black text-slate-500 uppercase tracking-widest pl-1">URL do GGUF de draft</label>
+                        <input type="url" id="mtp-import-url" required placeholder="https://.../dflash-modelo-Q4_K_M.gguf" class="w-full mt-2 px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-sm text-slate-200 outline-none focus:ring-2 focus:ring-amber-500/50">
                     </div>
                     <button type="submit" class="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-black rounded-xl transition-all uppercase">BAIXAR E VINCULAR</button>
                 </form>
@@ -5233,10 +5489,10 @@ def _build_html(
                                     </label>
                                 </div>
                                 <div class="{_CFG_FIELD} flex items-center gap-2 bg-slate-950/60 px-4 py-2 rounded-xl border border-slate-800 hover:border-amber-500/30 transition-all">
-                                    {_cfg_tip("Multi-Token Prediction: modelo draft prevê vários tokens à frente para acelerar a geração. Requer suporte no modelo/binário; consome VRAM extra.")}
+                                    {_cfg_tip("Decodificação especulativa com MTP embutido ou draft externo MTP/DFlash. O número define tokens de MTP ou o bloco máximo do DFlash; consome VRAM extra.")}
                                     <label class="flex items-center gap-2 cursor-pointer">
                                         <input type="checkbox" class="tab-mtp-toggle w-5 h-5 bg-slate-950 border-slate-700 rounded text-amber-600">
-                                        <span class="text-ui-body-sm font-bold uppercase text-slate-500">MTP</span>
+                                        <span class="text-ui-body-sm font-bold uppercase text-slate-500">Draft</span>
                                     </label>
                                     <input type="number" class="tab-mtp-draft-tokens w-12 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg px-2 py-1 text-ui-body-sm font-bold text-center focus:ring-1 focus:ring-amber-500/50 outline-none disabled:opacity-40 disabled:cursor-not-allowed" value="{default_mtp_draft_tokens}">
                                     <label class="cursor-pointer group/pin" title="Fixar valor no Auto Balance">
@@ -5336,7 +5592,7 @@ def _build_html(
                             <div class="flex gap-4 items-start text-amber-500/80">
                                 <i class="fas fa-bolt mt-1"></i>
                                 <div class="flex-1">
-                                    <p class="text-ui-body-sm font-black uppercase tracking-widest mb-1">MTP Indisponível</p>
+                                    <p class="text-ui-body-sm font-black uppercase tracking-widest mb-1">Draft indisponível</p>
                                     <p class="tab-mtp-warning-msg text-xs leading-relaxed"></p>
                                 </div>
                             </div>
@@ -5491,6 +5747,11 @@ def _build_html(
                                     <option value="">— Nenhum (não encaminhar) —</option>
                                 </select>
                                 <p class="text-xs text-slate-600 leading-snug">Usado quando esta plataforma não é a principal: requisições encaminhadas ao proxy são atendidas por este modelo.</p>
+                                <label class="block pt-2 text-ui-label font-black text-slate-500 uppercase tracking-wider">Modelo fallback após cota</label>
+                                <select class="platform-proxy-fallback-model w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-300 text-ui-label">
+                                    <option value="">— Nenhum fallback —</option>
+                                </select>
+                                <p class="text-xs text-slate-600 leading-snug">Tentado uma vez quando o modelo padrão retorna limite de cota, antes de bloquear a plataforma inteira.</p>
                             </div>
                         </div>
 
@@ -5586,21 +5847,37 @@ def _chain_shutdown_signals() -> None:
 def _auto_start_default_model() -> None:
     """Load the default models in the background so HTTP starts immediately."""
     default_models = config_manager.get_default_models()
-    if not default_models:
+    config = config_manager.get_config()
+    card_configs = config.get("model_card_configs", {})
+    clone_targets = [
+        (normalize_model_path(item.get("path", "")), str(item.get("id")))
+        for item in config.get("model_card_clones", [])
+        if isinstance(item, dict)
+        and item.get("path")
+        and item.get("id")
+        and card_configs.get(str(item.get("id")), {}).get("auto_start") is True
+    ]
+    targets = [(path, None) for path in default_models] + clone_targets
+    if not targets:
         return
 
-    logger.info(f"Auto-start requested for: {', '.join(default_models)}")
+    logger.info("Auto-start requested for: %s", ", ".join(
+        f"{path} [{card_id}]" if card_id else path for path, card_id in targets
+    ))
     
     # Track assigned ports to avoid collisions during batch start
     assigned_ports = set()
 
-    for model_path in default_models:
+    for model_path, card_id in targets:
         if not os.path.exists(model_path):
             logger.warning(f"Auto-start: model file not found: {model_path}")
             continue
 
         try:
-            saved_cfg = config_manager.get_model_settings(model_path)
+            saved_cfg = (
+                card_configs.get(card_id, {})
+                if card_id else config_manager.get_model_settings(model_path)
+            )
             if saved_cfg.get("gpu_weights"):
                 weights = [
                     GPUWeight(**w) if isinstance(w, dict) else w
@@ -5662,6 +5939,7 @@ def _auto_start_default_model() -> None:
 
             start_result = process_manager.start(
                 model_path=model_path,
+                card_id=card_id,
                 gpu_weights=weights,
                 context_size=context_size,
                 mmproj_path=mmproj_path,

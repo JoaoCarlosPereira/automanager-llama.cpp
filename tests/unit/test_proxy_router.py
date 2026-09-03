@@ -17,6 +17,10 @@ from proxy_router import (
     rewrite_json_model,
     rewrite_sse_stream,
 )
+from platform_manager import (
+    clear_platform_listing_registry,
+    register_platform_bare_model,
+)
 
 MAIN_PATH = "models/main.gguf"
 AUX0_PATH = "models/aux0.gguf"
@@ -524,6 +528,44 @@ class TestSelection:
         assert [backend["port"] for backend in snapshot[:2]] == [8087, 8085]
         assert decision.backend_port == 8087
         assert decision.reason == "custom_priority"
+
+    @pytest.mark.asyncio
+    async def test_explicit_platform_model_overrides_custom_priority(
+        self, router, proxy_config, status_holder
+    ):
+        codex = make_platform_instance(
+            port=9100, backend_id="platform:codex", provider="codex"
+        )
+        ollama = make_platform_instance(
+            port=-101,
+            backend_id="platform:ollama-cloud:account-1",
+            model="gpt-oss:120b",
+            provider="ollama-cloud",
+        )
+        status_holder["instances"] = [codex, ollama]
+        proxy_config.update_platform_settings(
+            "platform:codex", {"proxy_eligible": True}
+        )
+        proxy_config.update_platform_settings(
+            "platform:ollama-cloud", {"proxy_eligible": True}
+        )
+        proxy_config.update_smart_proxy_settings({
+            "primary_backend_id": "platform:codex",
+            "custom_priority": [ollama["backend_id"], codex["backend_id"]],
+        })
+
+        clear_platform_listing_registry()
+        try:
+            register_platform_bare_model("gpt-5.6-sol", "codex")
+            decision = await resolve(
+                router, body=body_with(model="gpt-5.6-sol")
+            )
+        finally:
+            clear_platform_listing_registry()
+
+        assert decision.backend_id == "platform:codex"
+        assert decision.provider == "codex"
+        assert decision.reason != "custom_priority"
 
     @pytest.mark.asyncio
     async def test_sticky_hit_ignores_load(self, router):

@@ -849,6 +849,44 @@ class GPUManager(GPUDetector):
         self._model_mtp_cache[norm] = (now, result)
         return result
 
+    def detect_draft_type(self, model_path: str) -> Optional[str]:
+        """Identify an external speculative draft as ``mtp`` or ``dflash``."""
+        name = os.path.basename(model_path).lower()
+        if name.startswith(("dflash-", "dflash_")):
+            return "dflash"
+        if name.startswith(("mtp-", "mtp_")):
+            return "mtp"
+
+        try:
+            bin_path = _llama_server_cmd()
+            bin_dir = os.path.dirname(bin_path)
+            env = os.environ.copy()
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            env["CUDA_VISIBLE_DEVICES"] = ""
+            try:
+                output = subprocess.check_output(
+                    [bin_path, "--model-info", model_path], env=env, timeout=15,
+                    stderr=subprocess.STDOUT,
+                ).decode(errors="replace")
+            except Exception:
+                gguf_tool = os.path.join(bin_dir, "llama-gguf")
+                if not os.path.exists(gguf_tool):
+                    return None
+                output = subprocess.check_output(
+                    [gguf_tool, model_path, "r", "n"], timeout=15,
+                    stderr=subprocess.STDOUT,
+                ).decode(errors="replace")
+            lowered = output.lower()
+            if ("architecture" in lowered and "dflash" in lowered) or any(
+                key in lowered for key in ("dflash.block_size", "target_layer_ids")
+            ):
+                return "dflash"
+            if "nextn_predict_layers" in lowered:
+                return "mtp"
+        except Exception as exc:
+            logger.warning("Could not detect draft type for %s: %s", model_path, exc)
+        return None
+
 def reasoning_cli_args(enabled: bool) -> List[str]:
     """Flags for 'thinking' models (e.g. DeepSeek-R1)."""
     if not enabled:
@@ -873,7 +911,14 @@ def mtp_cli_args(
     tokens = int(draft_tokens)
     reason = ""
     detection_path = mtp_model_path or model_path
-    if not detector.detect_model_mtp(detection_path):
+    draft_type = "mtp"
+    if mtp_model_path:
+        detect_type = getattr(detector, "detect_draft_type", None)
+        detected = detect_type(mtp_model_path) if callable(detect_type) else None
+        if detected in ("mtp", "dflash"):
+            draft_type = detected
+
+    if draft_type == "mtp" and not detector.detect_model_mtp(detection_path):
         logger.warning(
             "MTP ativado na UI para %s, mas model-info não detectou cabeças MTP; "
             "aplicando flags conforme configuração do usuário.",
@@ -882,11 +927,9 @@ def mtp_cli_args(
         reason = "MTP ativado na UI (model-info inconclusivo)"
 
     token_str = str(tokens)
-    flags = [
-        "--spec-type", "draft-mtp",
-        "--spec-draft-n-max", token_str,
-        "--spec-draft-n-min", token_str,
-    ]
+    flags = ["--spec-type", f"draft-{draft_type}", "--spec-draft-n-max", token_str]
+    if draft_type == "mtp":
+        flags.extend(["--spec-draft-n-min", token_str])
     if mtp_model_path:
         flags[0:0] = [
             "--spec-draft-model", mtp_model_path,

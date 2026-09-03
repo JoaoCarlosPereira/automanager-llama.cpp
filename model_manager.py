@@ -157,9 +157,12 @@ def _is_projector_filename(name_lower: str) -> bool:
 
 
 def _is_mtp_filename(name_lower: str) -> bool:
-    """MTP draft GGUFs are auxiliary models, not chat backends."""
+    """Speculative draft GGUFs are auxiliary models, not chat backends.
+
+    The legacy name is kept because the API/UI still expose ``mtp_*`` fields.
+    """
     return name_lower.endswith(".gguf") and (
-        name_lower.startswith("mtp-") or name_lower.startswith("mtp_")
+        name_lower.startswith(("mtp-", "mtp_", "dflash-", "dflash_"))
     )
 
 
@@ -171,7 +174,7 @@ _GGUF_QUANT_SUFFIX_RE = re.compile(
 
 def _mtp_compatibility_key(filename: str) -> str:
     stem = re.sub(r"\.gguf$", "", os.path.basename(filename), flags=re.IGNORECASE)
-    stem = re.sub(r"^mtp[-_]", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(?:mtp|dflash)[-_]", "", stem, flags=re.IGNORECASE)
     stem = _GGUF_QUANT_SUFFIX_RE.sub("", stem)
     stem = re.sub(r"-ud$", "", stem, flags=re.IGNORECASE)
     return stem.lower().replace("_", "-")
@@ -179,10 +182,26 @@ def _mtp_compatibility_key(filename: str) -> str:
 
 def _mtp_paths_for_model(model_path: str, drafts: List[dict]) -> List[str]:
     model_key = _mtp_compatibility_key(model_path)
-    return sorted(
+    compatible = sorted(
         draft["path"]
         for draft in drafts
         if _mtp_compatibility_key(draft["path"]) == model_key
+    )
+    if compatible:
+        return compatible
+
+    # Official DFlash companions are sometimes simply named dflash-kquant.gguf.
+    # It is safe to offer such an otherwise-unmatchable draft only beside the
+    # target model; ambiguous choices remain explicit in the UI.
+    model_dir = os.path.dirname(model_path)
+    return sorted(
+        draft["path"]
+        for draft in drafts
+        if os.path.dirname(draft["path"]) == model_dir
+        and re.match(
+            r"^dflash[-_](?:kquant|(?:i?q|bf|f)\d)",
+            os.path.basename(draft["path"]).lower(),
+        )
     )
 
 

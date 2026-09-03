@@ -34,6 +34,25 @@ def test_scanner_separates_mtp_draft_from_chat_models(tmp_path):
     assert result["models"][0]["mtp_candidates"] == [str(draft)]
 
 
+def test_scanner_separates_and_associates_dflash_in_same_directory(tmp_path):
+    model = tmp_path / "Muse-Glimmer-30B-UD-Q2_K_XL.gguf"
+    draft = tmp_path / "dflash-kquant.gguf"
+    model.write_text("", encoding="utf-8")
+    draft.write_text("", encoding="utf-8")
+
+    scanner = ModelScanner(MagicMock(load=MagicMock(return_value={})), MagicMock(), str(tmp_path))
+    result = scanner.scan()
+
+    assert [item["name"] for item in result["mtp_models"]] == [draft.name]
+    assert [item["name"] for item in result["models"]] == [model.name]
+    assert result["models"][0]["mtp_candidates"] == [str(draft)]
+
+
+def test_dflash_for_a_different_named_model_is_not_matched(tmp_path):
+    drafts = [{"path": str(tmp_path / "dflash-OtherModel-Q4_K_M.gguf")}]
+    assert _mtp_paths_for_model(str(tmp_path / "Muse-Glimmer-30B-Q2_K.gguf"), drafts) == []
+
+
 class TestProjectorScoping:
     def test_projector_paths_for_model_same_directory_only(self, tmp_path):
         model_path = tmp_path / "llava" / "model.gguf"

@@ -328,6 +328,7 @@ class ProcessManager:
                 try:
                     self.start(
                         model_path=request.path,
+                        card_id=request.card_id,
                         gpu_weights=gpu_weights,
                         context_size=request.context_size,
                         mmproj_path=request.mmproj_path,
@@ -461,6 +462,7 @@ class ProcessManager:
         model_path: str,
         gpu_weights: List[GPUWeight],
         context_size: int,
+        card_id: Optional[str] = None,
         mmproj_path: Optional[str] = None,
         mmproj_disabled: bool = False,
         split_mode: str = "layer",
@@ -536,7 +538,7 @@ class ProcessManager:
         if mtp_enabled and mtp_model_path and not os.path.isfile(mtp_model_path):
             raise HTTPException(
                 status_code=400,
-                detail=f"Modelo draft MTP não encontrado: {mtp_model_path}",
+                detail=f"Modelo draft não encontrado: {mtp_model_path}",
             )
         turbo_err = validate_turboquant_cache_types(cache_type_k, cache_type_v, llama_bin)
         if turbo_err:
@@ -668,6 +670,7 @@ class ProcessManager:
                 self.processes[port] = proc
                 self._requests[port] = StartRequest(
                     path=model_path,
+                    card_id=card_id,
                     mmproj_path=mmproj_path,
                     mmproj_disabled=mmproj_disabled,
                     gpu_weights=gpu_weights,
@@ -721,6 +724,7 @@ class ProcessManager:
                     "status": status,
                     "model": os.path.basename(req.path) if req else "unknown",
                     "model_path": req.path if req else None,
+                    "card_id": req.card_id if req else None,
                     "start_time": getattr(proc, "_start_time", None),
                     "config": req.model_dump() if req else None,
                 })
