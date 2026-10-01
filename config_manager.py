@@ -1052,14 +1052,18 @@ class AuthManager:
         self.config.save(config)
         return True
 
+    def _presented_api_token(self, request: Request) -> str:
+        """Token apresentado por clientes OpenAI (Bearer) ou Anthropic (x-api-key)."""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            return auth_header[7:].strip()
+        return request.headers.get("x-api-key", "").strip()
+
     def check_api_token(self, request: Request = None) -> bool:
-        """Bearer API token only — for OpenAI-compatible /v1 routes."""
+        """API token for /v1 routes: Authorization Bearer or x-api-key."""
         if request is None:
             return False
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.lower().startswith("bearer "):
-            return False
-        token = auth_header[7:].strip()
+        token = self._presented_api_token(request)
         stored = self.config.load().get("api_token", "")
         return bool(token and token == stored and self.token_mgr.validate(token))
 

@@ -797,8 +797,26 @@ def require_auth(request: Request) -> bool:
 
 
 def require_api_token(request: Request) -> bool:
-    """OpenAI-compatible routes: Bearer API token only (same as llama-server --api-key)."""
+    """Rotas /v1: Bearer (OpenAI) ou x-api-key (Anthropic), o mesmo token do llama-server."""
     return auth_manager.check_api_token(request)
+
+
+def _is_anthropic_messages_path(path: str) -> bool:
+    norm = path.strip("/")
+    return norm == "messages" or norm.startswith("messages/")
+
+
+def _ensure_bearer_from_api_key(headers: Dict[str, str]) -> None:
+    """llama-server valida Authorization Bearer; clientes Anthropic mandam x-api-key."""
+    if any(key.lower() == "authorization" for key in headers):
+        return
+    api_key = next(
+        (value for key, value in headers.items() if key.lower() == "x-api-key"),
+        "",
+    )
+    token = str(api_key or "").strip()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
 
 
 def _openai_auth_error() -> JSONResponse:
@@ -812,6 +830,25 @@ def _openai_auth_error() -> JSONResponse:
             }
         },
     )
+
+
+def _anthropic_auth_error() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "type": "error",
+            "error": {
+                "type": "authentication_error",
+                "message": "Invalid API Key",
+            },
+        },
+    )
+
+
+def _proxy_auth_error(path: str) -> JSONResponse:
+    if _is_anthropic_messages_path(path):
+        return _anthropic_auth_error()
+    return _openai_auth_error()
 
 # Context and Batch presets for the UI
 CONTEXT_PRESET_VALUES = [
@@ -2918,7 +2955,7 @@ async def _smart_proxy_forward(
     proxy_settings = config_manager.get_smart_proxy_settings()
     co_enabled = bool(
         proxy_settings.get("context_optimizer", {}).get("enabled", True)
-    )
+    ) and not _is_anthropic_messages_path(path)
     required_capabilities = derive_required_capabilities(data)
 
     optimized_data = data
@@ -3227,6 +3264,7 @@ async def _smart_proxy_forward(
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("content-length", None)
+        _ensure_bearer_from_api_key(headers)
         cloud_account = None
         generic_account = None
         if decision.provider == "ollama-cloud":
@@ -3539,9 +3577,10 @@ async def _smart_proxy_forward(
                         guarded_stream = guard_sse_stream(
                             upstream_byte_iter or response.aiter_bytes()
                         )
-                        guarded_stream = repair_plain_json_tool_call_stream(
-                            guarded_stream, payload_to_forward.get("tools")
-                        )
+                        if not _is_anthropic_messages_path(path):
+                            guarded_stream = repair_plain_json_tool_call_stream(
+                                guarded_stream, payload_to_forward.get("tools")
+                            )
                         if dec.rewrite:
                             # Reescrita por linha (ADR-006)
                             async for chunk in rewrite_sse_stream(
@@ -3695,14 +3734,15 @@ async def openai_proxy(
     path: str,
     authenticated: bool = Depends(require_api_token),
 ):
-    """Proxy OpenAI-compatible requests to the correct llama-server instance,
-    routing by the 'model' field in the request body (single-port multi-model).
+    """Proxy OpenAI (/v1/chat/completions) e Anthropic (/v1/messages) para a
+    instância llama-server escolhida pelo campo 'model'.
 
     Com o Modo Proxy Inteligente ativo, requisições ao modelo principal são
     roteadas pelo ProxyRouter (sticky + least-busy); o restante segue o fluxo
-    legado inalterado (ADR-003/ADR-004)."""
+    legado inalterado (ADR-003/ADR-004). O corpo Anthropic segue intacto:
+    o llama-server faz a conversão interna."""
     if not authenticated:
-        return _openai_auth_error()
+        return _proxy_auth_error(path)
     body = await request.body()
     request_started = time.perf_counter()
     data: Dict[str, Any] = {}
@@ -3751,9 +3791,9 @@ async def openai_proxy(
     proxy_settings = config_manager.get_smart_proxy_settings()
     proxy_enabled = bool(proxy_settings.get("enabled"))
 
-    # /v1/models: agregar todas as instancias (locais + plataforma) para clientes
-    # OpenAI-compatíveis (Cursor, etc.) validarem nomes de modelo na listagem.
-    # O Modo Proxy Inteligente continua atuando apenas em POST /v1/chat/completions.
+    # /v1/models agrega todas as instâncias para clientes OpenAI-compatíveis.
+    # O proxy inteligente atua no POST de chat/completions e de messages
+    # quando o modelo pedido é o principal.
     path_norm = path.strip("/")
     if request.method == "POST" and path_norm == "chat/completions" and data:
         data, repaired_tool_calls = normalize_tool_call_arguments(data)
@@ -3871,7 +3911,7 @@ async def openai_proxy(
         client_requested_model, target_instance, instances
     )
 
-    if request.method == "POST" and path_norm == "chat/completions":
+    if request.method == "POST" and path_norm in {"chat/completions", "messages"}:
         context_limit = _local_context_limit(target_instance)
         if context_limit is not None:
             token_budget = await _count_request_tokens(
@@ -3897,6 +3937,7 @@ async def openai_proxy(
     # O corpo pode ter sido re-serializado (alias/forward_model); o
     # content-length original do cliente fica inválido — httpx recalcula.
     headers.pop("content-length", None)
+    _ensure_bearer_from_api_key(headers)
     if target_instance.get("provider") == "generic-openai":
         account_id = str(target_instance.get("account_id") or "")
         generic_account = next(
@@ -5113,7 +5154,8 @@ def _build_html(
                  </div>
 
                  <div class="space-y-2 pt-4 border-t border-slate-800/30">
-                    <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Acesso API (OpenAI)</label>
+                    <label class="text-ui-label font-black text-slate-600 uppercase ml-1">Acesso API</label>
+                    <p class="text-ui-label text-slate-500 leading-relaxed">O mesmo token vale para /v1 (OpenAI) e /v1/messages (Anthropic).</p>
                     <div class="bg-slate-900 p-2 rounded-lg border border-slate-800 flex items-center justify-between">
                         <code id="api-token" data-full-token="{html.escape(api_token)}" class="text-ui-label text-amber-500/80 font-mono truncate mr-2">{html.escape(api_token[:11] + '…' + api_token[-8:]) if api_token else ''}</code>
                         <button type="button" onclick="copyApiToken()" title="Copiar token" class="text-slate-600 hover:text-white shrink-0"><i class="far fa-copy text-ui-body-sm"></i></button>
