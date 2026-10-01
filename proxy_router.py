@@ -201,6 +201,40 @@ def gpu_label(instance: Dict[str, Any]) -> str:
     return f"{name} #{index}" if index is not None else name
 
 
+def usage_for_accounting(usage: Any) -> Optional[dict]:
+    """Normaliza usage OpenAI ou Anthropic para a contagem da sessão sticky."""
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, (int, float)) and not isinstance(total, bool) and total > 0:
+        return usage
+    pieces = [
+        int(usage[key])
+        for key in ("input_tokens", "output_tokens")
+        if isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)
+    ]
+    if not pieces:
+        return usage
+    return {**usage, "total_tokens": sum(pieces)}
+
+
+def _rewrite_message_model(obj: dict, external_model: str) -> bool:
+    """Reescreve o model visível em Chat Completions e em message_start."""
+    changed = False
+    if "model" in obj:
+        obj["model"] = external_model
+        changed = True
+    message = obj.get("message")
+    if (
+        obj.get("type") == "message_start"
+        and isinstance(message, dict)
+        and "model" in message
+    ):
+        message["model"] = external_model
+        changed = True
+    return changed
+
+
 def _rewrite_sse_line(
     line: bytes, external_model: str, usage_holder: Optional[dict] = None
 ) -> bytes:
@@ -219,11 +253,17 @@ def _rewrite_sse_line(
         return line
     if not isinstance(obj, dict):
         return line
-    if usage_holder is not None and isinstance(obj.get("usage"), dict):
-        usage_holder["usage"] = obj["usage"]
-    if "model" not in obj:
+    if usage_holder is not None:
+        raw_usage = obj.get("usage")
+        if not isinstance(raw_usage, dict):
+            message = obj.get("message")
+            if isinstance(message, dict):
+                raw_usage = message.get("usage")
+        accounted = usage_for_accounting(raw_usage)
+        if accounted is not None:
+            usage_holder["usage"] = accounted
+    if not _rewrite_message_model(obj, external_model):
         return line
-    obj["model"] = external_model
     rewritten = b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8")
     return rewritten + b"\r" if has_cr else rewritten
 
@@ -268,7 +308,15 @@ def _sse_payload_is_terminal(payload: bytes) -> bool:
         "response.failed",
         "response.incomplete",
         "error",
+        "message_stop",
     }:
+        return True
+    delta = event.get("delta")
+    if (
+        event.get("type") == "message_delta"
+        and isinstance(delta, dict)
+        and delta.get("stop_reason")
+    ):
         return True
     choices = event.get("choices")
     return bool(
@@ -323,6 +371,7 @@ async def guard_sse_stream(
                 b"response.failed",
                 b"response.incomplete",
                 b"error",
+                b"message_stop",
             }:
                 terminal = True
         yield chunk
@@ -523,9 +572,8 @@ def rewrite_json_model(
         return content, None
     if not isinstance(obj, dict):
         return content, None
-    usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else None
-    if "model" in obj:
-        obj["model"] = external_model
+    usage = usage_for_accounting(obj.get("usage"))
+    if _rewrite_message_model(obj, external_model):
         return json.dumps(obj, ensure_ascii=False).encode("utf-8"), usage
     return content, usage
 

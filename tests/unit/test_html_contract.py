@@ -427,6 +427,7 @@ def test_html_contains_api_token(client):
     client.cookies.set("session_token", FakeAuthManager.valid_session)
     html = client.get("/").text
     assert 'id="api-token"' in html
+    assert "/v1/messages" in html
     assert FAKE_API_TOKEN in html
     assert 'data-full-token="' in html
     assert 'copyApiToken()' in html

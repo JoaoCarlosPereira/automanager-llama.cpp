@@ -619,6 +619,10 @@ class ProcessManager:
         if supports_cli_flag("--kv-unified", llama_bin):
             cmd.append("--kv-unified")
 
+        # Tool use da API Anthropic (/v1/messages) exige o chat template Jinja.
+        if supports_cli_flag("--jinja", llama_bin):
+            cmd.append("--jinja")
+
         if mmproj_path and os.path.exists(mmproj_path) and not mmproj_disabled:
             cmd.extend(["--mmproj", mmproj_path])
         elif not mmproj_disabled:
