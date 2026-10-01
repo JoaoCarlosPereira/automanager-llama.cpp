@@ -18,9 +18,13 @@ usage() {
 Usage: sudo bash installer/uninstall.sh [options]
 
 Options:
-  --purge   Remove local config, logs, and paths.json (models are kept)
+  --purge   Remove local config, logs, paths.json, and the Hugging Face
+            cache directory created by setup (models are kept)
   --yes     Skip confirmation prompt
   -h, --help  Show this help
+
+Managed llama.cpp binaries installed under bin/ are removed on every
+uninstall. Models, config, logs, and paths.json stay unless --purge is set.
 EOF
 }
 
@@ -65,6 +69,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=llama_cpp.sh
+source "${SCRIPT_DIR}/llama_cpp.sh"
 VENV_DIR="${PROJECT_DIR}/.venv"
 PATHS_FILE="${PROJECT_DIR}/paths.json"
 SERVICE_NAME="llama-manager.service"
@@ -119,10 +125,12 @@ echo ""
 echo "  Projeto:      ${PROJECT_DIR}"
 echo "  Servico:      ${SERVICE_NAME}"
 echo "  Virtualenv:   ${VENV_DIR}"
+echo "  llama.cpp:    arquivos gerenciados em ${PROJECT_DIR}/bin (se o setup os instalou)"
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
   echo "  Config:       ${CONFIG_FILE}"
   echo "  Logs:         ${LOGS_DIR}"
   echo "  paths.json:   ${PATHS_FILE}"
+  echo "  Cache HF:     ${PROJECT_DIR}/data/huggingface_cache"
 fi
 echo "  Modelos:      ${MODELS_DIR} (mantidos)"
 echo ""
@@ -166,6 +174,8 @@ if [[ -d "${VENV_DIR}" ]]; then
 else
   log_warn "Virtualenv not found at ${VENV_DIR}"
 fi
+
+remove_managed_llama_cpp || log_warn "Could not remove managed llama.cpp files."
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
   _purge_paths=()
@@ -226,6 +236,12 @@ if [[ "${PURGE_DATA}" -eq 1 ]]; then
     _validate_purge_path "${PATHS_FILE}" "paths.json" || { PURGE_DATA=0; }
   fi
 
+  # --- Hugging Face tokenizer cache created by setup (not model files) ---
+  HF_CACHE="${PROJECT_DIR}/data/huggingface_cache"
+  if [[ -d "${HF_CACHE}" ]]; then
+    _validate_purge_path "${HF_CACHE}" "huggingface cache" || { PURGE_DATA=0; }
+  fi
+
   if [[ "${PURGE_DATA}" -eq 1 ]]; then
     # Delete all validated paths
     for _pp in "${_purge_paths[@]}"; do
@@ -246,11 +262,12 @@ echo -e "${GREEN}  Automanager Llama.cpp desinstalado${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
-  echo -e "  Config, logs e paths.json foram removidos."
+  echo -e "  Config, logs, paths.json e o cache Hugging Face foram removidos."
 else
-  echo -e "  Config, logs e paths.json foram mantidos."
+  echo -e "  Config, logs, paths.json e o cache Hugging Face foram mantidos."
   echo -e "  Para remover tambem: ${YELLOW}sudo bash installer/uninstall.sh --purge --yes${NC}"
 fi
+echo -e "  Binarios llama.cpp gerenciados pelo setup foram removidos, quando existiam."
 echo -e "  Modelos mantidos em: ${YELLOW}${MODELS_DIR}${NC}"
 echo -e "  Codigo-fonte mantido em: ${YELLOW}${PROJECT_DIR}${NC}"
 echo ""
