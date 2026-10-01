@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.3';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.7';
+import { state } from './state.js?v=4.2.41';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.41';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.3';
+} from './gpu.js?v=4.2.41';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.22';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.12';
-import { checkForUpdates } from './version.js?v=4.2.3';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.41';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.41';
+import { checkForUpdates } from './version.js?v=4.2.41';
 
 // --- TAB MANAGEMENT ---
 
@@ -157,6 +157,10 @@ function jsString(value) {
     return String(value ?? '')
         .replace(/\\/g, '\\\\')
         .replace(/'/g, "\\'");
+}
+
+function markTabStatusStale(tab) {
+    if (tab) delete tab.dataset.lastRenderKey;
 }
 
 function platformDomId(backendId) {
@@ -1240,6 +1244,7 @@ export async function startSmartCalibration(path, tabId) {
             state.autoBalanceTabId = null;
             state.autoBalanceSeenActive = false;
             hideAutoBalanceProgress(tabId);
+            markTabStatusStale(tab);
             window.updateStatus();
             return;
         }
@@ -1260,6 +1265,7 @@ export async function startSmartCalibration(path, tabId) {
         state.autoBalanceTabId = null;
         state.autoBalanceSeenActive = false;
         hideAutoBalanceProgress(tabId);
+        markTabStatusStale(tab);
         window.updateStatus();
     }
 }
@@ -1435,6 +1441,7 @@ export async function applyProposedConfig(path, tabId) {
         if (!res.ok) {
             const err = await res.json();
             showToast('Erro ao salvar/iniciar: ' + (err.detail || 'Falha'), 'error');
+            markTabStatusStale(tab);
             window.updateStatus();
             return;
         }
@@ -1450,12 +1457,9 @@ export async function applyProposedConfig(path, tabId) {
 
         await window.updateModels?.();
         await window.updateStatus();
-        const openTab = state.activeTabs.find(t => t.kind === 'platform' && t.backendId === backendId);
-        if (openTab) {
-            await loadPlatformTabDetails(openTab.id, backendId);
-        }
     } catch (e) {
         showToast('Erro de rede ao salvar configuração.', 'error');
+        markTabStatusStale(tab);
         window.updateStatus();
     }
 }
@@ -2182,6 +2186,8 @@ export async function initDashboard() {
 }
 
 export function getTabActionsHtml(path, tabId, isRunning, port = 8085) {
+    const safePath = jsString(path);
+    const safeTabId = jsString(tabId);
     if (isRunning) {
         return `
             <a href="/ui/${port}/" target="_blank" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-ui-body-sm font-black rounded-xl flex items-center gap-2 uppercase tracking-widest shadow-xl shadow-blue-600/20 transition-all active:scale-95">
@@ -2193,7 +2199,7 @@ export function getTabActionsHtml(path, tabId, isRunning, port = 8085) {
         `;
     }
     return `
-        <button onclick="startModel('${path}', '${tabId}')" class="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white text-ui-body-sm font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-blue-600/30 transition-all">
+        <button onclick="startModel('${safePath}', '${safeTabId}')" class="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white text-ui-body-sm font-black rounded-2xl active:scale-95 flex items-center gap-3 uppercase tracking-[0.2em] shadow-2xl shadow-blue-600/30 transition-all">
             <i class="fas fa-bolt"></i> Iniciar Instância
         </button>
     `;
@@ -2954,6 +2960,7 @@ export async function startModel(path, tabId) {
         if (!res.ok) {
             const err = await res.json();
             showToast("Erro: " + (err.detail || "Falha ao iniciar"), 'error');
+            markTabStatusStale(tab);
             window.updateStatus();
             return;
         }
@@ -2977,13 +2984,14 @@ export async function startModel(path, tabId) {
         }
         if (!startData.probing && startData.mtp_applied !== undefined) {
             if (!startData.mtp_applied && startData.mtp_reason) {
-                window.showMtpWarning(startData.mtp_reason);
+                window.showMtpWarning(startData.mtp_reason, tabId);
             } else {
-                window.hideMtpWarning();
+                window.hideMtpWarning(tabId);
             }
         }
     } catch (e) {
         showToast("Erro de rede.", 'error');
+        markTabStatusStale(tab);
         window.updateStatus();
     } finally {
         delete tab.dataset.starting;
@@ -2997,10 +3005,17 @@ export async function stopModel(port = null) {
         detachTabLogs();
         const url = port !== null ? `/stop?port=${port}` : '/stop';
         const res = await apiFetch(url, {method: 'POST'});
-        if (res.ok) {
-            setTimeout(window.updateStatus, 1000);
+        if (sessionExpiredHandled) return;
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast('Erro: ' + (err.detail || 'Falha ao encerrar'), 'error');
+            window.updateStatus?.();
+            return;
         }
-    } catch (e) {}
+        setTimeout(window.updateStatus, 1000);
+    } catch (e) {
+        showToast('Erro de rede ao encerrar a instância.', 'error');
+    }
 }
 
 

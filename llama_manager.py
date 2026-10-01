@@ -136,7 +136,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.41"  # Auto-start e roteamento independentes por card_id
+_DASHBOARD_JS_V = "4.2.41"  # Auto-start e roteamento independentes por card_id; query ?v= única
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -4797,7 +4797,7 @@ def _build_html(
 
     version_update_modal = """
         <div id="version-update-modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4" role="dialog" aria-modal="true">
-            <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"></div>
+            <div id="version-update-backdrop" class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"></div>
             <div class="relative glass w-full max-w-2xl max-h-[80vh] flex flex-col rounded-3xl border border-blue-500/30 shadow-2xl overflow-hidden">
                 <div class="p-6 md:p-8 border-b border-slate-800/60 bg-slate-900/40">
                     <h2 class="text-xl font-bold text-white">Atualização Disponível</h2>
