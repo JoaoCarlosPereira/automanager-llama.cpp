@@ -63,6 +63,8 @@ tests/e2e/.pytest_cache/
 tests/integration/.pytest_cache/
 pytest_report.txt
 pytest_results.txt
+.coverage
+manager.pid
 
 # Games / artifacts
 angry_birds.html

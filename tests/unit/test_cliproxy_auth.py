@@ -9,6 +9,7 @@ from cliproxy_auth import (
     ensure_runtime_config,
     list_provider_auth_status,
     parse_login_output,
+    sync_antigravity_from_cli,
 )
 
 
@@ -159,3 +160,77 @@ def test_start_login_marks_completed_when_auth_file_appears(tmp_path):
     assert current is not None
     assert current["status"] == "completed"
     assert current["accounts"]
+
+
+def test_sync_antigravity_from_cli_missing(tmp_path):
+    missing_file = tmp_path / "does-not-exist"
+    res = sync_antigravity_from_cli(runtime_dir=tmp_path, cli_token_path=missing_file)
+    assert res is None
+
+
+def test_sync_antigravity_from_cli_success(tmp_path):
+    import base64
+
+    # Build dummy JWT id_token with email
+    payload = json.dumps({"email": "test-dev@example.com"}).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(payload).decode("utf-8").rstrip("=")
+    fake_jwt = f"header.{b64_payload}.signature"
+
+    token_file = tmp_path / "cli_token"
+    token_file.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "ya29.fake-token",
+                "refresh_token": "1//fake-refresh",
+                "token_type": "Bearer",
+                "expiry": "2026-10-01T17:00:00Z",
+            },
+            "id_token": fake_jwt,
+            "auth_method": "oauth",
+        }),
+        encoding="utf-8",
+    )
+
+    dest = sync_antigravity_from_cli(runtime_dir=tmp_path, cli_token_path=token_file)
+    assert dest is not None
+    assert dest.name == "antigravity-test-dev@example.com.json"
+    assert dest.is_file()
+
+    saved = json.loads(dest.read_text(encoding="utf-8"))
+    assert saved["email"] == "test-dev@example.com"
+    assert saved["access_token"] == "ya29.fake-token"
+    assert saved["refresh_token"] == "1//fake-refresh"
+
+
+def test_forward_http_callback(monkeypatch):
+    import http.server
+    import threading
+
+    received_path = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received_path.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.handle_request, daemon=True)
+    t.start()
+
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2Foauth-callback"
+    callback_url = f"http://localhost:{port}/oauth-callback?code=testcode123&state=teststate456"
+
+    CLIProxyAuthManager._forward_http_callback(callback_url, auth_url)
+    t.join(timeout=2)
+    server.server_close()
+
+    assert len(received_path) == 1
+    assert "code=testcode123" in received_path[0]
+    assert "state=teststate456" in received_path[0]
+

@@ -342,7 +342,7 @@ def test_static_proxy_controls_send_backend_id_payloads():
     assert "startup_latency_ms" in js
     assert "Prioridade de roteamento" in js
     assert "window.selectPlatform?.(backendId)" in js
-    assert "window.selectModel?.(modelPath, '')" in js
+    assert "window.selectModel?.(modelPath, cardId)" in js
     assert "data-model-path" in js
     assert "distance > 5" in js
     assert "pointerMoved || priorityDragActive" in js

@@ -609,7 +609,7 @@ class CLIProxySidecarManager:
         popen_factory: PopenFactory = subprocess.Popen,
         health_checker: Optional[HealthChecker] = None,
         port_available: Optional[PortChecker] = None,
-        health_timeout: float = 5.0,
+        health_timeout: float = 15.0,
     ) -> None:
         self._platform_manager = platform_manager
         self._log_manager = log_manager

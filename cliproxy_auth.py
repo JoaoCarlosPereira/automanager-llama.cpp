@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +38,7 @@ _LOGIN_COMMANDS = {
 }
 
 _DEFAULT_METHOD = {
-    "codex": "oauth",
+    "codex": "device",
     "claude": "oauth",
     "antigravity": "oauth",
 }
@@ -83,13 +87,54 @@ def ensure_runtime_config(runtime_dir: Optional[Path] = None, port: int = 8317) 
     return config_path
 
 
+def sync_antigravity_from_cli(
+    runtime_dir: Optional[Path] = None,
+    cli_token_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """If Antigravity CLI token (~/.gemini/antigravity-cli/antigravity-oauth-token) exists,
+    sync it into the cliproxy auth directory so CLIProxyAPI recognizes it."""
+    token_file = cli_token_path or (
+        Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    )
+    if not token_file.is_file():
+        return None
+    try:
+        raw = json.loads(token_file.read_text(encoding="utf-8"))
+        tok = raw.get("token") or {}
+        id_token = raw.get("id_token") or ""
+        email = "user"
+        if id_token and "." in id_token:
+            parts = id_token.split(".")
+            if len(parts) >= 2:
+                payload = parts[1]
+                payload += "=" * (-len(payload) % 4)
+                jwt_payload = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+                email = jwt_payload.get("email") or email
+
+        dest_dir = auth_dir_for(runtime_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = dest_dir / f"antigravity-{email}.json"
+        payload = {
+            "access_token": tok.get("access_token"),
+            "refresh_token": tok.get("refresh_token"),
+            "token_type": tok.get("token_type", "Bearer"),
+            "expiry": tok.get("expiry"),
+            "email": email,
+            "id_token": id_token,
+        }
+        dest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return dest_file
+    except Exception:
+        return None
+
+
 def list_provider_auth_status(
     runtime_dir: Optional[Path] = None,
 ) -> Dict[str, dict]:
     directory = auth_dir_for(runtime_dir)
     statuses: Dict[str, dict] = {}
     for provider, prefixes in _PROVIDER_PREFIXES.items():
-        status = _provider_status(provider, directory, prefixes)
+        status = _provider_status(provider, directory, prefixes, runtime_dir)
         statuses[provider] = {
             "provider": status.provider,
             "authenticated": status.authenticated,
@@ -101,8 +146,15 @@ def list_provider_auth_status(
 
 
 def _provider_status(
-    provider: str, directory: Path, prefixes: tuple[str, ...]
+    provider: str,
+    directory: Path,
+    prefixes: tuple[str, ...],
+    runtime_dir: Optional[Path] = None,
 ) -> ProviderAuthStatus:
+    if provider == "antigravity":
+        default_base = Path(INSTALL_ROOT) / "data" / "cliproxy"
+        if runtime_dir is None or Path(runtime_dir).resolve() == default_base.resolve():
+            sync_antigravity_from_cli(runtime_dir)
     accounts: List[str] = []
     if directory.is_dir():
         for path in sorted(directory.glob("*.json")):
@@ -276,18 +328,71 @@ class CLIProxyAuthManager:
             if session.get("status") in {"completed", "cancelled", "failed"}:
                 raise RuntimeError("Authentication session is no longer active")
             proc = session.get("process")
-            if proc is None or proc.stdin is None or proc.poll() is not None:
+            if proc is None or proc.poll() is not None:
                 raise RuntimeError("Authentication process is not waiting for callback")
             session["callback_submitted"] = True
             session["updated_at"] = time.time()
+            auth_url = session.get("parsed", {}).get("auth_url") or ""
 
-        try:
-            proc.stdin.write(callback_url + "\n")
-            proc.stdin.flush()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to submit callback URL: {exc}") from exc
+        # 1. Forward HTTP GET to local callback forwarder if listening
+        self._forward_http_callback(callback_url, auth_url)
+
+        # 2. Write to stdin in case process reads stdin
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(callback_url + "\n")
+                proc.stdin.flush()
+            except Exception:
+                pass
 
         return self.public_view(session_id)
+
+    @staticmethod
+    def _forward_http_callback(callback_url: str, auth_url: str) -> None:
+        target_port = None
+        target_path = "/oauth-callback"
+        if auth_url:
+            try:
+                parsed_auth = urllib.parse.urlparse(auth_url)
+                params = urllib.parse.parse_qs(parsed_auth.query)
+                redirect_uri = params.get("redirect_uri", [None])[0]
+                if redirect_uri:
+                    parsed_red = urllib.parse.urlparse(redirect_uri)
+                    if parsed_red.port:
+                        target_port = parsed_red.port
+                    if parsed_red.path:
+                        target_path = parsed_red.path
+            except Exception:
+                pass
+
+        query = ""
+        try:
+            parsed_cb = urllib.parse.urlparse(callback_url)
+            if parsed_cb.port and not target_port:
+                target_port = parsed_cb.port
+            if parsed_cb.path and parsed_cb.path not in ("", "/"):
+                target_path = parsed_cb.path
+            query = parsed_cb.query or ""
+            if not query and ("code=" in callback_url or "state=" in callback_url):
+                query = callback_url.split("?", 1)[-1]
+        except Exception:
+            if "code=" in callback_url:
+                query = callback_url.split("?", 1)[-1]
+
+        ports_to_try = [target_port] if target_port else [51121]
+        for port in ports_to_try:
+            if not port:
+                continue
+            try:
+                url = f"http://127.0.0.1:{port}{target_path}?{query}"
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "AutoManager-CallbackForwarder"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read()
+                break
+            except Exception:
+                pass
 
     def public_view(self, session_id: str) -> dict:
         with self._lock:
