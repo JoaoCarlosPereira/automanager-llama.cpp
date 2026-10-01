@@ -26,6 +26,9 @@ data/proxy_backend_benchmarks.json
 # Local model files (large binaries)
 data/models/
 
+# Binaries installed by installer/setup.sh (llama-server and bundled libs)
+bin/
+
 # Local auth tokens / session files (cliproxy, platform CLIs)
 data/cliproxy/auth/
 data/proxy_sessions.json

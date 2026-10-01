@@ -37,7 +37,7 @@
    cd automanager-llama.cpp
    ```
 
-2. **Install** with the Quick-Install script (requires root, Ubuntu/Debian, NVIDIA drivers, and `llama-server` on `PATH`):
+2. **Install** with the Quick-Install script (requires root, Ubuntu/Debian, and NVIDIA drivers; the script installs `llama-server` when it is not already present):
 
    ```bash
    sudo bash installer/setup.sh
@@ -190,11 +190,11 @@ Base URL: `http://<host>:8000`. Most endpoints require a valid **session cookie*
 | **OS** | Linux — Ubuntu 22.04+ or Debian 11+ (Quick-Install target) |
 | **GPU** | One or more NVIDIA GPUs with working drivers |
 | **`nvidia-smi`** | Must run successfully and list at least one GPU |
-| **`llama-server`** | Pre-built binary on `PATH` (not installed by setup script) |
+| **`llama-server`** | Installed by Quick-Install from [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) when missing. An existing binary on `PATH` or in `bin/` is kept |
 | **RAM / VRAM** | Depends on model and `context_size`; multi-GPU setups use tensor split |
 | **Disk** | Space for `.gguf` models under `models_dir` from `paths.json` (default `data/models/`) |
 
-CUDA toolkit installation is assumed if your `llama-server` build requires it; the installer does not install drivers or CUDA.
+The installer does not install NVIDIA drivers or the CUDA toolkit. When it downloads `llama-server`, it also fetches the matching CUDA runtime libraries published with that llama.cpp release.
 
 ---
 
@@ -206,8 +206,7 @@ CUDA toolkit installation is assumed if your `llama-server` build requires it; t
 - Python 3.11+
 - `sudo` / root access
 - NVIDIA drivers + `nvidia-smi`
-- `llama-server` on `PATH`
-- Git clone of this repository
+- Git clone of this repository (`llama-server` is downloaded by Quick-Install when missing)
 
 ### Quick-Install (recommended)
 
@@ -220,14 +219,15 @@ sudo bash installer/setup.sh
 The script will:
 
 1. Verify Ubuntu/Debian, root privileges, and Python 3.11+  
-2. Install `python3`, `python3-venv`, `python3-pip`, `python3-dev`, `curl`, `git`, `lsb-release`  
-3. Warn if `llama-server` is missing  
-4. Require at least one NVIDIA GPU  
-5. Create `paths.json` from `paths.json.example` when missing  
-6. Create or refresh `.venv/` and `pip install -r requirements.txt`  
-7. Create configured directories (`data/models`, `data/`, `logs/`) via `paths.py`  
-8. Install and enable `llama-manager.service`  
-9. Run `curl http://localhost:8000/` (public dashboard) and print the dashboard URL  
+2. Install `python3`, `python3-venv`, `python3-pip`, `python3-dev`, `curl`, `ca-certificates`, `git`, `tar`, `gzip`, `lsb-release`, `libgomp1`, and `libnuma1`  
+3. Require at least one NVIDIA GPU  
+4. Create `paths.json` from `paths.json.example` when missing  
+5. Create or update `.venv/` and run `pip install -r requirements.txt` (re-runs do not delete the venv unless `VENV_REBUILD=1`)  
+6. Install CLIProxyAPI, Codex, Google Antigravity (`agy`), and Claude Code when missing  
+7. Install the official `llama-server` / `llama-gguf` build into `bin/` when no binary is already available (`LLAMA_CPP_UPDATE=1` refreshes only the copy this setup installed)  
+8. Create configured directories (`data/models`, `data/`, `logs/`, `data/huggingface_cache`) via `paths.py`  
+9. Install and enable `llama-manager.service`  
+10. Run `curl http://localhost:8000/` (public dashboard) and print the dashboard URL  
 
 The script is **idempotent**: safe to re-run; it refreshes dependencies, rewrites the unit file, and restarts the service.
 
@@ -288,7 +288,7 @@ Edit `paths.json` to use absolute paths or a legacy layout. Installs under `/roo
 | **Health check failed after install** | `systemctl status llama-manager.service` and `journalctl -u llama-manager.service -n 50` |
 | **FALHA CRÍTICA / OOM** | Model + `context_size` exceeds total VRAM on selected GPUs; reduce context or use a smaller quant |
 | **No models listed** | `models_dir` from `paths.json` exists and contains `.gguf` files; permissions for the service user |
-| **`llama-server` not found** | Install binary and ensure `PATH` in the systemd unit includes its location |
+| **`llama-server` not found** | Re-run `sudo bash installer/setup.sh`, or place a binary on `PATH` or at `bin/llama-server` |
 | **GPU metrics empty** | `nvidia-smi` works as the service user; driver mismatch |
 | **401 on API calls** | Log in via dashboard or pass `Authorization: Bearer <key>` from `GET /api/key` |
 | **Logs not updating in UI** | Verify `logs/server.log` (or path from `paths.json`) exists and is writable |

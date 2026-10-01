@@ -15,6 +15,18 @@ if [[ "${EUID:-0}" -ne 0 ]]; then
   exit 1
 fi
 
+if [[ ! -f /etc/os-release ]]; then
+  log_error "Unsupported OS. Ubuntu or Debian required."
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+source /etc/os-release
+if [[ "${ID}" != "ubuntu" && "${ID}" != "debian" ]]; then
+  log_error "Unsupported distribution: ${ID}. Expected Ubuntu or Debian."
+  exit 1
+fi
+
 if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
   PYTHON_VERSION="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
   log_error "Python 3.11+ required (found ${PYTHON_VERSION})."
@@ -23,12 +35,9 @@ fi
 
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-  python3 python3-pip python3-venv python3-dev curl git lsb-release
-
-if ! command -v llama-server &>/dev/null; then
-  log_warn "llama-server not found in PATH."
-  log_warn "Install from: https://github.com/ggml-org/llama.cpp/releases"
-fi
+  python3 python3-pip python3-venv python3-dev \
+  curl ca-certificates git tar gzip lsb-release \
+  libgomp1 libnuma1
 
 if ! command -v nvidia-smi &>/dev/null; then
   log_error "nvidia-smi not found. Install NVIDIA drivers first."
@@ -48,7 +57,8 @@ VENV_DIR="${PROJECT_DIR}/.venv"
 
 # shellcheck source=platform_tools.sh
 source "${SCRIPT_DIR}/platform_tools.sh"
-install_platform_tools || log_warn "Continuing setup without full platform tool support."
+# shellcheck source=llama_cpp.sh
+source "${SCRIPT_DIR}/llama_cpp.sh"
 PATHS_FILE="${PROJECT_DIR}/paths.json"
 PATHS_EXAMPLE="${PROJECT_DIR}/paths.json.example"
 
@@ -64,33 +74,27 @@ else
   log_info "Using existing path configuration: ${PATHS_FILE}"
 fi
 
-if [[ -d "${VENV_DIR}" ]]; then
-  log_warn "Existing venv found at ${VENV_DIR}."
-  log_warn "To rebuild it, run with VENV_REBUILD=1."
-  if [[ "${VENV_REBUILD:-}" != "1" ]]; then
-    log_info "Skipping venv creation to preserve existing dependencies."
-    PYTHON_BIN="${VENV_DIR}/bin/python"
-  else
-    log_info "VENV_REBUILD=1 — removing existing venv and rebuilding."
-    rm -rf "${VENV_DIR}"
-    python3 -m venv "${VENV_DIR}"
-    # shellcheck source=/dev/null
-    source "${VENV_DIR}/bin/activate"
-    pip install --upgrade pip
-    pip install -r "${PROJECT_DIR}/requirements.txt"
-    PYTHON_BIN="${VENV_DIR}/bin/python"
-    log_info "Python dependencies installed"
-  fi
-else
+if [[ -d "${VENV_DIR}" && "${VENV_REBUILD:-}" == "1" ]]; then
+  log_info "VENV_REBUILD=1 — removing existing venv and rebuilding."
+  rm -rf "${VENV_DIR}"
+elif [[ -d "${VENV_DIR}" ]]; then
+  log_info "Existing venv found at ${VENV_DIR}. Updating Python dependencies in place."
+fi
+
+if [[ ! -d "${VENV_DIR}" ]]; then
   log_info "Creating virtualenv at ${VENV_DIR}..."
   python3 -m venv "${VENV_DIR}"
-  # shellcheck source=/dev/null
-  source "${VENV_DIR}/bin/activate"
-  pip install --upgrade pip
-  pip install -r "${PROJECT_DIR}/requirements.txt"
-  PYTHON_BIN="${VENV_DIR}/bin/python"
-  log_info "Python dependencies installed"
 fi
+
+# shellcheck source=/dev/null
+source "${VENV_DIR}/bin/activate"
+pip install --upgrade pip
+pip install -r "${PROJECT_DIR}/requirements.txt"
+PYTHON_BIN="${VENV_DIR}/bin/python"
+log_info "Python dependencies installed"
+
+install_platform_tools || log_warn "Continuing setup without full platform tool support."
+install_llama_cpp || log_warn "Continuing setup without a managed llama-server binary."
 
 log_info "Creating configured directories..."
 (cd "${PROJECT_DIR}" && "${PYTHON_BIN}" - <<'PY'
@@ -102,8 +106,11 @@ print(f"  config_file -> {paths.config_file}")
 print(f"  logs_dir    -> {paths.logs_dir}")
 PY
 )
+mkdir -p "${PROJECT_DIR}/data/huggingface_cache"
+log_info "Hugging Face cache directory: ${PROJECT_DIR}/data/huggingface_cache"
 
-SERVICE_FILE="/etc/systemd/system/llama-manager.service"
+SERVICE_NAME="llama-manager.service"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 cat >"${SERVICE_FILE}" <<EOF
 [Unit]
 Description=Automanager Llama.cpp
@@ -118,8 +125,8 @@ ExecStart=${VENV_DIR}/bin/python ${PROJECT_DIR}/llama_manager.py
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
-Environment=PATH=${VENV_DIR}/bin:/root/.local/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
-Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
+Environment=PATH=${VENV_DIR}/bin:${PROJECT_DIR}/bin:/root/.local/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LD_LIBRARY_PATH=${PROJECT_DIR}/bin:/usr/local/cuda/lib64
 Environment=HF_HOME=${PROJECT_DIR}/data/huggingface_cache
 KillMode=mixed
 KillSignal=SIGTERM
@@ -205,7 +212,9 @@ echo ""
 echo -e "  Login padrao: ${YELLOW}admin / admin${NC}"
 echo -e "  Altere a senha no primeiro acesso."
 echo ""
-echo -e "  Plataformas hibridas: Codex, Antigravity (agy) e Claude Code"
+echo -e "  llama-server: binario oficial em ${PROJECT_DIR}/bin quando o setup o instala"
+echo -e "  (um llama-server ja presente no PATH ou em bin/ e mantido)."
+echo -e "  Plataformas hibridas: Codex, Antigravity (agy), Claude Code e CLIProxyAPI"
 echo -e "  sao instaladas pelo setup. Autentique cada CLI antes de usar."
 echo ""
 echo -e "${GREEN}========================================${NC}"
