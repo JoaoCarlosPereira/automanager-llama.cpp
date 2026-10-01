@@ -1,11 +1,11 @@
-import { state } from './state.js?v=4.2.3';
-import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.2.3';
+import { state } from './state.js?v=4.2.41';
+import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.2.41';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
-} from './gpu.js?v=4.2.3';
+} from './gpu.js?v=4.2.41';
 import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.41';
 import { updateProxyPanel } from './proxy.js?v=4.2.41';
 
@@ -127,7 +127,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.2.26').then(m => {
+                        import('./models.js?v=4.2.41').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,
@@ -315,6 +315,7 @@ export async function updateDownloads() {
         if (sessionExpiredHandled || !res.ok) return;
         const data = await res.json();
         const container = document.getElementById('download-list');
+        if (!container) return;
         const entries = Object.entries(data.downloads || {});
         if (entries.length === 0) { container.innerHTML = '<p class="text-ui-label text-slate-600 text-center uppercase tracking-widest py-4">Nenhum download ativo</p>'; return; }
 
@@ -329,15 +330,15 @@ export async function updateDownloads() {
             const eta = d.eta_seconds != null && d.eta_seconds > 0
                 ? formatDuration(d.eta_seconds)
                 : '--';
-            const familyLabel = d.family ? `<span class="text-ui-caption text-slate-600 uppercase tracking-widest">${d.family}</span>` : '';
+            const familyLabel = d.family ? `<span class="text-ui-caption text-slate-600 uppercase tracking-widest">${escapeHtml(d.family)}</span>` : '';
             return `
                 <div class="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
                     <div class="flex justify-between items-center gap-2">
                         <div class="min-w-0 flex-1">
-                            <p class="text-ui-label font-bold truncate text-slate-400 font-mono">${d.filename}</p>
+                            <p class="text-ui-label font-bold truncate text-slate-400 font-mono">${escapeHtml(d.filename)}</p>
                             ${familyLabel}
                         </div>
-                        <span class="text-ui-label font-black uppercase shrink-0 ${statusClass}">${d.status}</span>
+                        <span class="text-ui-label font-black uppercase shrink-0 ${statusClass}">${escapeHtml(d.status)}</span>
                     </div>
                     <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
                         <div class="h-full bg-blue-500 transition-all" style="width: ${progress}%"></div>
@@ -354,7 +355,7 @@ export async function updateDownloads() {
                         ${isActive ? `<span>ETA: ${eta}</span>` : ''}
                     </div>
                     ${isActive ? `
-                        <button type="button" onclick="cancelDownload('${id}')"
+                        <button type="button" onclick="cancelDownload('${escapeHtml(id)}')"
                             class="w-full py-1.5 rounded-lg border border-red-500/30 text-ui-label font-black uppercase tracking-widest text-red-400 hover:bg-red-500/10 transition-all">
                             Cancelar
                         </button>` : ''}
@@ -366,8 +367,14 @@ export async function updateDownloads() {
 export async function clearCompletedDownloads() {
     try {
         const res = await apiFetch('/downloads/clear', { method: 'POST' });
+        if (sessionExpiredHandled) return;
         await window.updateDownloads();
-        if (res.ok) showToast('Downloads concluídos removidos da lista.', 'success');
+        if (res.ok) {
+            showToast('Downloads concluídos removidos da lista.', 'success');
+        } else {
+            const err = await res.json().catch(() => ({}));
+            showToast('Erro: ' + (err.detail || 'Falha ao limpar downloads'), 'error');
+        }
     } catch (e) {
         showToast('Erro de rede ao limpar downloads.', 'error');
     }
@@ -423,7 +430,7 @@ export function attachTabLogs(tabId, portOverride = null, { force = false, sessi
             box.dataset.connecting = '1';
             appendLogLine(box, 'Aguardando instância...', { tone: 'muted', replaceConnecting: false });
         }
-        setLogStreamStatus(tab, 'stopped');
+        setLogStreamStatus(tab, 'idle');
         return;
     }
 
@@ -458,6 +465,15 @@ function consumeLogSseBuffer(buffer, box, tab) {
         sizeEl.innerText = `${(bytes / 1024).toFixed(1)} KB`;
     }
     return remainder;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function escapeLogHtml(value) {
@@ -507,6 +523,9 @@ function setLogStreamStatus(tab, status) {
     } else if (status === 'connecting') {
         statusEl.textContent = 'Conectando...';
         statusEl.className = 'tab-log-status text-ui-label font-black text-slate-500 uppercase tracking-widest';
+    } else if (status === 'idle') {
+        statusEl.textContent = 'Aguardando instância';
+        statusEl.className = 'tab-log-status text-ui-label font-black text-slate-600 uppercase tracking-widest';
     } else {
         statusEl.textContent = 'Fluxo interrompido';
         statusEl.className = 'tab-log-status text-ui-label font-black text-amber-500 uppercase tracking-widest';
