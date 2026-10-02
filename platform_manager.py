@@ -89,6 +89,12 @@ DEFAULT_PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         display_name="Google Antigravity",
         command_candidates=("agy", "antigravity", "antigravity.cmd", "antigravity.exe"),
     ),
+    PlatformDefinition(
+        backend_id="platform:cursor",
+        provider="cursor",
+        display_name="Cursor",
+        command_candidates=("agent", "cursor-agent", "agent.exe", "cursor-agent.exe"),
+    ),
     DEFAULT_OLLAMA_CLOUD_DEFINITION,
     DEFAULT_GENERIC_OPENAI_DEFINITION,
 )
@@ -471,6 +477,7 @@ PLATFORM_MODEL_OWNED_BY: Dict[str, tuple[str, ...]] = {
     "codex": ("openai",),
     "claude": ("claude",),
     "antigravity": ("antigravity",),
+    "cursor": ("cursor",),
 }
 
 
@@ -548,7 +555,7 @@ def _tool_specific_paths(command: str) -> List[str]:
                     home, ".codex", "packages", "standalone", "current", "bin", "codex"
                 )
             )
-        if command in ("agy", "antigravity"):
+        if command in ("agy", "antigravity", "agent", "cursor-agent"):
             paths.append(os.path.join(home, ".local", "bin", command))
     return paths
 

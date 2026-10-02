@@ -59,6 +59,11 @@ class TestFilterModelsForProvider:
         result = filter_models_for_provider(self.SAMPLE, "claude")
         assert [m["id"] for m in result] == ["claude-sonnet-4-6"]
 
+    def test_cursor_keeps_cursor_only(self):
+        sample = self.SAMPLE + [{"id": "composer-2", "owned_by": "cursor"}]
+        result = filter_models_for_provider(sample, "cursor")
+        assert [m["id"] for m in result] == ["composer-2"]
+
     def test_unknown_provider_returns_all(self):
         result = filter_models_for_provider(self.SAMPLE, "unknown")
         assert len(result) == 3
@@ -253,6 +258,26 @@ class TestDefaultExecutableResolver:
         assert antigravity["detected"] is True
         assert antigravity["executable_command"] == "agy"
         assert antigravity["executable_path"] == str(agy)
+
+    def test_detects_cursor_via_agent_candidate(self, tmp_config_manager, tmp_path):
+        agent = tmp_path / "agent"
+        agent.write_text("#!/bin/sh\necho agent\n", encoding="utf-8")
+        agent.chmod(0o755)
+
+        manager = PlatformIntegrationManager(
+            tmp_config_manager,
+            executable_resolver=lambda command: (
+                str(agent) if command == "agent" else None
+            ),
+        )
+
+        cursor = entry(manager.catalog(), "platform:cursor")
+
+        assert cursor["detected"] is True
+        assert cursor["provider"] == "cursor"
+        assert cursor["display_name"] == "Cursor"
+        assert cursor["executable_command"] == "agent"
+        assert cursor["executable_path"] == str(agent)
 
 
 class FakeProcess:

@@ -157,6 +157,7 @@ class TestPlatformProxyFlags:
         assert configs["platform:codex"] == DEFAULT_PLATFORM_CONFIG
         assert configs["platform:claude-code"] == DEFAULT_PLATFORM_CONFIG
         assert configs["platform:google-antigravity"] == DEFAULT_PLATFORM_CONFIG
+        assert configs["platform:cursor"] == DEFAULT_PLATFORM_CONFIG
 
     def test_update_platform_settings_uses_backend_id_without_model_configs(
         self, tmp_config_manager: ConfigManager

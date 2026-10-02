@@ -93,6 +93,7 @@ pip install -r "${PROJECT_DIR}/requirements.txt"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 log_info "Python dependencies installed"
 
+log_info "Installing or reinstalling platform tools, including CLIProxyAPI with Cursor and the agent CLI..."
 install_platform_tools || log_warn "Continuing setup without full platform tool support."
 install_llama_cpp || log_warn "Continuing setup without a managed llama-server binary."
 

@@ -134,6 +134,7 @@ const PLATFORM_LIMITS_INFO = {
     codex: 'Modelos via assinatura OpenAI/Codex. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
     claude: 'Modelos via assinatura Claude. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
     antigravity: 'Modelos via Google Antigravity. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
+    cursor: 'Modelos via CLI agent do Cursor, em modo somente leitura. Limites de taxa e uso seguem a conta autenticada.',
 };
 
 function fallbackModelId(path) {

@@ -93,6 +93,41 @@ Paste the Codex callback URL (or press Enter to keep waiting):
     assert "Paste the Codex callback URL" in (parsed["callback_hint"] or "")
 
 
+def test_list_provider_auth_status_detects_cursor_account(tmp_path):
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    (auth_dir / "cursor-dev@example.com.json").write_text(
+        '{"type":"cursor"}', encoding="utf-8"
+    )
+
+    statuses = list_provider_auth_status(tmp_path)
+    assert statuses["cursor"]["authenticated"] is True
+    assert statuses["cursor"]["accounts"] == ["cursor-dev@example.com.json"]
+    assert statuses["cursor"]["default_method"] == "oauth"
+
+
+def test_start_login_cursor_uses_cli_flag(tmp_path):
+    ensure_runtime_config(tmp_path)
+    captured = {}
+
+    def factory(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProcess(["https://cursor.com/login?user=dev\n"], return_code=0)
+
+    manager = CLIProxyAuthManager(
+        FakePlatformManager(),
+        runtime_dir=tmp_path,
+        popen_factory=factory,
+    )
+    view = manager.start_login("cursor")
+    deadline = time.time() + 2
+    while time.time() < deadline and not captured.get("cmd"):
+        time.sleep(0.01)
+
+    assert captured["cmd"][1:3] == ["-cursor-login", "-no-browser"]
+    assert view["provider"] == "cursor"
+
+
 def test_list_provider_auth_status_detects_codex_account(tmp_path):
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir()

@@ -22,6 +22,7 @@ _PROVIDER_PREFIXES = {
     "codex": ("codex-", "openai-"),
     "claude": ("claude-",),
     "antigravity": ("antigravity-", "agy-"),
+    "cursor": ("cursor-",),
 }
 
 _LOGIN_COMMANDS = {
@@ -35,12 +36,16 @@ _LOGIN_COMMANDS = {
     "antigravity": {
         "oauth": ("-antigravity-login", "-no-browser"),
     },
+    "cursor": {
+        "oauth": ("-cursor-login", "-no-browser"),
+    },
 }
 
 _DEFAULT_METHOD = {
     "codex": "device",
     "claude": "oauth",
     "antigravity": "oauth",
+    "cursor": "oauth",
 }
 
 

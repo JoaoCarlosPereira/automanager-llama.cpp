@@ -74,6 +74,7 @@ DEFAULT_PLATFORM_BACKEND_IDS = (
     "platform:codex",
     "platform:claude-code",
     "platform:google-antigravity",
+    "platform:cursor",
 )
 
 DEFAULT_PLATFORM_CONFIG = {

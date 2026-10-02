@@ -125,7 +125,13 @@ class TestInstallerScripts:
             return handle.read()
 
     def test_shell_scripts_parse(self):
-        for name in ("setup.sh", "uninstall.sh", "llama_cpp.sh", "platform_tools.sh"):
+        for name in (
+            "setup.sh",
+            "uninstall.sh",
+            "llama_cpp.sh",
+            "platform_tools.sh",
+            "build_cliproxy_cursor.sh",
+        ):
             proc = subprocess.run(
                 ["bash", "-n", os.path.join(INSTALLER, name)],
                 capture_output=True,
@@ -147,6 +153,17 @@ class TestInstallerScripts:
         assert "https://github.com/ggml-org/llama.cpp" in self._read("llama_cpp.sh")
         assert "libgomp1" in setup
         assert "libnuma1" in setup
+        assert "Installing or reinstalling platform tools" in setup
+
+    def test_setup_reinstalls_cursor_platform_tools(self):
+        tools = self._read("platform_tools.sh")
+        assert "already installed with Cursor support" not in tools
+        assert "Reinstalling CLIProxyAPI with Cursor support" in tools
+        assert "Reinstalling Cursor CLI" in tools
+        cliproxy = tools.split("install_cliproxyapi()", 1)[1].split("\ninstall_codex()", 1)[0]
+        assert cliproxy.index("install_cliproxyapi_cursor_fork") < cliproxy.index("Keeping the existing binary")
+        cursor = tools.split("install_cursor_cli()", 1)[1].split("\ninstall_cliproxyapi()", 1)[0]
+        assert "return 0" not in cursor.split("curl -fsSL https://cursor.com/install", 1)[0]
 
     def test_uninstall_removes_managed_binaries_and_purges_hf_cache(self):
         uninstall = self._read("uninstall.sh")
