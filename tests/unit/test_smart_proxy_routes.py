@@ -77,10 +77,14 @@ def default_instances():
 
 
 @pytest.fixture(autouse=True)
-def override_auth():
+def override_auth(monkeypatch):
     app.dependency_overrides[llama_manager.require_auth] = lambda: True
     app.dependency_overrides[llama_manager.require_api_token] = lambda: True
     app.dependency_overrides[auth_manager.check_auth] = lambda: True
+    async def fake_fetch():
+        return llama_manager._platform_model_catalog_cache
+    monkeypatch.setattr(llama_manager, "_fetch_platform_model_catalog", fake_fetch)
+    monkeypatch.setattr(llama_manager, "_platform_catalog_ids", None)
     yield
     app.dependency_overrides.clear()
 
@@ -142,11 +146,25 @@ def _mock_response(payload: dict, port: int = 0, status: int = 200):
     return resp
 
 
-def _models_response(model_ids):
+def _models_response(model_ids, owned_by=None):
+    def _owner(mid):
+        if owned_by:
+            return owned_by
+        mid_l = str(mid).lower()
+        if "codex" in mid_l or "gpt" in mid_l:
+            return "openai"
+        if "claude" in mid_l:
+            return "anthropic"
+        if "antigravity" in mid_l or "gemini" in mid_l:
+            return "antigravity"
+        if "cursor" in mid_l:
+            return "cursor"
+        return "automanager"
+
     return _mock_response({
         "object": "list",
         "data": [
-            {"id": model_id, "object": "model", "owned_by": "test"}
+            {"id": model_id, "object": "model", "owned_by": _owner(model_id)}
             for model_id in model_ids
         ],
     })
@@ -1505,7 +1523,7 @@ class TestHybridV1Availability:
             }
         )
         mock_get.return_value = _models_response(
-            ["gemini-primary", "claude-fallback"]
+            ["gemini-primary", "claude-fallback"], owned_by="antigravity"
         )
         mock_post.side_effect = [
             _mock_response({"error": "rate_limit"}, status=429),

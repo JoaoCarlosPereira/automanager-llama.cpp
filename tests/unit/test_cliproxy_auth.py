@@ -276,15 +276,22 @@ def test_sync_antigravity_from_cli_success(tmp_path):
     assert dest.is_file()
 
     saved = json.loads(dest.read_text(encoding="utf-8"))
+    assert saved["type"] == "antigravity"
     assert saved["email"] == "test-dev@example.com"
     assert saved["access_token"] == "ya29.fake-token"
     assert saved["refresh_token"] == "1//fake-refresh"
+    assert saved["project_id"] == "aicode-consumers"
+    assert saved["expired"] == "2026-10-01T17:00:00Z"
+    assert saved["disabled"] is False
 
     saved["priority"] = 2
+    saved["project_id"] = "custom-project"
     dest.write_text(json.dumps(saved), encoding="utf-8")
     sync_antigravity_from_cli(runtime_dir=tmp_path, cli_token_path=token_file)
     kept = json.loads(dest.read_text(encoding="utf-8"))
     assert kept["priority"] == 2
+    assert kept["project_id"] == "custom-project"
+    assert kept["type"] == "antigravity"
     assert kept["access_token"] == "ya29.fake-token"
 
 

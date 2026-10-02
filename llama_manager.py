@@ -665,7 +665,7 @@ async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]
 
 def _provider_catalog_ids() -> Optional[Dict[str, set]]:
     """Ids por plataforma do models.json, ou None se o catálogo ainda não carregou."""
-    if _platform_catalog_ids is None:
+    if _platform_catalog_ids is None or not any(_platform_catalog_ids.values()):
         return None
     return {name: set(model_ids) for name, model_ids in _platform_catalog_ids.items()}
 

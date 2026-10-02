@@ -2640,14 +2640,24 @@ class ProxyRouter:
                     and session_provider != primary.get("provider")
                 )
             )
-            # Durante failover, mantenha a sessão no secundário enquanto o
-            # principal estiver em cooldown. A incompatibilidade só invalida
-            # sessões antigas quando o principal configurado está utilizável.
+            _, primary_max_parallel = self._backend_flags(config, primary)
+            primary_has_capacity = (
+                self._backend_available(primary)
+                and (
+                    ignore_capacity
+                    or self.in_flight_for(primary) < primary_max_parallel
+                )
+                and self._supports_required_capabilities(
+                    primary, required_capability_set
+                )
+                and needed_ctx <= _context_limit(primary)
+            )
+            # Durante failover ou saturação, mantenha a sessão no secundário enquanto o
+            # principal estiver em cooldown ou sem vagas. A incompatibilidade invalida
+            # sessões antigas quando o principal tem capacidade livre para atender.
             if (
                 incompatible_session
-                and tag != CURSOR_SUBAGENT_TAG
-                and self._backend_available(primary)
-                and needed_ctx <= _context_limit(primary)
+                and primary_has_capacity
             ):
                 logger.warning(
                     "[proxy] dropping incompatible sticky session "
@@ -2704,33 +2714,46 @@ class ProxyRouter:
             and tag == CURSOR_SUBAGENT_TAG
             and existing.backend_id == primary_backend_id
         ):
-            # Sessões de subagente persistidas antes da regra de isolamento
-            # não devem continuar presas ao modelo principal. Migre-as assim
-            # que houver um local ou provedor secundário compatível.
-            secondary_candidates = self._candidates(
-                instances,
-                config,
-                primary_port,
-                needed_ctx,
-                ignore_capacity=ignore_capacity,
-                exclude_backend_ids={primary_backend_id},
-                external_model=external_model,
-                configured_primary_backend_id=configured_backend_id,
-                required_capabilities=required_capability_set,
+            _, primary_max_parallel = self._backend_flags(config, primary)
+            primary_has_capacity = (
+                self._backend_available(primary)
+                and (
+                    ignore_capacity
+                    or self.in_flight_for(primary) < primary_max_parallel
+                )
+                and self._supports_required_capabilities(
+                    primary, required_capability_set
+                )
+                and needed_ctx <= _context_limit(primary)
             )
-            secondary_choice = self._pick_least_busy(
-                secondary_candidates,
-                primary_port,
-                primary_backend_id,
-                preferred_provider=primary.get("provider"),
-            )
-            if secondary_choice is not None:
-                return _commit(
-                    secondary_choice,
-                    False,
-                    "cursor_subagent_primary_avoidance",
-                    existing,
-                ), None
+            if not primary_has_capacity:
+                # Sessões de subagente no modelo principal só devem migrar para um
+                # secundário se o principal estiver saturado (todas as vagas ocupadas)
+                # ou indisponível.
+                secondary_candidates = self._candidates(
+                    instances,
+                    config,
+                    primary_port,
+                    needed_ctx,
+                    ignore_capacity=ignore_capacity,
+                    exclude_backend_ids={primary_backend_id},
+                    external_model=external_model,
+                    configured_primary_backend_id=configured_backend_id,
+                    required_capabilities=required_capability_set,
+                )
+                secondary_choice = self._pick_least_busy(
+                    secondary_candidates,
+                    primary_port,
+                    primary_backend_id,
+                    preferred_provider=primary.get("provider"),
+                )
+                if secondary_choice is not None:
+                    return _commit(
+                        secondary_choice,
+                        False,
+                        "cursor_subagent_primary_avoidance",
+                        existing,
+                    ), None
 
         if (
             existing is not None
@@ -3074,10 +3097,30 @@ class ProxyRouter:
                     None,
                 ), None
 
-            # Um subagente não deve retornar ao modelo principal apenas porque
-            # ele ficou livre entre duas chamadas. Depois das GPUs locais,
-            # tente outro provedor compatível; o primário fica como último
-            # recurso abaixo, caso nenhum secundário esteja disponível.
+            # Se não houver capacidade local disponível, verifica se o backend
+            # principal tem vagas paralelas livres (max_parallel_requests > in_flight).
+            # Com capacidade livre no principal, atende diretamente nele.
+            _, primary_max_parallel = self._backend_flags(config, primary)
+            if (
+                self._backend_available(primary)
+                and self._supports_required_capabilities(
+                    primary, required_capability_set
+                )
+                and needed_ctx <= _context_limit(primary)
+                and (
+                    ignore_capacity
+                    or self.in_flight_for(primary) < primary_max_parallel
+                )
+            ):
+                return _commit(
+                    primary,
+                    False,
+                    "main_preference",
+                    None,
+                ), None
+
+            # Apenas quando o primário estiver saturado ou indisponível,
+            # recorre a provedores secundários compatíveis.
             secondary_candidates = self._candidates(
                 instances,
                 config,

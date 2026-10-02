@@ -739,6 +739,90 @@ class TestSelection:
         await router.release(continuation.backend_id)
 
     @pytest.mark.asyncio
+    async def test_cursor_subagent_uses_primary_platform_when_capacity_available(
+        self, router, proxy_config, status_holder
+    ):
+        claude = make_platform_instance(
+            port=8318,
+            backend_id="platform:claude-code",
+            provider="claude",
+            model="Claude Code",
+        )
+        codex = make_platform_instance(
+            port=8318,
+            backend_id="platform:codex",
+            provider="codex",
+            model="Codex",
+        )
+        status_holder["instances"] = [claude, codex]
+        proxy_config.update_platform_settings(
+            "platform:claude-code",
+            {"proxy_eligible": True, "max_parallel_requests": 10},
+        )
+        proxy_config.update_platform_settings(
+            "platform:codex",
+            {"proxy_eligible": True, "max_parallel_requests": 10},
+        )
+        router._requested_primary_resolver = lambda instances, model: claude
+
+        child_body = body_with(user="Trabalho", model="claude-opus-5-5")
+        child_body["messages"].append({
+            "role": "user",
+            "content": (
+                "Tarefa delegada.\n<system_reminder>You are running as a "
+                "subagent under a parent agent.</system_reminder>"
+            ),
+        })
+
+        # Quando Claude tem vagas livres (10 configuradas), o subagente vai para Claude
+        child = await resolve(router, body=child_body)
+        assert child.backend_id == "platform:claude-code"
+        assert child.reason == "main_preference"
+        await router.release(child.backend_id)
+
+        # Continuação do subagente permanece em Claude (sticky)
+        child_again = await resolve(router, body=child_body)
+        assert child_again.backend_id == "platform:claude-code"
+        assert child_again.reason == "sticky"
+        await router.release(child_again.backend_id)
+
+        # Se Claude estiver saturado (in_flight >= 10), subagente existente no primário migra para o secundário
+        router._in_flight[router._flight_key(claude)] = 10
+        avoided_child = await resolve(router, body=child_body)
+        assert avoided_child.backend_id == "platform:codex"
+        assert avoided_child.reason == "cursor_subagent_primary_avoidance"
+        await router.release(avoided_child.backend_id)
+
+        # Um NOVO subagente quando Claude está saturado recebe diretamente o secundário
+        new_child_body = body_with(user="Outro subagente independente", model="claude-opus-5-5")
+        new_child_body["messages"].append({
+            "role": "user",
+            "content": (
+                "Outra tarefa isolada.\n<system_reminder>You are running as a "
+                "subagent under a parent agent.</system_reminder>"
+            ),
+        })
+        new_child = await resolve(router, body=new_child_body)
+        assert new_child.backend_id == "platform:codex"
+        assert new_child.reason == "cursor_subagent_secondary_preference"
+        await router.release(new_child.backend_id)
+
+        # Liberando Claude, novo subagente volta a usar Claude (main_preference)
+        router._in_flight[router._flight_key(claude)] = 0
+        fresh_child_body = body_with(user="Terceiro subagente", model="claude-opus-5-5")
+        fresh_child_body["messages"].append({
+            "role": "user",
+            "content": (
+                "Terceira tarefa.\n<system_reminder>You are running as a "
+                "subagent under a parent agent.</system_reminder>"
+            ),
+        })
+        fresh_child = await resolve(router, body=fresh_child_body)
+        assert fresh_child.backend_id == "platform:claude-code"
+        assert fresh_child.reason == "main_preference"
+        await router.release(fresh_child.backend_id)
+
+    @pytest.mark.asyncio
     async def test_explicit_model_returns_from_fallback_when_available(
         self, router, proxy_config, status_holder
     ):

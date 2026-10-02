@@ -120,18 +120,42 @@ def sync_antigravity_from_cli(
         dest_dir = auth_dir_for(runtime_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file = dest_dir / f"antigravity-{email}.json"
+
+        existing_payload = {}
+        if dest_file.is_file():
+            try:
+                loaded = json.loads(dest_file.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing_payload = loaded
+            except Exception:
+                existing_payload = {}
+
+        expiry = tok.get("expiry")
+        project_id = (
+            existing_payload.get("project_id")
+            or raw.get("project_id")
+            or "aicode-consumers"
+        )
         payload = {
+            "type": "antigravity",
             "access_token": tok.get("access_token"),
             "refresh_token": tok.get("refresh_token"),
             "token_type": tok.get("token_type", "Bearer"),
-            "expiry": tok.get("expiry"),
+            "expiry": expiry,
+            "expired": expiry,
             "email": email,
+            "project_id": project_id,
             "id_token": id_token,
+            "disabled": bool(existing_payload.get("disabled", False)),
         }
-        existing_priority = _read_account_priority(dest_file)
+        existing_priority = _coerce_priority(existing_payload.get("priority"))
         if existing_priority:
             payload["priority"] = existing_priority
-        dest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        if dest_file.is_file() and existing_payload == payload:
+            return dest_file
+
+        dest_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return dest_file
     except Exception:
         return None
