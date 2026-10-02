@@ -1917,3 +1917,31 @@ class TestTask08ContextOptimizerIntegration:
         mock_post.assert_not_called()
         assert smart_env.router._sessions == {}
         assert all(smart_env.router.in_flight(p) == 0 for p in (8085, 8086, 8087))
+
+    @patch("llama_manager.client.post", new_callable=AsyncMock)
+    def test_anthropic_messages_endpoints_normalization(self, mock_post, smart_env):
+        mock_post.return_value = _mock_response({
+            "id": "msg_123",
+            "type": "message",
+            "content": [{"type": "text", "text": "ok"}],
+        })
+        body = {
+            "model": "main.gguf",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+
+        # 1. Standard /v1/messages
+        res1 = client.post("/v1/messages", json=body)
+        assert res1.status_code == 200
+        assert mock_post.call_args[0][0] == "http://127.0.0.1:8085/v1/messages"
+
+        # 2. Duplicate /v1/v1/messages?beta=true
+        res2 = client.post("/v1/v1/messages?beta=true", json=body)
+        assert res2.status_code == 200
+        assert mock_post.call_args[0][0] == "http://127.0.0.1:8085/v1/messages?beta=true"
+
+        # 3. Root /messages
+        res3 = client.post("/messages", json=body)
+        assert res3.status_code == 200
+        assert mock_post.call_args[0][0] == "http://127.0.0.1:8085/v1/messages"

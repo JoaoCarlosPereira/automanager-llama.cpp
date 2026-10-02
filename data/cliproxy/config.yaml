@@ -1,4 +1,4 @@
-port: 8318
+port: 8317
 host: "127.0.0.1"
 auth-dir: "/home/orangepi/dsv/automanager-llama.cpp/data/cliproxy/auth"
 api-keys: []

@@ -248,7 +248,7 @@ def _proxy_failure_cooldown(
             retry_after = (target - datetime.now(timezone.utc)).total_seconds()
         except (TypeError, ValueError, OverflowError):
             return float(base)
-    return max(float(base), min(max(retry_after, 0.0), 3600.0))
+    return max(float(base), min(max(retry_after, 0.0), 300.0))
 
 
 def _platform_rate_limit_retry_after(response: Optional[httpx.Response]) -> float:
@@ -814,6 +814,8 @@ def require_api_token(request: Request) -> bool:
 
 def _is_anthropic_messages_path(path: str) -> bool:
     norm = path.strip("/")
+    while norm.startswith("v1/"):
+        norm = norm[3:].strip("/")
     return norm == "messages" or norm.startswith("messages/")
 
 
@@ -3322,7 +3324,10 @@ async def _smart_proxy_forward(
                     status_code=502,
                 )
             headers["authorization"] = f"Bearer {cloud_account.api_key}"
-            target_url = f"https://ollama.com/v1/{path}"
+            clean_path = path.strip("/")
+            while clean_path.startswith("v1/"):
+                clean_path = clean_path[3:].strip("/")
+            target_url = f"https://ollama.com/v1/{clean_path}"
         elif decision.provider == "generic-openai":
             account_id = str(decision.backend_id or "").rsplit(":", 1)[-1]
             generic_account = next(
@@ -3346,11 +3351,19 @@ async def _smart_proxy_forward(
                 )
             if generic_account.api_key:
                 headers["authorization"] = f"Bearer {generic_account.api_key}"
+            clean_path = path.strip("/")
+            while clean_path.startswith("v1/"):
+                clean_path = clean_path[3:].strip("/")
             target_url = (
-                f"{generic_account.base_url.rstrip('/')}/{path.lstrip('/')}"
+                f"{generic_account.base_url.rstrip('/')}/{clean_path}"
             )
         else:
-            target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{path}"
+            clean_path = path.strip("/")
+            while clean_path.startswith("v1/"):
+                clean_path = clean_path[3:].strip("/")
+            target_url = f"http://127.0.0.1:{decision.backend_port}/v1/{clean_path}"
+        if request.url.query:
+            target_url = f"{target_url}?{request.url.query}"
         backend_label = (
             f"platform:{decision.provider or decision.backend_port}"
             if decision.backend_type == "platform"
@@ -3761,6 +3774,17 @@ async def _smart_proxy_forward(
             continue
 
 
+@app.api_route("/messages", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+@app.api_route("/messages/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def anthropic_messages_proxy(
+    request: Request,
+    path: str = "",
+    authenticated: bool = Depends(require_api_token),
+):
+    subpath = f"messages/{path}".strip("/") if path else "messages"
+    return await openai_proxy(request, path=subpath, authenticated=authenticated)
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def openai_proxy(
     request: Request,
@@ -3774,8 +3798,11 @@ async def openai_proxy(
     roteadas pelo ProxyRouter (sticky + least-busy); o restante segue o fluxo
     legado inalterado (ADR-003/ADR-004). O corpo Anthropic segue intacto:
     o llama-server faz a conversão interna."""
+    while path.startswith("v1/"):
+        path = path[3:]
+    path_norm = path.strip("/")
     if not authenticated:
-        return _proxy_auth_error(path)
+        return _proxy_auth_error(path_norm)
     body = await request.body()
     request_started = time.perf_counter()
     data: Dict[str, Any] = {}
@@ -3894,7 +3921,7 @@ async def openai_proxy(
         ):
             return await _smart_proxy_forward(
                 request,
-                path,
+                path_norm,
                 data,
                 client_model=client_requested_model,
                 received_payload=received_payload,
@@ -3991,9 +4018,11 @@ async def openai_proxy(
             )
         if generic_account.api_key:
             headers["authorization"] = f"Bearer {generic_account.api_key}"
-        target_url = f"{generic_account.base_url.rstrip('/')}/{path.lstrip('/')}"
+        target_url = f"{generic_account.base_url.rstrip('/')}/{path_norm}"
     else:
-        target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path}"
+        target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path_norm}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
 
     backend_label = (
         f"platform:{target_instance.get('provider') or target_instance.get('port')}"
