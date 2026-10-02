@@ -9,6 +9,7 @@ from platform_manager import (
     PlatformIntegrationManager,
     clear_platform_listing_registry,
     default_executable_resolver,
+    catalog_ids_by_provider,
     filter_models_for_provider,
     lookup_platform_bare_id,
     merge_platform_model_metadata,
@@ -75,6 +76,70 @@ class TestFilterModelsForProvider:
             strict=True,
         )
         assert result == []
+
+    def test_mixed_sidecar_does_not_fall_back_to_every_platform(self):
+        models = [
+            {"id": "gpt-6-astra", "owned_by": "openai"},
+            {"id": "claude-fable-5-1", "owned_by": "anthropic"},
+            {"id": "claude-sonnet-4-6", "owned_by": "anthropic"},
+        ]
+        assert filter_models_for_provider(models, "antigravity") == []
+        assert [model["id"] for model in filter_models_for_provider(models, "codex")] == [
+            "gpt-6-astra"
+        ]
+        assert [model["id"] for model in filter_models_for_provider(models, "claude")] == [
+            "claude-fable-5-1",
+            "claude-sonnet-4-6",
+        ]
+
+    def test_untagged_models_stay_visible_without_a_catalog(self):
+        models = [{"id": "custom-model"}, {"id": "other"}]
+        assert filter_models_for_provider(models, "antigravity") == models
+
+    def test_catalog_ids_keep_each_platform_on_its_own_tab(self):
+        models = [
+            {"id": "gpt-6-astra", "owned_by": "openai"},
+            {"id": "claude-fable-5-1", "owned_by": "anthropic"},
+            {"id": "claude-sonnet-4-6", "owned_by": "anthropic"},
+            {"id": "gemini-3.1-pro-low", "owned_by": "google"},
+        ]
+        catalog_ids = {
+            "codex": {"gpt-6-astra"},
+            "claude": {"claude-fable-5-1", "claude-sonnet-4-6"},
+            "antigravity": {"claude-sonnet-4-6", "gemini-3.1-pro-low"},
+            "cursor": set(),
+        }
+        assert [
+            model["id"]
+            for model in filter_models_for_provider(
+                models, "antigravity", catalog_ids=catalog_ids
+            )
+        ] == ["claude-sonnet-4-6", "gemini-3.1-pro-low"]
+        assert [
+            model["id"]
+            for model in filter_models_for_provider(
+                models, "claude", catalog_ids=catalog_ids
+            )
+        ] == ["claude-fable-5-1", "claude-sonnet-4-6"]
+        assert [
+            model["id"]
+            for model in filter_models_for_provider(
+                models, "codex", catalog_ids=catalog_ids
+            )
+        ] == ["gpt-6-astra"]
+
+    def test_catalog_ids_by_provider_ignores_other_sections(self):
+        payload = {
+            "claude": [{"id": "claude-fable-5-1"}],
+            "codex-pro": [{"id": "gpt-6-astra"}],
+            "antigravity": [{"id": "gemini-3.1-pro-low"}],
+            "gemini": [{"id": "gemini-2.5-pro"}],
+        }
+        grouped = catalog_ids_by_provider(payload)
+        assert grouped["claude"] == {"claude-fable-5-1"}
+        assert grouped["codex"] == {"gpt-6-astra"}
+        assert grouped["antigravity"] == {"gemini-3.1-pro-low"}
+        assert "gemini-2.5-pro" not in grouped["antigravity"]
 
 
 class TestPlatformModelListing:
