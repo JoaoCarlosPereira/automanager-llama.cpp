@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.41';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.41';
+import { state } from './state.js?v=4.2.42';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.42';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.41';
+} from './gpu.js?v=4.2.42';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.41';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.41';
-import { checkForUpdates } from './version.js?v=4.2.41';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.42';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.42';
+import { checkForUpdates } from './version.js?v=4.2.42';
 
 // --- TAB MANAGEMENT ---
 
@@ -136,6 +136,8 @@ const PLATFORM_LIMITS_INFO = {
     antigravity: 'Modelos via Google Antigravity. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
     cursor: 'Modelos via CLI agent do Cursor, em modo somente leitura. Limites de taxa e uso seguem a conta autenticada.',
 };
+
+const REORDERABLE_PLATFORM_PROVIDERS = new Set(['codex', 'claude', 'antigravity', 'cursor']);
 
 function fallbackModelId(path) {
     let hash = 0;
@@ -804,6 +806,37 @@ async function refreshLocalCursorSection(tab, modelPath) {
     renderLocalCursorAliases(tab, aliasState, modelPath);
 }
 
+async function reorderPlatformAccount(tabId, backendId, provider, accounts, name, direction) {
+    const tab = document.getElementById(tabId);
+    const accountsEl = tab?.querySelector('.platform-auth-accounts');
+    if (!accountsEl || accountsEl.dataset.reordering === '1') return;
+    const index = accounts.indexOf(name);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= accounts.length) return;
+    const ordered = accounts.slice();
+    const [moved] = ordered.splice(index, 1);
+    ordered.splice(target, 0, moved);
+    accountsEl.dataset.reordering = '1';
+    try {
+        const res = await apiFetch(`/cliproxy/auth/${encodeURIComponent(provider)}/priority`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accounts: ordered }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.detail || 'Falha ao salvar a ordem das contas', 'error');
+            return;
+        }
+        showToast('Ordem de prioridade atualizada');
+        await loadPlatformTabDetails(tabId, backendId);
+    } catch {
+        showToast('Erro de rede ao salvar a ordem das contas', 'error');
+    } finally {
+        if (accountsEl.isConnected) delete accountsEl.dataset.reordering;
+    }
+}
+
 export function populatePlatformTab(tabId, backendId, detail = null) {
     const tab = document.getElementById(tabId);
     if (!tab) return;
@@ -860,10 +893,42 @@ export function populatePlatformTab(tabId, backendId, detail = null) {
                 deleteOllamaCloudAccount(button.dataset.accountId, backendId, tab.id);
             });
         });
+    } else if (accounts.length > 1 && REORDERABLE_PLATFORM_PROVIDERS.has(platform.provider)) {
+        accountsEl.innerHTML = accounts.map((name, index) => `
+            <li class="flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-950/40 px-2 py-1.5">
+                <span class="w-4 shrink-0 text-center text-slate-600">${index + 1}</span>
+                <i class="fas fa-user-circle text-slate-600 shrink-0"></i>
+                <span class="min-w-0 flex-1 truncate" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                <button type="button" class="platform-account-move w-7 h-7 shrink-0 rounded border border-slate-700 text-slate-400 hover:bg-slate-800 disabled:opacity-30 disabled:pointer-events-none" data-account="${escapeHtml(name)}" data-direction="-1" title="Usar antes" aria-label="Subir prioridade" ${index === 0 ? 'disabled' : ''}>
+                    <i class="fas fa-chevron-up"></i>
+                </button>
+                <button type="button" class="platform-account-move w-7 h-7 shrink-0 rounded border border-slate-700 text-slate-400 hover:bg-slate-800 disabled:opacity-30 disabled:pointer-events-none" data-account="${escapeHtml(name)}" data-direction="1" title="Usar depois" aria-label="Descer prioridade" ${index === accounts.length - 1 ? 'disabled' : ''}>
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+            </li>`).join('');
+        accountsEl.querySelectorAll('.platform-account-move').forEach(button => {
+            button.addEventListener('click', () => {
+                reorderPlatformAccount(
+                    tabId,
+                    backendId,
+                    platform.provider,
+                    accounts,
+                    button.dataset.account,
+                    Number(button.dataset.direction),
+                );
+            });
+        });
     } else {
         accountsEl.innerHTML = accounts.length
             ? accounts.map(a => `<li class="truncate"><i class="fas fa-user-circle text-slate-600 mr-1"></i>${escapeHtml(a)}</li>`).join('')
             : '<li class="text-slate-600 italic">Nenhuma conta autenticada</li>';
+    }
+    const orderHint = tab.querySelector('.platform-auth-order-hint');
+    if (orderHint) {
+        orderHint.classList.toggle(
+            'hidden',
+            accounts.length < 2 || !REORDERABLE_PLATFORM_PROVIDERS.has(platform.provider),
+        );
     }
 
     const methods = auth.available_methods || [];

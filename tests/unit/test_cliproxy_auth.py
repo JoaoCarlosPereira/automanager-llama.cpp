@@ -9,6 +9,7 @@ from cliproxy_auth import (
     ensure_runtime_config,
     list_provider_auth_status,
     parse_login_output,
+    set_provider_account_order,
     sync_antigravity_from_cli,
 )
 
@@ -128,6 +129,49 @@ def test_start_login_cursor_uses_cli_flag(tmp_path):
     assert view["provider"] == "cursor"
 
 
+def test_account_order_prefers_higher_priority_and_persists(tmp_path):
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    (auth_dir / "claude-financeiro.json").write_text(
+        json.dumps({"type": "claude", "access_token": "keep-me", "priority": 1}),
+        encoding="utf-8",
+    )
+    (auth_dir / "claude-joao.json").write_text(
+        json.dumps({"type": "claude", "access_token": "also-keep"}),
+        encoding="utf-8",
+    )
+
+    status = list_provider_auth_status(tmp_path)["claude"]
+    assert status["accounts"] == ["claude-financeiro.json", "claude-joao.json"]
+    assert status["account_details"][0]["priority"] == 1
+
+    updated = set_provider_account_order(
+        "claude",
+        ["claude-joao.json", "claude-financeiro.json"],
+        tmp_path,
+    )
+    assert updated["accounts"] == ["claude-joao.json", "claude-financeiro.json"]
+    first = json.loads((auth_dir / "claude-joao.json").read_text(encoding="utf-8"))
+    second = json.loads((auth_dir / "claude-financeiro.json").read_text(encoding="utf-8"))
+    assert first["priority"] == 2
+    assert first["access_token"] == "also-keep"
+    assert second["priority"] == 1
+    assert second["access_token"] == "keep-me"
+
+
+def test_account_order_rejects_unknown_account(tmp_path):
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    (auth_dir / "claude-financeiro.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        set_provider_account_order(
+            "claude",
+            ["claude-financeiro.json", "../secrets.json"],
+            tmp_path,
+        )
+
+
 def test_list_provider_auth_status_detects_codex_account(tmp_path):
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir()
@@ -235,6 +279,13 @@ def test_sync_antigravity_from_cli_success(tmp_path):
     assert saved["email"] == "test-dev@example.com"
     assert saved["access_token"] == "ya29.fake-token"
     assert saved["refresh_token"] == "1//fake-refresh"
+
+    saved["priority"] = 2
+    dest.write_text(json.dumps(saved), encoding="utf-8")
+    sync_antigravity_from_cli(runtime_dir=tmp_path, cli_token_path=token_file)
+    kept = json.loads(dest.read_text(encoding="utf-8"))
+    assert kept["priority"] == 2
+    assert kept["access_token"] == "ya29.fake-token"
 
 
 def test_forward_http_callback(monkeypatch):

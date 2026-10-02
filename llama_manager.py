@@ -119,6 +119,7 @@ from schemas import (
     SetModelProxyRequest,
     CLIProxyAuthStartRequest,
     CLIProxyAuthCallbackRequest,
+    CLIProxyAccountOrderRequest,
     ModelAliasRequest,
     GenericOpenAIAddAccountRequest,
     GenericOpenAIUpdateAccountRequest,
@@ -136,7 +137,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.41"  # Auto-start e roteamento independentes por card_id; query ?v= única
+_DASHBOARD_JS_V = "4.2.42"  # Ordem de prioridade das contas de plataforma; query ?v= única
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1952,6 +1953,23 @@ async def cancel_cliproxy_auth_session(
     if session is None:
         raise HTTPException(status_code=404, detail="Sessao de autenticacao nao encontrada")
     return {"session": session}
+
+
+@app.post("/cliproxy/auth/{provider}/priority")
+async def set_cliproxy_account_priority(
+    provider: str,
+    req: CLIProxyAccountOrderRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        status = await asyncio.to_thread(
+            cliproxy_auth_manager.set_account_order, provider, req.accounts
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"provider": status}
 
 
 @app.post("/cliproxy/restart")
@@ -5724,7 +5742,8 @@ def _build_html(
                                 </button>
                             </div>
                             <p class="platform-auth-summary text-ui-body-sm text-slate-400">—</p>
-                            <ul class="platform-auth-accounts space-y-1.5 text-ui-label font-mono text-slate-500 max-h-32 overflow-y-auto custom-scroll"></ul>
+                            <ul class="platform-auth-accounts space-y-1.5 text-ui-label font-mono text-slate-500 max-h-40 overflow-y-auto custom-scroll"></ul>
+                            <p class="platform-auth-order-hint hidden text-ui-label text-slate-600">A primeira conta é usada primeiro. As seguintes entram quando ela estiver indisponível.</p>
                             <p class="platform-auth-methods text-ui-label text-slate-600">—</p>
                         </div>
                     </div>
