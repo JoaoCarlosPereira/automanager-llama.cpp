@@ -474,38 +474,105 @@ def should_skip_platform_model_listing(
 
 
 PLATFORM_MODEL_OWNED_BY: Dict[str, tuple[str, ...]] = {
-    "codex": ("openai",),
-    "claude": ("claude",),
+    "codex": ("openai", "codex"),
+    "claude": ("claude", "anthropic"),
     "antigravity": ("antigravity",),
     "cursor": ("cursor",),
 }
 
+# Nome do canal no catálogo estático do CLIProxyAPI. Gemini/Vertex ficam de
+# fora: entram na aba só quando o id está na seção da própria plataforma.
+_CATALOG_GROUP_PROVIDER = {
+    "claude": "claude",
+    "codex-free": "codex",
+    "codex-team": "codex",
+    "codex-plus": "codex",
+    "codex-pro": "codex",
+    "antigravity": "antigravity",
+    "cursor": "cursor",
+}
+
+
+def catalog_ids_by_provider(payload: Optional[Dict]) -> Dict[str, set]:
+    """Ids de modelo por plataforma, a partir das seções do models.json."""
+    grouped = {name: set() for name in PLATFORM_MODEL_OWNED_BY}
+    if not isinstance(payload, dict):
+        return grouped
+    for group, models in payload.items():
+        provider = _CATALOG_GROUP_PROVIDER.get(str(group or "").strip().lower())
+        if not provider or not isinstance(models, list):
+            continue
+        for model in models:
+            if isinstance(model, dict) and model.get("id"):
+                grouped[provider].add(str(model["id"]))
+    return grouped
+
+
+def _model_labels(model: Dict) -> set:
+    labels = set()
+    for key in ("type", "owned_by"):
+        value = str(model.get(key) or "").strip().lower()
+        if value:
+            labels.add(value)
+    return labels
+
 
 def filter_models_for_provider(
-    models: List[Dict], provider: str, *, strict: bool = False
+    models: List[Dict],
+    provider: str,
+    *,
+    catalog_ids: Optional[Dict[str, set]] = None,
+    strict: bool = False,
 ) -> List[Dict]:
     """Mantém apenas modelos do provedor da plataforma (sidecar agrega todos)."""
-    owners = PLATFORM_MODEL_OWNED_BY.get((provider or "").strip().lower())
+    provider = (provider or "").strip().lower()
+    owners = PLATFORM_MODEL_OWNED_BY.get(provider)
     if not owners:
         return list(models)
     allowed = {owner.lower() for owner in owners}
-    # Alguns gateways compatíveis omitem ``owned_by`` (ou devolvem um valor
-    # genérico). Sem uma indicação de provedor, preserve o catálogo em vez de
-    # esconder modelos válidos; quando há owners conhecidos, filtre de forma
-    # estrita para não duplicar o catálogo no sidecar compartilhado.
-    known_owners = {
-        str(model.get("owned_by") or "").lower()
-        for model in models
-        if isinstance(model, dict)
-    }
-    if not known_owners.intersection(allowed):
-        if strict:
+    entries = [model for model in models if isinstance(model, dict)]
+
+    if catalog_ids is not None:
+        own_ids = {str(model_id) for model_id in catalog_ids.get(provider, set())}
+        other_ids: set = set()
+        for name, model_ids in catalog_ids.items():
+            if name == provider:
+                continue
+            other_ids.update(str(model_id) for model_id in model_ids)
+        selected = []
+        for model in entries:
+            model_id = str(model.get("id") or "")
+            channel = str(model.get("type") or "").strip().lower()
+            owner = str(model.get("owned_by") or "").strip().lower()
+            # Canal explícito (type ou owned_by igual ao provedor) vence o
+            # catálogo. owned_by de fornecedor (anthropic, openai) não vence:
+            # o mesmo nome aparece em mais de uma plataforma.
+            if channel == provider or owner == provider:
+                selected.append(model)
+                continue
+            if model_id and model_id in own_ids:
+                selected.append(model)
+                continue
+            if model_id and model_id in other_ids:
+                continue
+            if _model_labels(model) & allowed:
+                selected.append(model)
+        return selected
+
+    # Alguns gateways omitem ``owned_by``. Sem marca nenhuma, preserve a
+    # lista. Se as marcas existem e são de outra plataforma, não despeje o
+    # catálogo inteiro nesta aba.
+    known_labels = set()
+    for model in entries:
+        known_labels.update(_model_labels(model))
+    if not known_labels.intersection(allowed):
+        if strict or known_labels:
             return []
-        return list(models)
+        return list(entries)
     return [
         model
-        for model in models
-        if str(model.get("owned_by") or "").lower() in allowed
+        for model in entries
+        if _model_labels(model) & allowed
     ]
 
 

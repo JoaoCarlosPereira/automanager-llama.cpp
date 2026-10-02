@@ -227,6 +227,11 @@ class CLIProxyAuthCallbackRequest(BaseModel):
     callback_url: str = Field(..., min_length=8)
 
 
+class CLIProxyAccountOrderRequest(BaseModel):
+    """Filenames in usage order. The first account is preferred by the sidecar."""
+    accounts: list[str] = Field(..., min_length=1)
+
+
 class ModelAliasRequest(BaseModel):
     """Alias externo (ex.: gpt-4o no Cursor) -> modelo real no backend."""
     alias: str = Field(..., min_length=1)

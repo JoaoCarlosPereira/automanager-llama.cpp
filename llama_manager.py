@@ -70,6 +70,7 @@ from platform_manager import (
     CLIProxySidecarManager,
     PlatformIntegrationError,
     PlatformIntegrationManager,
+    catalog_ids_by_provider,
     clear_platform_listing_registry,
     clear_platform_listings_for_provider,
     filter_models_for_provider,
@@ -119,6 +120,7 @@ from schemas import (
     SetModelProxyRequest,
     CLIProxyAuthStartRequest,
     CLIProxyAuthCallbackRequest,
+    CLIProxyAccountOrderRequest,
     ModelAliasRequest,
     GenericOpenAIAddAccountRequest,
     GenericOpenAIUpdateAccountRequest,
@@ -136,7 +138,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.41"  # Auto-start e roteamento independentes por card_id; query ?v= única
+_DASHBOARD_JS_V = "4.2.42"  # Ordem de prioridade das contas de plataforma; query ?v= única
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -526,6 +528,7 @@ _PLATFORM_MODEL_CATALOG_URL = (
 )
 _platform_model_catalog_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _platform_model_catalog_loaded_at = 0.0
+_platform_catalog_ids: Optional[Dict[str, set]] = None
 _platform_model_catalog_lock = asyncio.Lock()
 _ollama_cloud_model_catalog: Dict[str, Dict[str, Any]] = {}
 _ollama_cloud_model_catalog_loaded_at = 0.0
@@ -600,7 +603,7 @@ async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]
     request every time; if the catalog is unavailable, preserve the last
     successful snapshot and let unknown models report context as 0.
     """
-    global _platform_model_catalog_cache, _platform_model_catalog_loaded_at
+    global _platform_model_catalog_cache, _platform_model_catalog_loaded_at, _platform_catalog_ids
     now = time.monotonic()
     if _platform_model_catalog_cache and now - _platform_model_catalog_loaded_at < 600:
         return _platform_model_catalog_cache
@@ -651,12 +654,20 @@ async def _fetch_platform_model_catalog() -> Dict[str, Dict[str, Dict[str, Any]]
                 model_metadata = catalog.get(provider, {}).get(model_id)
                 if isinstance(model_metadata, dict):
                     model_metadata["context_length"] = context_length
-            if catalog:
+            if catalog or isinstance(payload, dict):
                 _platform_model_catalog_cache = catalog
+                _platform_catalog_ids = catalog_ids_by_provider(payload if isinstance(payload, dict) else {})
                 _platform_model_catalog_loaded_at = time.monotonic()
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError, TypeError) as exc:
             logger.warning("Falha ao carregar limites dos modelos plataforma: %s", exc)
     return _platform_model_catalog_cache
+
+
+def _provider_catalog_ids() -> Optional[Dict[str, set]]:
+    """Ids por plataforma do models.json, ou None se o catálogo ainda não carregou."""
+    if _platform_catalog_ids is None:
+        return None
+    return {name: set(model_ids) for name, model_ids in _platform_catalog_ids.items()}
 
 
 def _platform_model_context_limit(
@@ -1591,11 +1602,11 @@ async def get_platform_detail(
             for model in payload["available_models"]
         ]
     elif payload.get("status") == "running" and sidecar_port:
+        platform_catalog = await _fetch_platform_model_catalog()
         all_models = await _fetch_sidecar_models(sidecar_port)
         filtered = filter_models_for_provider(
-            all_models, provider
+            all_models, provider, catalog_ids=_provider_catalog_ids()
         )
-        platform_catalog = await _fetch_platform_model_catalog()
         payload["available_models"] = [
             merge_platform_model_metadata(model, provider, platform_catalog)
             for model in filtered
@@ -1952,6 +1963,23 @@ async def cancel_cliproxy_auth_session(
     if session is None:
         raise HTTPException(status_code=404, detail="Sessao de autenticacao nao encontrada")
     return {"session": session}
+
+
+@app.post("/cliproxy/auth/{provider}/priority")
+async def set_cliproxy_account_priority(
+    provider: str,
+    req: CLIProxyAccountOrderRequest,
+    authenticated: bool = Depends(require_auth),
+):
+    if not authenticated:
+        raise HTTPException(status_code=401)
+    try:
+        status = await asyncio.to_thread(
+            cliproxy_auth_manager.set_account_order, provider, req.accounts
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"provider": status}
 
 
 @app.post("/cliproxy/restart")
@@ -2413,7 +2441,9 @@ async def _aggregate_models_response(
             if inst.get("backend_type") == "platform":
                 local_ids = _local_model_ids(instances)
                 provider = str(inst.get("provider") or "")
-                models = filter_models_for_provider(models, provider)
+                models = filter_models_for_provider(
+                    models, provider, catalog_ids=_provider_catalog_ids()
+                )
                 models = [
                     platform_model_listing_entry(
                         merge_platform_model_metadata(m, provider, platform_catalog),
@@ -2548,6 +2578,7 @@ async def _ensure_platform_listing_registry(
     """
     if platform_listing_registry_populated() and not force:
         return
+    await _fetch_platform_model_catalog()
     hdrs = headers or {}
     for inst in instances:
         if inst.get("backend_type") != "platform":
@@ -2563,7 +2594,9 @@ async def _ensure_platform_listing_registry(
             resp.raise_for_status()
             local_ids = _local_model_ids(instances)
             models = filter_models_for_provider(
-                resp.json().get("data") or [], provider
+                resp.json().get("data") or [],
+                provider,
+                catalog_ids=_provider_catalog_ids(),
             )
             for m in models:
                 root = str(m.get("id") or "")
@@ -5724,7 +5757,8 @@ def _build_html(
                                 </button>
                             </div>
                             <p class="platform-auth-summary text-ui-body-sm text-slate-400">—</p>
-                            <ul class="platform-auth-accounts space-y-1.5 text-ui-label font-mono text-slate-500 max-h-32 overflow-y-auto custom-scroll"></ul>
+                            <ul class="platform-auth-accounts space-y-1.5 text-ui-label font-mono text-slate-500 max-h-40 overflow-y-auto custom-scroll"></ul>
+                            <p class="platform-auth-order-hint hidden text-ui-label text-slate-600">A primeira conta é usada primeiro. As seguintes entram quando ela estiver indisponível.</p>
                             <p class="platform-auth-methods text-ui-label text-slate-600">—</p>
                         </div>
                     </div>
@@ -6091,6 +6125,7 @@ async def _proxy_benchmark_targets(
     instances: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Resolve o modelo concreto usado para medir cada backend online."""
+    await _fetch_platform_model_catalog()
     models_by_port: Dict[int, List[Dict[str, Any]]] = {}
     for instance in instances:
         if instance.get("backend_type") != "platform":
@@ -6109,7 +6144,9 @@ async def _proxy_benchmark_targets(
         if backend_type == "platform":
             provider = str(instance.get("provider") or "")
             available = filter_models_for_provider(
-                models_by_port.get(int(instance["port"]), []), provider
+                models_by_port.get(int(instance["port"]), []),
+                provider,
+                catalog_ids=_provider_catalog_ids(),
             )
             for model in available:
                 root = str(model.get("id") or "")

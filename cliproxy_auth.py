@@ -56,6 +56,7 @@ class ProviderAuthStatus:
     accounts: tuple[str, ...]
     default_method: str
     available_methods: tuple[str, ...]
+    account_details: tuple[dict, ...] = ()
 
 
 def auth_dir_for(runtime_dir: Optional[Path] = None) -> Path:
@@ -127,6 +128,9 @@ def sync_antigravity_from_cli(
             "email": email,
             "id_token": id_token,
         }
+        existing_priority = _read_account_priority(dest_file)
+        if existing_priority:
+            payload["priority"] = existing_priority
         dest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return dest_file
     except Exception:
@@ -144,6 +148,7 @@ def list_provider_auth_status(
             "provider": status.provider,
             "authenticated": status.authenticated,
             "accounts": list(status.accounts),
+            "account_details": [dict(row) for row in status.account_details],
             "default_method": status.default_method,
             "available_methods": list(status.available_methods),
         }
@@ -160,12 +165,14 @@ def _provider_status(
         default_base = Path(INSTALL_ROOT) / "data" / "cliproxy"
         if runtime_dir is None or Path(runtime_dir).resolve() == default_base.resolve():
             sync_antigravity_from_cli(runtime_dir)
-    accounts: List[str] = []
+    rows: List[dict] = []
     if directory.is_dir():
-        for path in sorted(directory.glob("*.json")):
+        for path in directory.glob("*.json"):
             name = path.name
             if any(name.startswith(prefix) for prefix in prefixes):
-                accounts.append(name)
+                rows.append({"name": name, "priority": _read_account_priority(path)})
+    rows.sort(key=lambda row: (-int(row["priority"]), row["name"]))
+    accounts = [row["name"] for row in rows]
     methods = tuple(_LOGIN_COMMANDS.get(provider, {}).keys())
     return ProviderAuthStatus(
         provider=provider,
@@ -173,7 +180,76 @@ def _provider_status(
         accounts=tuple(accounts),
         default_method=_DEFAULT_METHOD.get(provider, "oauth"),
         available_methods=methods,
+        account_details=tuple(rows),
     )
+
+
+def _read_account_priority(path: Path) -> int:
+    """Return the sidecar routing priority stored in an auth file. Higher is used first."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    return _coerce_priority(payload.get("priority"))
+
+
+def _coerce_priority(raw) -> int:
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        return int(raw.strip())
+    return 0
+
+
+def _write_account_priority(path: Path, priority: int) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Arquivo de conta inválido: {path.name}")
+    payload["priority"] = int(priority)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def set_provider_account_order(
+    provider: str,
+    ordered_names: List[str],
+    runtime_dir: Optional[Path] = None,
+) -> dict:
+    """Persist usage order for one provider. The first name is used first."""
+    provider = provider.strip().lower()
+    if provider not in _PROVIDER_PREFIXES:
+        raise ValueError(f"Unsupported provider: {provider}")
+    if not isinstance(ordered_names, list) or any(not isinstance(name, str) for name in ordered_names):
+        raise ValueError("A ordem precisa ser uma lista de contas")
+    names = [name.strip() for name in ordered_names]
+    if any(not name or "/" in name or "\\" in name or name.startswith(".") for name in names):
+        raise ValueError("Nome de conta inválido")
+    if len(names) != len(set(names)):
+        raise ValueError("A ordem não pode repetir contas")
+
+    current = list_provider_auth_status(runtime_dir).get(provider, {})
+    known = list(current.get("accounts") or [])
+    if sorted(names) != sorted(known):
+        raise ValueError("A ordem deve incluir exatamente as contas autenticadas")
+
+    directory = auth_dir_for(runtime_dir)
+    total = len(names)
+    for index, name in enumerate(names):
+        path = directory / name
+        if not path.is_file():
+            raise ValueError(f"Conta não encontrada: {name}")
+        _write_account_priority(path, total - index)
+    return list_provider_auth_status(runtime_dir)[provider]
 
 
 def parse_login_output(text: str) -> dict:
@@ -239,6 +315,9 @@ class CLIProxyAuthManager:
 
     def list_status(self) -> Dict[str, dict]:
         return list_provider_auth_status(self._runtime_dir)
+
+    def set_account_order(self, provider: str, ordered_names: List[str]) -> dict:
+        return set_provider_account_order(provider, ordered_names, self._runtime_dir)
 
     def start_login(self, provider: str, method: Optional[str] = None) -> dict:
         provider = provider.strip().lower()

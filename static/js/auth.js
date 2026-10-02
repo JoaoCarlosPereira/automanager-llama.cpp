@@ -1,4 +1,4 @@
-import { state } from './state.js?v=4.2.41';
+import { state } from './state.js?v=4.2.42';
 
 export let sessionExpiredHandled = false;
 
