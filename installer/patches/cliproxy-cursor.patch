@@ -1,0 +1,1109 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 2b99077..2eaae57 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -115,6 +115,7 @@ func main() {
+ 	var xaiLogin bool
+ 	var devinLogin bool
+ 	var metaLogin bool
++	var cursorLogin bool
+ 	var discoverGateways bool
+ 	var discoverTimeout int
+ 	var discoverJSON bool
+@@ -144,6 +145,7 @@ func main() {
+ 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
+ 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
+ 	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
++	flag.BoolVar(&cursorLogin, "cursor-login", false, "Login to Cursor using the agent CLI")
+ 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
+ 	flag.IntVar(&discoverTimeout, "discover-timeout", 3, "Timeout in seconds for LAN discovery (default 3s)")
+ 	flag.BoolVar(&discoverJSON, "discover-json", false, "Output discovered gateways in JSON format")
+@@ -654,7 +656,7 @@ func main() {
+ 		CallbackPort: oauthCallbackPort,
+ 	}
+ 
+-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin
++	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin || cursorLogin
+ 	cloudConfigMissing := isCloudDeploy && !configFileExists
+ 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
+ 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
+@@ -734,6 +736,8 @@ func main() {
+ 		cmd.DoDevinLogin(cfg, options)
+ 	} else if metaLogin {
+ 		cmd.DoMetaLogin(cfg, options)
++	} else if cursorLogin {
++		cmd.DoCursorLogin(cfg, options)
+ 	} else {
+ 		// In cloud deploy mode without config file, just wait for shutdown signals
+ 		if isCloudDeploy && !configFileExists {
+@@ -968,7 +972,7 @@ func argvEnablesBoolFlag(args []string, name string) bool {
+ func argvFlagConsumesValue(name string) bool {
+ 	switch name {
+ 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
+-		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login",
++		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login", "cursor-login",
+ 		"discover", "discover-json", "home-disable-cluster-discovery",
+ 		"tui", "standalone", "local-model":
+ 		return false
+diff --git a/internal/cmd/auth_manager.go b/internal/cmd/auth_manager.go
+index 79356cb..7098797 100644
+--- a/internal/cmd/auth_manager.go
++++ b/internal/cmd/auth_manager.go
+@@ -22,6 +22,7 @@ func newAuthManager() *sdkAuth.Manager {
+ 		sdkAuth.NewXAIAuthenticator(),
+ 		sdkAuth.NewDevinAuthenticator(),
+ 		sdkAuth.NewMetaAuthenticator(),
++		sdkAuth.NewCursorAuthenticator(),
+ 	)
+ 	return manager
+ }
+diff --git a/internal/cmd/cursor_login.go b/internal/cmd/cursor_login.go
+new file mode 100644
+index 0000000..c4481e5
+--- /dev/null
++++ b/internal/cmd/cursor_login.go
+@@ -0,0 +1,35 @@
++package cmd
++
++import (
++	"context"
++	"fmt"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
++	log "github.com/sirupsen/logrus"
++)
++
++// DoCursorLogin runs the Cursor agent CLI login and stores the credential marker.
++func DoCursorLogin(cfg *config.Config, options *LoginOptions) {
++	if options == nil {
++		options = &LoginOptions{}
++	}
++	manager := newAuthManager()
++	record, savedPath, err := manager.Login(context.Background(), "cursor", cfg, &sdkAuth.LoginOptions{
++		NoBrowser:    options.NoBrowser,
++		CallbackPort: options.CallbackPort,
++		Metadata:     map[string]string{},
++		Prompt:       options.Prompt,
++	})
++	if err != nil {
++		log.Errorf("Cursor authentication failed: %v", err)
++		return
++	}
++	if savedPath != "" {
++		fmt.Printf("Authentication saved to %s\n", savedPath)
++	}
++	if record != nil && record.Label != "" {
++		fmt.Printf("Authenticated as %s\n", record.Label)
++	}
++	fmt.Println("Cursor authentication successful!")
++}
+diff --git a/internal/cursorcli/cli.go b/internal/cursorcli/cli.go
+new file mode 100644
+index 0000000..ad0fa27
+--- /dev/null
++++ b/internal/cursorcli/cli.go
+@@ -0,0 +1,471 @@
++// Package cursorcli runs the official Cursor agent CLI.
++package cursorcli
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"regexp"
++	"strings"
++	"time"
++)
++
++const defaultCompleteTimeout = 15 * time.Minute
++
++var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
++
++// Account is the signed-in Cursor CLI identity.
++type Account struct {
++	Email    string
++	Label    string
++	LoggedIn bool
++}
++
++// Model is one model id reported by the CLI.
++type Model struct {
++	ID          string
++	DisplayName string
++}
++
++// ResolveBinary finds the agent executable.
++func ResolveBinary() (string, error) {
++	for _, name := range []string{"agent", "cursor-agent"} {
++		if path, err := exec.LookPath(name); err == nil && path != "" {
++			return path, nil
++		}
++	}
++	home, err := os.UserHomeDir()
++	if err != nil {
++		return "", fmt.Errorf("cursor cli: agent executable not found")
++	}
++	for _, name := range []string{"agent", "cursor-agent"} {
++		candidate := filepath.Join(home, ".local", "bin", name)
++		info, errStat := os.Stat(candidate)
++		if errStat == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
++			return candidate, nil
++		}
++	}
++	return "", fmt.Errorf("cursor cli: agent executable not found")
++}
++
++// Status reads the current CLI login.
++func Status(ctx context.Context) (Account, error) {
++	binary, err := ResolveBinary()
++	if err != nil {
++		return Account{}, err
++	}
++	stdout, errRun := run(ctx, binary, nil, "", 30*time.Second, "status", "--format", "json")
++	if errRun != nil {
++		stdout, errRun = run(ctx, binary, nil, "", 30*time.Second, "whoami", "--format", "json")
++	}
++	if strings.TrimSpace(stdout) == "" && errRun != nil {
++		return Account{}, errRun
++	}
++	return ParseStatus(stdout), nil
++}
++
++// Login starts the CLI login flow. Credentials stay in the CLI's own store.
++func Login(ctx context.Context, noBrowser bool) error {
++	binary, err := ResolveBinary()
++	if err != nil {
++		return err
++	}
++	env := os.Environ()
++	if noBrowser {
++		env = append(env, "NO_OPEN_BROWSER=1")
++	}
++	cmd := exec.CommandContext(ctx, binary, "login")
++	cmd.Env = env
++	cmd.Stdin = os.Stdin
++	cmd.Stdout = os.Stdout
++	cmd.Stderr = os.Stderr
++	if errRun := cmd.Run(); errRun != nil {
++		return fmt.Errorf("cursor cli: login failed: %w", errRun)
++	}
++	return nil
++}
++
++// ListModels returns the models available to the signed-in account.
++func ListModels(ctx context.Context) ([]Model, error) {
++	binary, err := ResolveBinary()
++	if err != nil {
++		return nil, err
++	}
++	stdout, errRun := run(ctx, binary, nil, "", 30*time.Second, "models", "--format", "json")
++	models := ParseModels(stdout)
++	if len(models) > 0 {
++		return models, nil
++	}
++	stdout, errRun = run(ctx, binary, nil, "", 30*time.Second, "--list-models")
++	models = ParseModels(stdout)
++	if len(models) == 0 && errRun != nil {
++		return nil, errRun
++	}
++	return models, nil
++}
++
++// Complete runs one read-only agent turn in an empty workspace.
++func Complete(ctx context.Context, model, prompt, apiKey string) (string, error) {
++	binary, err := ResolveBinary()
++	if err != nil {
++		return "", err
++	}
++	model = strings.TrimSpace(model)
++	prompt = strings.TrimSpace(prompt)
++	if model == "" {
++		return "", fmt.Errorf("cursor cli: model is required")
++	}
++	if prompt == "" {
++		return "", fmt.Errorf("cursor cli: prompt is required")
++	}
++	workspace, errDir := os.MkdirTemp("", "cursor-ask-")
++	if errDir != nil {
++		return "", errDir
++	}
++	defer os.RemoveAll(workspace)
++
++	env := os.Environ()
++	if key := strings.TrimSpace(apiKey); key != "" {
++		env = append(env, "CURSOR_API_KEY="+key)
++	}
++	args := []string{
++		"-p",
++		"--mode", "ask",
++		"--model", model,
++		"--output-format", "json",
++		"--trust",
++	}
++	stdout, errRun := run(ctx, binary, env, workspace, defaultCompleteTimeout, append(args, prompt)...)
++	if errRun != nil && isUnknownFlag(errRun, stdout) {
++		stdout, errRun = run(ctx, binary, env, workspace, defaultCompleteTimeout, "-p", "--mode", "ask", "--model", model, "--output-format", "json", prompt)
++	}
++	text := ExtractResult(stdout)
++	if text == "" && errRun != nil {
++		return "", errRun
++	}
++	if text == "" {
++		return "", fmt.Errorf("cursor cli: empty response")
++	}
++	return text, nil
++}
++
++func run(ctx context.Context, binary string, env []string, dir string, timeout time.Duration, args ...string) (string, error) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if _, hasDeadline := ctx.Deadline(); !hasDeadline && timeout > 0 {
++		var cancel context.CancelFunc
++		ctx, cancel = context.WithTimeout(ctx, timeout)
++		defer cancel()
++	}
++	cmd := exec.CommandContext(ctx, binary, args...)
++	if len(env) > 0 {
++		cmd.Env = env
++	}
++	if dir != "" {
++		cmd.Dir = dir
++	}
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++	err := cmd.Run()
++	combined := stdout.String()
++	if err != nil {
++		message := strings.TrimSpace(stderr.String())
++		if message == "" {
++			message = strings.TrimSpace(combined)
++		}
++		if message == "" {
++			message = err.Error()
++		}
++		return combined, fmt.Errorf("cursor cli: %s", message)
++	}
++	return combined, nil
++}
++
++func isUnknownFlag(err error, stdout string) bool {
++	text := strings.ToLower(err.Error() + "\n" + stdout)
++	return strings.Contains(text, "unknown flag") || strings.Contains(text, "flag provided but not defined")
++}
++
++// ParseStatus reads agent status output.
++func ParseStatus(raw string) Account {
++	raw = strings.TrimSpace(raw)
++	account := Account{}
++	if raw == "" {
++		return account
++	}
++	var payload any
++	if err := json.Unmarshal([]byte(raw), &payload); err == nil {
++		account = accountFromJSON(payload)
++	}
++	if account.Email == "" {
++		if found := emailPattern.FindString(raw); found != "" {
++			account.Email = found
++		}
++	}
++	lower := strings.ToLower(raw)
++	if strings.Contains(lower, "logged in") || strings.Contains(lower, "logged_in") || strings.Contains(lower, "\"authenticated\":true") || strings.Contains(lower, "\"authenticated\": true") {
++		account.LoggedIn = true
++	}
++	if account.Email != "" && !strings.Contains(lower, "not logged") && !strings.Contains(lower, "logged out") {
++		account.LoggedIn = true
++	}
++	if account.Label == "" {
++		account.Label = account.Email
++	}
++	return account
++}
++
++func accountFromJSON(payload any) Account {
++	account := Account{}
++	switch value := payload.(type) {
++	case map[string]any:
++		account.Email = firstString(value, "email", "userEmail", "user_email")
++		account.Label = firstString(value, "label", "name", "user", "username", "account")
++		if logged, ok := value["loggedIn"].(bool); ok {
++			account.LoggedIn = logged
++		}
++		if logged, ok := value["logged_in"].(bool); ok {
++			account.LoggedIn = logged
++		}
++		if logged, ok := value["authenticated"].(bool); ok {
++			account.LoggedIn = logged
++		}
++		if status := strings.ToLower(firstString(value, "status", "state")); status != "" {
++			if strings.Contains(status, "login") || status == "ok" || status == "ready" || status == "authenticated" {
++				account.LoggedIn = true
++			}
++		}
++		for _, key := range []string{"account", "user", "profile"} {
++			if nested, ok := value[key].(map[string]any); ok {
++				nestedAccount := accountFromJSON(nested)
++				if account.Email == "" {
++					account.Email = nestedAccount.Email
++				}
++				if account.Label == "" {
++					account.Label = nestedAccount.Label
++				}
++				account.LoggedIn = account.LoggedIn || nestedAccount.LoggedIn
++			}
++		}
++	}
++	return account
++}
++
++// ParseModels reads agent models output.
++func ParseModels(raw string) []Model {
++	raw = strings.TrimSpace(raw)
++	if raw == "" {
++		return nil
++	}
++	if models := modelsFromJSON(raw); len(models) > 0 {
++		return models
++	}
++	var models []Model
++	seen := map[string]struct{}{}
++	for _, line := range strings.Split(raw, "\n") {
++		id, display := modelFromLine(line)
++		if id == "" {
++			continue
++		}
++		if _, ok := seen[id]; ok {
++			continue
++		}
++		seen[id] = struct{}{}
++		models = append(models, Model{ID: id, DisplayName: display})
++	}
++	return models
++}
++
++func modelsFromJSON(raw string) []Model {
++	var payload any
++	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
++		var collected []Model
++		seen := map[string]struct{}{}
++		for _, line := range strings.Split(raw, "\n") {
++			line = strings.TrimSpace(line)
++			if line == "" || (line[0] != '{' && line[0] != '[') {
++				continue
++			}
++			for _, model := range modelsFromJSON(line) {
++				if _, ok := seen[model.ID]; ok {
++					continue
++				}
++				seen[model.ID] = struct{}{}
++				collected = append(collected, model)
++			}
++		}
++		return collected
++	}
++	return modelsFromValue(payload)
++}
++
++func modelsFromValue(payload any) []Model {
++	switch value := payload.(type) {
++	case []any:
++		var models []Model
++		for _, item := range value {
++			models = append(models, modelsFromValue(item)...)
++		}
++		return models
++	case map[string]any:
++		if id := firstString(value, "id", "model", "name", "slug"); id != "" && !isWrapperKey(id) {
++			display := firstString(value, "displayName", "display_name", "label", "title")
++			if display == "" {
++				display = id
++			}
++			return []Model{{ID: id, DisplayName: display}}
++		}
++		for _, key := range []string{"models", "data", "items", "results"} {
++			if nested, ok := value[key]; ok {
++				if models := modelsFromValue(nested); len(models) > 0 {
++					return models
++				}
++			}
++		}
++	case string:
++		id := strings.TrimSpace(value)
++		if id == "" || strings.Contains(id, " ") {
++			return nil
++		}
++		return []Model{{ID: id, DisplayName: id}}
++	}
++	return nil
++}
++
++func isWrapperKey(id string) bool {
++	switch strings.ToLower(id) {
++	case "models", "data", "items", "results":
++		return true
++	default:
++		return false
++	}
++}
++
++func modelFromLine(line string) (string, string) {
++	line = strings.TrimSpace(line)
++	line = strings.TrimLeft(line, "-*• \t")
++	if line == "" || strings.HasPrefix(strings.ToLower(line), "available") || strings.HasPrefix(strings.ToLower(line), "model") && strings.Contains(strings.ToLower(line), " ") && !strings.Contains(line, "/") {
++		if strings.HasSuffix(strings.ToLower(line), ":") {
++			return "", ""
++		}
++	}
++	fields := strings.Fields(line)
++	if len(fields) == 0 {
++		return "", ""
++	}
++	id := strings.Trim(fields[0], "`:,")
++	if id == "" || strings.EqualFold(id, "model") || strings.EqualFold(id, "models") || strings.EqualFold(id, "id") {
++		return "", ""
++	}
++	if strings.Contains(id, " ") {
++		return "", ""
++	}
++	display := id
++	if len(fields) > 1 {
++		rest := strings.TrimSpace(strings.TrimLeft(strings.Join(fields[1:], " "), "-–—:"))
++		if rest != "" {
++			display = rest
++		}
++	}
++	return id, display
++}
++
++// ExtractResult reads the assistant text from print-mode output.
++func ExtractResult(raw string) string {
++	raw = strings.TrimSpace(raw)
++	if raw == "" {
++		return ""
++	}
++	var last string
++	for _, line := range strings.Split(raw, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" || (line[0] != '{' && line[0] != '[') {
++			continue
++		}
++		if text := resultFromJSON(line); text != "" {
++			last = text
++		}
++	}
++	if last != "" {
++		return last
++	}
++	if text := resultFromJSON(raw); text != "" {
++		return text
++	}
++	return raw
++}
++
++func resultFromJSON(raw string) string {
++	var payload any
++	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
++		return ""
++	}
++	return resultFromValue(payload)
++}
++
++func resultFromValue(payload any) string {
++	switch value := payload.(type) {
++	case map[string]any:
++		if text := firstString(value, "result", "text", "message", "response", "content"); text != "" {
++			return text
++		}
++		for _, key := range []string{"message", "data", "output"} {
++			if nested, ok := value[key]; ok {
++				if text := resultFromValue(nested); text != "" {
++					return text
++				}
++			}
++		}
++	case []any:
++		var last string
++		for _, item := range value {
++			if text := resultFromValue(item); text != "" {
++				last = text
++			}
++		}
++		return last
++	case string:
++		return strings.TrimSpace(value)
++	}
++	return ""
++}
++
++func firstString(values map[string]any, keys ...string) string {
++	for _, key := range keys {
++		raw, ok := values[key]
++		if !ok || raw == nil {
++			continue
++		}
++		switch typed := raw.(type) {
++		case string:
++			if text := strings.TrimSpace(typed); text != "" {
++				return text
++			}
++		}
++	}
++	return ""
++}
++
++// APIKeyFromAuth reads a dashboard API key stored on the credential.
++func APIKeyFromAuth(metadata map[string]any, attributes map[string]string) string {
++	if attributes != nil {
++		if key := strings.TrimSpace(attributes["api_key"]); key != "" {
++			return key
++		}
++	}
++	if metadata == nil {
++		return ""
++	}
++	for _, key := range []string{"api_key", "apiKey", "cursor_api_key"} {
++		if raw, ok := metadata[key].(string); ok && strings.TrimSpace(raw) != "" {
++			return strings.TrimSpace(raw)
++		}
++	}
++	return ""
++}
+diff --git a/internal/cursorcli/cli_test.go b/internal/cursorcli/cli_test.go
+new file mode 100644
+index 0000000..02737c5
+--- /dev/null
++++ b/internal/cursorcli/cli_test.go
+@@ -0,0 +1,37 @@
++package cursorcli
++
++import "testing"
++
++func TestParseStatusJSON(t *testing.T) {
++	account := ParseStatus(`{"authenticated":true,"email":"dev@example.com","label":"Dev"}`)
++	if !account.LoggedIn {
++		t.Fatal("expected logged in")
++	}
++	if account.Email != "dev@example.com" {
++		t.Fatalf("email = %q", account.Email)
++	}
++	if account.Label != "Dev" {
++		t.Fatalf("label = %q", account.Label)
++	}
++}
++
++func TestParseModelsTextAndJSON(t *testing.T) {
++	fromJSON := ParseModels(`{"models":[{"id":"gpt-5.5","displayName":"GPT-5.5"},{"id":"composer-2"}]}`)
++	if len(fromJSON) != 2 || fromJSON[0].ID != "gpt-5.5" || fromJSON[1].DisplayName != "composer-2" {
++		t.Fatalf("json models = %#v", fromJSON)
++	}
++	fromText := ParseModels("Available models:\n- gpt-5.5 GPT-5.5\ncomposer-2\n")
++	if len(fromText) != 2 || fromText[0].ID != "gpt-5.5" || fromText[0].DisplayName != "GPT-5.5" {
++		t.Fatalf("text models = %#v", fromText)
++	}
++}
++
++func TestExtractResult(t *testing.T) {
++	raw := "{\"type\":\"result\",\"result\":\"hello cursor\"}\n"
++	if got := ExtractResult(raw); got != "hello cursor" {
++		t.Fatalf("result = %q", got)
++	}
++	if got := ExtractResult("plain text"); got != "plain text" {
++		t.Fatalf("plain = %q", got)
++	}
++}
+diff --git a/internal/registry/cursor_models.go b/internal/registry/cursor_models.go
+new file mode 100644
+index 0000000..5dfb2d0
+--- /dev/null
++++ b/internal/registry/cursor_models.go
+@@ -0,0 +1,57 @@
++package registry
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursorcli"
++	log "github.com/sirupsen/logrus"
++)
++
++var cursorModelCache = struct {
++	sync.Mutex
++	at     time.Time
++	models []*ModelInfo
++}{}
++
++// GetCursorModels returns the account catalog reported by the Cursor agent CLI.
++func GetCursorModels() []*ModelInfo {
++	cursorModelCache.Lock()
++	defer cursorModelCache.Unlock()
++	if cursorModelCache.models != nil && time.Since(cursorModelCache.at) < 30*time.Second {
++		return cloneModelInfos(cursorModelCache.models)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	listed, err := cursorcli.ListModels(ctx)
++	if err != nil {
++		log.Warnf("cursor models: %v", err)
++		if cursorModelCache.models != nil {
++			return cloneModelInfos(cursorModelCache.models)
++		}
++		return nil
++	}
++	models := make([]*ModelInfo, 0, len(listed))
++	for _, model := range listed {
++		if model.ID == "" {
++			continue
++		}
++		display := model.DisplayName
++		if display == "" {
++			display = model.ID
++		}
++		models = append(models, &ModelInfo{
++			ID:          model.ID,
++			Object:      "model",
++			OwnedBy:     "cursor",
++			Type:        "cursor",
++			DisplayName: display,
++			Name:        model.ID,
++			Description: display,
++		})
++	}
++	cursorModelCache.at = time.Now()
++	cursorModelCache.models = models
++	return cloneModelInfos(models)
++}
+diff --git a/internal/runtime/executor/cursor_executor.go b/internal/runtime/executor/cursor_executor.go
+new file mode 100644
+index 0000000..1bd26e2
+--- /dev/null
++++ b/internal/runtime/executor/cursor_executor.go
+@@ -0,0 +1,263 @@
++package executor
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursorcli"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++	"github.com/tidwall/gjson"
++)
++
++var _ cliproxyauth.ProviderExecutor = (*CursorExecutor)(nil)
++
++// CursorExecutor proxies OpenAI chat requests through the Cursor agent CLI.
++type CursorExecutor struct {
++	cfg *config.Config
++}
++
++// NewCursorExecutor constructs a Cursor executor.
++func NewCursorExecutor(cfg *config.Config) *CursorExecutor {
++	return &CursorExecutor{cfg: cfg}
++}
++
++// Identifier returns the provider key.
++func (e *CursorExecutor) Identifier() string { return "cursor" }
++
++// Execute runs one read-only agent turn and returns an OpenAI chat completion.
++func (e *CursorExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	var resp cliproxyexecutor.Response
++	text, model, translated, err := e.complete(ctx, auth, req, opts)
++	if err != nil {
++		return resp, err
++	}
++	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
++	body := openAIChatCompletion(model, text)
++	var param any
++	out := sdktranslator.TranslateNonStream(
++		ctx,
++		sdktranslator.FormatOpenAI,
++		responseFormat,
++		req.Model,
++		opts.OriginalRequest,
++		translated,
++		body,
++		&param,
++	)
++	if len(out) == 0 {
++		out = body
++	}
++	resp.Payload = out
++	return resp, nil
++}
++
++// ExecuteStream returns the same final answer as a single OpenAI stream.
++func (e *CursorExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	text, model, translated, err := e.complete(ctx, auth, req, opts)
++	if err != nil {
++		return nil, err
++	}
++	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
++	frames := [][]byte{
++		openAIStreamFrame(model, text, ""),
++		openAIStreamFrame(model, "", "stop"),
++		[]byte("data: [DONE]\n\n"),
++	}
++	out := make(chan cliproxyexecutor.StreamChunk, len(frames))
++	var param any
++	go func() {
++		defer close(out)
++		for _, frame := range frames {
++			chunks := sdktranslator.TranslateStream(
++				ctx,
++				sdktranslator.FormatOpenAI,
++				responseFormat,
++				req.Model,
++				opts.OriginalRequest,
++				translated,
++				frame,
++				&param,
++			)
++			if len(chunks) == 0 {
++				chunks = [][]byte{frame}
++			}
++			for _, chunk := range chunks {
++				select {
++				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
++				case <-ctx.Done():
++					return
++				}
++			}
++		}
++	}()
++	return &cliproxyexecutor.StreamResult{Chunks: out}, nil
++}
++
++// Refresh keeps the CLI-managed credential unchanged.
++func (e *CursorExecutor) Refresh(_ context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
++	return auth, nil
++}
++
++// CountTokens estimates the translated prompt length.
++func (e *CursorExecutor) CountTokens(ctx context.Context, _ *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	translated := translateToOpenAI(req, opts, false)
++	prompt := promptFromOpenAI(translated)
++	count := int64(len(prompt) / 4)
++	if count < 1 && prompt != "" {
++		count = 1
++	}
++	payload := sdktranslator.TranslateTokenCount(ctx, sdktranslator.FormatOpenAI, cliproxyexecutor.ResponseFormatOrSource(opts), count, translated)
++	return cliproxyexecutor.Response{Payload: payload}, nil
++}
++
++// HttpRequest is unused. Cursor traffic goes through the agent CLI.
++func (e *CursorExecutor) HttpRequest(context.Context, *cliproxyauth.Auth, *http.Request) (*http.Response, error) {
++	return nil, fmt.Errorf("cursor executor: raw HTTP is not supported")
++}
++
++func (e *CursorExecutor) complete(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (string, string, []byte, error) {
++	translated := translateToOpenAI(req, opts, opts.Stream)
++	model := strings.TrimSpace(req.Model)
++	if model == "" {
++		model = strings.TrimSpace(gjson.GetBytes(translated, "model").String())
++	}
++	prompt := promptFromOpenAI(translated)
++	if strings.TrimSpace(prompt) == "" {
++		return "", model, translated, statusErr{code: http.StatusBadRequest, msg: "cursor executor: empty prompt"}
++	}
++	var metadata map[string]any
++	var attributes map[string]string
++	if auth != nil {
++		metadata = auth.Metadata
++		attributes = auth.Attributes
++	}
++	text, err := cursorcli.Complete(ctx, model, prompt, cursorcli.APIKeyFromAuth(metadata, attributes))
++	if err != nil {
++		return "", model, translated, statusErr{code: http.StatusBadGateway, msg: err.Error()}
++	}
++	return text, model, translated, nil
++}
++
++func translateToOpenAI(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) []byte {
++	from := opts.SourceFormat
++	if from == "" {
++		from = sdktranslator.FormatOpenAI
++	}
++	source := req.Payload
++	if len(opts.OriginalRequest) > 0 {
++		source = opts.OriginalRequest
++	}
++	translated := sdktranslator.TranslateRequest(from, sdktranslator.FormatOpenAI, req.Model, source, stream)
++	if len(translated) == 0 {
++		return source
++	}
++	return translated
++}
++
++func promptFromOpenAI(payload []byte) string {
++	messages := gjson.GetBytes(payload, "messages")
++	if !messages.Exists() {
++		if prompt := strings.TrimSpace(gjson.GetBytes(payload, "prompt").String()); prompt != "" {
++			return prompt
++		}
++		if input := strings.TrimSpace(gjson.GetBytes(payload, "input").String()); input != "" {
++			return input
++		}
++		return strings.TrimSpace(string(payload))
++	}
++	var parts []string
++	messages.ForEach(func(_, message gjson.Result) bool {
++		role := strings.TrimSpace(message.Get("role").String())
++		if role == "" {
++			role = "user"
++		}
++		content := messageContent(message.Get("content"))
++		if content == "" {
++			return true
++		}
++		parts = append(parts, role+": "+content)
++		return true
++	})
++	return strings.TrimSpace(strings.Join(parts, "\n\n"))
++}
++
++func messageContent(content gjson.Result) string {
++	if !content.Exists() {
++		return ""
++	}
++	if content.Type == gjson.String {
++		return strings.TrimSpace(content.String())
++	}
++	var parts []string
++	content.ForEach(func(_, part gjson.Result) bool {
++		text := strings.TrimSpace(part.Get("text").String())
++		if text == "" && part.Type == gjson.String {
++			text = strings.TrimSpace(part.String())
++		}
++		if text != "" {
++			parts = append(parts, text)
++		}
++		return true
++	})
++	return strings.TrimSpace(strings.Join(parts, "\n"))
++}
++
++func openAIChatCompletion(model, text string) []byte {
++	payload := map[string]any{
++		"id":      "chatcmpl-cursor",
++		"object":  "chat.completion",
++		"created": time.Now().Unix(),
++		"model":   model,
++		"choices": []any{
++			map[string]any{
++				"index": 0,
++				"message": map[string]any{
++					"role":    "assistant",
++					"content": text,
++				},
++				"finish_reason": "stop",
++			},
++		},
++	}
++	encoded, err := json.Marshal(payload)
++	if err != nil {
++		return []byte(`{"error":"cursor executor: failed to encode response"}`)
++	}
++	return encoded
++}
++
++func openAIStreamFrame(model, text, finish string) []byte {
++	delta := map[string]any{}
++	if text != "" {
++		delta["role"] = "assistant"
++		delta["content"] = text
++	}
++	choice := map[string]any{
++		"index": 0,
++		"delta": delta,
++	}
++	if finish != "" {
++		choice["finish_reason"] = finish
++	} else {
++		choice["finish_reason"] = nil
++	}
++	payload := map[string]any{
++		"id":      "chatcmpl-cursor",
++		"object":  "chat.completion.chunk",
++		"created": time.Now().Unix(),
++		"model":   model,
++		"choices": []any{choice},
++	}
++	encoded, err := json.Marshal(payload)
++	if err != nil {
++		encoded = []byte(`{}`)
++	}
++	return append(append([]byte("data: "), encoded...), []byte("\n\n")...)
++}
+diff --git a/sdk/auth/cursor.go b/sdk/auth/cursor.go
+new file mode 100644
+index 0000000..389e877
+--- /dev/null
++++ b/sdk/auth/cursor.go
+@@ -0,0 +1,99 @@
++package auth
++
++import (
++	"context"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/cursorcli"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++// CursorAuthenticator records a Cursor CLI login in the shared auth directory.
++type CursorAuthenticator struct{}
++
++// NewCursorAuthenticator constructs a Cursor authenticator.
++func NewCursorAuthenticator() Authenticator { return &CursorAuthenticator{} }
++
++// Provider returns the provider key.
++func (CursorAuthenticator) Provider() string { return "cursor" }
++
++// RefreshLead reports that the CLI owns credential refresh.
++func (CursorAuthenticator) RefreshLead() *time.Duration { return nil }
++
++// Login runs agent login when needed and persists a cursor-*.json credential.
++func (CursorAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
++	if cfg == nil {
++		return nil, fmt.Errorf("cliproxy auth: configuration is required")
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if opts == nil {
++		opts = &LoginOptions{}
++	}
++	account, errStatus := cursorcli.Status(ctx)
++	if errStatus != nil || !account.LoggedIn {
++		if errLogin := cursorcli.Login(ctx, opts.NoBrowser); errLogin != nil {
++			return nil, errLogin
++		}
++		account, errStatus = cursorcli.Status(ctx)
++		if errStatus != nil {
++			return nil, errStatus
++		}
++	}
++	if !account.LoggedIn {
++		return nil, fmt.Errorf("cursor: CLI login did not produce an authenticated account")
++	}
++	label := strings.TrimSpace(account.Label)
++	if label == "" {
++		label = strings.TrimSpace(account.Email)
++	}
++	if label == "" {
++		label = "cursor"
++	}
++	fileID := cursorFileID(account.Email)
++	fileName := "cursor-" + fileID + ".json"
++	metadata := map[string]any{
++		"type":      "cursor",
++		"email":     account.Email,
++		"label":     label,
++		"auth_kind": "oauth",
++	}
++	return &coreauth.Auth{
++		ID:       fileName,
++		Provider: "cursor",
++		FileName: fileName,
++		Label:    label,
++		Status:   coreauth.StatusActive,
++		Attributes: map[string]string{
++			"email":     account.Email,
++			"auth_kind": "oauth",
++		},
++		Metadata: metadata,
++		CreatedAt: time.Now().UTC(),
++		UpdatedAt: time.Now().UTC(),
++	}, nil
++}
++
++func cursorFileID(email string) string {
++	email = strings.TrimSpace(email)
++	if email == "" {
++		return "default"
++	}
++	var b strings.Builder
++	for _, r := range email {
++		switch {
++		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.', r == '@':
++			b.WriteRune(r)
++		default:
++			b.WriteByte('_')
++		}
++	}
++	if b.Len() == 0 {
++		return "default"
++	}
++	return b.String()
++}
+diff --git a/sdk/auth/refresh_registry.go b/sdk/auth/refresh_registry.go
+index cfa5099..4081bd0 100644
+--- a/sdk/auth/refresh_registry.go
++++ b/sdk/auth/refresh_registry.go
+@@ -16,6 +16,7 @@ func init() {
+ 	registerRefreshLead("xai", func() Authenticator { return NewXAIAuthenticator() })
+ 	registerRefreshLead("devin", func() Authenticator { return NewDevinAuthenticator() })
+ 	registerRefreshLead("meta", func() Authenticator { return NewMetaAuthenticator() })
++	registerRefreshLead("cursor", func() Authenticator { return NewCursorAuthenticator() })
+ }
+ 
+ func registerRefreshLead(provider string, factory func() Authenticator) {
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+index 9616a82..eedf9e5 100644
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -428,6 +428,8 @@ func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexe
+ 		return sdktranslator.FormatCodex
+ 	case "antigravity":
+ 		return sdktranslator.FormatAntigravity
++	case "cursor":
++		return sdktranslator.FormatOpenAI
+ 	case "devin":
+ 		return sdktranslator.FormatInteractions
+ 	default:
+diff --git a/sdk/cliproxy/service_executors.go b/sdk/cliproxy/service_executors.go
+index c057888..b2632e2 100644
+--- a/sdk/cliproxy/service_executors.go
++++ b/sdk/cliproxy/service_executors.go
+@@ -292,6 +292,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
+ 		return
+ 	case "antigravity":
+ 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
++	case "cursor":
++		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(cfg))
+ 	case "claude":
+ 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
+ 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
+diff --git a/sdk/cliproxy/service_models.go b/sdk/cliproxy/service_models.go
+index 1bb4b62..41956d6 100644
+--- a/sdk/cliproxy/service_models.go
++++ b/sdk/cliproxy/service_models.go
+@@ -112,6 +112,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
+ 	case "antigravity":
+ 		models = registry.GetAntigravityModels()
+ 		models = applyExcludedModels(models, excluded)
++	case "cursor":
++		models = registry.GetCursorModels()
++		models = applyExcludedModels(models, excluded)
+ 	case "claude":
+ 		models = registry.GetClaudeModels()
+ 		if entry := s.resolveConfigClaudeKey(a); entry != nil {

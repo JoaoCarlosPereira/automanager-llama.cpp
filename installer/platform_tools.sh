@@ -58,14 +58,63 @@ resolve_platform_command() {
   return 1
 }
 
-install_cliproxyapi() {
-  local arch install_dir tmp_dir version tag asset archive binary
+install_cliproxyapi_cursor_fork() {
+  local script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build_cliproxy_cursor.sh"
+  if [[ ! -f "${script}" ]]; then
+    log_warn "Cursor CLIProxyAPI build script not found."
+    return 1
+  fi
+  bash "${script}"
+}
 
-  if resolve_platform_command cli-proxy-api &>/dev/null \
-    || resolve_platform_command CLIProxyAPI &>/dev/null; then
-    log_info "CLIProxyAPI already installed: $(resolve_platform_command cli-proxy-api || resolve_platform_command CLIProxyAPI)"
+install_cursor_cli() {
+  local existing=""
+  existing="$(resolve_platform_command agent || resolve_platform_command cursor-agent || true)"
+  if [[ -n "${existing}" ]]; then
+    log_info "Reinstalling Cursor CLI (agent) at ${existing}..."
+  else
+    log_info "Installing Cursor CLI (agent)..."
+  fi
+
+  if ! curl -fsSL https://cursor.com/install | bash; then
+    if [[ -n "${existing}" ]]; then
+      log_warn "Cursor CLI reinstall failed. Keeping ${existing}."
+      return 0
+    fi
+    log_warn "Cursor CLI installation failed."
+    return 1
+  fi
+
+  if resolve_platform_command agent &>/dev/null \
+    || resolve_platform_command cursor-agent &>/dev/null; then
+    log_info "Cursor CLI installed: $(resolve_platform_command agent || resolve_platform_command cursor-agent)"
+  else
+    log_warn "Cursor CLI install script finished, but agent was not found."
+    return 1
+  fi
+}
+
+install_cliproxyapi() {
+  local arch install_dir tmp_dir version tag asset archive binary existing
+
+  existing="$(resolve_platform_command cli-proxy-api || resolve_platform_command CLIProxyAPI || true)"
+  if [[ -n "${existing}" ]]; then
+    log_info "Reinstalling CLIProxyAPI with Cursor support (current: ${existing})..."
+  else
+    log_info "Installing CLIProxyAPI with Cursor support..."
+  fi
+
+  if install_cliproxyapi_cursor_fork; then
     return 0
   fi
+  log_warn "Could not build the Cursor-enabled CLIProxyAPI."
+
+  if [[ -n "${existing}" ]]; then
+    log_warn "Keeping the existing binary: ${existing}"
+    return 0
+  fi
+  log_warn "Falling back to the upstream release."
 
   arch="$(detect_linux_arch)" || return 1
   install_dir="/usr/local/bin"
@@ -215,7 +264,7 @@ install_httpx_deps() {
 verify_platform_tools() {
   local label path
   local -a required=(cli-proxy-api codex agy)
-  local -a optional=(claude)
+  local -a optional=(claude agent)
 
   log_info "Platform tool detection summary:"
   for label in "${required[@]}"; do
@@ -243,6 +292,7 @@ install_platform_tools() {
   install_codex || failed=1
   install_antigravity_cli || failed=1
   install_claude_code || true
+  install_cursor_cli || true
   verify_platform_tools
 
   if [[ "${failed}" -ne 0 ]]; then
