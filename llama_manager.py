@@ -2490,15 +2490,30 @@ async def _aggregate_models_response(
 
 
 def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Adiciona aliases no início da lista (prioridade sobre nomes reais)."""
+    """Injeta aliases no início; alias com mesmo id de um modelo real substitui-o.
+
+    Ex.: alias ``haiku-5.5`` → ``luna-5.5`` remove da listagem o ``haiku-5.5``
+    vindo da plataforma e expõe só o alias apontando para o alvo.
+    """
     aliases = config_manager.get_model_aliases()
     if not aliases:
         return models
-    existing_ids = {str(m.get("id") or "") for m in models}
+    alias_ids = {
+        str(alias or "").strip()
+        for alias in aliases.keys()
+        if str(alias or "").strip()
+    }
     by_id = {str(m.get("id") or ""): m for m in models}
+    # Modelos reais cujo id colide com um alias saem da lista — o alias vence.
+    remaining = [
+        model for model in models
+        if str(model.get("id") or "") not in alias_ids
+    ]
     alias_entries: List[Dict[str, Any]] = []
+    seen_alias_ids: set[str] = set()
     for alias, target in aliases.items():
-        if alias in existing_ids:
+        alias_key = str(alias or "").strip()
+        if not alias_key or alias_key in seen_alias_ids:
             continue
         target_text = str(target or "").strip()
         target_entry = by_id.get(target_text)
@@ -2528,13 +2543,14 @@ def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             )
             entry["meta"] = {
                 **(entry.get("meta") or {}),
+                "root_model": target_text,
+                "alias_target": target_text,
                 "is_alias": True,
             }
-        entry["id"] = alias
+        entry["id"] = alias_key
         alias_entries.append(entry)
-        existing_ids.add(alias)
-    # Aliases primeiro: clientes BYOK (ex. Cursor) priorizam o topo da listagem.
-    return alias_entries + list(models)
+        seen_alias_ids.add(alias_key)
+    return alias_entries + remaining
 
 
 async def _v1_models_payload(
@@ -2693,26 +2709,56 @@ def _local_model_ids(instances: List[Dict[str, Any]]) -> set[str]:
     return ids
 
 
+def _alias_resolution_keys(
+    model_name: str, instances: Optional[List[Dict[str, Any]]] = None
+) -> List[str]:
+    """Chaves candidatas para casar um pedido com um alias configurado."""
+    original = str(model_name or "").strip()
+    if not original:
+        return []
+    keys = [original]
+    local_ids = _local_model_ids(instances or [])
+    bare = resolve_platform_listing_model(original, local_ids)
+    if bare and bare not in keys:
+        keys.append(bare)
+    mapped = lookup_platform_bare_id(original)
+    if mapped and mapped not in keys:
+        keys.append(mapped)
+    listing = platform_model_listing_id(original)
+    if listing and listing not in keys:
+        keys.append(listing)
+    return keys
+
+
 def _prepare_request_model(
     data: Dict[str, Any], instances: List[Dict[str, Any]]
 ) -> tuple[Dict[str, Any], Optional[str]]:
-    """Resolve apenas alias no corpo; sufixo .gguf de plataforma é resolvido no encaminhamento."""
+    """Resolve alias no corpo (vence modelo real da plataforma com o mesmo nome)."""
     requested = data.get("model")
     if not requested:
         return data, None
     original = str(requested)
-    resolved = config_manager.resolve_model_alias(original)
+    keys = _alias_resolution_keys(original, instances)
+    resolved = config_manager.resolve_model_alias(
+        original, extra_keys=keys[1:] if len(keys) > 1 else None
+    )
     if resolved == original:
         return data, None
     return {**data, "model": resolved}, original
 
 
-def _reject_removed_model_alias(model_name: Optional[str]) -> None:
-    if model_name and config_manager.is_removed_model_alias(model_name):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Alias de modelo '{model_name}' foi removido.",
-        )
+def _reject_removed_model_alias(
+    model_name: Optional[str],
+    instances: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    if not model_name:
+        return
+    for key in _alias_resolution_keys(str(model_name), instances):
+        if config_manager.is_removed_model_alias(key):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Alias de modelo '{key}' foi removido.",
+            )
 
 
 def _forward_model_for_backend(
@@ -2792,13 +2838,26 @@ def _instance_matches_model(
             os.path.basename(model_path.replace("\\", "/")),
         }
     local_ids = _local_model_ids(instances)
+    # Alias resolvido para um modelo local (ex.: haiku-5.5 → /models/luna.gguf)
+    # não pode ser capturado por uma plataforma só porque o path está no set local.
+    if requested in local_ids:
+        return False
+    requested_basename = os.path.basename(requested.replace("\\", "/"))
+    if requested_basename and any(
+        os.path.basename(str(local_id).replace("\\", "/")) == requested_basename
+        for local_id in local_ids
+    ):
+        return False
     provider = str(inst.get("provider") or "")
     bare = resolve_platform_listing_model(requested_model, local_ids)
+    if bare in local_ids:
+        return False
     listing = platform_model_listing_id(bare, provider)
     if requested_model in {bare, listing}:
         return True
     if lookup_platform_bare_id(requested_model):
-        return True
+        owned_provider = platform_provider_for_listing(requested_model)
+        return owned_provider == provider if owned_provider else False
     listing_provider = platform_provider_for_listing(requested_model)
     return listing_provider == provider if listing_provider else False
 
@@ -3894,7 +3953,7 @@ async def openai_proxy(
     client_requested_model = requested_model
     external_model_name: Optional[str] = None
     if requested_model:
-        _reject_removed_model_alias(str(requested_model))
+        _reject_removed_model_alias(str(requested_model), instances)
         data, external_model_name = _prepare_request_model(data, instances)
         requested_model = data.get("model")
         if body and data:
@@ -5414,7 +5473,7 @@ def _build_html(
                     <div class="local-cursor-alias-panel glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
                         <div>
                             <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
-                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Use um nome do catálogo BYOK ou digite um alias personalizado. O alias aparece antes do nome real na API.</p>
+                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Use um nome do catálogo BYOK ou digite um alias personalizado. Se o alias coincidir com um modelo de plataforma, o pedido vai para este modelo local.</p>
                         </div>
                         <ul class="local-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
@@ -5812,7 +5871,7 @@ def _build_html(
 
                     <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
                         <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
-                        <p class="text-sm text-slate-400 leading-relaxed">Use um nome do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …), um alias personalizado, ou o ID opaco da listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Aliases têm prioridade sobre o nome real na API. Alguns clientes BYOK bloqueiam nomes de provedor como <span class="font-mono">gemini</span>/<span class="font-mono">claude</span>.</p>
+                        <p class="text-sm text-slate-400 leading-relaxed">Use um nome do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …), um alias personalizado, ou o ID opaco da listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Se o alias tiver o mesmo nome de um modelo da plataforma, o alias vence e o pedido vai para o alvo. Alguns clientes BYOK bloqueiam nomes de provedor como <span class="font-mono">gemini</span>/<span class="font-mono">claude</span>.</p>
                         <ul class="platform-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
                             <label class="space-y-1 flex-1 min-w-[10rem]">

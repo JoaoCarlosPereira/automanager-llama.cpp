@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 import llama_manager
 from config_manager import ConfigManager
 from llama_manager import app, auth_manager, config_manager
-from platform_manager import platform_model_listing_id
+from platform_manager import (
+    clear_platform_listing_registry,
+    platform_model_listing_id,
+    register_platform_bare_model,
+)
 
 client = TestClient(app)
 
@@ -240,6 +244,86 @@ def test_chat_resolves_alias_before_forward(mock_post, mock_get, mock_status, al
     sent = json.loads(mock_post.call_args.kwargs["content"])
     assert sent["model"] == "gemini-3.1-pro-low"
     assert response.json()["model"] == "gemini-3.1-pro-low"
+
+
+def test_inject_model_aliases_replaces_colliding_real_id(alias_cfg):
+    """Se a plataforma já expõe o id do alias, o alias substitui essa entrada."""
+    alias_cfg.set_model_alias("haiku-5.5", "/models/luna-5.gguf")
+    models = [
+        {
+            "id": "haiku-5.5",
+            "object": "model",
+            "owned_by": "antigravity",
+            "meta": {"root_model": "haiku-5.5"},
+        },
+        {
+            "id": "/models/luna-5.gguf",
+            "object": "model",
+            "owned_by": "llamacpp",
+            "meta": {"root_model": "/models/luna-5.gguf"},
+        },
+    ]
+
+    result = llama_manager._inject_model_aliases(models)
+    ids = [m["id"] for m in result]
+    alias_entry = next(m for m in result if m["id"] == "haiku-5.5")
+
+    assert ids.count("haiku-5.5") == 1
+    assert ids.index("haiku-5.5") < ids.index("/models/luna-5.gguf")
+    assert alias_entry["meta"]["is_alias"] is True
+    assert alias_entry["meta"]["alias_target"] == "/models/luna-5.gguf"
+    assert alias_entry["owned_by"] == "llamacpp"
+
+
+@patch("llama_manager._ensure_platform_listing_registry", new_callable=AsyncMock)
+@patch("llama_manager._hybrid_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+@patch("llama_manager.client.post", new_callable=AsyncMock)
+def test_chat_alias_overrides_platform_model_with_same_name(
+    mock_post, mock_get, mock_status, _mock_registry, alias_cfg
+):
+    """Pedido pelo nome do alias vai ao alvo, mesmo com plataforma tendo esse modelo."""
+    local_inst = {
+        "port": 8085,
+        "backend_type": "local",
+        "model": "luna-5.gguf",
+        "model_path": "/models/luna-5.gguf",
+    }
+    alias_cfg.set_model_alias("haiku-5.5", "/models/luna-5.gguf")
+    mock_status.return_value = {"instances": [PLATFORM_INST, local_inst]}
+    clear_platform_listing_registry()
+    register_platform_bare_model("haiku-5.5", "antigravity")
+    models_resp = MagicMock(spec=httpx.Response)
+    models_resp.raise_for_status.return_value = None
+    models_resp.json.return_value = {
+        "object": "list",
+        "data": [
+            {"id": "haiku-5.5", "object": "model", "owned_by": "antigravity"},
+            {"id": "/models/luna-5.gguf", "object": "model", "owned_by": "llamacpp"},
+        ],
+    }
+    mock_get.return_value = models_resp
+    upstream = MagicMock(spec=httpx.Response)
+    upstream.status_code = 200
+    upstream.headers = httpx.Headers({"Content-Type": "application/json"})
+    upstream.content = json.dumps(
+        {"id": "x", "model": "/models/luna-5.gguf"}
+    ).encode()
+    mock_post.return_value = upstream
+
+    try:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "haiku-5.5", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    finally:
+        clear_platform_listing_registry()
+
+    assert response.status_code == 200
+    assert "8085" in mock_post.call_args.args[0]
+    assert "9100" not in mock_post.call_args.args[0]
+    sent = json.loads(mock_post.call_args.kwargs["content"])
+    assert sent["model"] == "/models/luna-5.gguf"
 
 
 @patch("llama_manager._hybrid_status")
