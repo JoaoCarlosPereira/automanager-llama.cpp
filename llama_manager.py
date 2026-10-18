@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.43"  # Ordem de prioridade das contas de plataforma; query ?v= única
+_DASHBOARD_JS_V = "4.2.44"  # Aneis/barras de cota real por conta de plataforma
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5172,27 +5172,90 @@ def _build_html(
             -webkit-mask-composite: xor;
             mask-composite: exclude;
         }}
-        .quota-ring-legend {{
+        .platform-quota-shell.quota-unknown .quota-ring-weekly,
+        .platform-quota-shell.quota-unknown .quota-ring-session {{
+            opacity: 0.25;
+        }}
+        .quota-account-list {{
             display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin-top: 0.5rem;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin-top: 0.35rem;
+        }}
+        .quota-account {{
+            width: 100%;
+            text-align: left;
+            border: 1px solid rgba(51, 65, 85, 0.55);
+            background: rgba(15, 23, 42, 0.55);
+            border-radius: 0.65rem;
+            padding: 0.45rem 0.55rem;
+            color: #cbd5e1;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }}
+        .quota-account:hover {{
+            border-color: rgba(56, 189, 248, 0.45);
+            background: rgba(15, 23, 42, 0.8);
+        }}
+        .quota-account.is-focused {{
+            border-color: rgba(56, 189, 248, 0.7);
+            box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.15);
+        }}
+        .quota-account-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.4rem;
+            margin-bottom: 0.3rem;
+        }}
+        .quota-account-name {{
             font-size: var(--text-caption);
-            color: #94a3b8;
+            font-weight: 700;
+            color: #e2e8f0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .quota-account-badge {{
+            flex-shrink: 0;
+            font-size: 0.625rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #38bdf8;
+        }}
+        .quota-bar-row {{
+            display: grid;
+            grid-template-columns: 4.6rem 1fr 2.2rem;
+            align-items: center;
+            gap: 0.35rem;
+            margin-top: 0.18rem;
+        }}
+        .quota-bar-label {{
+            font-size: 0.625rem;
+            font-weight: 800;
             letter-spacing: 0.04em;
             text-transform: uppercase;
-            font-weight: 700;
+            color: #64748b;
         }}
-        .quota-ring-legend span {{
-            display: inline-flex;
-            align-items: center;
-            gap: 0.3rem;
-        }}
-        .quota-ring-legend i {{
-            width: 0.55rem;
-            height: 0.55rem;
+        .quota-bar-track {{
+            height: 0.4rem;
             border-radius: 999px;
-            display: inline-block;
+            background: rgba(51, 65, 85, 0.7);
+            overflow: hidden;
+        }}
+        .quota-bar-fill {{
+            height: 100%;
+            border-radius: inherit;
+            transition: width 0.45s ease, background 0.45s ease;
+        }}
+        .quota-bar-pct {{
+            font-size: var(--text-caption);
+            font-family: 'JetBrains Mono', monospace;
+            color: #94a3b8;
+            text-align: right;
+        }}
+        .quota-accounts-empty {{
+            margin-top: 0.35rem;
         }}
 
         /* --- Polish: cursor, foco por teclado, transições --- */

@@ -286,49 +286,73 @@ def _empty_quota(provider: str, *, error: Optional[str] = None) -> Dict[str, Any
         "session_reset_at": None,
         "weekly_reset_at": None,
         "accounts": 0,
+        "account_details": [],
+        "focused_auth_index": None,
         "error": error,
         "updated_at": time.time(),
     }
 
 
+def _account_sort_key(account: Dict[str, Any]) -> Tuple[int, float, str]:
+    """Prefer higher priority, then most depleted weekly remaining, then label."""
+    priority = int(account.get("priority") or 0)
+    weekly = account.get("weekly_remaining_pct")
+    weekly_key = float(weekly) if weekly is not None else 101.0
+    label = str(account.get("label") or account.get("auth_index") or "")
+    return (-priority, weekly_key, label.lower())
+
+
 def _merge_account_quotas(provider: str, accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Aggregate per-account windows into one card snapshot (most depleted wins)."""
-    usable = [
-        a
-        for a in accounts
-        if a.get("session_remaining_pct") is not None or a.get("weekly_remaining_pct") is not None
-    ]
-    if not usable:
+    """Keep real per-account windows; card summary follows the focused account.
+
+    Focus defaults to the highest-priority account (CLIProxy routing order).
+    When priorities tie, the most depleted weekly window is preferred so the
+    card rings surface real pressure instead of a blended average.
+    """
+    details: List[Dict[str, Any]] = []
+    for raw in accounts:
+        session = raw.get("session_remaining_pct")
+        weekly = raw.get("weekly_remaining_pct")
+        has_values = session is not None or weekly is not None
+        details.append(
+            {
+                "auth_index": raw.get("auth_index"),
+                "label": raw.get("label") or raw.get("email") or raw.get("name") or "conta",
+                "email": raw.get("email"),
+                "priority": int(raw.get("priority") or 0),
+                "session_remaining_pct": (
+                    round(float(session), 1) if session is not None else None
+                ),
+                "weekly_remaining_pct": (
+                    round(float(weekly), 1) if weekly is not None else None
+                ),
+                "session_reset_at": raw.get("session_reset_at"),
+                "weekly_reset_at": raw.get("weekly_reset_at"),
+                "available": has_values,
+                "error": raw.get("error"),
+            }
+        )
+
+    details.sort(key=_account_sort_key)
+    usable = [a for a in details if a.get("available")]
+    if not usable and not details:
         err = next((a.get("error") for a in accounts if a.get("error")), None)
         return _empty_quota(provider, error=err)
 
-    session_vals = [
-        float(a["session_remaining_pct"])
-        for a in usable
-        if a.get("session_remaining_pct") is not None
-    ]
-    weekly_vals = [
-        float(a["weekly_remaining_pct"])
-        for a in usable
-        if a.get("weekly_remaining_pct") is not None
-    ]
-    session_reset = next(
-        (a.get("session_reset_at") for a in usable if a.get("session_reset_at")),
-        None,
-    )
-    weekly_reset = next(
-        (a.get("weekly_reset_at") for a in usable if a.get("weekly_reset_at")),
-        None,
-    )
+    focused = usable[0] if usable else details[0]
     return {
         "provider": provider,
-        "available": True,
-        "session_remaining_pct": round(min(session_vals), 1) if session_vals else None,
-        "weekly_remaining_pct": round(min(weekly_vals), 1) if weekly_vals else None,
-        "session_reset_at": session_reset,
-        "weekly_reset_at": weekly_reset,
-        "accounts": len(usable),
-        "error": None,
+        "available": bool(usable),
+        "session_remaining_pct": focused.get("session_remaining_pct"),
+        "weekly_remaining_pct": focused.get("weekly_remaining_pct"),
+        "session_reset_at": focused.get("session_reset_at"),
+        "weekly_reset_at": focused.get("weekly_reset_at"),
+        "accounts": len(details),
+        "account_details": details,
+        "focused_auth_index": focused.get("auth_index"),
+        "error": None if usable else next(
+            (a.get("error") for a in details if a.get("error")), None
+        ),
         "updated_at": time.time(),
     }
 
@@ -365,7 +389,7 @@ class PlatformQuotaService:
             return {k: dict(v) for k, v in self._cache.items()}
 
     def update_from_headers(self, provider: str, headers: Dict[str, Any]) -> None:
-        """Merge live response headers into the provider cache (non-blocking)."""
+        """Merge live response headers into the focused account cache."""
         key = _normalize_provider(provider)
         if not key:
             return
@@ -374,6 +398,23 @@ class PlatformQuotaService:
             return
         with self._lock:
             current = dict(self._cache.get(key) or _empty_quota(key))
+            details = [dict(row) for row in (current.get("account_details") or [])]
+            focus_id = current.get("focused_auth_index")
+            target = None
+            if details:
+                for row in details:
+                    if focus_id and row.get("auth_index") == focus_id:
+                        target = row
+                        break
+                if target is None:
+                    target = details[0]
+            if target is None:
+                target = {
+                    "auth_index": focus_id or "live",
+                    "label": key,
+                    "priority": 0,
+                }
+                details = [target]
             for field in (
                 "session_remaining_pct",
                 "weekly_remaining_pct",
@@ -381,11 +422,16 @@ class PlatformQuotaService:
                 "weekly_reset_at",
             ):
                 if parsed.get(field) is not None:
+                    target[field] = parsed[field]
                     current[field] = parsed[field]
-            current["available"] = (
-                current.get("session_remaining_pct") is not None
-                or current.get("weekly_remaining_pct") is not None
+            target["available"] = (
+                target.get("session_remaining_pct") is not None
+                or target.get("weekly_remaining_pct") is not None
             )
+            current["account_details"] = details
+            current["accounts"] = len(details)
+            current["focused_auth_index"] = target.get("auth_index")
+            current["available"] = any(bool(row.get("available")) for row in details)
             current["error"] = None
             current["updated_at"] = time.time()
             current["provider"] = key
@@ -454,9 +500,20 @@ class PlatformQuotaService:
                     account = self._fetch_account(client, base, provider, auth)
                 except Exception as exc:
                     account = {
-                        **_empty_quota(provider, error=str(exc)),
+                        "auth_index": auth.get("auth_index"),
                         "label": auth.get("email") or auth.get("label") or auth.get("name"),
+                        "email": auth.get("email"),
+                        "priority": int(auth.get("priority") or 0),
+                        "session_remaining_pct": None,
+                        "weekly_remaining_pct": None,
+                        "session_reset_at": None,
+                        "weekly_reset_at": None,
+                        "error": str(exc),
                     }
+                else:
+                    account.setdefault("auth_index", auth.get("auth_index"))
+                    account.setdefault("email", auth.get("email"))
+                    account.setdefault("priority", int(auth.get("priority") or 0))
                 by_provider[provider].append(account)
 
             return {
@@ -576,7 +633,10 @@ class PlatformQuotaService:
             raise RuntimeError(f"unsupported provider {provider}")
 
         return {
+            "auth_index": auth_index,
             "label": label,
+            "email": auth.get("email"),
+            "priority": int(auth.get("priority") or 0),
             "session_remaining_pct": parsed.get("session_remaining_pct"),
             "weekly_remaining_pct": parsed.get("weekly_remaining_pct"),
             "session_reset_at": parsed.get("session_reset_at"),

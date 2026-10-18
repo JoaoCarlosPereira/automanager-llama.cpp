@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.43';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.43';
+import { state } from './state.js?v=4.2.44';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.44';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.43';
+} from './gpu.js?v=4.2.44';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.43';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.43';
-import { checkForUpdates } from './version.js?v=4.2.43';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.44';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.44';
+import { checkForUpdates } from './version.js?v=4.2.44';
 
 // --- TAB MANAGEMENT ---
 
@@ -159,17 +159,53 @@ function quotaColor(kind, remainingPct) {
     return '#34d399';
 }
 
-function normalizeQuota(quota) {
+function clampQuotaPct(value) {
+    if (value == null || Number.isNaN(Number(value))) return null;
+    return Math.max(0, Math.min(100, Number(value)));
+}
+
+function quotaAccountRows(quota) {
+    const rows = Array.isArray(quota?.account_details) ? quota.account_details : [];
+    if (rows.length) return rows;
+    const weekly = clampQuotaPct(quota?.weekly_remaining_pct);
+    const session = clampQuotaPct(quota?.session_remaining_pct);
+    if (weekly == null && session == null) return [];
+    return [{
+        auth_index: quota?.focused_auth_index || 'default',
+        label: quota?.label || 'Conta',
+        weekly_remaining_pct: weekly,
+        session_remaining_pct: session,
+        available: true,
+    }];
+}
+
+function focusedQuotaAccount(quota, preferredAuthIndex = null) {
+    const rows = quotaAccountRows(quota);
+    if (!rows.length) return null;
+    const wanted = preferredAuthIndex || quota?.focused_auth_index;
+    if (wanted) {
+        const match = rows.find((row) => String(row.auth_index) === String(wanted));
+        if (match) return match;
+    }
+    return rows.find((row) => row.available) || rows[0];
+}
+
+function normalizeQuota(quota, preferredAuthIndex = null) {
     if (!quota || typeof quota !== 'object') return null;
-    const weekly = quota.weekly_remaining_pct;
-    const session = quota.session_remaining_pct;
-    if (weekly == null && session == null) return null;
+    const focused = focusedQuotaAccount(quota, preferredAuthIndex);
+    if (!focused) return null;
+    const weekly = clampQuotaPct(focused.weekly_remaining_pct);
+    const session = clampQuotaPct(focused.session_remaining_pct);
+    if (weekly == null && session == null && !focused.available) return null;
     return {
-        weekly: weekly == null ? null : Math.max(0, Math.min(100, Number(weekly))),
-        session: session == null ? null : Math.max(0, Math.min(100, Number(session))),
-        weeklyReset: quota.weekly_reset_at || null,
-        sessionReset: quota.session_reset_at || null,
-        available: quota.available !== false,
+        weekly,
+        session,
+        weeklyReset: focused.weekly_reset_at || quota.weekly_reset_at || null,
+        sessionReset: focused.session_reset_at || quota.session_reset_at || null,
+        available: focused.available !== false && (weekly != null || session != null),
+        label: focused.label || focused.email || 'Conta',
+        authIndex: focused.auth_index || null,
+        accounts: quotaAccountRows(quota),
     };
 }
 
@@ -178,43 +214,107 @@ function formatQuotaPct(value) {
     return `${Math.round(value)}%`;
 }
 
+function shortAccountLabel(label) {
+    const text = String(label || 'conta').trim();
+    if (!text) return 'conta';
+    if (text.includes('@')) return text;
+    return text.replace(/\.json$/i, '').replace(/^(claude|codex|antigravity|gemini)-/i, '');
+}
+
+function quotaBarHtml(kind, remainingPct) {
+    const value = clampQuotaPct(remainingPct);
+    const width = value == null ? 0 : value;
+    const color = value == null ? '#475569' : quotaColor(kind, value);
+    const label = kind === 'weekly' ? 'Semanal' : 'Sessao 5h';
+    return `
+        <div class="quota-bar-row" title="${escapeHtml(label)} restante: ${formatQuotaPct(value)}">
+            <span class="quota-bar-label">${label}</span>
+            <div class="quota-bar-track" aria-hidden="true">
+                <div class="quota-bar-fill" style="width:${width}%; background:${color}"></div>
+            </div>
+            <span class="quota-bar-pct">${formatQuotaPct(value)}</span>
+        </div>`;
+}
+
+function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
+    const rows = quotaAccountRows(quota);
+    if (!rows.length) {
+        return `<p class="quota-accounts-empty text-ui-caption text-slate-500 px-1">Aguardando cota real das contas autenticadas…</p>`;
+    }
+    const focus = focusedAuthIndex || quota?.focused_auth_index || rows[0]?.auth_index;
+    return `
+        <div class="quota-account-list" onclick="event.stopPropagation()">
+            ${rows.map((row) => {
+                const authIndex = String(row.auth_index || row.label || '');
+                const active = String(focus) === authIndex;
+                const err = row.error ? `<span class="text-rose-400/90"> · ${escapeHtml(row.error)}</span>` : '';
+                return `
+                <button type="button"
+                    class="quota-account ${active ? 'is-focused' : ''}"
+                    data-auth-index="${escapeHtml(authIndex)}"
+                    title="Usar esta conta nos aneis do card">
+                    <div class="quota-account-head">
+                        <span class="quota-account-name">${escapeHtml(shortAccountLabel(row.label || row.email || authIndex))}</span>
+                        ${active ? '<span class="quota-account-badge">ativa</span>' : ''}
+                    </div>
+                    ${quotaBarHtml('weekly', row.weekly_remaining_pct)}
+                    ${quotaBarHtml('session', row.session_remaining_pct)}
+                    ${err}
+                </button>`;
+            }).join('')}
+        </div>`;
+}
+
 function applyQuotaRings(shell, quota) {
     if (!shell) return;
-    const normalized = normalizeQuota(quota);
+    const preferred = shell.dataset.focusedAuthIndex || null;
+    const normalized = normalizeQuota(quota, preferred);
     const weeklyRing = shell.querySelector('.quota-ring-weekly');
     const sessionRing = shell.querySelector('.quota-ring-session');
-    const legend = shell.querySelector('.quota-ring-legend');
-    if (!normalized) {
-        shell.classList.add('opacity-90');
-        if (weeklyRing) weeklyRing.style.setProperty('--quota-weekly', '0');
-        if (sessionRing) sessionRing.style.setProperty('--quota-session', '0');
-        if (legend) legend.classList.add('hidden');
+    const accountsHost = shell.querySelector('.quota-accounts-host');
+    const hasReal = !!(normalized && normalized.available);
+
+    shell.classList.toggle('quota-unknown', !hasReal);
+    if (accountsHost) {
+        accountsHost.innerHTML = buildQuotaAccountsHtml(quota, preferred || normalized?.authIndex);
+        accountsHost.querySelectorAll('.quota-account').forEach((btn) => {
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const authIndex = btn.getAttribute('data-auth-index');
+                if (!authIndex) return;
+                shell.dataset.focusedAuthIndex = authIndex;
+                applyQuotaRings(shell, quota);
+            });
+        });
+    }
+
+    if (!hasReal) {
+        if (weeklyRing) {
+            weeklyRing.style.setProperty('--quota-weekly', '0');
+            weeklyRing.removeAttribute('title');
+        }
+        if (sessionRing) {
+            sessionRing.style.setProperty('--quota-session', '0');
+            sessionRing.removeAttribute('title');
+        }
         return;
     }
-    shell.classList.remove('opacity-90');
+
     const weekly = normalized.weekly == null ? 0 : normalized.weekly;
     const session = normalized.session == null ? 0 : normalized.session;
+    shell.dataset.focusedAuthIndex = String(normalized.authIndex || '');
     if (weeklyRing) {
         weeklyRing.style.setProperty('--quota-weekly', String(weekly));
         weeklyRing.style.setProperty('--quota-weekly-color', quotaColor('weekly', normalized.weekly));
-        weeklyRing.title = `Cota semanal restante: ${formatQuotaPct(normalized.weekly)}`;
+        weeklyRing.title = `${normalized.label} · semanal restante: ${formatQuotaPct(normalized.weekly)}`;
     }
     if (sessionRing) {
         sessionRing.style.setProperty('--quota-session', String(session));
         sessionRing.style.setProperty('--quota-session-color', quotaColor('session', normalized.session));
-        sessionRing.title = `Cota de sessao (5h) restante: ${formatQuotaPct(normalized.session)}`;
+        sessionRing.title = `${normalized.label} · sessao 5h restante: ${formatQuotaPct(normalized.session)}`;
     }
-    if (legend) {
-        legend.classList.remove('hidden');
-        const weeklyEl = legend.querySelector('[data-quota="weekly"]');
-        const sessionEl = legend.querySelector('[data-quota="session"]');
-        if (weeklyEl) weeklyEl.textContent = `Semanal ${formatQuotaPct(normalized.weekly)}`;
-        if (sessionEl) sessionEl.textContent = `Sessao ${formatQuotaPct(normalized.session)}`;
-        const weeklyDot = legend.querySelector('[data-quota-dot="weekly"]');
-        const sessionDot = legend.querySelector('[data-quota-dot="session"]');
-        if (weeklyDot) weeklyDot.style.background = quotaColor('weekly', normalized.weekly);
-        if (sessionDot) sessionDot.style.background = quotaColor('session', normalized.session);
-    }
+    shell.title = `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`;
 }
 
 const QUOTA_RING_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -225,18 +325,15 @@ function wrapPlatformCardWithQuota(cardHtml, quota, provider = '') {
     if (!supportsQuota && !normalized) {
         return cardHtml;
     }
-    const title = normalized
-        ? `Semanal ${formatQuotaPct(normalized.weekly)} · Sessao 5h ${formatQuotaPct(normalized.session)}`
-        : 'Cota ainda nao disponivel — autentique a conta e aguarde a atualizacao';
+    const title = normalized?.available
+        ? `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`
+        : 'Cota real ainda nao carregada — autentique e inicie a plataforma';
     return `
-        <div class="platform-quota-shell" title="${escapeHtml(title)}">
+        <div class="platform-quota-shell ${normalized?.available ? '' : 'quota-unknown'}" title="${escapeHtml(title)}">
             <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
             <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
             ${cardHtml}
-            <div class="quota-ring-legend ${normalized ? '' : 'hidden'} px-1">
-                <span><i data-quota-dot="weekly"></i><span data-quota="weekly">Semanal —</span></span>
-                <span><i data-quota-dot="session"></i><span data-quota="session">Sessao —</span></span>
-            </div>
+            <div class="quota-accounts-host px-1 pt-1">${buildQuotaAccountsHtml(quota, normalized?.authIndex)}</div>
         </div>`;
 }
 
@@ -2743,7 +2840,9 @@ export async function updateModels() {
             await renderList();
         }
         ensurePlatformQuotaPolling();
-        refreshPlatformQuotas({ force: false });
+        // First paint may have empty cache; force a real upstream refresh.
+        const needsQuota = (data.platforms || []).some((p) => QUOTA_RING_PROVIDERS.has(p.provider));
+        refreshPlatformQuotas({ force: needsQuota });
     } catch (e) {
         console.error('updateModels error:', e);
     }

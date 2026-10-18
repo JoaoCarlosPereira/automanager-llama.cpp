@@ -78,28 +78,61 @@ def test_parse_antigravity_quota_min_across_groups():
     assert parsed["session_remaining_pct"] == 50.0
 
 
-def test_merge_account_quotas_uses_most_depleted():
+def test_merge_account_quotas_keeps_per_account_and_focuses_priority():
     merged = pq._merge_account_quotas(
         "codex",
         [
             {
-                "session_remaining_pct": 80,
-                "weekly_remaining_pct": 60,
-                "session_reset_at": None,
-                "weekly_reset_at": None,
+                "auth_index": "low",
+                "label": "low@example.com",
+                "priority": 0,
+                "session_remaining_pct": 20,
+                "weekly_remaining_pct": 15,
             },
             {
-                "session_remaining_pct": 20,
-                "weekly_remaining_pct": 90,
+                "auth_index": "high",
+                "label": "high@example.com",
+                "priority": 10,
+                "session_remaining_pct": 80,
+                "weekly_remaining_pct": 60,
                 "session_reset_at": "soon",
-                "weekly_reset_at": None,
             },
         ],
     )
     assert merged["available"] is True
-    assert merged["session_remaining_pct"] == 20.0
-    assert merged["weekly_remaining_pct"] == 60.0
     assert merged["accounts"] == 2
+    assert merged["focused_auth_index"] == "high"
+    assert merged["session_remaining_pct"] == 80.0
+    assert merged["weekly_remaining_pct"] == 60.0
+    assert [row["label"] for row in merged["account_details"]] == [
+        "high@example.com",
+        "low@example.com",
+    ]
+    assert merged["account_details"][1]["weekly_remaining_pct"] == 15.0
+
+
+def test_merge_account_quotas_focuses_most_depleted_when_priority_ties():
+    merged = pq._merge_account_quotas(
+        "claude",
+        [
+            {
+                "auth_index": "a",
+                "label": "a@example.com",
+                "priority": 1,
+                "session_remaining_pct": 50,
+                "weekly_remaining_pct": 90,
+            },
+            {
+                "auth_index": "b",
+                "label": "b@example.com",
+                "priority": 1,
+                "session_remaining_pct": 40,
+                "weekly_remaining_pct": 12,
+            },
+        ],
+    )
+    assert merged["focused_auth_index"] == "b"
+    assert merged["weekly_remaining_pct"] == 12.0
 
 
 def test_ensure_management_key_persists(tmp_path: Path):
@@ -195,5 +228,7 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "wrapPlatformCardWithQuota" in models_js
     assert "quota-ring-weekly" in models_js
     assert "quota-ring-session" in models_js
+    assert "quota-account-list" in models_js
+    assert "buildQuotaAccountsHtml" in models_js
     assert "refreshPlatformQuotas" in models_js
     assert "/platforms/quota" in models_js
