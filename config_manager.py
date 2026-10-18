@@ -604,11 +604,31 @@ class ConfigManager:
                 cleaned[alias_key] = target_val
         return cleaned
 
-    def resolve_model_alias(self, model_name: Optional[str]) -> str:
-        if not model_name:
+    def resolve_model_alias(
+        self,
+        model_name: Optional[str],
+        extra_keys: Optional[list[str]] = None,
+    ) -> str:
+        """Resolve alias → alvo. Alias sempre vence o nome real do provedor.
+
+        ``extra_keys`` permite checar formas alternativas do mesmo pedido
+        (ex.: ID opaco de listagem e bare id da plataforma).
+        """
+        if not model_name and not extra_keys:
             return model_name or ""
         aliases = self.get_model_aliases()
-        return aliases.get(model_name, model_name)
+        if not aliases:
+            return model_name or ""
+        seen: set[str] = set()
+        for key in (model_name, *(extra_keys or ())):
+            alias_key = str(key or "").strip()
+            if not alias_key or alias_key in seen:
+                continue
+            seen.add(alias_key)
+            target = aliases.get(alias_key)
+            if target:
+                return target
+        return model_name or ""
 
     def is_removed_model_alias(self, model_name: Optional[str]) -> bool:
         """Return whether a previously configured alias was explicitly removed."""

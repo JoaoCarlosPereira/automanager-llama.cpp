@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.42';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.42';
+import { state } from './state.js?v=4.2.43';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.43';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.42';
+} from './gpu.js?v=4.2.43';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.42';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.42';
-import { checkForUpdates } from './version.js?v=4.2.42';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.43';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.43';
+import { checkForUpdates } from './version.js?v=4.2.43';
 
 // --- TAB MANAGEMENT ---
 
@@ -437,9 +437,9 @@ export function createModelTab(path, name, id, activate = true, forceNew = false
     bindTabListeners(tabId);
     bindGpuManualListeners(tabId);
     bindTabLogPanelHeightSync(tabId);
-    const localAliasSelect = tabDiv.querySelector('.local-cursor-alias-select');
+    const localAliasInput = tabDiv.querySelector('.local-cursor-alias-input, .local-cursor-alias-select');
     tabDiv.querySelector('.local-cursor-save-alias')?.addEventListener('click', () => {
-        const alias = localAliasSelect?.value;
+        const alias = (localAliasInput?.value || '').trim();
         if (!alias) return;
         saveModelAlias(alias, m_js, tabDiv).then(() => refreshLocalCursorSection(tabDiv, m_js));
     });
@@ -524,7 +524,9 @@ function bindPlatformTabListeners(tabId, backendId) {
     });
 
     tab.querySelector('.platform-cursor-save-alias')?.addEventListener('click', () => {
-        const alias = tab.querySelector('.platform-cursor-alias-select')?.value;
+        const alias = (
+            tab.querySelector('.platform-cursor-alias-input, .platform-cursor-alias-select')?.value || ''
+        ).trim();
         const target = tab.querySelector('.platform-cursor-target-select')?.value;
         if (alias && target) saveModelAlias(alias, target, tab);
     });
@@ -644,6 +646,26 @@ function populatePlatformFallbackModelSelect(tab, models, currentValue) {
     select.dataset.prevValue = currentValue || '';
 }
 
+const DEFAULT_CURSOR_ALIAS_NAMES = [
+    'gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini', 'gpt-5.5'
+];
+
+function ensureCursorAliasSuggestions(names) {
+    const datalist = document.getElementById('cursor-alias-suggestions');
+    if (!datalist) return;
+    const suggestions = (names?.length ? names : DEFAULT_CURSOR_ALIAS_NAMES);
+    datalist.innerHTML = suggestions.map((name) => (
+        `<option value="${escapeHtml(name)}"></option>`
+    )).join('');
+}
+
+function aliasInputFor(tab, kind) {
+    if (kind === 'local') {
+        return tab?.querySelector('.local-cursor-alias-input, .local-cursor-alias-select');
+    }
+    return tab?.querySelector('.platform-cursor-alias-input, .platform-cursor-alias-select');
+}
+
 async function fetchModelAliasState() {
     const res = await apiFetch('/model-aliases');
     if (!res.ok) return { aliases: {}, cursor_compatible_names: [] };
@@ -671,8 +693,8 @@ function renderPlatformCursorAliases(tab, aliasState) {
 
 function renderLocalCursorAliases(tab, aliasState, modelPath) {
     const list = tab.querySelector('.local-cursor-aliases-list');
-    const select = tab.querySelector('.local-cursor-alias-select');
-    if (!list || !select) return;
+    const input = aliasInputFor(tab, 'local');
+    if (!list || !input) return;
     const normalizedPath = (modelPath || '').replace(/\\/g, '/');
     const aliases = Object.entries(aliasState?.aliases || {}).filter(([, target]) => {
         const normalizedTarget = String(target || '').replace(/\\/g, '/');
@@ -691,27 +713,22 @@ function renderLocalCursorAliases(tab, aliasState, modelPath) {
             button.addEventListener('click', () => saveModelAlias(button.dataset.localAlias, null, tab));
         });
     }
-    const names = aliasState?.cursor_compatible_names || [
-        'gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini', 'gpt-5.5'
-    ];
+    const names = aliasState?.cursor_compatible_names || DEFAULT_CURSOR_ALIAS_NAMES;
+    ensureCursorAliasSuggestions(names);
     const current = aliases[0]?.[0] || '';
-    select.innerHTML = names.map(name => `
-        <option value="${escapeHtml(name)}">${escapeHtml(name)}</option>
-    `).join('');
-    if (current && [...select.options].some(option => option.value === current)) {
-        select.value = current;
-    }
+    if (current) input.value = current;
 }
 
 function syncPlatformCursorSelectors(tab, models) {
-    const aliasSelect = tab.querySelector('.platform-cursor-alias-select');
+    const aliasInput = aliasInputFor(tab, 'platform');
     const targetSelect = tab.querySelector('.platform-cursor-target-select');
-    if (!aliasSelect || !targetSelect) return;
+    if (!targetSelect) return;
     const names = state.cursorCompatibleNames?.length
         ? state.cursorCompatibleNames
-        : ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo', 'o3-mini', 'gpt-5.5'];
-    if (!aliasSelect.options.length) {
-        aliasSelect.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+        : DEFAULT_CURSOR_ALIAS_NAMES;
+    ensureCursorAliasSuggestions(names);
+    if (aliasInput && !aliasInput.value) {
+        aliasInput.placeholder = 'gpt-4o ou nome personalizado';
     }
     const currentTarget = targetSelect.value;
     targetSelect.innerHTML = (models || []).map((m) => {
@@ -733,16 +750,24 @@ async function saveModelAlias(alias, target, tab) {
         if (!res.ok) throw new Error('alias');
         const data = await res.json();
         window.lastConfig = { ...(window.lastConfig || {}), model_aliases: data.aliases };
+        ensureCursorAliasSuggestions(
+            state.cursorCompatibleNames?.length
+                ? state.cursorCompatibleNames
+                : DEFAULT_CURSOR_ALIAS_NAMES
+        );
         if (tab?.querySelector('.local-cursor-aliases-list')) {
-            renderLocalCursorAliases(tab, data, tab.dataset.path || '');
+            renderLocalCursorAliases(tab, { ...data, cursor_compatible_names: state.cursorCompatibleNames }, tab.dataset.path || '');
         } else if (tab) {
             renderPlatformCursorAliases(tab, data);
+            const platformInput = aliasInputFor(tab, 'platform');
+            if (platformInput && target) platformInput.value = '';
         }
         if (target) {
             showToast(`Alias "${alias}" → "${target}". Selecione "${alias}" no cliente.`, 'success');
         } else {
             showToast(`Alias "${alias}" removido.`, 'success');
         }
+        await updateModels();
     } catch {
         showToast('Falha ao salvar alias.', 'error');
     }
@@ -769,7 +794,6 @@ export async function configureLocalModelAlias(target) {
     if (alias === null || alias === undefined) return;
     if (!alias.trim() && !currentAlias) return;
     await saveModelAlias(alias.trim() || currentAlias, alias.trim() ? normalizedTarget : null);
-    await updateModels();
 }
 
 async function copyPlatformAlias(alias) {
@@ -797,12 +821,14 @@ async function copyPlatformAlias(alias) {
 async function refreshPlatformCursorSection(tab) {
     const aliasState = await fetchModelAliasState();
     state.cursorCompatibleNames = aliasState.cursor_compatible_names || [];
+    ensureCursorAliasSuggestions(state.cursorCompatibleNames);
     renderPlatformCursorAliases(tab, aliasState);
 }
 
 async function refreshLocalCursorSection(tab, modelPath) {
     const aliasState = await fetchModelAliasState();
     state.cursorCompatibleNames = aliasState.cursor_compatible_names || [];
+    ensureCursorAliasSuggestions(state.cursorCompatibleNames);
     renderLocalCursorAliases(tab, aliasState, modelPath);
 }
 
@@ -2024,9 +2050,12 @@ function buildModelListHtml(models, cfg, platforms = []) {
                  onauxclick="selectModelFromEvent(event, '${safePath}', '${m.id}')">
                 <div class="flex items-start justify-between gap-2 overflow-hidden">
                     <div class="flex-1 min-w-0">
-                        <p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
-                        <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>
-                        ${localAlias ? `<p class="text-ui-label text-cyan-400/80 font-mono truncate mt-1">Alias: ${escapeHtml(localAlias)}</p>` : ''}
+                        ${localAlias
+                            ? `<p class="model-name text-ui-body font-bold text-cyan-300 truncate">${escapeHtml(localAlias)}</p>
+                               <p class="text-ui-label text-slate-400 font-mono truncate mt-0.5">${escapeHtml(m.name)}</p>
+                               <p class="text-ui-label text-slate-500 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>`
+                            : `<p class="model-name text-ui-body font-bold text-slate-100 truncate">${escapeHtml(m.name)}</p>
+                               <p class="text-ui-label text-slate-400 font-mono uppercase truncate mt-0.5">${escapeHtml(m.dir)}</p>`}
                     </div>
                     ${status ? '<div class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>' : ''}
                 </div>

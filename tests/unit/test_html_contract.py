@@ -264,11 +264,14 @@ def test_html_contains_default_model_toggle(html):
 
 
 def test_html_contains_local_cursor_alias_panel(html):
-    """Local model tabs expose the same predefined Cursor alias workflow."""
+    """Local model tabs allow predefined suggestions and custom alias names."""
     assert "local-cursor-alias-panel" in html
     assert "local-cursor-aliases-list" in html
-    assert "local-cursor-alias-select" in html
+    assert "local-cursor-alias-input" in html
     assert "local-cursor-save-alias" in html
+    assert 'id="cursor-alias-suggestions"' in html
+    assert "platform-cursor-alias-input" in html
+    assert "nome personalizado" in html
 
 
 # ── Proxy Inteligente ─────────────────────────────────────────────────────
