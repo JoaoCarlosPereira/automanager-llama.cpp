@@ -70,6 +70,8 @@ def config_path_for(runtime_dir: Optional[Path] = None) -> Path:
 
 
 def ensure_runtime_config(runtime_dir: Optional[Path] = None, port: int = 8317) -> Path:
+    from platform_quota import ensure_management_key
+
     base = runtime_dir or Path(INSTALL_ROOT) / "data" / "cliproxy"
     base.mkdir(parents=True, exist_ok=True)
     auth_dir = base / "auth"
@@ -77,6 +79,7 @@ def ensure_runtime_config(runtime_dir: Optional[Path] = None, port: int = 8317) 
     config_path = base / "config.yaml"
     if not config_path.is_file():
         auth_dir_value = str(auth_dir).replace("\\", "/")
+        management_key = ensure_management_key(base).replace('"', '\\"')
         config = "\n".join(
             [
                 f"port: {port}",
@@ -84,7 +87,7 @@ def ensure_runtime_config(runtime_dir: Optional[Path] = None, port: int = 8317) 
                 f'auth-dir: "{auth_dir_value}"',
                 "api-keys: []",
                 "remote-management:",
-                '  secret-key: ""',
+                f'  secret-key: "{management_key}"',
                 "  allow-remote: false",
                 "",
             ]

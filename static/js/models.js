@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.42';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.42';
+import { state } from './state.js?v=4.2.43';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.43';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.42';
+} from './gpu.js?v=4.2.43';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.42';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.42';
-import { checkForUpdates } from './version.js?v=4.2.42';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.43';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.43';
+import { checkForUpdates } from './version.js?v=4.2.43';
 
 // --- TAB MANAGEMENT ---
 
@@ -131,11 +131,144 @@ function findTabForBackend(backendId, { forceNew = false } = {}) {
 }
 
 const PLATFORM_LIMITS_INFO = {
-    codex: 'Modelos via assinatura OpenAI/Codex. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
-    claude: 'Modelos via assinatura Claude. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
-    antigravity: 'Modelos via Google Antigravity. Limites de taxa e uso seguem a politica da conta autenticada no CLIProxyAPI.',
+    codex: 'Modelos via assinatura OpenAI/Codex. Cotas: janela de sessao (~5h) e semanal (7d) via ChatGPT/Codex.',
+    claude: 'Modelos via assinatura Claude. Cotas: janela de sessao (5h) e semanal (7d) da conta Claude.ai.',
+    antigravity: 'Modelos via Google Antigravity. Cotas: limite semanal e janela de 5h por grupo de modelos.',
     cursor: 'Modelos via CLI agent do Cursor, em modo somente leitura. Limites de taxa e uso seguem a conta autenticada.',
 };
+
+let platformQuotaPollTimer = null;
+
+function quotaTone(remainingPct) {
+    if (remainingPct == null || Number.isNaN(Number(remainingPct))) return 'slate';
+    const value = Number(remainingPct);
+    if (value < 10) return 'rose';
+    if (value < 30) return 'amber';
+    return 'emerald';
+}
+
+function quotaColor(kind, remainingPct) {
+    const tone = quotaTone(remainingPct);
+    if (kind === 'weekly') {
+        if (tone === 'rose') return '#fb7185';
+        if (tone === 'amber') return '#fbbf24';
+        return '#38bdf8';
+    }
+    if (tone === 'rose') return '#fb7185';
+    if (tone === 'amber') return '#fbbf24';
+    return '#34d399';
+}
+
+function normalizeQuota(quota) {
+    if (!quota || typeof quota !== 'object') return null;
+    const weekly = quota.weekly_remaining_pct;
+    const session = quota.session_remaining_pct;
+    if (weekly == null && session == null) return null;
+    return {
+        weekly: weekly == null ? null : Math.max(0, Math.min(100, Number(weekly))),
+        session: session == null ? null : Math.max(0, Math.min(100, Number(session))),
+        weeklyReset: quota.weekly_reset_at || null,
+        sessionReset: quota.session_reset_at || null,
+        available: quota.available !== false,
+    };
+}
+
+function formatQuotaPct(value) {
+    if (value == null || Number.isNaN(value)) return '—';
+    return `${Math.round(value)}%`;
+}
+
+function applyQuotaRings(shell, quota) {
+    if (!shell) return;
+    const normalized = normalizeQuota(quota);
+    const weeklyRing = shell.querySelector('.quota-ring-weekly');
+    const sessionRing = shell.querySelector('.quota-ring-session');
+    const legend = shell.querySelector('.quota-ring-legend');
+    if (!normalized) {
+        shell.classList.add('opacity-90');
+        if (weeklyRing) weeklyRing.style.setProperty('--quota-weekly', '0');
+        if (sessionRing) sessionRing.style.setProperty('--quota-session', '0');
+        if (legend) legend.classList.add('hidden');
+        return;
+    }
+    shell.classList.remove('opacity-90');
+    const weekly = normalized.weekly == null ? 0 : normalized.weekly;
+    const session = normalized.session == null ? 0 : normalized.session;
+    if (weeklyRing) {
+        weeklyRing.style.setProperty('--quota-weekly', String(weekly));
+        weeklyRing.style.setProperty('--quota-weekly-color', quotaColor('weekly', normalized.weekly));
+        weeklyRing.title = `Cota semanal restante: ${formatQuotaPct(normalized.weekly)}`;
+    }
+    if (sessionRing) {
+        sessionRing.style.setProperty('--quota-session', String(session));
+        sessionRing.style.setProperty('--quota-session-color', quotaColor('session', normalized.session));
+        sessionRing.title = `Cota de sessao (5h) restante: ${formatQuotaPct(normalized.session)}`;
+    }
+    if (legend) {
+        legend.classList.remove('hidden');
+        const weeklyEl = legend.querySelector('[data-quota="weekly"]');
+        const sessionEl = legend.querySelector('[data-quota="session"]');
+        if (weeklyEl) weeklyEl.textContent = `Semanal ${formatQuotaPct(normalized.weekly)}`;
+        if (sessionEl) sessionEl.textContent = `Sessao ${formatQuotaPct(normalized.session)}`;
+        const weeklyDot = legend.querySelector('[data-quota-dot="weekly"]');
+        const sessionDot = legend.querySelector('[data-quota-dot="session"]');
+        if (weeklyDot) weeklyDot.style.background = quotaColor('weekly', normalized.weekly);
+        if (sessionDot) sessionDot.style.background = quotaColor('session', normalized.session);
+    }
+}
+
+const QUOTA_RING_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
+
+function wrapPlatformCardWithQuota(cardHtml, quota, provider = '') {
+    const supportsQuota = QUOTA_RING_PROVIDERS.has(String(provider || '').toLowerCase());
+    const normalized = normalizeQuota(quota);
+    if (!supportsQuota && !normalized) {
+        return cardHtml;
+    }
+    const title = normalized
+        ? `Semanal ${formatQuotaPct(normalized.weekly)} · Sessao 5h ${formatQuotaPct(normalized.session)}`
+        : 'Cota ainda nao disponivel — autentique a conta e aguarde a atualizacao';
+    return `
+        <div class="platform-quota-shell" title="${escapeHtml(title)}">
+            <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
+            <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
+            ${cardHtml}
+            <div class="quota-ring-legend ${normalized ? '' : 'hidden'} px-1">
+                <span><i data-quota-dot="weekly"></i><span data-quota="weekly">Semanal —</span></span>
+                <span><i data-quota-dot="session"></i><span data-quota="session">Sessao —</span></span>
+            </div>
+        </div>`;
+}
+
+export async function refreshPlatformQuotas({ force = false } = {}) {
+    try {
+        const res = await apiFetch(`/platforms/quota${force ? '?refresh=true' : ''}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const quotas = data.quotas || {};
+        const platforms = (state.lastPlatformList || []).map((platform) => {
+            const provider = platform.provider;
+            if (!provider || !quotas[provider]) return platform;
+            return { ...platform, quota: quotas[provider] };
+        });
+        state.lastPlatformList = platforms;
+        state.platforms = platforms;
+        for (const platform of platforms) {
+            const el = document.getElementById(platformDomId(platform.backend_id));
+            const shell = el?.closest('.platform-quota-shell');
+            if (shell) applyQuotaRings(shell, platform.quota);
+        }
+    } catch (err) {
+        console.debug('refreshPlatformQuotas:', err);
+    }
+}
+
+function ensurePlatformQuotaPolling() {
+    if (platformQuotaPollTimer || typeof window === 'undefined') return;
+    platformQuotaPollTimer = window.setInterval(() => {
+        refreshPlatformQuotas({ force: false });
+    }, 60_000);
+}
 
 const REORDERABLE_PLATFORM_PROVIDERS = new Set(['codex', 'claude', 'antigravity', 'cursor']);
 
@@ -1805,6 +1938,9 @@ function patchPlatformListItems(platforms, cfg) {
         el.classList.toggle('border-slate-700/50', !isRunning);
         el.classList.toggle('bg-slate-800/40', !isRunning);
 
+        const shell = el.closest('.platform-quota-shell');
+        if (shell) applyQuotaRings(shell, platform.quota);
+
         const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
         const primaryCb = el.querySelector('.proxy-primary-checkbox');
         if (primaryCb && document.activeElement !== primaryCb) {
@@ -1915,7 +2051,7 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
         : `<button type="button" ${canStart ? '' : 'disabled'} onclick="event.stopPropagation(); startPlatform('${safeBackendId}')" title="Iniciar integração" aria-label="Iniciar integração" class="w-8 h-8 flex items-center justify-center rounded bg-blue-600/10 text-blue-300 hover:bg-blue-600/20 disabled:opacity-40 disabled:pointer-events-none"><i class="fas fa-bolt text-ui-label"></i></button>`;
     const authButtonHtml = buildPlatformAuthButton(platform, safeBackendId);
 
-    return `
+    const cardHtml = `
             <div id="${platformDomId(backendId)}" class="model-item-container platform-card group p-3 rounded-xl border transition-all cursor-pointer ${runningClass}"
                  data-backend-id="${escapeHtml(backendId)}" data-backend-type="platform"
                  title="Clique para abrir · Ctrl+clique para nova aba"
@@ -1959,6 +2095,11 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                     </label>
                 </div>
             </div>`;
+    const wrapped = wrapPlatformCardWithQuota(cardHtml, platform.quota, platform.provider);
+    return wrapped.replace(
+        'class="platform-quota-shell"',
+        `class="platform-quota-shell" data-quota-provider="${escapeHtml(platform.provider || '')}"`,
+    );
 }
 
 function buildGenericOpenAICardsHtml(platform) {
@@ -2071,6 +2212,12 @@ function buildModelListHtml(models, cfg, platforms = []) {
 
 async function renderModelList(container, models, cfg, platforms = []) {
     container.innerHTML = buildModelListHtml(models, cfg, platforms);
+    for (const raw of platforms || []) {
+        const platform = platformDisplayState(raw);
+        const el = document.getElementById(platformDomId(platform.backend_id));
+        const shell = el?.closest('.platform-quota-shell');
+        if (shell) applyQuotaRings(shell, platform.quota);
+    }
 }
 
 export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false, cardId = null } = {}) {
@@ -2595,6 +2742,8 @@ export async function updateModels() {
             deferredModelListUpdate = null;
             await renderList();
         }
+        ensurePlatformQuotaPolling();
+        refreshPlatformQuotas({ force: false });
     } catch (e) {
         console.error('updateModels error:', e);
     }

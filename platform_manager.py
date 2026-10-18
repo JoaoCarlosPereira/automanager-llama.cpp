@@ -765,11 +765,16 @@ class CLIProxySidecarManager:
         }
 
     def _write_config(self, port: int) -> Path:
+        from platform_quota import ensure_management_key
+
         self._runtime_dir.mkdir(parents=True, exist_ok=True)
         auth_dir = self._runtime_dir / "auth"
         auth_dir.mkdir(parents=True, exist_ok=True)
         config_path = self._runtime_dir / "config.yaml"
         auth_dir_value = str(auth_dir).replace("\\", "/")
+        # Keep plaintext in management.key; CLIProxyAPI bcrypt-hashes this
+        # value into config.yaml on startup. Localhost-only management.
+        management_key = ensure_management_key(self._runtime_dir).replace('"', '\\"')
         config = "\n".join(
             [
                 f"port: {port}",
@@ -777,7 +782,7 @@ class CLIProxySidecarManager:
                 f'auth-dir: "{auth_dir_value}"',
                 "api-keys: []",
                 "remote-management:",
-                "  secret-key: \"\"",
+                f'  secret-key: "{management_key}"',
                 "  allow-remote: false",
                 "",
             ]
