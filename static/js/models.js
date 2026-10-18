@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.44';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.44';
+import { state } from './state.js?v=4.2.45';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.45';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.44';
+} from './gpu.js?v=4.2.45';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.44';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.44';
-import { checkForUpdates } from './version.js?v=4.2.44';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.45';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.45';
+import { checkForUpdates } from './version.js?v=4.2.45';
 
 // --- TAB MANAGEMENT ---
 
@@ -138,6 +138,11 @@ const PLATFORM_LIMITS_INFO = {
 };
 
 let platformQuotaPollTimer = null;
+let platformQuotaRotateTimer = null;
+const QUOTA_ACCOUNT_ROTATE_MS = 5000;
+const QUOTA_ACCOUNT_ROTATE_PAUSE_MS = 20000;
+/** @type {WeakMap<Element, object>|null} */
+const platformQuotaByShell = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
 
 function quotaTone(remainingPct) {
     if (remainingPct == null || Number.isNaN(Number(remainingPct))) return 'slate';
@@ -255,7 +260,7 @@ function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
                     title="Usar esta conta nos aneis do card">
                     <div class="quota-account-head">
                         <span class="quota-account-name">${escapeHtml(shortAccountLabel(row.label || row.email || authIndex))}</span>
-                        ${active ? '<span class="quota-account-badge">ativa</span>' : ''}
+                        ${active ? '<span class="quota-account-badge">exibindo</span>' : ''}
                     </div>
                     ${quotaBarHtml('weekly', row.weekly_remaining_pct)}
                     ${quotaBarHtml('session', row.session_remaining_pct)}
@@ -265,16 +270,42 @@ function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
         </div>`;
 }
 
+function pauseQuotaRotation(shell, ms = QUOTA_ACCOUNT_ROTATE_PAUSE_MS) {
+    if (!shell) return;
+    shell.dataset.quotaRotatePauseUntil = String(Date.now() + ms);
+}
+
+function isQuotaRotationPaused(shell) {
+    const until = Number(shell?.dataset?.quotaRotatePauseUntil || 0);
+    return Number.isFinite(until) && until > Date.now();
+}
+
+function rotateFocusedQuotaAccount(shell, quota) {
+    const rows = quotaAccountRows(quota).filter((row) => row.available !== false);
+    if (rows.length < 2) return false;
+    const current = String(shell.dataset.focusedAuthIndex || '');
+    const index = Math.max(0, rows.findIndex((row) => String(row.auth_index) === current));
+    const next = rows[(index + 1) % rows.length];
+    if (!next?.auth_index) return false;
+    shell.dataset.focusedAuthIndex = String(next.auth_index);
+    shell.classList.add('quota-rotating');
+    window.setTimeout(() => shell.classList.remove('quota-rotating'), 450);
+    return true;
+}
+
 function applyQuotaRings(shell, quota) {
     if (!shell) return;
+    if (quota && platformQuotaByShell) platformQuotaByShell.set(shell, quota);
     const preferred = shell.dataset.focusedAuthIndex || null;
     const normalized = normalizeQuota(quota, preferred);
     const weeklyRing = shell.querySelector('.quota-ring-weekly');
     const sessionRing = shell.querySelector('.quota-ring-session');
     const accountsHost = shell.querySelector('.quota-accounts-host');
     const hasReal = !!(normalized && normalized.available);
+    const multiAccount = quotaAccountRows(quota).length > 1;
 
     shell.classList.toggle('quota-unknown', !hasReal);
+    shell.classList.toggle('quota-multi-account', multiAccount);
     if (accountsHost) {
         accountsHost.innerHTML = buildQuotaAccountsHtml(quota, preferred || normalized?.authIndex);
         accountsHost.querySelectorAll('.quota-account').forEach((btn) => {
@@ -284,6 +315,7 @@ function applyQuotaRings(shell, quota) {
                 const authIndex = btn.getAttribute('data-auth-index');
                 if (!authIndex) return;
                 shell.dataset.focusedAuthIndex = authIndex;
+                pauseQuotaRotation(shell);
                 applyQuotaRings(shell, quota);
             });
         });
@@ -314,7 +346,29 @@ function applyQuotaRings(shell, quota) {
         sessionRing.style.setProperty('--quota-session-color', quotaColor('session', normalized.session));
         sessionRing.title = `${normalized.label} · sessao 5h restante: ${formatQuotaPct(normalized.session)}`;
     }
-    shell.title = `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`;
+    shell.title = multiAccount
+        ? `${normalized.label} (alternando): semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`
+        : `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`;
+}
+
+function rotateAllPlatformQuotaShells() {
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('.platform-quota-shell.quota-multi-account').forEach((shell) => {
+        if (isQuotaRotationPaused(shell)) return;
+        const quota = platformQuotaByShell?.get(shell);
+        if (!quota) return;
+        if (rotateFocusedQuotaAccount(shell, quota)) {
+            applyQuotaRings(shell, quota);
+        }
+    });
+}
+
+function ensurePlatformQuotaRotation() {
+    if (platformQuotaRotateTimer || typeof window === 'undefined') return;
+    platformQuotaRotateTimer = window.setInterval(
+        rotateAllPlatformQuotaShells,
+        QUOTA_ACCOUNT_ROTATE_MS,
+    );
 }
 
 const QUOTA_RING_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -361,10 +415,13 @@ export async function refreshPlatformQuotas({ force = false } = {}) {
 }
 
 function ensurePlatformQuotaPolling() {
-    if (platformQuotaPollTimer || typeof window === 'undefined') return;
-    platformQuotaPollTimer = window.setInterval(() => {
-        refreshPlatformQuotas({ force: false });
-    }, 60_000);
+    if (typeof window === 'undefined') return;
+    if (!platformQuotaPollTimer) {
+        platformQuotaPollTimer = window.setInterval(() => {
+            refreshPlatformQuotas({ force: false });
+        }, 60_000);
+    }
+    ensurePlatformQuotaRotation();
 }
 
 const REORDERABLE_PLATFORM_PROVIDERS = new Set(['codex', 'claude', 'antigravity', 'cursor']);

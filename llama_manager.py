@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.44"  # Aneis/barras de cota real por conta de plataforma
+_DASHBOARD_JS_V = "4.2.45"  # Alternancia automatica dos aneis por conta
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5175,6 +5175,18 @@ def _build_html(
         .platform-quota-shell.quota-unknown .quota-ring-weekly,
         .platform-quota-shell.quota-unknown .quota-ring-session {{
             opacity: 0.25;
+        }}
+        .platform-quota-shell.quota-rotating .quota-ring {{
+            transition: background 0.45s ease, opacity 0.45s ease;
+            opacity: 0.92;
+        }}
+        .platform-quota-shell.quota-multi-account .quota-account.is-focused {{
+            animation: quota-focus-pulse 5s linear;
+        }}
+        @keyframes quota-focus-pulse {{
+            0% {{ border-color: rgba(56, 189, 248, 0.35); }}
+            50% {{ border-color: rgba(56, 189, 248, 0.85); }}
+            100% {{ border-color: rgba(56, 189, 248, 0.35); }}
         }}
         .quota-account-list {{
             display: flex;

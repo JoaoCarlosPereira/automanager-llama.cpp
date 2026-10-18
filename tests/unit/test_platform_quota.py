@@ -230,5 +230,8 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "quota-ring-session" in models_js
     assert "quota-account-list" in models_js
     assert "buildQuotaAccountsHtml" in models_js
+    assert "ensurePlatformQuotaRotation" in models_js
+    assert "rotateAllPlatformQuotaShells" in models_js
+    assert "QUOTA_ACCOUNT_ROTATE_MS" in models_js
     assert "refreshPlatformQuotas" in models_js
     assert "/platforms/quota" in models_js
