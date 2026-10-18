@@ -138,7 +138,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.42"  # Ordem de prioridade das contas de plataforma; query ?v= única
+_DASHBOARD_JS_V = "4.2.43"  # Aliases personalizados + prioridade na listagem /v1/models
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -2490,13 +2490,13 @@ async def _aggregate_models_response(
 
 
 def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Adiciona aliases usando o shape do modelo real sempre que possível."""
+    """Adiciona aliases no início da lista (prioridade sobre nomes reais)."""
     aliases = config_manager.get_model_aliases()
     if not aliases:
         return models
     existing_ids = {str(m.get("id") or "") for m in models}
     by_id = {str(m.get("id") or ""): m for m in models}
-    augmented = list(models)
+    alias_entries: List[Dict[str, Any]] = []
     for alias, target in aliases.items():
         if alias in existing_ids:
             continue
@@ -2520,15 +2520,21 @@ def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 **(entry.get("meta") or {}),
                 "root_model": target_text,
                 "alias_target": target_text,
+                "is_alias": True,
             }
         else:
             entry = platform_model_listing_entry(
                 {"id": target_text, "owned_by": "platform"}, provider="platform"
             )
+            entry["meta"] = {
+                **(entry.get("meta") or {}),
+                "is_alias": True,
+            }
         entry["id"] = alias
-        augmented.append(entry)
+        alias_entries.append(entry)
         existing_ids.add(alias)
-    return augmented
+    # Aliases primeiro: clientes BYOK (ex. Cursor) priorizam o topo da listagem.
+    return alias_entries + list(models)
 
 
 async def _v1_models_payload(
@@ -5408,13 +5414,13 @@ def _build_html(
                     <div class="local-cursor-alias-panel glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
                         <div>
                             <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
-                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Escolha um nome compatível com clientes BYOK para expor este modelo local.</p>
+                            <p class="text-sm text-slate-400 leading-relaxed mt-2">Use um nome do catálogo BYOK ou digite um alias personalizado. O alias aparece antes do nome real na API.</p>
                         </div>
                         <ul class="local-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
-                            <label class="space-y-1">
+                            <label class="space-y-1 flex-1 min-w-[12rem]">
                                 <span class="text-ui-label font-black text-slate-600 uppercase">Nome do alias</span>
-                                <select class="local-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
+                                <input type="text" list="cursor-alias-suggestions" class="local-cursor-alias-input local-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold w-full min-w-[10rem]" placeholder="gpt-4o ou nome personalizado" autocomplete="off" spellcheck="false">
                             </label>
                             <button type="button" class="local-cursor-save-alias px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/30 text-cyan-300 text-ui-label font-black uppercase tracking-widest hover:bg-cyan-600/30 transition-all">Salvar alias</button>
                         </div>
@@ -5806,12 +5812,12 @@ def _build_html(
 
                     <div class="glass rounded-[2rem] p-6 space-y-4 shadow-sm border border-cyan-500/20">
                         <p class="text-ui-body-sm font-black text-cyan-400 uppercase tracking-[0.25em]">Uso com Alias</p>
-                        <p class="text-sm text-slate-400 leading-relaxed">Use alias do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …) ou o ID opaco gerado na listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Alguns clientes BYOK bloqueiam nomes de provedor como <span class="font-mono">gemini</span>/<span class="font-mono">claude</span>.</p>
+                        <p class="text-sm text-slate-400 leading-relaxed">Use um nome do catálogo (<span class="font-mono">gpt-4o</span>, <span class="font-mono">gpt-4o-mini</span>, …), um alias personalizado, ou o ID opaco da listagem — ex.: <span class="font-mono">antigravity-31prolow.gguf</span>. Aliases têm prioridade sobre o nome real na API. Alguns clientes BYOK bloqueiam nomes de provedor como <span class="font-mono">gemini</span>/<span class="font-mono">claude</span>.</p>
                         <ul class="platform-cursor-aliases-list space-y-2 text-ui-label font-mono text-slate-500"></ul>
                         <div class="flex flex-wrap items-end gap-3 pt-2 border-t border-slate-800/50">
-                            <label class="space-y-1">
+                            <label class="space-y-1 flex-1 min-w-[10rem]">
                                 <span class="text-ui-label font-black text-slate-600 uppercase">Nome do alias</span>
-                                <select class="platform-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold min-w-[10rem]"></select>
+                                <input type="text" list="cursor-alias-suggestions" class="platform-cursor-alias-input platform-cursor-alias-select bg-slate-950 border border-slate-800 text-slate-300 rounded-xl px-3 py-2 text-sm font-bold w-full min-w-[10rem]" placeholder="gpt-4o ou nome personalizado" autocomplete="off" spellcheck="false">
                             </label>
                             <label class="space-y-1 flex-1 min-w-[12rem]">
                                 <span class="text-ui-label font-black text-slate-600 uppercase">Modelo real</span>
@@ -5917,6 +5923,7 @@ def _build_html(
             TURBOQUANT_CACHE_V_PRESETS: {json.dumps(TURBOQUANT_CACHE_V_PRESETS)},
         }};
     </script>
+    <datalist id="cursor-alias-suggestions"></datalist>
     <script type="module" src="/static/js/index.js?v={_DASHBOARD_JS_V}"></script>
 </body>
 </html>"""

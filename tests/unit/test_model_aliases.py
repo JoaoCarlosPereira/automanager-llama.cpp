@@ -43,6 +43,15 @@ def test_config_resolve_model_alias(alias_cfg):
     assert alias_cfg.is_removed_model_alias("gpt-4o") is False
 
 
+def test_config_accepts_custom_alias_beyond_predefined(tmp_path):
+    cfg = ConfigManager(config_path=str(tmp_path / "cfg.json"))
+    cfg.set_model_alias("meu-modelo-rapido", "gemini-3.1-pro-low")
+    assert cfg.get_model_aliases() == {
+        "meu-modelo-rapido": "gemini-3.1-pro-low",
+    }
+    assert cfg.resolve_model_alias("meu-modelo-rapido") == "gemini-3.1-pro-low"
+
+
 def test_config_updates_local_alias_target_on_model_rename(tmp_path):
     cfg = ConfigManager(config_path=str(tmp_path / "cfg.json"))
     cfg.set_model_alias("qwen-local", "/models/Qwen3.gguf")
@@ -94,9 +103,33 @@ def test_v1_models_includes_aliases(mock_get, mock_status, alias_cfg):
     ids = [m["id"] for m in response.json()["data"]]
     assert GEMINI_LISTING in ids
     assert "gpt-4o" in ids
+    # Aliases must appear before real model names (higher priority for clients).
+    assert ids.index("gpt-4o") < ids.index(GEMINI_LISTING)
     alias_entry = next(m for m in response.json()["data"] if m["id"] == "gpt-4o")
     assert alias_entry["owned_by"] == "llamacpp"
     assert "meta" in alias_entry
+    assert alias_entry["meta"].get("is_alias") is True
+
+
+@patch("llama_manager._hybrid_status")
+@patch("llama_manager.client.get", new_callable=AsyncMock)
+def test_v1_models_custom_alias_listed_before_real_name(mock_get, mock_status, alias_cfg):
+    alias_cfg.set_model_alias("agente-local", "gemini-3.1-pro-low")
+    mock_status.return_value = {"instances": [PLATFORM_INST]}
+    resp = MagicMock(spec=httpx.Response)
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {
+        "object": "list",
+        "data": [{"id": "gemini-3.1-pro-low", "object": "model", "owned_by": "antigravity"}],
+    }
+    mock_get.return_value = resp
+
+    response = client.get("/v1/models")
+    assert response.status_code == 200
+    ids = [m["id"] for m in response.json()["data"]]
+    assert "agente-local" in ids
+    assert ids.index("agente-local") < ids.index(GEMINI_LISTING)
+    assert ids.index("gpt-4o") < ids.index(GEMINI_LISTING)
 
 
 @patch("llama_manager._hybrid_status")
