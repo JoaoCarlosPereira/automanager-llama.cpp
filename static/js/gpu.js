@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.45';
-import { apiFetch } from './auth.js?v=4.2.45';
+import { state } from './state.js?v=4.2.46';
+import { apiFetch } from './auth.js?v=4.2.46';
 
 const CPU_INDEX = -1;
 

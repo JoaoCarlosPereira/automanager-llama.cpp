@@ -233,7 +233,7 @@ class CLIProxyAccountOrderRequest(BaseModel):
 
 
 class ModelAliasRequest(BaseModel):
-    """Alias externo (ex.: gpt-4o no Cursor) -> modelo real no backend."""
+    """Alias externo (catálogo BYOK ou nome personalizado) -> modelo real no backend."""
     alias: str = Field(..., min_length=1)
     target: Optional[str] = None
 
