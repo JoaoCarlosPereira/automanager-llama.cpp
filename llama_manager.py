@@ -65,6 +65,7 @@ from process_manager import ProcessManager, OOMWatchdog, SERVER_PORT
 from model_manager import ModelScanner, DownloadManager, _is_projector_filename
 from schemas import DuplicateModelCardRequest
 from cliproxy_auth import CLIProxyAuthManager
+from platform_quota import PlatformQuotaService
 from platform_manager import (
     CLIProxySidecarError,
     CLIProxySidecarManager,
@@ -138,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.43"  # Aliases personalizados + prioridade na listagem /v1/models
+_DASHBOARD_JS_V = "4.2.46"  # Cota por conta + aliases personalizados (merge main)
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -249,6 +250,18 @@ def _proxy_failure_cooldown(
         except (TypeError, ValueError, OverflowError):
             return float(base)
     return max(float(base), min(max(retry_after, 0.0), 300.0))
+
+
+def _observe_platform_quota_headers(
+    provider: Optional[str], response: Optional[httpx.Response]
+) -> None:
+    """Update cached quota rings from upstream rate-limit headers when present."""
+    if not provider or response is None:
+        return
+    try:
+        platform_quota_service.update_from_headers(provider, dict(response.headers))
+    except Exception:
+        pass
 
 
 def _platform_rate_limit_retry_after(response: Optional[httpx.Response]) -> float:
@@ -780,6 +793,9 @@ platform_manager = PlatformIntegrationManager(
 )
 cliproxy_sidecar = CLIProxySidecarManager(platform_manager, log_manager=log_manager)
 cliproxy_auth_manager = CLIProxyAuthManager(platform_manager)
+platform_quota_service = PlatformQuotaService(
+    port_provider=lambda: cliproxy_sidecar.port,
+)
 download_mgr = DownloadManager()
 proxy_router = ProxyRouter(
     get_status=lambda: _hybrid_status(),
@@ -1255,6 +1271,7 @@ def _model_catalog_response() -> Dict[str, Any]:
         expanded.append(clone)
     result["models"] = expanded
     auth_status = cliproxy_auth_manager.list_status()
+    quota_by_provider = platform_quota_service.cached_snapshot()
     platforms = []
     for item in platform_manager.catalog():
         entry = dict(item)
@@ -1270,6 +1287,11 @@ def _model_catalog_response() -> Dict[str, Any]:
             }
         else:
             entry["cliproxy_auth"] = auth_status.get(provider or "", {})
+        if provider:
+            entry["quota"] = quota_by_provider.get(provider) or {
+                "provider": provider,
+                "available": False,
+            }
         platforms.append(entry)
     result["platforms"] = platforms
     return result
@@ -1544,6 +1566,26 @@ def _platform_detail_payload(backend_id: str) -> Dict[str, Any]:
     }
 
 
+@app.get("/platforms/quota")
+async def get_platforms_quota(
+    refresh: bool = False,
+    authenticated: bool = Depends(require_auth),
+):
+    """Return session (5h) + weekly quota remaining for CLIProxy platforms."""
+    if not authenticated:
+        raise HTTPException(status_code=401)
+
+    def _load() -> Dict[str, Any]:
+        return platform_quota_service.snapshot(force=refresh)
+
+    try:
+        quotas = await asyncio.to_thread(_load)
+    except Exception as exc:
+        logger.debug("platform quota endpoint failed: %s", exc)
+        quotas = platform_quota_service.cached_snapshot()
+    return {"quotas": quotas, "updated_at": time.time()}
+
+
 @app.get("/platforms/{backend_id}")
 async def get_platform_detail(
     backend_id: str, authenticated: bool = Depends(require_auth)
@@ -1552,6 +1594,8 @@ async def get_platform_detail(
         raise HTTPException(status_code=401)
     payload = _platform_detail_payload(backend_id)
     provider = payload.get("provider") or ""
+    if provider:
+        payload["quota"] = platform_quota_service.for_provider(provider)
     sidecar_port = payload.get("sidecar", {}).get("port")
     if provider == "ollama-cloud" and payload.get("cliproxy_auth", {}).get("authenticated"):
         cloud_models: List[Dict[str, Any]] = []
@@ -1635,6 +1679,14 @@ async def start_platform(
     except PlatformIntegrationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail)
     _invalidate_models_cache()
+
+    def _refresh_quota() -> None:
+        try:
+            platform_quota_service.snapshot(force=True)
+        except Exception:
+            pass
+
+    asyncio.create_task(asyncio.to_thread(_refresh_quota))
     return {
         "message": "Integracao iniciada",
         "platform": state,
@@ -3729,6 +3781,8 @@ async def _smart_proxy_forward(
 
                 response_headers = _filter_proxy_headers(dict(upstream.headers))
                 response_headers.update(telemetry)
+                if decision.backend_type == "platform":
+                    _observe_platform_quota_headers(decision.provider, upstream)
                 return StreamingResponse(
                     stream_generator(),
                     status_code=upstream.status_code,
@@ -3788,6 +3842,8 @@ async def _smart_proxy_forward(
                     )
                     response_headers = _filter_proxy_headers(dict(resp.headers))
                     response_headers.update(telemetry)
+                    if decision.backend_type == "platform":
+                        _observe_platform_quota_headers(decision.provider, resp)
                     return Response(
                         content=content,
                         status_code=resp.status_code,
@@ -5133,6 +5189,151 @@ def _build_html(
         .tab-btn:hover .tab-close-btn {{ opacity: 1; }}
         
         .model-item-container.active-selection {{ border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }}
+
+        /* Dual quota rings on platform cards: outer=weekly, inner=session (5h) */
+        .platform-quota-shell {{
+            position: relative;
+            border-radius: 0.75rem;
+            padding: 5px;
+            background: transparent;
+        }}
+        .platform-quota-shell .platform-card {{
+            position: relative;
+            z-index: 1;
+            margin: 0;
+        }}
+        .quota-ring {{
+            position: absolute;
+            border-radius: inherit;
+            pointer-events: none;
+            transition: background 0.6s ease;
+        }}
+        .quota-ring-weekly {{
+            inset: 0;
+            padding: 2.5px;
+            background: conic-gradient(
+                from -90deg,
+                var(--quota-weekly-color, #38bdf8) calc(var(--quota-weekly, 0) * 1%),
+                rgba(51, 65, 85, 0.35) 0
+            );
+            -webkit-mask:
+                linear-gradient(#fff 0 0) content-box,
+                linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+        }}
+        .quota-ring-session {{
+            inset: 4px;
+            padding: 2px;
+            border-radius: calc(0.75rem - 4px);
+            background: conic-gradient(
+                from -90deg,
+                var(--quota-session-color, #34d399) calc(var(--quota-session, 0) * 1%),
+                rgba(51, 65, 85, 0.25) 0
+            );
+            -webkit-mask:
+                linear-gradient(#fff 0 0) content-box,
+                linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+        }}
+        .platform-quota-shell.quota-unknown .quota-ring-weekly,
+        .platform-quota-shell.quota-unknown .quota-ring-session {{
+            opacity: 0.25;
+        }}
+        .platform-quota-shell.quota-rotating .quota-ring {{
+            transition: background 0.45s ease, opacity 0.45s ease;
+            opacity: 0.92;
+        }}
+        .platform-quota-shell.quota-multi-account .quota-account.is-focused {{
+            animation: quota-focus-pulse 5s linear;
+        }}
+        @keyframes quota-focus-pulse {{
+            0% {{ border-color: rgba(56, 189, 248, 0.35); }}
+            50% {{ border-color: rgba(56, 189, 248, 0.85); }}
+            100% {{ border-color: rgba(56, 189, 248, 0.35); }}
+        }}
+        .quota-account-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin-top: 0.35rem;
+        }}
+        .quota-account {{
+            width: 100%;
+            text-align: left;
+            border: 1px solid rgba(51, 65, 85, 0.55);
+            background: rgba(15, 23, 42, 0.55);
+            border-radius: 0.65rem;
+            padding: 0.45rem 0.55rem;
+            color: #cbd5e1;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }}
+        .quota-account:hover {{
+            border-color: rgba(56, 189, 248, 0.45);
+            background: rgba(15, 23, 42, 0.8);
+        }}
+        .quota-account.is-focused {{
+            border-color: rgba(56, 189, 248, 0.7);
+            box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.15);
+        }}
+        .quota-account-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.4rem;
+            margin-bottom: 0.3rem;
+        }}
+        .quota-account-name {{
+            font-size: var(--text-caption);
+            font-weight: 700;
+            color: #e2e8f0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        .quota-account-badge {{
+            flex-shrink: 0;
+            font-size: 0.625rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #38bdf8;
+        }}
+        .quota-bar-row {{
+            display: grid;
+            grid-template-columns: 4.6rem 1fr 2.2rem;
+            align-items: center;
+            gap: 0.35rem;
+            margin-top: 0.18rem;
+        }}
+        .quota-bar-label {{
+            font-size: 0.625rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #64748b;
+        }}
+        .quota-bar-track {{
+            height: 0.4rem;
+            border-radius: 999px;
+            background: rgba(51, 65, 85, 0.7);
+            overflow: hidden;
+        }}
+        .quota-bar-fill {{
+            height: 100%;
+            border-radius: inherit;
+            transition: width 0.45s ease, background 0.45s ease;
+        }}
+        .quota-bar-pct {{
+            font-size: var(--text-caption);
+            font-family: 'JetBrains Mono', monospace;
+            color: #94a3b8;
+            text-align: right;
+        }}
+        .quota-accounts-empty {{
+            margin-top: 0.35rem;
+        }}
 
         /* --- Polish: cursor, foco por teclado, transições --- */
         button:not(:disabled), [onclick], label[onclick], a[href] {{ cursor: pointer; }}
