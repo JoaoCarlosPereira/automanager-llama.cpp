@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.46';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.46';
+import { state } from './state.js?v=4.2.47';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.47';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.46';
+} from './gpu.js?v=4.2.47';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.46';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.46';
-import { checkForUpdates } from './version.js?v=4.2.46';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.47';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.47';
+import { checkForUpdates } from './version.js?v=4.2.47';
 
 // --- TAB MANAGEMENT ---
 
@@ -252,7 +252,10 @@ function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
             ${rows.map((row) => {
                 const authIndex = String(row.auth_index || row.label || '');
                 const active = String(focus) === authIndex;
-                const err = row.error ? `<span class="text-rose-400/90"> · ${escapeHtml(row.error)}</span>` : '';
+                const hasValues = row.weekly_remaining_pct != null || row.session_remaining_pct != null;
+                const err = row.error
+                    ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}">${escapeHtml(row.error)}</p>`
+                    : '';
                 return `
                 <button type="button"
                     class="quota-account ${active ? 'is-focused' : ''}"
@@ -417,9 +420,10 @@ export async function refreshPlatformQuotas({ force = false } = {}) {
 function ensurePlatformQuotaPolling() {
     if (typeof window === 'undefined') return;
     if (!platformQuotaPollTimer) {
+        // Match backend cache (~180s) so we do not hammer /api/oauth/usage.
         platformQuotaPollTimer = window.setInterval(() => {
             refreshPlatformQuotas({ force: false });
-        }, 60_000);
+        }, 180_000);
     }
     ensurePlatformQuotaRotation();
 }

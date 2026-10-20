@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.46"  # Cota por conta + aliases personalizados (merge main)
+_DASHBOARD_JS_V = "4.2.47"  # Claude usage UA + preservar cota em 429
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5333,6 +5333,15 @@ def _build_html(
         }}
         .quota-accounts-empty {{
             margin-top: 0.35rem;
+        }}
+        .quota-account-error {{
+            margin-top: 0.3rem;
+            font-size: var(--text-caption);
+            color: #fb7185;
+            line-height: 1.3;
+        }}
+        .quota-account-error.is-stale {{
+            color: #fbbf24;
         }}
 
         /* --- Polish: cursor, foco por teclado, transições --- */

@@ -33,7 +33,9 @@ from paths import INSTALL_ROOT
 
 logger = logging.getLogger("automanager.platform_quota")
 
-_CACHE_TTL_SECONDS = 90.0
+# Anthropic rate-limits /api/oauth/usage aggressively unless the request looks
+# like Claude Code; community tools poll at ~180s with a claude-code UA.
+_CACHE_TTL_SECONDS = 180.0
 _REQUEST_TIMEOUT = 20.0
 
 _ANTIGRAVITY_HOSTS = (
@@ -42,6 +44,9 @@ _ANTIGRAVITY_HOSTS = (
     "https://cloudcode-pa.googleapis.com",
 )
 _ANTIGRAVITY_UA = "antigravity/cli/1.0.13 (aidev_client; os_type=linux; arch=x86_64)"
+# Required: without this UA the usage endpoint parks the token in a persistent
+# 429 bucket (see anthropics/claude-code#31021 / #31637).
+_CLAUDE_USAGE_UA = "claude-code/2.1.80 (external, cli)"
 
 # Providers we can query for dual-window quota.
 _QUOTA_PROVIDERS = frozenset({"codex", "claude", "antigravity"})
@@ -274,7 +279,54 @@ def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             or parsed.get("weekly_remaining_pct") is not None
         ):
             return parsed
+
+    # Anthropic subscription / API responses sometimes expose remaining tokens.
+    remaining = _to_float(
+        lower.get("anthropic-ratelimit-tokens-remaining")
+        or lower.get("anthropic-ratelimit-requests-remaining")
+    )
+    limit = _to_float(
+        lower.get("anthropic-ratelimit-tokens-limit")
+        or lower.get("anthropic-ratelimit-requests-limit")
+    )
+    if remaining is not None and limit is not None and limit > 0:
+        pct = _clamp_pct((remaining / limit) * 100.0)
+        return {
+            "session_remaining_pct": pct,
+            "weekly_remaining_pct": None,
+            "session_reset_at": _iso_or_unix(
+                lower.get("anthropic-ratelimit-tokens-reset")
+                or lower.get("anthropic-ratelimit-requests-reset")
+            ),
+            "weekly_reset_at": None,
+            "source": "claude-headers",
+        }
     return None
+
+
+def _preserve_account_on_error(
+    previous: Optional[Dict[str, Any]], failed: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Keep last known percentages when a refresh fails (e.g. usage HTTP 429)."""
+    if not previous:
+        return failed
+    merged = dict(failed)
+    for field in (
+        "session_remaining_pct",
+        "weekly_remaining_pct",
+        "session_reset_at",
+        "weekly_reset_at",
+    ):
+        if merged.get(field) is None and previous.get(field) is not None:
+            merged[field] = previous[field]
+    if (
+        merged.get("session_remaining_pct") is not None
+        or merged.get("weekly_remaining_pct") is not None
+    ):
+        # Stale-but-real values beat an empty error row in the UI.
+        err = failed.get("error") or "atualizacao falhou"
+        merged["error"] = f"{err} (exibindo ultima cota conhecida)"
+    return merged
 
 
 def _empty_quota(provider: str, *, error: Optional[str] = None) -> Dict[str, Any]:
@@ -480,6 +532,16 @@ class PlatformQuotaService:
             "User-Agent": "automanager-platform-quota",
         }
 
+    def _previous_accounts(self, provider: str) -> Dict[str, Dict[str, Any]]:
+        with self._lock:
+            snap = self._cache.get(provider) or {}
+            rows = snap.get("account_details") or []
+        return {
+            str(row.get("auth_index")): dict(row)
+            for row in rows
+            if row.get("auth_index")
+        }
+
     def _refresh(self) -> Dict[str, Dict[str, Any]]:
         base = self._base_url()
         if not base:
@@ -490,26 +552,35 @@ class PlatformQuotaService:
             by_provider: Dict[str, List[Dict[str, Any]]] = {
                 p: [] for p in _QUOTA_PROVIDERS
             }
+            previous_by_provider = {
+                provider: self._previous_accounts(provider) for provider in _QUOTA_PROVIDERS
+            }
             for auth in files:
                 if auth.get("disabled") or auth.get("unavailable"):
                     continue
                 provider = _infer_provider(auth)
                 if not provider or not auth.get("auth_index"):
                     continue
+                auth_index = str(auth.get("auth_index"))
                 try:
                     account = self._fetch_account(client, base, provider, auth)
                 except Exception as exc:
-                    account = {
-                        "auth_index": auth.get("auth_index"),
-                        "label": auth.get("email") or auth.get("label") or auth.get("name"),
-                        "email": auth.get("email"),
-                        "priority": int(auth.get("priority") or 0),
-                        "session_remaining_pct": None,
-                        "weekly_remaining_pct": None,
-                        "session_reset_at": None,
-                        "weekly_reset_at": None,
-                        "error": str(exc),
-                    }
+                    account = _preserve_account_on_error(
+                        previous_by_provider.get(provider, {}).get(auth_index),
+                        {
+                            "auth_index": auth.get("auth_index"),
+                            "label": auth.get("email")
+                            or auth.get("label")
+                            or auth.get("name"),
+                            "email": auth.get("email"),
+                            "priority": int(auth.get("priority") or 0),
+                            "session_remaining_pct": None,
+                            "weekly_remaining_pct": None,
+                            "session_reset_at": None,
+                            "weekly_reset_at": None,
+                            "error": str(exc),
+                        },
+                    )
                 else:
                     account.setdefault("auth_index", auth.get("auth_index"))
                     account.setdefault("email", auth.get("email"))
@@ -612,7 +683,9 @@ class PlatformQuotaService:
                 raise RuntimeError(f"codex usage HTTP {status}")
             parsed = parse_codex_usage(body, resp_headers)
         elif provider == "claude":
-            status, body, _ = self._api_call(
+            # User-Agent must identify as Claude Code or Anthropic puts the
+            # token in a persistent 429 bucket for this undocumented endpoint.
+            status, body, resp_headers = self._api_call(
                 client,
                 base,
                 auth_index=auth_index,
@@ -620,13 +693,24 @@ class PlatformQuotaService:
                 url="https://api.anthropic.com/api/oauth/usage",
                 header={
                     "Authorization": "Bearer $TOKEN$",
+                    "Accept": "application/json",
                     "Content-Type": "application/json",
                     "anthropic-beta": "oauth-2025-04-20",
+                    "User-Agent": _CLAUDE_USAGE_UA,
                 },
             )
             if status < 200 or status >= 300:
                 raise RuntimeError(f"claude usage HTTP {status}")
             parsed = parse_claude_usage(body)
+            if (
+                parsed.get("session_remaining_pct") is None
+                and parsed.get("weekly_remaining_pct") is None
+            ):
+                header_parsed = parse_quota_headers(resp_headers)
+                if header_parsed:
+                    parsed = {**parsed, **{
+                        k: v for k, v in header_parsed.items() if v is not None
+                    }}
         elif provider == "antigravity":
             parsed = self._fetch_antigravity(client, base, auth_index, auth)
         else:

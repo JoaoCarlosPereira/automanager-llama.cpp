@@ -157,6 +157,90 @@ def test_quota_service_update_from_headers(tmp_path: Path):
     assert snap["codex"]["available"] is True
 
 
+def test_preserve_account_on_error_keeps_last_known_percentages():
+    previous = {
+        "auth_index": "a1",
+        "label": "user@example.com",
+        "session_remaining_pct": 42.0,
+        "weekly_remaining_pct": 77.0,
+    }
+    failed = {
+        "auth_index": "a1",
+        "label": "user@example.com",
+        "session_remaining_pct": None,
+        "weekly_remaining_pct": None,
+        "error": "claude usage HTTP 429",
+    }
+    merged = pq._preserve_account_on_error(previous, failed)
+    assert merged["session_remaining_pct"] == 42.0
+    assert merged["weekly_remaining_pct"] == 77.0
+    assert "ultima cota conhecida" in merged["error"]
+
+
+def test_claude_fetch_sends_claude_code_user_agent(tmp_path: Path):
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            return FakeResponse(
+                200,
+                {
+                    "files": [
+                        {
+                            "auth_index": "auth-claude",
+                            "provider": "claude",
+                            "email": "user@example.com",
+                        }
+                    ]
+                },
+            )
+
+        def post(self, url, headers=None, json=None):
+            payload = json or {}
+            captured["header"] = payload.get("header") or {}
+            body = {
+                "five_hour": {"utilization": 12, "resets_at": "2026-10-20T12:00:00Z"},
+                "seven_day": {"utilization": 34, "resets_at": "2026-10-24T00:00:00Z"},
+            }
+            return FakeResponse(
+                200,
+                {
+                    "status_code": 200,
+                    "body": __import__("json").dumps(body),
+                    "header": {},
+                },
+            )
+
+    service = pq.PlatformQuotaService(
+        runtime_dir=tmp_path,
+        port_provider=lambda: 8317,
+        http_client_factory=FakeClient,
+        cache_ttl=0,
+    )
+    snap = service.snapshot(force=True)
+    assert captured["header"].get("User-Agent", "").startswith("claude-code/")
+    assert snap["claude"]["session_remaining_pct"] == 88.0
+    assert snap["claude"]["weekly_remaining_pct"] == 66.0
+
+
 def test_quota_service_refresh_via_management_api(tmp_path: Path, monkeypatch):
     class FakeResponse:
         def __init__(self, status_code, payload):
