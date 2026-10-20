@@ -309,7 +309,9 @@ def test_quota_service_refresh_via_management_api(tmp_path: Path, monkeypatch):
 
 def test_models_js_exposes_quota_ring_helpers():
     models_js = Path("static/js/models.js").read_text(encoding="utf-8")
-    assert "wrapPlatformCardWithQuota" in models_js
+    proxy_js = Path("static/js/proxy.js").read_text(encoding="utf-8")
+    assert "wrapProxyBackendWithQuota" in models_js
+    assert "applyAllQuotaShells" in models_js
     assert "quota-ring-weekly" in models_js
     assert "quota-ring-session" in models_js
     assert "quota-account-list" in models_js
@@ -319,3 +321,6 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "QUOTA_ACCOUNT_ROTATE_MS" in models_js
     assert "refreshPlatformQuotas" in models_js
     assert "/platforms/quota" in models_js
+    assert "proxy-quota-shell" in proxy_js
+    assert "data-quota-provider" in proxy_js
+    assert "applyAllQuotaShells" in proxy_js

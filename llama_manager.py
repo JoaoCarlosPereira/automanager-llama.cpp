@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.47"  # Claude usage UA + preservar cota em 429
+_DASHBOARD_JS_V = "4.2.48"  # Aneis de cota nos cards do Proxy Inteligente
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5190,14 +5190,15 @@ def _build_html(
         
         .model-item-container.active-selection {{ border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }}
 
-        /* Dual quota rings on platform cards: outer=weekly, inner=session (5h) */
+        /* Dual quota rings on Proxy Inteligente cards: outer=weekly, inner=session */
         .platform-quota-shell {{
             position: relative;
-            border-radius: 0.75rem;
-            padding: 5px;
+            border-radius: 0.9rem;
+            padding: 10px;
             background: transparent;
         }}
-        .platform-quota-shell .platform-card {{
+        .platform-quota-shell .platform-card,
+        .platform-quota-shell .proxy-backend-card {{
             position: relative;
             z-index: 1;
             margin: 0;
@@ -5206,15 +5207,15 @@ def _build_html(
             position: absolute;
             border-radius: inherit;
             pointer-events: none;
-            transition: background 0.6s ease;
+            transition: background 0.55s ease, opacity 0.45s ease;
         }}
         .quota-ring-weekly {{
             inset: 0;
-            padding: 2.5px;
+            padding: 5px; /* anel externo mais grosso = cota semanal (âmbar) */
             background: conic-gradient(
                 from -90deg,
-                var(--quota-weekly-color, #38bdf8) calc(var(--quota-weekly, 0) * 1%),
-                rgba(51, 65, 85, 0.35) 0
+                var(--quota-weekly-color, #f59e0b) calc(var(--quota-weekly, 0) * 1%),
+                rgba(71, 85, 105, 0.45) 0
             );
             -webkit-mask:
                 linear-gradient(#fff 0 0) content-box,
@@ -5223,19 +5224,25 @@ def _build_html(
             mask-composite: exclude;
         }}
         .quota-ring-session {{
-            inset: 4px;
-            padding: 2px;
-            border-radius: calc(0.75rem - 4px);
+            inset: 7px;
+            padding: 4px; /* anel interno = cota de sessão 5h (violeta) */
+            border-radius: calc(0.9rem - 7px);
             background: conic-gradient(
                 from -90deg,
-                var(--quota-session-color, #34d399) calc(var(--quota-session, 0) * 1%),
-                rgba(51, 65, 85, 0.25) 0
+                var(--quota-session-color, #8b5cf6) calc(var(--quota-session, 0) * 1%),
+                rgba(71, 85, 105, 0.35) 0
             );
             -webkit-mask:
                 linear-gradient(#fff 0 0) content-box,
                 linear-gradient(#fff 0 0);
             -webkit-mask-composite: xor;
             mask-composite: exclude;
+        }}
+        .proxy-quota-shell .quota-account-list {{
+            margin-top: 0.45rem;
+        }}
+        .proxy-quota-shell .quota-account {{
+            background: rgba(2, 6, 23, 0.72);
         }}
         .platform-quota-shell.quota-unknown .quota-ring-weekly,
         .platform-quota-shell.quota-unknown .quota-ring-session {{
