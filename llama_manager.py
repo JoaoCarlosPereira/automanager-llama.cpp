@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.48"  # Aneis de cota nos cards do Proxy Inteligente
+_DASHBOARD_JS_V = "4.2.49"  # Cards Proxy com gauges Semanal/Sessao lado a lado
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5190,69 +5190,249 @@ def _build_html(
         
         .model-item-container.active-selection {{ border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }}
 
-        /* Dual quota rings on Proxy Inteligente cards: outer=weekly, inner=session */
+        /* Proxy Inteligente cards: gauges Semanal/Sessão lado a lado */
         .platform-quota-shell {{
             position: relative;
-            border-radius: 0.9rem;
-            padding: 10px;
+            border-radius: 1rem;
             background: transparent;
         }}
-        .platform-quota-shell .platform-card,
         .platform-quota-shell .proxy-backend-card {{
+            margin: 0;
+            height: 100%;
+        }}
+        .proxy-card-v2 {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            padding: 1rem;
+            border-radius: 1rem;
+            border: 1px solid rgba(51, 65, 85, 0.7);
+            background:
+                linear-gradient(165deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.96) 55%, rgba(2, 6, 23, 0.98) 100%);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+        }}
+        .proxy-card-v2.accent-claude {{
+            border-color: rgba(245, 158, 11, 0.45);
+            box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.08), 0 10px 28px rgba(245, 158, 11, 0.08);
+        }}
+        .proxy-card-v2.accent-codex {{
+            border-color: rgba(56, 189, 248, 0.45);
+            box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.08), 0 10px 28px rgba(56, 189, 248, 0.08);
+        }}
+        .proxy-card-v2.accent-antigravity {{
+            border-color: rgba(167, 139, 250, 0.45);
+            box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.08), 0 10px 28px rgba(167, 139, 250, 0.08);
+        }}
+        .proxy-card-v2.accent-local {{
+            border-color: rgba(52, 211, 153, 0.4);
+            box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.08), 0 10px 28px rgba(52, 211, 153, 0.06);
+        }}
+        .proxy-card-v2.accent-platform {{
+            border-color: rgba(148, 163, 184, 0.35);
+        }}
+        .proxy-card-head {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }}
+        .proxy-card-title-row {{
+            display: flex;
+            align-items: flex-start;
+            gap: 0.7rem;
+        }}
+        .proxy-card-icon {{
+            flex-shrink: 0;
+            width: 2.35rem;
+            height: 2.35rem;
+            border-radius: 0.7rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(71, 85, 105, 0.55);
+            color: #cbd5e1;
+        }}
+        .accent-claude .proxy-card-icon {{ color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); }}
+        .accent-codex .proxy-card-icon {{ color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); }}
+        .accent-antigravity .proxy-card-icon {{ color: #c4b5fd; border-color: rgba(167, 139, 250, 0.35); }}
+        .accent-local .proxy-card-icon {{ color: #34d399; border-color: rgba(52, 211, 153, 0.35); }}
+        .proxy-card-name-row {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }}
+        .proxy-card-name {{
+            font-size: var(--text-body-sm);
+            font-weight: 800;
+            color: #f1f5f9;
+            letter-spacing: 0.01em;
+        }}
+        .proxy-card-status {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            flex-shrink: 0;
+            font-size: 0.65rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }}
+        .proxy-card-status-dot {{
+            width: 0.45rem;
+            height: 0.45rem;
+            border-radius: 999px;
+            background: currentColor;
+            box-shadow: 0 0 8px currentColor;
+        }}
+        .proxy-card-subtitle {{
+            margin-top: 0.15rem;
+            font-size: var(--text-caption);
+            color: #64748b;
+        }}
+        .proxy-card-grip {{
+            margin-left: auto;
+            color: #475569;
+            padding-top: 0.35rem;
+        }}
+        .proxy-priority-bar {{
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            padding: 0.55rem 0.75rem;
+            border-radius: 0.7rem;
+            background: rgba(2, 6, 23, 0.72);
+            border: 1px solid rgba(51, 65, 85, 0.55);
+            color: #94a3b8;
+            font-size: var(--text-caption);
+            font-weight: 700;
+        }}
+        .proxy-priority-bar i {{
+            color: #a78bfa;
+        }}
+        .accent-claude .proxy-priority-bar i {{ color: #fbbf24; }}
+        .accent-codex .proxy-priority-bar i {{ color: #38bdf8; }}
+        .accent-antigravity .proxy-priority-bar i {{ color: #c4b5fd; }}
+        .accent-local .proxy-priority-bar i {{ color: #34d399; }}
+        .quota-gauges-host {{
+            padding: 0.15rem 0 0.1rem;
+        }}
+        .quota-gauges {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem;
+            align-items: start;
+        }}
+        .quota-gauge {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.35rem;
+            text-align: center;
+        }}
+        .quota-gauge-ring {{
+            --quota-pct: 0;
+            --quota-color: #475569;
+            width: 6.6rem;
+            height: 6.6rem;
+            border-radius: 999px;
+            display: grid;
+            place-items: center;
+            position: relative;
+            background: conic-gradient(
+                from -90deg,
+                var(--quota-color) calc(var(--quota-pct) * 1%),
+                rgba(51, 65, 85, 0.55) 0
+            );
+            transition: background 0.55s ease, opacity 0.35s ease;
+        }}
+        .quota-gauge-ring::before {{
+            content: '';
+            position: absolute;
+            inset: 0.72rem;
+            border-radius: inherit;
+            background: radial-gradient(circle at 35% 30%, rgba(51, 65, 85, 0.35), rgba(2, 6, 23, 0.98) 70%);
+            border: 1px solid rgba(30, 41, 59, 0.9);
+        }}
+        .quota-gauge-center {{
             position: relative;
             z-index: 1;
-            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            line-height: 1.05;
         }}
-        .quota-ring {{
-            position: absolute;
-            border-radius: inherit;
-            pointer-events: none;
-            transition: background 0.55s ease, opacity 0.45s ease;
+        .quota-gauge-pct {{
+            font-size: 1.35rem;
+            font-weight: 900;
+            color: #f8fafc;
+            font-variant-numeric: tabular-nums;
         }}
-        .quota-ring-weekly {{
-            inset: 0;
-            padding: 5px; /* anel externo mais grosso = cota semanal (âmbar) */
-            background: conic-gradient(
-                from -90deg,
-                var(--quota-weekly-color, #f59e0b) calc(var(--quota-weekly, 0) * 1%),
-                rgba(71, 85, 105, 0.45) 0
-            );
-            -webkit-mask:
-                linear-gradient(#fff 0 0) content-box,
-                linear-gradient(#fff 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
+        .quota-gauge-sub {{
+            margin-top: 0.15rem;
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #64748b;
         }}
-        .quota-ring-session {{
-            inset: 7px;
-            padding: 4px; /* anel interno = cota de sessão 5h (violeta) */
-            border-radius: calc(0.9rem - 7px);
-            background: conic-gradient(
-                from -90deg,
-                var(--quota-session-color, #8b5cf6) calc(var(--quota-session, 0) * 1%),
-                rgba(71, 85, 105, 0.35) 0
-            );
-            -webkit-mask:
-                linear-gradient(#fff 0 0) content-box,
-                linear-gradient(#fff 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
+        .quota-gauge-name {{
+            font-size: var(--text-caption);
+            font-weight: 800;
+            color: #e2e8f0;
+            letter-spacing: 0.02em;
         }}
-        .proxy-quota-shell .quota-account-list {{
-            margin-top: 0.45rem;
+        .quota-gauge-reset {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.65rem;
+            color: #64748b;
         }}
-        .proxy-quota-shell .quota-account {{
-            background: rgba(2, 6, 23, 0.72);
+        .quota-gauge-reset i {{
+            font-size: 0.6rem;
+            opacity: 0.85;
         }}
-        .platform-quota-shell.quota-unknown .quota-ring-weekly,
-        .platform-quota-shell.quota-unknown .quota-ring-session {{
-            opacity: 0.25;
+        .platform-quota-shell.quota-unknown .quota-gauge-ring {{
+            opacity: 0.45;
         }}
-        .platform-quota-shell.quota-rotating .quota-ring {{
-            transition: background 0.45s ease, opacity 0.45s ease;
-            opacity: 0.92;
+        .platform-quota-shell.quota-rotating .quota-gauge-ring {{
+            opacity: 0.9;
         }}
-        .platform-quota-shell.quota-multi-account .quota-account.is-focused {{
+        .quota-accounts-host {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }}
+        .quota-account-chips {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }}
+        .quota-chip {{
+            max-width: 100%;
+            border: 1px solid rgba(71, 85, 105, 0.55);
+            background: rgba(2, 6, 23, 0.65);
+            color: #94a3b8;
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+            font-size: 0.65rem;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+        }}
+        .quota-chip:hover {{
+            border-color: rgba(148, 163, 184, 0.55);
+            color: #e2e8f0;
+        }}
+        .quota-chip.is-focused {{
+            border-color: rgba(56, 189, 248, 0.7);
+            color: #e0f2fe;
+            background: rgba(14, 165, 233, 0.12);
+        }}
+        .platform-quota-shell.quota-multi-account .quota-chip.is-focused {{
             animation: quota-focus-pulse 5s linear;
         }}
         @keyframes quota-focus-pulse {{
@@ -5260,95 +5440,69 @@ def _build_html(
             50% {{ border-color: rgba(56, 189, 248, 0.85); }}
             100% {{ border-color: rgba(56, 189, 248, 0.35); }}
         }}
-        .quota-account-list {{
+        .quota-account-single {{
             display: flex;
-            flex-direction: column;
-            gap: 0.4rem;
-            margin-top: 0.35rem;
-        }}
-        .quota-account {{
-            width: 100%;
-            text-align: left;
-            border: 1px solid rgba(51, 65, 85, 0.55);
-            background: rgba(15, 23, 42, 0.55);
-            border-radius: 0.65rem;
-            padding: 0.45rem 0.55rem;
-            color: #cbd5e1;
-            transition: border-color 0.15s ease, background 0.15s ease;
-        }}
-        .quota-account:hover {{
-            border-color: rgba(56, 189, 248, 0.45);
-            background: rgba(15, 23, 42, 0.8);
-        }}
-        .quota-account.is-focused {{
-            border-color: rgba(56, 189, 248, 0.7);
-            box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.15);
-        }}
-        .quota-account-head {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.4rem;
-            margin-bottom: 0.3rem;
+            justify-content: center;
         }}
         .quota-account-name {{
             font-size: var(--text-caption);
             font-weight: 700;
-            color: #e2e8f0;
+            color: #94a3b8;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }}
-        .quota-account-badge {{
-            flex-shrink: 0;
-            font-size: 0.625rem;
-            font-weight: 800;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            color: #38bdf8;
-        }}
-        .quota-bar-row {{
-            display: grid;
-            grid-template-columns: 4.6rem 1fr 2.2rem;
-            align-items: center;
-            gap: 0.35rem;
-            margin-top: 0.18rem;
-        }}
-        .quota-bar-label {{
-            font-size: 0.625rem;
-            font-weight: 800;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
+        .quota-accounts-empty {{
+            margin: 0;
+            text-align: center;
+            font-size: var(--text-caption);
             color: #64748b;
         }}
-        .quota-bar-track {{
-            height: 0.4rem;
-            border-radius: 999px;
-            background: rgba(51, 65, 85, 0.7);
-            overflow: hidden;
-        }}
-        .quota-bar-fill {{
-            height: 100%;
-            border-radius: inherit;
-            transition: width 0.45s ease, background 0.45s ease;
-        }}
-        .quota-bar-pct {{
-            font-size: var(--text-caption);
-            font-family: 'JetBrains Mono', monospace;
-            color: #94a3b8;
-            text-align: right;
-        }}
-        .quota-accounts-empty {{
-            margin-top: 0.35rem;
-        }}
         .quota-account-error {{
-            margin-top: 0.3rem;
+            margin: 0;
+            text-align: center;
             font-size: var(--text-caption);
             color: #fb7185;
             line-height: 1.3;
         }}
         .quota-account-error.is-stale {{
             color: #fbbf24;
+        }}
+        .proxy-card-footer {{
+            display: grid;
+            grid-template-columns: 1fr 1fr 1.35fr;
+            gap: 0.45rem;
+            padding-top: 0.15rem;
+            border-top: 1px solid rgba(51, 65, 85, 0.45);
+        }}
+        .proxy-card-stat {{
+            display: flex;
+            align-items: flex-start;
+            gap: 0.4rem;
+            min-width: 0;
+            color: #64748b;
+        }}
+        .proxy-card-stat i {{
+            margin-top: 0.15rem;
+            font-size: 0.7rem;
+            color: #94a3b8;
+        }}
+        .proxy-card-stat-value {{
+            font-size: var(--text-caption);
+            font-weight: 800;
+            color: #e2e8f0;
+            font-variant-numeric: tabular-nums;
+        }}
+        .proxy-card-stat-label {{
+            font-size: 0.6rem;
+            color: #64748b;
+            letter-spacing: 0.02em;
+        }}
+        .proxy-backends-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr));
+            gap: 0.85rem;
+            align-items: stretch;
         }}
 
         /* --- Polish: cursor, foco por teclado, transições --- */
@@ -5599,7 +5753,7 @@ def _build_html(
                         </div>
                     </div>
                     <div id="proxy-panel-body" class="space-y-4 hidden">
-                        <div id="proxy-backends-list" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+                        <div id="proxy-backends-list" class="proxy-backends-grid"></div>
                         <div>
                             <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
                                 <p class="text-ui-label font-black text-slate-500 uppercase tracking-widest">

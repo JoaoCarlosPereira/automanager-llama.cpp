@@ -312,11 +312,13 @@ def test_models_js_exposes_quota_ring_helpers():
     proxy_js = Path("static/js/proxy.js").read_text(encoding="utf-8")
     assert "wrapProxyBackendWithQuota" in models_js
     assert "applyAllQuotaShells" in models_js
-    assert "quota-ring-weekly" in models_js
-    assert "quota-ring-session" in models_js
-    assert "quota-account-list" in models_js
+    assert "quota-gauge" in models_js
+    assert "buildQuotaGaugesHtml" in models_js
+    assert "quota-account-chips" in models_js or "quota-chip" in models_js
     assert "buildQuotaAccountsHtml" in models_js
     assert "ensurePlatformQuotaRotation" in models_js
+    assert "quota-gauges" in proxy_js
+    assert "proxy-card-v2" in proxy_js
     assert "rotateAllPlatformQuotaShells" in models_js
     assert "QUOTA_ACCOUNT_ROTATE_MS" in models_js
     assert "refreshPlatformQuotas" in models_js

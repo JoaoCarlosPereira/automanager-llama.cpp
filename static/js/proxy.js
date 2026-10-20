@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.48';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.49';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.48').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.49').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;
@@ -213,6 +213,16 @@ function renderOff() {
     if (body) body.classList.add('hidden');
 }
 
+function providerIcon(provider, isPlatform) {
+    const key = String(provider || '').toLowerCase();
+    if (!isPlatform) return 'fa-server';
+    if (key === 'claude') return 'fa-brain';
+    if (key === 'codex') return 'fa-code';
+    if (key === 'antigravity') return 'fa-star';
+    if (key === 'cursor') return 'fa-i-cursor';
+    return 'fa-cloud';
+}
+
 function backendCard(backend, index) {
     // Rate-limited platform backends: show "ESGOTADO" regardless of state
     let state = backend.state;
@@ -220,7 +230,9 @@ function backendCard(backend, index) {
         state = 'rate_limited';
     }
     const style = STATE_STYLES[state] || STATE_STYLES.offline;
+    const stateColor = style.split(' ')[0];
     const isPlatform = backend.backend_type === 'platform';
+    const provider = String(backend.provider || '').toLowerCase();
     const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
     const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
     const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
@@ -228,48 +240,100 @@ function backendCard(backend, index) {
     const measured = Number.isFinite(latency) && latency > 0;
     const latencyLabel = measured
         ? `${latency >= 1000 ? `${(latency / 1000).toFixed(2)} s` : `${Math.round(latency)} ms`}`
-        : 'medição pendente';
+        : '—';
+    const latencyHint = measured ? 'Latência média' : 'Startup pendente';
     const priorityRank = index + 1;
+    const priorityIcon = priorityRank === 1 ? 'fa-crown' : 'fa-signal';
     const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
     const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
     const dataCardId = backend.card_id ? ` data-card-id="${esc(backend.card_id)}"` : '';
     const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
-    // Border do estado (ONLINE etc.) fica no card interno; os anéis de cota
-    // envolvem o card para plataformas com janela semanal + sessão.
-    const cardHtml = `
-    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}" data-provider="${esc(backend.provider || '')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
-        <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2 min-w-0">
-                <span class="proxy-priority-rank shrink-0 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-violet-500/15 border border-violet-500/40 text-violet-300 text-sm font-black" title="Prioridade de roteamento">${priorityRank}º</span>
-                <i class="fas fa-grip-vertical text-slate-600" aria-hidden="true"></i>
-                <span class="text-ui-body-sm font-bold text-slate-200 truncate">${esc(backend.model)}</span>
+    const showQuota = isPlatform && QUOTA_PROVIDERS.has(provider);
+    const accent = showQuota ? provider : (isPlatform ? 'platform' : 'local');
+    const activeLabel = `${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)}`;
+    const techRight = isPlatform
+        ? `porta ${esc(backend.port)} · ctx ${esc(backend.ctx_per_slot)}`
+        : `${esc(backend.gpu || 'CPU')} · ctx ${esc(backend.ctx_per_slot)}`;
+
+    const quotaBlock = showQuota ? `
+        <div class="quota-accounts-host"></div>
+        <div class="quota-gauges-host">
+            <div class="quota-gauges" aria-label="Cota semanal e de sessao">
+                <div class="quota-gauge" data-kind="weekly">
+                    <div class="quota-gauge-ring" style="--quota-pct:0;--quota-color:#475569">
+                        <div class="quota-gauge-center">
+                            <span class="quota-gauge-pct">—</span>
+                            <span class="quota-gauge-sub">restante</span>
+                        </div>
+                    </div>
+                    <p class="quota-gauge-name">Semanal</p>
+                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">—</span></p>
+                </div>
+                <div class="quota-gauge" data-kind="session">
+                    <div class="quota-gauge-ring" style="--quota-pct:0;--quota-color:#475569">
+                        <div class="quota-gauge-center">
+                            <span class="quota-gauge-pct">—</span>
+                            <span class="quota-gauge-sub">restante</span>
+                        </div>
+                    </div>
+                    <p class="quota-gauge-name">Sessão</p>
+                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">—</span></p>
+                </div>
             </div>
-            <span class="text-ui-label font-black uppercase tracking-widest ${style.split(' ')[0]}">${esc(STATE_LABELS[state] || backend.state)}</span>
+        </div>` : '';
+
+    const cardHtml = `
+    <div draggable="true" class="proxy-backend-card proxy-card-v2 accent-${esc(accent)} cursor-pointer active:cursor-grabbing select-none" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}" data-provider="${esc(backend.provider || '')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
+        <div class="proxy-card-head">
+            <div class="proxy-card-title-row">
+                <span class="proxy-card-icon" aria-hidden="true"><i class="fas ${providerIcon(provider, isPlatform)}"></i></span>
+                <div class="proxy-card-title-text min-w-0">
+                    <div class="proxy-card-name-row">
+                        <span class="proxy-card-name truncate">${esc(backend.model)}</span>
+                        <span class="proxy-card-status ${stateColor}"><span class="proxy-card-status-dot" aria-hidden="true"></span>${esc(STATE_LABELS[state] || backend.state)}</span>
+                    </div>
+                    <p class="proxy-card-subtitle truncate">${role} · ${detail}</p>
+                </div>
+                <i class="fas fa-grip-vertical proxy-card-grip" aria-hidden="true"></i>
+            </div>
         </div>
-        <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${role} · ${detail}</span>
-            <span class="font-mono">porta ${esc(backend.port)}</span>
-        </div>
-        <div class="flex items-center justify-between text-ui-label text-slate-500">
-            <span>${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)} requisição(ões) ativa(s) · base ${esc(backend.max_parallel)}</span>
-            <span class="font-mono">ctx/slot ${esc(backend.ctx_per_slot)}</span>
-        </div>
-        <div class="flex items-center justify-between text-ui-label text-slate-500">
+        <div class="proxy-priority-bar">
+            <i class="fas ${priorityIcon}" aria-hidden="true"></i>
             <span class="proxy-priority-label">Prioridade de roteamento: ${priorityRank}º</span>
-            <span class="font-mono">startup ${esc(latencyLabel)}</span>
+            <span class="proxy-priority-rank" hidden>${priorityRank}º</span>
+        </div>
+        ${quotaBlock}
+        <div class="proxy-card-footer">
+            <div class="proxy-card-stat">
+                <i class="fas fa-bolt" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${esc(latencyLabel)}</p>
+                    <p class="proxy-card-stat-label">${esc(latencyHint)}</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat">
+                <i class="fas fa-gauge-high" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${activeLabel}</p>
+                    <p class="proxy-card-stat-label">Req. ativas</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat proxy-card-stat-wide">
+                <i class="fas fa-microchip" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value truncate">${esc(techRight)}</p>
+                    <p class="proxy-card-stat-label">Infra</p>
+                </div>
+            </div>
         </div>
     </div>`;
-    const provider = String(backend.provider || '').toLowerCase();
-    if (!isPlatform || !QUOTA_PROVIDERS.has(provider)) return cardHtml;
+    if (!showQuota) return cardHtml;
     // Shell síncrono; percentuais reais entram via applyAllQuotaShells após o render.
     return `
         <div class="platform-quota-shell proxy-quota-shell quota-unknown"
              data-quota-provider="${esc(provider)}"
-             title="Cota semanal (anel externo) e sessao 5h (anel interno)">
-            <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
-            <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
+             title="Cota semanal e sessao 5h">
             ${cardHtml}
-            <div class="quota-accounts-host px-1 pt-1"></div>
         </div>`;
 }
 
@@ -323,6 +387,10 @@ function bindDragEvents() {
             if (badge) badge.textContent = rank;
             const label = item.querySelector('.proxy-priority-label');
             if (label) label.textContent = `Prioridade de roteamento: ${rank}`;
+            const icon = item.querySelector('.proxy-priority-bar i');
+            if (icon) {
+                icon.className = `fas ${index === 0 ? 'fa-crown' : 'fa-signal'}`;
+            }
         });
     };
 

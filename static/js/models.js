@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.48';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.48';
+import { state } from './state.js?v=4.2.49';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.49';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.48';
+} from './gpu.js?v=4.2.49';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.48';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.48';
-import { checkForUpdates } from './version.js?v=4.2.48';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.49';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.49';
+import { checkForUpdates } from './version.js?v=4.2.49';
 
 // --- TAB MANAGEMENT ---
 
@@ -154,8 +154,7 @@ function quotaTone(remainingPct) {
 
 function quotaColor(kind, remainingPct) {
     const tone = quotaTone(remainingPct);
-    // Semanal (anel externo) = âmbar/dourado; Sessão (anel interno) = violeta.
-    // Cores bem distintas para leitura rápida nos cards do Proxy Inteligente.
+    // Semanal = âmbar; Sessão 5h = violeta (lado a lado nos cards).
     if (kind === 'weekly') {
         if (tone === 'rose') return '#ef4444';
         if (tone === 'amber') return '#f97316';
@@ -164,6 +163,24 @@ function quotaColor(kind, remainingPct) {
     if (tone === 'rose') return '#e11d48';
     if (tone === 'amber') return '#d946ef';
     return '#8b5cf6';
+}
+
+function formatQuotaReset(iso) {
+    if (!iso) return '—';
+    const stamp = new Date(iso).getTime();
+    if (Number.isNaN(stamp)) return '—';
+    const ms = stamp - Date.now();
+    if (ms <= 0) return 'reset agora';
+    const mins = Math.round(ms / 60000);
+    if (mins < 60) return `reset em ${mins} min`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hours < 48) {
+        return remMins ? `reset em ${hours}h ${remMins}min` : `reset em ${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return remHours ? `reset em ${days}d ${remHours}h` : `reset em ${days}d`;
 }
 
 function clampQuotaPct(value) {
@@ -228,51 +245,63 @@ function shortAccountLabel(label) {
     return text.replace(/\.json$/i, '').replace(/^(claude|codex|antigravity|gemini)-/i, '');
 }
 
-function quotaBarHtml(kind, remainingPct) {
+function buildQuotaGaugeHtml(kind, remainingPct, resetAt) {
     const value = clampQuotaPct(remainingPct);
-    const width = value == null ? 0 : value;
+    const pct = value == null ? 0 : value;
     const color = value == null ? '#475569' : quotaColor(kind, value);
-    const label = kind === 'weekly' ? 'Semanal' : 'Sessao 5h';
+    const label = kind === 'weekly' ? 'Semanal' : 'Sessão';
     return `
-        <div class="quota-bar-row" title="${escapeHtml(label)} restante: ${formatQuotaPct(value)}">
-            <span class="quota-bar-label">${label}</span>
-            <div class="quota-bar-track" aria-hidden="true">
-                <div class="quota-bar-fill" style="width:${width}%; background:${color}"></div>
+        <div class="quota-gauge" data-kind="${kind}" title="${escapeHtml(label)} restante: ${formatQuotaPct(value)}">
+            <div class="quota-gauge-ring" style="--quota-pct:${pct};--quota-color:${color}">
+                <div class="quota-gauge-center">
+                    <span class="quota-gauge-pct">${formatQuotaPct(value)}</span>
+                    <span class="quota-gauge-sub">restante</span>
+                </div>
             </div>
-            <span class="quota-bar-pct">${formatQuotaPct(value)}</span>
+            <p class="quota-gauge-name">${label}</p>
+            <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${escapeHtml(formatQuotaReset(resetAt))}</span></p>
+        </div>`;
+}
+
+export function buildQuotaGaugesHtml(quota, focusedAuthIndex = null) {
+    const normalized = normalizeQuota(quota, focusedAuthIndex);
+    return `
+        <div class="quota-gauges" aria-label="Cota semanal e de sessao">
+            ${buildQuotaGaugeHtml('weekly', normalized?.weekly, normalized?.weeklyReset)}
+            ${buildQuotaGaugeHtml('session', normalized?.session, normalized?.sessionReset)}
         </div>`;
 }
 
 function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
     const rows = quotaAccountRows(quota);
     if (!rows.length) {
-        return `<p class="quota-accounts-empty text-ui-caption text-slate-500 px-1">Aguardando cota real das contas autenticadas…</p>`;
+        return `<p class="quota-accounts-empty">Aguardando cota real das contas autenticadas…</p>`;
     }
     const focus = focusedAuthIndex || quota?.focused_auth_index || rows[0]?.auth_index;
-    return `
-        <div class="quota-account-list" onclick="event.stopPropagation()">
+    const focusedRow = rows.find((row) => String(row.auth_index) === String(focus)) || rows[0];
+    const hasValues = focusedRow
+        && (focusedRow.weekly_remaining_pct != null || focusedRow.session_remaining_pct != null);
+    const err = focusedRow?.error
+        ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}">${escapeHtml(focusedRow.error)}</p>`
+        : '';
+    const chips = rows.length > 1
+        ? `<div class="quota-account-chips" onclick="event.stopPropagation()">
             ${rows.map((row) => {
                 const authIndex = String(row.auth_index || row.label || '');
                 const active = String(focus) === authIndex;
-                const hasValues = row.weekly_remaining_pct != null || row.session_remaining_pct != null;
-                const err = row.error
-                    ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}">${escapeHtml(row.error)}</p>`
-                    : '';
                 return `
                 <button type="button"
-                    class="quota-account ${active ? 'is-focused' : ''}"
+                    class="quota-chip ${active ? 'is-focused' : ''}"
                     data-auth-index="${escapeHtml(authIndex)}"
-                    title="Usar esta conta nos aneis do card">
-                    <div class="quota-account-head">
-                        <span class="quota-account-name">${escapeHtml(shortAccountLabel(row.label || row.email || authIndex))}</span>
-                        ${active ? '<span class="quota-account-badge">exibindo</span>' : ''}
-                    </div>
-                    ${quotaBarHtml('weekly', row.weekly_remaining_pct)}
-                    ${quotaBarHtml('session', row.session_remaining_pct)}
-                    ${err}
+                    title="Exibir cota desta conta">
+                    ${escapeHtml(shortAccountLabel(row.label || row.email || authIndex))}
                 </button>`;
             }).join('')}
-        </div>`;
+           </div>`
+        : `<div class="quota-account-single">
+                <span class="quota-account-name">${escapeHtml(shortAccountLabel(focusedRow?.label || focusedRow?.email || focus || 'Conta'))}</span>
+           </div>`;
+    return `${chips}${err}`;
 }
 
 function pauseQuotaRotation(shell, ms = QUOTA_ACCOUNT_ROTATE_PAUSE_MS) {
@@ -298,22 +327,50 @@ function rotateFocusedQuotaAccount(shell, quota) {
     return true;
 }
 
+function updateQuotaGauge(root, kind, remainingPct, resetAt) {
+    const gauge = root?.querySelector(`.quota-gauge[data-kind="${kind}"]`);
+    if (!gauge) return;
+    const value = clampQuotaPct(remainingPct);
+    const pct = value == null ? 0 : value;
+    const color = value == null ? '#475569' : quotaColor(kind, value);
+    const ring = gauge.querySelector('.quota-gauge-ring');
+    const pctEl = gauge.querySelector('.quota-gauge-pct');
+    const resetEl = gauge.querySelector('.quota-gauge-reset-text');
+    if (ring) {
+        ring.style.setProperty('--quota-pct', String(pct));
+        ring.style.setProperty('--quota-color', color);
+    }
+    if (pctEl) pctEl.textContent = formatQuotaPct(value);
+    if (resetEl) resetEl.textContent = formatQuotaReset(resetAt);
+    const label = kind === 'weekly' ? 'Semanal' : 'Sessão';
+    gauge.title = `${label} restante: ${formatQuotaPct(value)}`;
+}
+
 function applyQuotaRings(shell, quota) {
     if (!shell) return;
     if (quota && platformQuotaByShell) platformQuotaByShell.set(shell, quota);
     const preferred = shell.dataset.focusedAuthIndex || null;
     const normalized = normalizeQuota(quota, preferred);
-    const weeklyRing = shell.querySelector('.quota-ring-weekly');
-    const sessionRing = shell.querySelector('.quota-ring-session');
+    const gaugesHost = shell.querySelector('.quota-gauges-host');
     const accountsHost = shell.querySelector('.quota-accounts-host');
     const hasReal = !!(normalized && normalized.available);
     const multiAccount = quotaAccountRows(quota).length > 1;
 
     shell.classList.toggle('quota-unknown', !hasReal);
     shell.classList.toggle('quota-multi-account', multiAccount);
+
+    if (gaugesHost) {
+        if (!gaugesHost.querySelector('.quota-gauges')) {
+            gaugesHost.innerHTML = buildQuotaGaugesHtml(quota, preferred || normalized?.authIndex);
+        } else {
+            updateQuotaGauge(gaugesHost, 'weekly', normalized?.weekly, normalized?.weeklyReset);
+            updateQuotaGauge(gaugesHost, 'session', normalized?.session, normalized?.sessionReset);
+        }
+    }
+
     if (accountsHost) {
         accountsHost.innerHTML = buildQuotaAccountsHtml(quota, preferred || normalized?.authIndex);
-        accountsHost.querySelectorAll('.quota-account').forEach((btn) => {
+        accountsHost.querySelectorAll('.quota-chip').forEach((btn) => {
             btn.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -327,30 +384,11 @@ function applyQuotaRings(shell, quota) {
     }
 
     if (!hasReal) {
-        if (weeklyRing) {
-            weeklyRing.style.setProperty('--quota-weekly', '0');
-            weeklyRing.removeAttribute('title');
-        }
-        if (sessionRing) {
-            sessionRing.style.setProperty('--quota-session', '0');
-            sessionRing.removeAttribute('title');
-        }
+        shell.title = 'Cota real ainda nao carregada — autentique e inicie a plataforma';
         return;
     }
 
-    const weekly = normalized.weekly == null ? 0 : normalized.weekly;
-    const session = normalized.session == null ? 0 : normalized.session;
     shell.dataset.focusedAuthIndex = String(normalized.authIndex || '');
-    if (weeklyRing) {
-        weeklyRing.style.setProperty('--quota-weekly', String(weekly));
-        weeklyRing.style.setProperty('--quota-weekly-color', quotaColor('weekly', normalized.weekly));
-        weeklyRing.title = `${normalized.label} · semanal restante: ${formatQuotaPct(normalized.weekly)}`;
-    }
-    if (sessionRing) {
-        sessionRing.style.setProperty('--quota-session', String(session));
-        sessionRing.style.setProperty('--quota-session-color', quotaColor('session', normalized.session));
-        sessionRing.title = `${normalized.label} · sessao 5h restante: ${formatQuotaPct(normalized.session)}`;
-    }
     shell.title = multiAccount
         ? `${normalized.label} (alternando): semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`
         : `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`;
@@ -378,7 +416,7 @@ function ensurePlatformQuotaRotation() {
 
 const QUOTA_RING_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
 
-/** Envolve um card do Proxy Inteligente com anéis de cota (semanal + sessão). */
+/** Envolve um card do Proxy Inteligente com shell de cota (gauges lado a lado). */
 export function wrapProxyBackendWithQuota(cardHtml, provider = '', quota = null) {
     const key = String(provider || '').toLowerCase();
     if (!QUOTA_RING_PROVIDERS.has(key)) return cardHtml;
@@ -390,10 +428,7 @@ export function wrapProxyBackendWithQuota(cardHtml, provider = '', quota = null)
         <div class="platform-quota-shell proxy-quota-shell ${normalized?.available ? '' : 'quota-unknown'}"
              data-quota-provider="${escapeHtml(key)}"
              title="${escapeHtml(title)}">
-            <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
-            <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
             ${cardHtml}
-            <div class="quota-accounts-host px-1 pt-1">${buildQuotaAccountsHtml(quota, normalized?.authIndex)}</div>
         </div>`;
 }
 
