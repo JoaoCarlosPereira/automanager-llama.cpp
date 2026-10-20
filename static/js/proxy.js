@@ -1,7 +1,22 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.46';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.48';
+
+// Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
+const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
+let quotaHelpersPromise = null;
+
+function loadQuotaHelpers() {
+    if (!quotaHelpersPromise) {
+        quotaHelpersPromise = import('./models.js?v=4.2.48').catch((err) => {
+            console.debug('quota helpers:', err);
+            quotaHelpersPromise = null;
+            return null;
+        });
+    }
+    return quotaHelpersPromise;
+}
 
 // updateStatus roda a cada 1s; o painel consulta o proxy a cada 3 ticks.
 const POLL_EVERY_TICKS = 3;
@@ -219,8 +234,10 @@ function backendCard(backend, index) {
     const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
     const dataCardId = backend.card_id ? ` data-card-id="${esc(backend.card_id)}"` : '';
     const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
-    return `
-    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
+    // Border do estado (ONLINE etc.) fica no card interno; os anéis de cota
+    // envolvem o card para plataformas com janela semanal + sessão.
+    const cardHtml = `
+    <div draggable="true" class="proxy-backend-card p-3 rounded-xl border ${style.split(' ').slice(1).join(' ')} bg-slate-900/40 flex flex-col gap-1 cursor-pointer active:cursor-grabbing select-none transition-transform" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}" data-provider="${esc(backend.provider || '')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
         <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-2 min-w-0">
                 <span class="proxy-priority-rank shrink-0 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-violet-500/15 border border-violet-500/40 text-violet-300 text-sm font-black" title="Prioridade de roteamento">${priorityRank}º</span>
@@ -242,6 +259,18 @@ function backendCard(backend, index) {
             <span class="font-mono">startup ${esc(latencyLabel)}</span>
         </div>
     </div>`;
+    const provider = String(backend.provider || '').toLowerCase();
+    if (!isPlatform || !QUOTA_PROVIDERS.has(provider)) return cardHtml;
+    // Shell síncrono; percentuais reais entram via applyAllQuotaShells após o render.
+    return `
+        <div class="platform-quota-shell proxy-quota-shell quota-unknown"
+             data-quota-provider="${esc(provider)}"
+             title="Cota semanal (anel externo) e sessao 5h (anel interno)">
+            <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
+            <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
+            ${cardHtml}
+            <div class="quota-accounts-host px-1 pt-1"></div>
+        </div>`;
 }
 
 function formatLocalDateTime(iso) {
@@ -279,10 +308,12 @@ function bindDragEvents() {
     let draggedItem = null;
     let orderChanged = false;
 
+    const moveUnit = (card) => card.closest('.platform-quota-shell') || card;
+
     const clearDropStyles = () => {
-        cards.forEach(c => c.classList.remove(
-            'opacity-50', 'ring-2', 'ring-violet-500', 'scale-[1.01]'
-        ));
+        list.querySelectorAll('.proxy-backend-card, .platform-quota-shell').forEach((el) => {
+            el.classList.remove('opacity-50', 'ring-2', 'ring-violet-500', 'scale-[1.01]');
+        });
     };
 
     const refreshVisibleRanks = () => {
@@ -298,6 +329,11 @@ function bindDragEvents() {
     cards.forEach(card => {
         let pointerStart = null;
         let pointerMoved = false;
+        // Arrasta o shell de cota inteiro (quando existir) para não separar o anel do card.
+        card.setAttribute('draggable', 'true');
+        const unit = moveUnit(card);
+        if (unit !== card) card.removeAttribute('draggable');
+        unit.setAttribute('draggable', 'true');
 
         card.addEventListener('pointerdown', function(e) {
             if (e.button !== 0) return;
@@ -343,29 +379,29 @@ function bindDragEvents() {
             if (modelPath) window.selectModel?.(modelPath, cardId);
         });
 
-        card.addEventListener('dragstart', function(e) {
+        unit.addEventListener('dragstart', function(e) {
             draggedItem = this;
             orderChanged = false;
             priorityDragActive = true;
-            this.dataset.suppressOpen = 'true';
+            card.dataset.suppressOpen = 'true';
             setTimeout(() => this.classList.add('opacity-50'), 0);
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', this.dataset.backendId || 'backend');
+            e.dataTransfer.setData('text/plain', card.dataset.backendId || 'backend');
         });
 
-        card.addEventListener('dragend', async function() {
+        unit.addEventListener('dragend', async function() {
             const shouldSave = orderChanged;
             draggedItem = null;
             priorityDragActive = false;
             clearDropStyles();
             if (shouldSave) await savePriorityOrder();
             setTimeout(() => {
-                this.dataset.suppressOpen = 'false';
+                card.dataset.suppressOpen = 'false';
                 pointerMoved = false;
             }, 0);
         });
 
-        card.addEventListener('dragover', function(e) {
+        unit.addEventListener('dragover', function(e) {
             e.preventDefault();
             if (this !== draggedItem) {
                 this.classList.add('ring-2', 'ring-violet-500', 'scale-[1.01]');
@@ -380,11 +416,11 @@ function bindDragEvents() {
             }
         });
 
-        card.addEventListener('dragleave', function() {
+        unit.addEventListener('dragleave', function() {
             this.classList.remove('ring-2', 'ring-violet-500', 'scale-[1.01]');
         });
 
-        card.addEventListener('drop', function(e) {
+        unit.addEventListener('drop', function(e) {
             e.preventDefault();
             this.classList.remove('ring-2', 'ring-violet-500', 'scale-[1.01]');
         });
@@ -507,6 +543,17 @@ function render(status, sessions) {
         const grouped = groupBackends(status.backends);
         backendsEl.innerHTML = grouped.map((backend, index) => backendCard(backend, index)).join('')
             || '<p class="text-ui-label text-slate-600">Nenhuma instância online.</p>';
+        const hasPlatformQuota = grouped.some(
+            (b) => b.backend_type === 'platform'
+                && QUOTA_PROVIDERS.has(String(b.provider || '').toLowerCase()),
+        );
+        if (hasPlatformQuota) {
+            loadQuotaHelpers().then((mod) => {
+                if (!mod) return;
+                mod.applyAllQuotaShells?.();
+                mod.refreshPlatformQuotas?.({ force: false });
+            });
+        }
     }
     const countEl = document.getElementById('proxy-sessions-count');
     if (countEl) countEl.innerText = `(${sessions.length})`;

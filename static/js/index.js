@@ -1,15 +1,15 @@
-import { state } from './state.js?v=4.2.46';
-import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.46';
-import { cancelAutoBalance } from './gpu.js?v=4.2.46';
+import { state } from './state.js?v=4.2.48';
+import { handleLogin, handleLogout, changePassword, apiFetch, handleShutdown, handleUpdate } from './auth.js?v=4.2.48';
+import { cancelAutoBalance } from './gpu.js?v=4.2.48';
 import {
     syncContextSizeCustomVisibility,
     getContextSize, setContextSize, balanceWeights, updateTotal, resetToDefaults,
     hideAutoBalanceCapacityAlert, showMtpWarning, hideMtpWarning,
-} from './gpu.js?v=4.2.46';
+} from './gpu.js?v=4.2.48';
 import {
     stopDashboardPolling, startDashboardPolling, renewToken, copyApiToken, updateMetrics, updateStatus,
     updateDownloads, clearCompletedDownloads, cancelDownload, refreshApiToken,
-} from './metrics.js?v=4.2.46';
+} from './metrics.js?v=4.2.48';
 import {
     initDashboard, selectModel, selectModelFromEvent, selectPlatform, selectPlatformFromEvent,
     applyModelConfig, setDefaultModel,
@@ -19,12 +19,12 @@ import {
     onMmprojChange, onMtpModelChange, closeTab, startSmartCalibration,
     startCliproxyAuth, manageOllamaCloudAuth, deleteOllamaCloudAccount, closeCliproxyAuthModal, cancelCliproxyAuth, submitCliproxyAuthCallback,
     setPlatformAutoStart, setPlatformVisionEnabled, setLocalVisionEnabled,
-} from './models.js?v=4.2.46';
-import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.46';
+} from './models.js?v=4.2.48';
+import { checkForUpdates, dismissVersionModal } from './version.js?v=4.2.48';
 import {
     proxyToggleEnabled, setProxyPrimary, setProxyEligible, setProxyMaxParallel,
     updateProxyPanel, proxyDeleteSession, proxyClearAllSessions, proxyReassignSession,
-} from './proxy.js?v=4.2.46';
+} from './proxy.js?v=4.2.48';
 
 window.modelConfigs = window.modelConfigs || {};
 

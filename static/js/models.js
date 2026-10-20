@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.46';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.46';
+import { state } from './state.js?v=4.2.48';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.48';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.46';
+} from './gpu.js?v=4.2.48';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.46';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.46';
-import { checkForUpdates } from './version.js?v=4.2.46';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.48';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.48';
+import { checkForUpdates } from './version.js?v=4.2.48';
 
 // --- TAB MANAGEMENT ---
 
@@ -154,14 +154,16 @@ function quotaTone(remainingPct) {
 
 function quotaColor(kind, remainingPct) {
     const tone = quotaTone(remainingPct);
+    // Semanal (anel externo) = âmbar/dourado; Sessão (anel interno) = violeta.
+    // Cores bem distintas para leitura rápida nos cards do Proxy Inteligente.
     if (kind === 'weekly') {
-        if (tone === 'rose') return '#fb7185';
-        if (tone === 'amber') return '#fbbf24';
-        return '#38bdf8';
+        if (tone === 'rose') return '#ef4444';
+        if (tone === 'amber') return '#f97316';
+        return '#f59e0b';
     }
-    if (tone === 'rose') return '#fb7185';
-    if (tone === 'amber') return '#fbbf24';
-    return '#34d399';
+    if (tone === 'rose') return '#e11d48';
+    if (tone === 'amber') return '#d946ef';
+    return '#8b5cf6';
 }
 
 function clampQuotaPct(value) {
@@ -252,7 +254,10 @@ function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
             ${rows.map((row) => {
                 const authIndex = String(row.auth_index || row.label || '');
                 const active = String(focus) === authIndex;
-                const err = row.error ? `<span class="text-rose-400/90"> · ${escapeHtml(row.error)}</span>` : '';
+                const hasValues = row.weekly_remaining_pct != null || row.session_remaining_pct != null;
+                const err = row.error
+                    ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}">${escapeHtml(row.error)}</p>`
+                    : '';
                 return `
                 <button type="button"
                     class="quota-account ${active ? 'is-focused' : ''}"
@@ -373,22 +378,42 @@ function ensurePlatformQuotaRotation() {
 
 const QUOTA_RING_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
 
-function wrapPlatformCardWithQuota(cardHtml, quota, provider = '') {
-    const supportsQuota = QUOTA_RING_PROVIDERS.has(String(provider || '').toLowerCase());
+/** Envolve um card do Proxy Inteligente com anéis de cota (semanal + sessão). */
+export function wrapProxyBackendWithQuota(cardHtml, provider = '', quota = null) {
+    const key = String(provider || '').toLowerCase();
+    if (!QUOTA_RING_PROVIDERS.has(key)) return cardHtml;
     const normalized = normalizeQuota(quota);
-    if (!supportsQuota && !normalized) {
-        return cardHtml;
-    }
     const title = normalized?.available
         ? `${normalized.label}: semanal ${formatQuotaPct(normalized.weekly)} · sessao ${formatQuotaPct(normalized.session)}`
         : 'Cota real ainda nao carregada — autentique e inicie a plataforma';
     return `
-        <div class="platform-quota-shell ${normalized?.available ? '' : 'quota-unknown'}" title="${escapeHtml(title)}">
+        <div class="platform-quota-shell proxy-quota-shell ${normalized?.available ? '' : 'quota-unknown'}"
+             data-quota-provider="${escapeHtml(key)}"
+             title="${escapeHtml(title)}">
             <div class="quota-ring quota-ring-weekly" aria-hidden="true"></div>
             <div class="quota-ring quota-ring-session" aria-hidden="true"></div>
             ${cardHtml}
             <div class="quota-accounts-host px-1 pt-1">${buildQuotaAccountsHtml(quota, normalized?.authIndex)}</div>
         </div>`;
+}
+
+function quotaByProviderMap() {
+    const map = {};
+    for (const platform of state.lastPlatformList || []) {
+        if (platform?.provider && platform.quota) {
+            map[String(platform.provider).toLowerCase()] = platform.quota;
+        }
+    }
+    return map;
+}
+
+export function applyAllQuotaShells(quotas = null) {
+    const map = quotas || quotaByProviderMap();
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('.platform-quota-shell[data-quota-provider]').forEach((shell) => {
+        const provider = String(shell.dataset.quotaProvider || '').toLowerCase();
+        applyQuotaRings(shell, map[provider] || null);
+    });
 }
 
 export async function refreshPlatformQuotas({ force = false } = {}) {
@@ -404,11 +429,8 @@ export async function refreshPlatformQuotas({ force = false } = {}) {
         });
         state.lastPlatformList = platforms;
         state.platforms = platforms;
-        for (const platform of platforms) {
-            const el = document.getElementById(platformDomId(platform.backend_id));
-            const shell = el?.closest('.platform-quota-shell');
-            if (shell) applyQuotaRings(shell, platform.quota);
-        }
+        // Aneis vivem nos cards do Proxy Inteligente (e qualquer shell data-quota-provider).
+        applyAllQuotaShells(quotas);
     } catch (err) {
         console.debug('refreshPlatformQuotas:', err);
     }
@@ -417,9 +439,10 @@ export async function refreshPlatformQuotas({ force = false } = {}) {
 function ensurePlatformQuotaPolling() {
     if (typeof window === 'undefined') return;
     if (!platformQuotaPollTimer) {
+        // Match backend cache (~180s) so we do not hammer /api/oauth/usage.
         platformQuotaPollTimer = window.setInterval(() => {
             refreshPlatformQuotas({ force: false });
-        }, 60_000);
+        }, 180_000);
     }
     ensurePlatformQuotaRotation();
 }
@@ -2118,9 +2141,6 @@ function patchPlatformListItems(platforms, cfg) {
         el.classList.toggle('border-slate-700/50', !isRunning);
         el.classList.toggle('bg-slate-800/40', !isRunning);
 
-        const shell = el.closest('.platform-quota-shell');
-        if (shell) applyQuotaRings(shell, platform.quota);
-
         const pCfg = (cfg.platform_configs || window.platformConfigs || {})[backendId] || {};
         const primaryCb = el.querySelector('.proxy-primary-checkbox');
         if (primaryCb && document.activeElement !== primaryCb) {
@@ -2275,11 +2295,8 @@ function buildPlatformCardHtml(rawPlatform, cfg) {
                     </label>
                 </div>
             </div>`;
-    const wrapped = wrapPlatformCardWithQuota(cardHtml, platform.quota, platform.provider);
-    return wrapped.replace(
-        'class="platform-quota-shell"',
-        `class="platform-quota-shell" data-quota-provider="${escapeHtml(platform.provider || '')}"`,
-    );
+    // Cota visual fica nos cards do Proxy Inteligente, não na lista lateral.
+    return cardHtml;
 }
 
 function buildGenericOpenAICardsHtml(platform) {
@@ -2395,12 +2412,6 @@ function buildModelListHtml(models, cfg, platforms = []) {
 
 async function renderModelList(container, models, cfg, platforms = []) {
     container.innerHTML = buildModelListHtml(models, cfg, platforms);
-    for (const raw of platforms || []) {
-        const platform = platformDisplayState(raw);
-        const el = document.getElementById(platformDomId(platform.backend_id));
-        const shell = el?.closest('.platform-quota-shell');
-        if (shell) applyQuotaRings(shell, platform.quota);
-    }
 }
 
 export async function persistMmprojSelection(modelPath, mmprojPath, { silent = false, cardId = null } = {}) {
