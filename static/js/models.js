@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.51';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.51';
+import { state } from './state.js?v=4.2.52';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.52';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.51';
+} from './gpu.js?v=4.2.52';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.51';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.51';
-import { checkForUpdates } from './version.js?v=4.2.51';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.52';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.52';
+import { checkForUpdates } from './version.js?v=4.2.52';
 
 // --- TAB MANAGEMENT ---
 
@@ -281,8 +281,18 @@ function buildQuotaAccountsHtml(quota, focusedAuthIndex = null) {
     const focusedRow = rows.find((row) => String(row.auth_index) === String(focus)) || rows[0];
     const hasValues = focusedRow
         && (focusedRow.weekly_remaining_pct != null || focusedRow.session_remaining_pct != null);
-    const err = focusedRow?.error
-        ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}">${escapeHtml(focusedRow.error)}</p>`
+    const errText = focusedRow?.error
+        ? (() => {
+            const raw = String(focusedRow.error || '');
+            const low = raw.toLowerCase();
+            const waiting = low.includes('429') || low.includes('em espera') || low.includes('rate limit') || low.includes('monitoramento');
+            if (waiting && hasValues) return 'Monitoramento em espera · exibindo ultima cota';
+            if (waiting) return 'Monitoramento em espera — tente mais tarde';
+            return raw;
+        })()
+        : '';
+    const err = errText
+        ? `<p class="quota-account-error ${hasValues ? 'is-stale' : ''}" title="${escapeHtml(focusedRow.error)}">${escapeHtml(errText)}</p>`
         : '';
     const chips = rows.length > 1
         ? `<div class="quota-account-chips" onclick="event.stopPropagation()">

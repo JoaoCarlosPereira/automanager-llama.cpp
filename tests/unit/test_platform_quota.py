@@ -174,7 +174,26 @@ def test_preserve_account_on_error_keeps_last_known_percentages():
     merged = pq._preserve_account_on_error(previous, failed)
     assert merged["session_remaining_pct"] == 42.0
     assert merged["weekly_remaining_pct"] == 77.0
-    assert "ultima cota conhecida" in merged["error"]
+    assert "Monitoramento em espera" in merged["error"]
+    assert "HTTP 429" not in merged["error"]
+
+
+def test_parse_codex_usage_primary_only_when_secondary_null():
+    payload = {
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 12,
+                "reset_after_seconds": 3600,
+                "limit_window_seconds": 18000,
+            },
+            "secondary_window": None,
+        },
+    }
+    parsed = pq.parse_codex_usage(payload)
+    assert parsed["session_remaining_pct"] == 88.0
+    assert parsed["weekly_remaining_pct"] is None
+    assert parsed["session_reset_at"]
 
 
 def test_claude_fetch_sends_claude_code_user_agent(tmp_path: Path):
@@ -313,13 +332,14 @@ def test_claude_usage_429_backs_off_and_skips_followup_polls(tmp_path: Path):
     second = service.snapshot(force=True)
     assert calls["n"] == 2  # one 429 attempt
     assert second["claude"]["weekly_remaining_pct"] == 28.0
-    assert "429" in (second["claude"]["account_details"][0].get("error") or "")
+    second_err = second["claude"]["account_details"][0].get("error") or ""
+    assert "Monitoramento em espera" in second_err
 
     third = service.snapshot(force=True)
     # Still in backoff — must not call Anthropic again.
     assert calls["n"] == 2
     err = third["claude"]["account_details"][0].get("error") or ""
-    assert "em espera" in err
+    assert "espera" in err.lower() or "Monitoramento" in err
     assert third["claude"]["weekly_remaining_pct"] == 28.0
     assert third["claude"]["session_remaining_pct"] == 93.0
 

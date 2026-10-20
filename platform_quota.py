@@ -154,37 +154,74 @@ def _infer_provider(auth: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _codex_window(rate: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    for key in keys:
+        value = rate.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _codex_reset_at(window: Dict[str, Any]) -> Optional[str]:
+    direct = _iso_or_unix(
+        window.get("reset_at") or window.get("resets_at") or window.get("resets_in_seconds")
+    )
+    if direct:
+        return direct
+    after = _to_float(window.get("reset_after_seconds") or window.get("resetAfterSeconds"))
+    if after is None:
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + float(after)))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def parse_codex_usage(payload: Any, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Parse Codex wham/usage JSON (and optional x-codex-* headers)."""
     data = payload if isinstance(payload, dict) else {}
     rate = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else data
-    primary = (
-        rate.get("primary_window")
-        if isinstance(rate.get("primary_window"), dict)
-        else rate.get("primary")
-        if isinstance(rate.get("primary"), dict)
-        else {}
-    )
-    secondary = (
-        rate.get("secondary_window")
-        if isinstance(rate.get("secondary_window"), dict)
-        else rate.get("secondary")
-        if isinstance(rate.get("secondary"), dict)
-        else {}
-    )
+    if not isinstance(rate, dict):
+        rate = {}
+    primary = _codex_window(rate, "primary_window", "primary")
+    secondary = _codex_window(rate, "secondary_window", "secondary")
+
+    # Alguns planos deixam secondary_window=null; ainda assim a sessão (5h) vem
+    # em primary_window. Janelas extras às vezes aparecem em additional_rate_limits.
+    if not secondary:
+        extras = data.get("additional_rate_limits") or rate.get("additional_rate_limits") or []
+        if isinstance(extras, list):
+            for item in extras:
+                if not isinstance(item, dict):
+                    continue
+                nested = item.get("rate_limit") if isinstance(item.get("rate_limit"), dict) else item
+                if not isinstance(nested, dict):
+                    continue
+                candidate = _codex_window(nested, "secondary_window", "primary_window", "primary")
+                seconds = _to_float(
+                    candidate.get("limit_window_seconds") or candidate.get("limitWindowSeconds")
+                )
+                # Prefer weekly-sized windows (~7d) when primary already filled session.
+                if candidate and seconds is not None and seconds >= 86400:
+                    secondary = candidate
+                    break
 
     session_remaining = _remaining_from_used(
-        _to_float(primary.get("used_percent") or primary.get("usedPercent"))
+        _to_float(
+            primary.get("used_percent")
+            if primary.get("used_percent") is not None
+            else primary.get("usedPercent")
+        )
     )
     weekly_remaining = _remaining_from_used(
-        _to_float(secondary.get("used_percent") or secondary.get("usedPercent"))
+        _to_float(
+            secondary.get("used_percent")
+            if secondary.get("used_percent") is not None
+            else secondary.get("usedPercent")
+        )
     )
-    session_reset = _iso_or_unix(
-        primary.get("reset_at") or primary.get("resets_at") or primary.get("resets_in_seconds")
-    )
-    weekly_reset = _iso_or_unix(
-        secondary.get("reset_at") or secondary.get("resets_at") or secondary.get("resets_in_seconds")
-    )
+    session_reset = _codex_reset_at(primary)
+    weekly_reset = _codex_reset_at(secondary)
 
     headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
     if session_remaining is None:
@@ -310,12 +347,28 @@ def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _friendly_quota_error(err: Optional[str], *, has_values: bool) -> str:
+    """Humanize provider errors for the card (avoid raw HTTP 429 noise)."""
+    text = str(err or "").strip()
+    low = text.lower()
+    waiting = "429" in low or "em espera" in low or "rate limit" in low
+    if waiting and has_values:
+        return "Monitoramento em espera · exibindo ultima cota"
+    if waiting:
+        return "Monitoramento em espera — tente mais tarde"
+    if has_values:
+        return f"{text} · exibindo ultima cota" if text else "Exibindo ultima cota conhecida"
+    return text or "Falha ao atualizar cota"
+
+
 def _preserve_account_on_error(
     previous: Optional[Dict[str, Any]], failed: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Keep last known percentages when a refresh fails (e.g. usage HTTP 429)."""
     if not previous:
-        return failed
+        out = dict(failed)
+        out["error"] = _friendly_quota_error(failed.get("error"), has_values=False)
+        return out
     merged = dict(failed)
     for field in (
         "session_remaining_pct",
@@ -325,13 +378,12 @@ def _preserve_account_on_error(
     ):
         if merged.get(field) is None and previous.get(field) is not None:
             merged[field] = previous[field]
-    if (
+    has_values = (
         merged.get("session_remaining_pct") is not None
         or merged.get("weekly_remaining_pct") is not None
-    ):
-        # Stale-but-real values beat an empty error row in the UI.
-        err = failed.get("error") or "atualizacao falhou"
-        merged["error"] = f"{err} (exibindo ultima cota conhecida)"
+    )
+    # Stale-but-real values beat an empty error row in the UI.
+    merged["error"] = _friendly_quota_error(failed.get("error"), has_values=has_values)
     return merged
 
 
@@ -613,10 +665,7 @@ class PlatformQuotaService:
                             "weekly_remaining_pct": None,
                             "session_reset_at": None,
                             "weekly_reset_at": None,
-                            "error": (
-                                "claude usage em espera apos HTTP 429 "
-                                f"(nova tentativa em ~{mins} min)"
-                            ),
+                            "error": f"em espera ~{mins} min apos HTTP 429",
                         },
                     )
                     by_provider[provider].append(account)
@@ -731,9 +780,18 @@ class PlatformQuotaService:
                 "Content-Type": "application/json",
                 "User-Agent": "codex_cli_rs/0.76.0 (Debian; x86_64) AutoManager",
             }
-            account_id = auth.get("account_id") or auth.get("account")
+            account_id = (
+                auth.get("account_id")
+                or auth.get("accountId")
+                or auth.get("chatgpt_account_id")
+                or auth.get("chatgptAccountId")
+                or auth.get("workspace_id")
+                or auth.get("account")
+            )
             if account_id:
+                # Codex emite as duas grafias em caminhos diferentes.
                 headers["ChatGPT-Account-Id"] = str(account_id)
+                headers["ChatGPT-Account-ID"] = str(account_id)
             status, body, resp_headers = self._api_call(
                 client,
                 base,
@@ -745,6 +803,11 @@ class PlatformQuotaService:
             if status < 200 or status >= 300:
                 raise RuntimeError(f"codex usage HTTP {status}")
             parsed = parse_codex_usage(body, resp_headers)
+            if (
+                parsed.get("session_remaining_pct") is None
+                and parsed.get("weekly_remaining_pct") is None
+            ):
+                raise RuntimeError("codex usage sem janelas de cota na resposta")
         elif provider == "claude":
             # User-Agent must identify as Claude Code or Anthropic puts the
             # token in a persistent 429 bucket for this undocumented endpoint.

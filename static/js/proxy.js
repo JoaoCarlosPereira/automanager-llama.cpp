@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.51';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.52';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.51').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.52').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;
@@ -322,6 +322,16 @@ function clampPct(value) {
     return Math.max(0, Math.min(100, Number(value)));
 }
 
+function friendlyQuotaError(err, hasValues) {
+    const text = String(err || '').trim();
+    const low = text.toLowerCase();
+    const waiting = low.includes('429') || low.includes('em espera') || low.includes('rate limit') || low.includes('monitoramento em espera');
+    if (waiting && hasValues) return 'Monitoramento em espera · exibindo ultima cota';
+    if (waiting) return 'Monitoramento em espera — tente mais tarde';
+    if (hasValues) return text ? `${text}` : 'Exibindo ultima cota conhecida';
+    return text || 'Falha ao atualizar cota';
+}
+
 function platformQuotaTone(remainingPct) {
     if (remainingPct == null || Number.isNaN(Number(remainingPct))) return 'slate';
     const value = Number(remainingPct);
@@ -385,7 +395,7 @@ function platformQuotaGaugesHtml(provider, quota = null) {
     const label = focused?.label || focused?.email || provider || 'Conta';
     const rows = Array.isArray(quota?.account_details) ? quota.account_details : [];
     const err = focused?.error
-        ? `<p class="quota-account-error ${weekly != null || session != null ? 'is-stale' : ''}">${esc(focused.error)}</p>`
+        ? `<p class="quota-account-error ${weekly != null || session != null ? 'is-stale' : ''}" title="${esc(focused.error)}">${esc(friendlyQuotaError(focused.error, weekly != null || session != null))}</p>`
         : '';
     const accountHost = rows.length > 1
         ? `<div class="quota-account-chips">${rows.map((row) => {
