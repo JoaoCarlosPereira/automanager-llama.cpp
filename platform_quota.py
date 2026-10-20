@@ -37,6 +37,10 @@ logger = logging.getLogger("automanager.platform_quota")
 # like Claude Code; community tools poll at ~180s with a claude-code UA.
 _CACHE_TTL_SECONDS = 180.0
 _REQUEST_TIMEOUT = 20.0
+# Once /api/oauth/usage returns 429 for a token, Anthropic often keeps that
+# access token in a sticky bucket for a long time. Keep polling away until the
+# window cools down instead of re-hitting every cache TTL.
+_CLAUDE_USAGE_429_BACKOFF_SECONDS = 900.0
 
 _ANTIGRAVITY_HOSTS = (
     "https://daily-cloudcode-pa.googleapis.com",
@@ -44,9 +48,11 @@ _ANTIGRAVITY_HOSTS = (
     "https://cloudcode-pa.googleapis.com",
 )
 _ANTIGRAVITY_UA = "antigravity/cli/1.0.13 (aidev_client; os_type=linux; arch=x86_64)"
-# Required: without this UA the usage endpoint parks the token in a persistent
-# 429 bucket (see anthropics/claude-code#31021 / #31637).
-_CLAUDE_USAGE_UA = "claude-code/2.1.80 (external, cli)"
+# Required: without a plain ``claude-code/<ver>`` UA the usage endpoint parks
+# the token in a persistent 429 bucket (anthropics/claude-code#31021 / #31637).
+# Do not append suffixes like "(external, cli)" — working clients send only
+# ``claude-code/<version>``.
+_CLAUDE_USAGE_UA = "claude-code/2.1.80"
 
 # Providers we can query for dual-window quota.
 _QUOTA_PROVIDERS = frozenset({"codex", "claude", "antigravity"})
@@ -429,11 +435,39 @@ class PlatformQuotaService:
         self._lock = threading.Lock()
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._fetched_at: float = 0.0
+        # auth_index → unix timestamp until which Claude usage calls are skipped
+        self._claude_backoff_until: Dict[str, float] = {}
 
     def invalidate(self) -> None:
         with self._lock:
             self._cache.clear()
             self._fetched_at = 0.0
+            self._claude_backoff_until.clear()
+
+    def _claude_in_backoff(self, auth_index: str) -> bool:
+        with self._lock:
+            until = self._claude_backoff_until.get(str(auth_index), 0.0)
+        return time.time() < until
+
+    def _claude_backoff_remaining(self, auth_index: str) -> float:
+        with self._lock:
+            until = self._claude_backoff_until.get(str(auth_index), 0.0)
+        return max(0.0, until - time.time())
+
+    def _mark_claude_backoff(
+        self, auth_index: str, seconds: float = _CLAUDE_USAGE_429_BACKOFF_SECONDS
+    ) -> None:
+        with self._lock:
+            self._claude_backoff_until[str(auth_index)] = time.time() + float(seconds)
+        logger.info(
+            "Claude usage HTTP 429 for %s — backing off %.0fs before next poll",
+            auth_index,
+            seconds,
+        )
+
+    def _clear_claude_backoff(self, auth_index: str) -> None:
+        with self._lock:
+            self._claude_backoff_until.pop(str(auth_index), None)
 
     def cached_snapshot(self) -> Dict[str, Dict[str, Any]]:
         """Return the last known snapshot without contacting providers."""
@@ -562,11 +596,38 @@ class PlatformQuotaService:
                 if not provider or not auth.get("auth_index"):
                     continue
                 auth_index = str(auth.get("auth_index"))
+                previous = previous_by_provider.get(provider, {}).get(auth_index)
+                if provider == "claude" and self._claude_in_backoff(auth_index):
+                    remaining = self._claude_backoff_remaining(auth_index)
+                    mins = max(1, int((remaining + 59) // 60))
+                    account = _preserve_account_on_error(
+                        previous,
+                        {
+                            "auth_index": auth.get("auth_index"),
+                            "label": auth.get("email")
+                            or auth.get("label")
+                            or auth.get("name"),
+                            "email": auth.get("email"),
+                            "priority": int(auth.get("priority") or 0),
+                            "session_remaining_pct": None,
+                            "weekly_remaining_pct": None,
+                            "session_reset_at": None,
+                            "weekly_reset_at": None,
+                            "error": (
+                                "claude usage em espera apos HTTP 429 "
+                                f"(nova tentativa em ~{mins} min)"
+                            ),
+                        },
+                    )
+                    by_provider[provider].append(account)
+                    continue
                 try:
                     account = self._fetch_account(client, base, provider, auth)
                 except Exception as exc:
+                    if provider == "claude" and "HTTP 429" in str(exc):
+                        self._mark_claude_backoff(auth_index)
                     account = _preserve_account_on_error(
-                        previous_by_provider.get(provider, {}).get(auth_index),
+                        previous,
                         {
                             "auth_index": auth.get("auth_index"),
                             "label": auth.get("email")
@@ -582,6 +643,8 @@ class PlatformQuotaService:
                         },
                     )
                 else:
+                    if provider == "claude":
+                        self._clear_claude_backoff(auth_index)
                     account.setdefault("auth_index", auth.get("auth_index"))
                     account.setdefault("email", auth.get("email"))
                     account.setdefault("priority", int(auth.get("priority") or 0))
