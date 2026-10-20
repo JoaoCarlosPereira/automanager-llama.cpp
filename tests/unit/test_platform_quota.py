@@ -329,3 +329,5 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "proxy-quota-shell" in proxy_js
     assert "data-quota-provider" in proxy_js
     assert "applyAllQuotaShells" in proxy_js
+    assert "lastProxyQuotas" in proxy_js or "syncProxyQuotas" in proxy_js
+    assert "patchBackendCard" in proxy_js or "patchPlatformGauges" in proxy_js

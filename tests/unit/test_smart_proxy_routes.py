@@ -806,6 +806,9 @@ class TestAdminEndpoints:
         assert status["enabled"] is True
         assert status["exposed_model"] == "main.gguf"
         assert status["primary"]["port"] == 8085
+        # Cache de cota para o painel atualizar gauges a cada poll (~3s).
+        assert "quotas" in status
+        assert isinstance(status["quotas"], dict)
 
     def test_proxy_config_accepts_platform_primary_backend(self, smart_env):
         response = client.post(

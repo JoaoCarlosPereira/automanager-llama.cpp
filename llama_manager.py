@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.50"  # Gauges locais: Capacidade + Prontidao (startup)
+_DASHBOARD_JS_V = "4.2.51"  # Cota/sessao ao vivo via /proxy/status + patch in-place
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -4386,6 +4386,12 @@ async def proxy_status(authenticated: bool = Depends(require_auth)):
     backends = proxy_router.backends_snapshot()
     primary = next((b for b in backends if b["role"] == "primary"), None)
     sessions = await proxy_router.sessions()
+    # Snapshot em memoria (headers de rate-limit + ultimo /oauth/usage).
+    # O painel aplica a cada poll (~3s) sem bater de novo na Anthropic.
+    try:
+        quotas = platform_quota_service.cached_snapshot()
+    except Exception:
+        quotas = {}
     return {
         "enabled": settings["enabled"],
         "primary_model_path": settings["primary_model_path"],
@@ -4396,6 +4402,7 @@ async def proxy_status(authenticated: bool = Depends(require_auth)):
         "sessions_count": len(sessions),
         "ttl_minutes": settings["ttl_minutes"],
         "max_wait_seconds": settings["max_wait_seconds"],
+        "quotas": quotas,
     }
 
 

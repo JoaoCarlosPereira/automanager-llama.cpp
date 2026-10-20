@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.50';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.51';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.50').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.51').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;
@@ -24,6 +24,10 @@ let tick = 0;
 let updating = false;
 let priorityDragActive = false;
 let prioritySavePending = false;
+/** Ultimo mapa provider→quota vindo de /proxy/status (cache em memoria). */
+let lastProxyQuotas = {};
+/** Assinatura da lista de backends para evitar recriar o DOM a cada poll. */
+let lastBackendsSignature = '';
 
 function esc(value) {
     return String(value ?? '')
@@ -313,30 +317,107 @@ function localGaugesHtml(backend) {
         </div>`;
 }
 
-function platformQuotaGaugesSkeleton() {
+function clampPct(value) {
+    if (value == null || Number.isNaN(Number(value))) return null;
+    return Math.max(0, Math.min(100, Number(value)));
+}
+
+function platformQuotaTone(remainingPct) {
+    if (remainingPct == null || Number.isNaN(Number(remainingPct))) return 'slate';
+    const value = Number(remainingPct);
+    if (value < 10) return 'rose';
+    if (value < 30) return 'amber';
+    return 'emerald';
+}
+
+function platformQuotaColor(kind, remainingPct) {
+    const tone = platformQuotaTone(remainingPct);
+    if (kind === 'weekly') {
+        if (tone === 'rose') return '#ef4444';
+        if (tone === 'amber') return '#f97316';
+        return '#f59e0b';
+    }
+    if (tone === 'rose') return '#e11d48';
+    if (tone === 'amber') return '#d946ef';
+    return '#8b5cf6';
+}
+
+function formatResetShort(iso) {
+    if (!iso) return '—';
+    const stamp = new Date(iso).getTime();
+    if (Number.isNaN(stamp)) return '—';
+    const ms = stamp - Date.now();
+    if (ms <= 0) return 'reset agora';
+    const mins = Math.round(ms / 60000);
+    if (mins < 60) return `reset em ${mins} min`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hours < 48) {
+        return remMins ? `reset em ${hours}h ${remMins}min` : `reset em ${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return remHours ? `reset em ${days}d ${remHours}h` : `reset em ${days}d`;
+}
+
+function focusedQuotaFromMap(quota) {
+    if (!quota || typeof quota !== 'object') return null;
+    const rows = Array.isArray(quota.account_details) ? quota.account_details : [];
+    if (rows.length) {
+        const wanted = quota.focused_auth_index;
+        const match = wanted
+            ? rows.find((row) => String(row.auth_index) === String(wanted))
+            : null;
+        return match || rows.find((row) => row.available) || rows[0];
+    }
+    if (quota.weekly_remaining_pct == null && quota.session_remaining_pct == null) return null;
+    return quota;
+}
+
+function platformQuotaGaugesHtml(provider, quota = null) {
+    const focused = focusedQuotaFromMap(quota);
+    const weekly = clampPct(focused?.weekly_remaining_pct ?? quota?.weekly_remaining_pct);
+    const session = clampPct(focused?.session_remaining_pct ?? quota?.session_remaining_pct);
+    const weeklyReset = focused?.weekly_reset_at || quota?.weekly_reset_at || null;
+    const sessionReset = focused?.session_reset_at || quota?.session_reset_at || null;
+    const weeklyColor = weekly == null ? '#475569' : platformQuotaColor('weekly', weekly);
+    const sessionColor = session == null ? '#475569' : platformQuotaColor('session', session);
+    const label = focused?.label || focused?.email || provider || 'Conta';
+    const rows = Array.isArray(quota?.account_details) ? quota.account_details : [];
+    const err = focused?.error
+        ? `<p class="quota-account-error ${weekly != null || session != null ? 'is-stale' : ''}">${esc(focused.error)}</p>`
+        : '';
+    const accountHost = rows.length > 1
+        ? `<div class="quota-account-chips">${rows.map((row) => {
+            const authIndex = String(row.auth_index || '');
+            const active = String(focused?.auth_index || '') === authIndex;
+            return `<button type="button" class="quota-chip ${active ? 'is-focused' : ''}" data-auth-index="${esc(authIndex)}">${esc(row.label || row.email || authIndex)}</button>`;
+        }).join('')}</div>${err}`
+        : `<div class="quota-account-single"><span class="quota-account-name">${esc(label)}</span></div>${err}`;
+
     return `
-        <div class="quota-accounts-host"></div>
+        <div class="quota-accounts-host">${accountHost}</div>
         <div class="quota-gauges-host">
             <div class="quota-gauges" aria-label="Cota semanal e de sessao">
-                <div class="quota-gauge" data-kind="weekly">
-                    <div class="quota-gauge-ring" style="--quota-pct:0;--quota-color:#475569">
+                <div class="quota-gauge" data-kind="weekly" title="Semanal restante: ${weekly == null ? '—' : `${Math.round(weekly)}%`}">
+                    <div class="quota-gauge-ring" style="--quota-pct:${weekly ?? 0};--quota-color:${weeklyColor}">
                         <div class="quota-gauge-center">
-                            <span class="quota-gauge-pct">—</span>
+                            <span class="quota-gauge-pct">${weekly == null ? '—' : `${Math.round(weekly)}%`}</span>
                             <span class="quota-gauge-sub">restante</span>
                         </div>
                     </div>
                     <p class="quota-gauge-name">Semanal</p>
-                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">—</span></p>
+                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${esc(formatResetShort(weeklyReset))}</span></p>
                 </div>
-                <div class="quota-gauge" data-kind="session">
-                    <div class="quota-gauge-ring" style="--quota-pct:0;--quota-color:#475569">
+                <div class="quota-gauge" data-kind="session" title="Sessao restante: ${session == null ? '—' : `${Math.round(session)}%`}">
+                    <div class="quota-gauge-ring" style="--quota-pct:${session ?? 0};--quota-color:${sessionColor}">
                         <div class="quota-gauge-center">
-                            <span class="quota-gauge-pct">—</span>
+                            <span class="quota-gauge-pct">${session == null ? '—' : `${Math.round(session)}%`}</span>
                             <span class="quota-gauge-sub">restante</span>
                         </div>
                     </div>
                     <p class="quota-gauge-name">Sessão</p>
-                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">—</span></p>
+                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${esc(formatResetShort(sessionReset))}</span></p>
                 </div>
             </div>
         </div>`;
@@ -370,7 +451,7 @@ function backendCard(backend, index) {
     const activeLabel = `${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)}`;
     const workerCount = Array.isArray(backend.grouped_ids) ? backend.grouped_ids.length : 1;
     const gaugesBlock = showQuota
-        ? platformQuotaGaugesSkeleton()
+        ? platformQuotaGaugesHtml(provider, lastProxyQuotas[provider] || null)
         : (showLocalGauges ? localGaugesHtml(backend) : '');
 
     // Rodapé: plataformas sem cota e locais priorizam infra (gauges já cobrem carga/startup).
@@ -723,28 +804,159 @@ function groupBackends(backends) {
     return grouped;
 }
 
+function backendStableKey(backend) {
+    if (Array.isArray(backend.grouped_ids) && backend.grouped_ids.length) {
+        return `g:${backend.grouped_ids.join(',')}`;
+    }
+    return `b:${backend.backend_id || backend.port || backend.model || ''}`;
+}
+
+function backendsSignature(grouped) {
+    return grouped.map((b) => backendStableKey(b)).join('|');
+}
+
+function findBackendCard(listEl, backend, index) {
+    const key = backendStableKey(backend);
+    const cards = [...listEl.querySelectorAll('.proxy-backend-card')];
+    const byId = cards.find((card) => {
+        if (Array.isArray(backend.grouped_ids) && backend.grouped_ids.length) {
+            const ids = String(card.dataset.backendIds || '').split(',').filter(Boolean);
+            return ids.join(',') === backend.grouped_ids.join(',');
+        }
+        return String(card.dataset.backendId || '') === String(backend.backend_id || '')
+            || String(card.dataset.proxyBackend || '') === String(backend.port || '');
+    });
+    return byId || cards[index] || null;
+}
+
+function updateGaugeDom(root, kind, pct, color, centerText, hintText) {
+    const gauge = root?.querySelector(`.quota-gauge[data-kind="${kind}"]`);
+    if (!gauge) return;
+    const ring = gauge.querySelector('.quota-gauge-ring');
+    const pctEl = gauge.querySelector('.quota-gauge-pct');
+    const resetEl = gauge.querySelector('.quota-gauge-reset-text')
+        || gauge.querySelector('.quota-gauge-reset span:last-child');
+    if (ring) {
+        ring.style.setProperty('--quota-pct', String(pct == null ? 0 : pct));
+        ring.style.setProperty('--quota-color', color || '#475569');
+    }
+    if (pctEl) pctEl.textContent = centerText;
+    if (resetEl) resetEl.textContent = hintText;
+}
+
+function patchLocalGauges(card, backend) {
+    const host = card.querySelector('.quota-gauges-host');
+    if (!host) {
+        // Card antigo sem gauges: recria o bloco inteiro.
+        const priority = card.querySelector('.proxy-priority-bar');
+        if (priority) priority.insertAdjacentHTML('afterend', localGaugesHtml(backend));
+        return;
+    }
+    const tmp = document.createElement('div');
+    tmp.innerHTML = localGaugesHtml(backend);
+    const next = tmp.querySelector('.quota-gauges-host');
+    if (next) host.replaceWith(next);
+}
+
+function patchPlatformGauges(shellOrCard, provider, quota) {
+    const root = shellOrCard.closest?.('.platform-quota-shell') || shellOrCard;
+    const card = root.querySelector?.('.proxy-backend-card') || shellOrCard;
+    const accounts = card.querySelector('.quota-accounts-host');
+    const gauges = card.querySelector('.quota-gauges-host');
+    const tmp = document.createElement('div');
+    tmp.innerHTML = platformQuotaGaugesHtml(provider, quota);
+    const nextAccounts = tmp.querySelector('.quota-accounts-host');
+    const nextGauges = tmp.querySelector('.quota-gauges-host');
+    if (accounts && nextAccounts) accounts.replaceWith(nextAccounts);
+    if (gauges && nextGauges) gauges.replaceWith(nextGauges);
+}
+
+function patchBackendCard(card, backend, index, quotas) {
+    if (!card) return;
+    let state = backend.state;
+    if (backend.backend_type === 'platform' && backend.is_rate_limited) {
+        state = 'rate_limited';
+    }
+    const style = STATE_STYLES[state] || STATE_STYLES.offline;
+    const stateColor = style.split(' ')[0];
+    const statusEl = card.querySelector('.proxy-card-status');
+    if (statusEl) {
+        statusEl.className = `proxy-card-status ${stateColor}`;
+        statusEl.innerHTML = `<span class="proxy-card-status-dot" aria-hidden="true"></span>${esc(STATE_LABELS[state] || backend.state)}`;
+    }
+    const rank = `${index + 1}º`;
+    const badge = card.querySelector('.proxy-priority-rank');
+    if (badge) badge.textContent = rank;
+    const label = card.querySelector('.proxy-priority-label');
+    if (label) label.textContent = `Prioridade de roteamento: ${rank}`;
+    const icon = card.querySelector('.proxy-priority-bar i');
+    if (icon) icon.className = `fas ${index === 0 ? 'fa-crown' : 'fa-signal'}`;
+
+    const isPlatform = backend.backend_type === 'platform';
+    const provider = String(backend.provider || '').toLowerCase();
+    if (!isPlatform) {
+        patchLocalGauges(card, backend);
+        const workerCount = Array.isArray(backend.grouped_ids) ? backend.grouped_ids.length : 1;
+        const stats = card.querySelectorAll('.proxy-card-stat-value');
+        if (stats[0]) stats[0].textContent = `${workerCount} worker${workerCount === 1 ? '' : 's'}`;
+        if (stats[1]) stats[1].textContent = String(backend.ctx_per_slot || '—');
+        if (stats[2]) stats[2].textContent = `${backend.gpu || 'CPU'} · porta ${backend.port}`;
+        return;
+    }
+    if (QUOTA_PROVIDERS.has(provider)) {
+        const shell = card.closest('.platform-quota-shell') || card.parentElement;
+        patchPlatformGauges(shell || card, provider, quotas[provider] || null);
+        if (shell?.classList) {
+            const q = quotas[provider];
+            const available = !!(q && (q.available || q.session_remaining_pct != null || q.weekly_remaining_pct != null));
+            shell.classList.toggle('quota-unknown', !available);
+        }
+    }
+    const latency = Number(backend.startup_latency_ms);
+    const measured = Number.isFinite(latency) && latency > 0;
+    const stats = card.querySelectorAll('.proxy-card-stat-value');
+    if (stats[0]) stats[0].textContent = measured ? formatLatencyShort(latency) : '—';
+    if (stats[1]) {
+        stats[1].textContent = `${backend.in_flight}/${backend.effective_parallel ?? backend.max_parallel}`;
+    }
+}
+
+function syncProxyQuotas(quotas) {
+    lastProxyQuotas = quotas && typeof quotas === 'object' ? quotas : {};
+    loadQuotaHelpers().then((mod) => {
+        if (!mod) return;
+        mod.applyAllQuotaShells?.(lastProxyQuotas);
+    });
+}
+
 function render(status, sessions) {
     renderModeBadge(status.enabled);
     syncPrimaryHint(status);
     const body = document.getElementById('proxy-panel-body');
     if (body) body.classList.toggle('hidden', !status.enabled);
 
+    const quotas = status.quotas && typeof status.quotas === 'object' ? status.quotas : {};
+    lastProxyQuotas = quotas;
+
     const backendsEl = document.getElementById('proxy-backends-list');
     if (backendsEl) {
         const grouped = groupBackends(status.backends);
-        backendsEl.innerHTML = grouped.map((backend, index) => backendCard(backend, index)).join('')
-            || '<p class="text-ui-label text-slate-600">Nenhuma instância online.</p>';
-        const hasPlatformQuota = grouped.some(
-            (b) => b.backend_type === 'platform'
-                && QUOTA_PROVIDERS.has(String(b.provider || '').toLowerCase()),
-        );
-        if (hasPlatformQuota) {
-            loadQuotaHelpers().then((mod) => {
-                if (!mod) return;
-                mod.applyAllQuotaShells?.();
-                mod.refreshPlatformQuotas?.({ force: false });
+        const signature = backendsSignature(grouped);
+        const canPatch = signature
+            && signature === lastBackendsSignature
+            && backendsEl.querySelector('.proxy-backend-card');
+
+        if (canPatch) {
+            grouped.forEach((backend, index) => {
+                patchBackendCard(findBackendCard(backendsEl, backend, index), backend, index, quotas);
             });
+        } else {
+            lastBackendsSignature = signature;
+            backendsEl.innerHTML = grouped.map((backend, index) => backendCard(backend, index)).join('')
+                || '<p class="text-ui-label text-slate-600">Nenhuma instância online.</p>';
+            bindDragEvents();
         }
+        syncProxyQuotas(quotas);
     }
     const countEl = document.getElementById('proxy-sessions-count');
     if (countEl) countEl.innerText = `(${sessions.length})`;
@@ -759,11 +971,37 @@ function render(status, sessions) {
     if (clearBtn) clearBtn.disabled = sessions.length === 0;
     const sessionsEl = document.getElementById('proxy-sessions-list');
     if (sessionsEl) {
-        sessionsEl.innerHTML = sessions.map(sessionRow).join('')
-            || '<p class="text-ui-label text-slate-600">Nenhuma sessão ativa.</p>';
-        bindSessionActions();
+        const keysSig = sessions.map((s) => s.affinity_key).join('|');
+        const liveSig = sessions.map((s) => (
+            `${s.affinity_key}:${s.request_count}:${s.tokens_processed || 0}:${s.last_used_at || ''}:${s.internal_model || ''}`
+        )).join('|');
+        if (sessionsEl.dataset.sessionsKeys !== keysSig) {
+            sessionsEl.dataset.sessionsKeys = keysSig;
+            sessionsEl.dataset.sessionsLive = liveSig;
+            sessionsEl.innerHTML = sessions.map(sessionRow).join('')
+                || '<p class="text-ui-label text-slate-600">Nenhuma sessão ativa.</p>';
+            bindSessionActions();
+        } else if (sessionsEl.dataset.sessionsLive !== liveSig) {
+            sessionsEl.dataset.sessionsLive = liveSig;
+            // Mesmas sessões: atualiza contadores/tokens sem recriar botões.
+            sessionsEl.querySelectorAll('[data-proxy-session]').forEach((row) => {
+                const key = row.getAttribute('data-proxy-session');
+                const session = sessions.find((s) => String(s.affinity_key) === String(key));
+                if (!session) return;
+                const title = row.querySelector('.text-ui-body-sm');
+                if (title) {
+                    const label = session.detected_tag || session.affinity_key;
+                    title.innerHTML = `${esc(label)} <span class="text-slate-500 font-normal">→ ${esc(session.gpu || '?')} / ${esc(session.internal_model)}</span>`;
+                }
+                const meta = row.querySelector('.text-ui-label');
+                if (meta) {
+                    const lastUsed = formatLocalDateTime(session.last_used_at);
+                    const tokens = session.tokens_processed ? ` · ${session.tokens_processed} tokens` : '';
+                    meta.textContent = `${session.affinity_key} · ${session.request_count} requisição(ões)${tokens} · ${lastUsed}`;
+                }
+            });
+        }
     }
-    bindDragEvents();
 }
 
 

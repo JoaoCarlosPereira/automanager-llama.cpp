@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.50';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.50';
+import { state } from './state.js?v=4.2.51';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.51';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.50';
+} from './gpu.js?v=4.2.51';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.50';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.50';
-import { checkForUpdates } from './version.js?v=4.2.50';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.51';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.51';
+import { checkForUpdates } from './version.js?v=4.2.51';
 
 // --- TAB MANAGEMENT ---
 
@@ -444,6 +444,16 @@ function quotaByProviderMap() {
 
 export function applyAllQuotaShells(quotas = null) {
     const map = quotas || quotaByProviderMap();
+    if (quotas && typeof quotas === 'object') {
+        // Mantém state alinhado ao cache empurrado por /proxy/status (~3s).
+        const platforms = (state.lastPlatformList || []).map((platform) => {
+            const provider = platform?.provider;
+            if (!provider || !quotas[provider]) return platform;
+            return { ...platform, quota: quotas[provider] };
+        });
+        state.lastPlatformList = platforms;
+        state.platforms = platforms;
+    }
     if (typeof document === 'undefined') return;
     document.querySelectorAll('.platform-quota-shell[data-quota-provider]').forEach((shell) => {
         const provider = String(shell.dataset.quotaProvider || '').toLowerCase();
