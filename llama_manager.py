@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.49"  # Cards Proxy com gauges Semanal/Sessao lado a lado
+_DASHBOARD_JS_V = "4.2.50"  # Gauges locais: Capacidade + Prontidao (startup)
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5368,6 +5368,10 @@ def _build_html(
             color: #f8fafc;
             font-variant-numeric: tabular-nums;
         }}
+        .quota-gauge-pct-sm {{
+            font-size: 1.05rem;
+            letter-spacing: -0.02em;
+        }}
         .quota-gauge-sub {{
             margin-top: 0.15rem;
             font-size: 0.62rem;
@@ -5375,6 +5379,12 @@ def _build_html(
             letter-spacing: 0.04em;
             text-transform: uppercase;
             color: #64748b;
+        }}
+        .quota-gauge[data-kind="capacity"] .quota-gauge-name {{
+            color: #a7f3d0;
+        }}
+        .quota-gauge[data-kind="startup"] .quota-gauge-name {{
+            color: #99f6e4;
         }}
         .quota-gauge-name {{
             font-size: var(--text-caption);

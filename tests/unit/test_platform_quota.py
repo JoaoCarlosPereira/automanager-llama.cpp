@@ -319,6 +319,9 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "ensurePlatformQuotaRotation" in models_js
     assert "quota-gauges" in proxy_js
     assert "proxy-card-v2" in proxy_js
+    assert "localGaugesHtml" in proxy_js or "Capacidade" in proxy_js
+    assert "Prontidão" in proxy_js or "Prontidao" in proxy_js
+    assert 'data-kind="capacity"' in proxy_js or 'data-kind="startup"' in proxy_js
     assert "rotateAllPlatformQuotaShells" in models_js
     assert "QUOTA_ACCOUNT_ROTATE_MS" in models_js
     assert "refreshPlatformQuotas" in models_js

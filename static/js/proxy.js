@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.49';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.50';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.49').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.50').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;
@@ -223,39 +223,98 @@ function providerIcon(provider, isPlatform) {
     return 'fa-cloud';
 }
 
-function backendCard(backend, index) {
-    // Rate-limited platform backends: show "ESGOTADO" regardless of state
-    let state = backend.state;
-    if (backend.backend_type === 'platform' && backend.is_rate_limited) {
-        state = 'rate_limited';
+function formatLatencyShort(ms) {
+    const latency = Number(ms);
+    if (!Number.isFinite(latency) || latency <= 0) return '—';
+    if (latency >= 1000) return `${(latency / 1000).toFixed(2)} s`;
+    return `${Math.round(latency)} ms`;
+}
+
+function localMetricTone(pct) {
+    if (pct == null || Number.isNaN(Number(pct))) return 'slate';
+    const value = Number(pct);
+    if (value < 10) return 'rose';
+    if (value < 30) return 'amber';
+    return 'emerald';
+}
+
+function localMetricColor(kind, pct) {
+    const tone = localMetricTone(pct);
+    if (kind === 'capacity') {
+        if (tone === 'rose') return '#ef4444';
+        if (tone === 'amber') return '#f59e0b';
+        return '#34d399';
     }
-    const style = STATE_STYLES[state] || STATE_STYLES.offline;
-    const stateColor = style.split(' ')[0];
-    const isPlatform = backend.backend_type === 'platform';
-    const provider = String(backend.provider || '').toLowerCase();
-    const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
-    const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
-    const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
+    // Startup / prontidão — ciano/teal no acento local
+    if (tone === 'rose') return '#f43f5e';
+    if (tone === 'amber') return '#22d3ee';
+    return '#2dd4bf';
+}
+
+/** Capacidade livre e prontidão de startup — substitutos locais de Semanal/Sessão. */
+function localGaugesHtml(backend) {
+    const maxParallel = Math.max(0, Number(backend.max_parallel) || 0);
+    const inFlight = Math.max(0, Number(backend.in_flight) || 0);
+    const free = Math.max(0, maxParallel - inFlight);
+    const capacityPct = maxParallel > 0
+        ? Math.max(0, Math.min(100, Math.round((free / maxParallel) * 100)))
+        : null;
+    const capacityColor = capacityPct == null ? '#475569' : localMetricColor('capacity', capacityPct);
+    const capacityCenter = capacityPct == null ? '—' : `${capacityPct}%`;
+    const capacityHint = maxParallel > 0
+        ? `${free}/${maxParallel} livres`
+        : 'sem slots';
+
     const latency = Number(backend.startup_latency_ms);
     const measured = Number.isFinite(latency) && latency > 0;
-    const latencyLabel = measured
-        ? `${latency >= 1000 ? `${(latency / 1000).toFixed(2)} s` : `${Math.round(latency)} ms`}`
-        : '—';
-    const latencyHint = measured ? 'Latência média' : 'Startup pendente';
-    const priorityRank = index + 1;
-    const priorityIcon = priorityRank === 1 ? 'fa-crown' : 'fa-signal';
-    const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
-    const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
-    const dataCardId = backend.card_id ? ` data-card-id="${esc(backend.card_id)}"` : '';
-    const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
-    const showQuota = isPlatform && QUOTA_PROVIDERS.has(provider);
-    const accent = showQuota ? provider : (isPlatform ? 'platform' : 'local');
-    const activeLabel = `${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)}`;
-    const techRight = isPlatform
-        ? `porta ${esc(backend.port)} · ctx ${esc(backend.ctx_per_slot)}`
-        : `${esc(backend.gpu || 'CPU')} · ctx ${esc(backend.ctx_per_slot)}`;
+    let startupPct = null;
+    if (measured) {
+        // Mais rápido → anel mais cheio (escala ~1.5s).
+        startupPct = Math.max(5, Math.min(100, Math.round(100 * Math.exp(-latency / 1500))));
+    } else if (backend.state === 'offline' || backend.state === 'disabled') {
+        startupPct = 0;
+    }
+    const startupColor = startupPct == null ? '#475569' : localMetricColor('startup', startupPct);
+    const startupCenter = measured ? formatLatencyShort(latency) : '—';
+    let startupHint = 'medição pendente';
+    if (measured) {
+        const rank = backend.speed_rank;
+        if (rank === 0) startupHint = 'principal';
+        else if (Number.isFinite(Number(rank)) && Number(rank) > 0) startupHint = `${rank}º em velocidade`;
+        else startupHint = 'startup medido';
+    } else if (backend.state === 'offline' || backend.state === 'disabled') {
+        startupHint = 'indisponível';
+    }
 
-    const quotaBlock = showQuota ? `
+    return `
+        <div class="quota-gauges-host">
+            <div class="quota-gauges" aria-label="Capacidade e startup local">
+                <div class="quota-gauge" data-kind="capacity" title="Slots livres: ${esc(capacityHint)}">
+                    <div class="quota-gauge-ring" style="--quota-pct:${capacityPct ?? 0};--quota-color:${capacityColor}">
+                        <div class="quota-gauge-center">
+                            <span class="quota-gauge-pct">${esc(capacityCenter)}</span>
+                            <span class="quota-gauge-sub">livre</span>
+                        </div>
+                    </div>
+                    <p class="quota-gauge-name">Capacidade</p>
+                    <p class="quota-gauge-reset"><i class="fas fa-layer-group" aria-hidden="true"></i> <span>${esc(capacityHint)}</span></p>
+                </div>
+                <div class="quota-gauge" data-kind="startup" title="Startup: ${esc(startupCenter)}">
+                    <div class="quota-gauge-ring" style="--quota-pct:${startupPct ?? 0};--quota-color:${startupColor}">
+                        <div class="quota-gauge-center">
+                            <span class="quota-gauge-pct quota-gauge-pct-sm">${esc(startupCenter)}</span>
+                            <span class="quota-gauge-sub">startup</span>
+                        </div>
+                    </div>
+                    <p class="quota-gauge-name">Prontidão</p>
+                    <p class="quota-gauge-reset"><i class="fas fa-stopwatch" aria-hidden="true"></i> <span>${esc(startupHint)}</span></p>
+                </div>
+            </div>
+        </div>`;
+}
+
+function platformQuotaGaugesSkeleton() {
+    return `
         <div class="quota-accounts-host"></div>
         <div class="quota-gauges-host">
             <div class="quota-gauges" aria-label="Cota semanal e de sessao">
@@ -280,7 +339,93 @@ function backendCard(backend, index) {
                     <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">—</span></p>
                 </div>
             </div>
-        </div>` : '';
+        </div>`;
+}
+
+function backendCard(backend, index) {
+    // Rate-limited platform backends: show "ESGOTADO" regardless of state
+    let state = backend.state;
+    if (backend.backend_type === 'platform' && backend.is_rate_limited) {
+        state = 'rate_limited';
+    }
+    const style = STATE_STYLES[state] || STATE_STYLES.offline;
+    const stateColor = style.split(' ')[0];
+    const isPlatform = backend.backend_type === 'platform';
+    const provider = String(backend.provider || '').toLowerCase();
+    const kind = isPlatform ? `Plataforma · ${esc(backend.provider || 'cloud')}` : 'Local';
+    const detail = isPlatform ? kind : `Local · ${esc(backend.gpu)}`;
+    const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
+    const latency = Number(backend.startup_latency_ms);
+    const measured = Number.isFinite(latency) && latency > 0;
+    const latencyLabel = formatLatencyShort(latency);
+    const priorityRank = index + 1;
+    const priorityIcon = priorityRank === 1 ? 'fa-crown' : 'fa-signal';
+    const dataBackendIds = backend.grouped_ids ? ` data-backend-ids="${esc(backend.grouped_ids.join(','))}"` : '';
+    const dataModelPath = backend.model_path ? ` data-model-path="${esc(backend.model_path)}"` : '';
+    const dataCardId = backend.card_id ? ` data-card-id="${esc(backend.card_id)}"` : '';
+    const navigationBackendId = backend.config_backend_id || backend.backend_id || '';
+    const showQuota = isPlatform && QUOTA_PROVIDERS.has(provider);
+    const showLocalGauges = !isPlatform;
+    const accent = showQuota ? provider : (isPlatform ? 'platform' : 'local');
+    const activeLabel = `${esc(backend.in_flight)}/${esc(backend.effective_parallel ?? backend.max_parallel)}`;
+    const workerCount = Array.isArray(backend.grouped_ids) ? backend.grouped_ids.length : 1;
+    const gaugesBlock = showQuota
+        ? platformQuotaGaugesSkeleton()
+        : (showLocalGauges ? localGaugesHtml(backend) : '');
+
+    // Rodapé: plataformas sem cota e locais priorizam infra (gauges já cobrem carga/startup).
+    let footerHtml;
+    if (showLocalGauges) {
+        footerHtml = `
+        <div class="proxy-card-footer">
+            <div class="proxy-card-stat">
+                <i class="fas fa-server" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${esc(workerCount)} worker${workerCount === 1 ? '' : 's'}</p>
+                    <p class="proxy-card-stat-label">Instâncias</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat">
+                <i class="fas fa-memory" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${esc(backend.ctx_per_slot || '—')}</p>
+                    <p class="proxy-card-stat-label">Ctx/slot</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat proxy-card-stat-wide">
+                <i class="fas fa-microchip" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value truncate">${esc(backend.gpu || 'CPU')} · porta ${esc(backend.port)}</p>
+                    <p class="proxy-card-stat-label">Infra</p>
+                </div>
+            </div>
+        </div>`;
+    } else {
+        footerHtml = `
+        <div class="proxy-card-footer">
+            <div class="proxy-card-stat">
+                <i class="fas fa-bolt" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${esc(measured ? latencyLabel : '—')}</p>
+                    <p class="proxy-card-stat-label">${measured ? 'Latência média' : 'Startup pendente'}</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat">
+                <i class="fas fa-gauge-high" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value">${activeLabel}</p>
+                    <p class="proxy-card-stat-label">Req. ativas</p>
+                </div>
+            </div>
+            <div class="proxy-card-stat proxy-card-stat-wide">
+                <i class="fas fa-microchip" aria-hidden="true"></i>
+                <div>
+                    <p class="proxy-card-stat-value truncate">porta ${esc(backend.port)} · ctx ${esc(backend.ctx_per_slot)}</p>
+                    <p class="proxy-card-stat-label">Infra</p>
+                </div>
+            </div>
+        </div>`;
+    }
 
     const cardHtml = `
     <div draggable="true" class="proxy-backend-card proxy-card-v2 accent-${esc(accent)} cursor-pointer active:cursor-grabbing select-none" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}" data-provider="${esc(backend.provider || '')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
@@ -302,30 +447,8 @@ function backendCard(backend, index) {
             <span class="proxy-priority-label">Prioridade de roteamento: ${priorityRank}º</span>
             <span class="proxy-priority-rank" hidden>${priorityRank}º</span>
         </div>
-        ${quotaBlock}
-        <div class="proxy-card-footer">
-            <div class="proxy-card-stat">
-                <i class="fas fa-bolt" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value">${esc(latencyLabel)}</p>
-                    <p class="proxy-card-stat-label">${esc(latencyHint)}</p>
-                </div>
-            </div>
-            <div class="proxy-card-stat">
-                <i class="fas fa-gauge-high" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value">${activeLabel}</p>
-                    <p class="proxy-card-stat-label">Req. ativas</p>
-                </div>
-            </div>
-            <div class="proxy-card-stat proxy-card-stat-wide">
-                <i class="fas fa-microchip" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value truncate">${esc(techRight)}</p>
-                    <p class="proxy-card-stat-label">Infra</p>
-                </div>
-            </div>
-        </div>
+        ${gaugesBlock}
+        ${footerHtml}
     </div>`;
     if (!showQuota) return cardHtml;
     // Shell síncrono; percentuais reais entram via applyAllQuotaShells após o render.
