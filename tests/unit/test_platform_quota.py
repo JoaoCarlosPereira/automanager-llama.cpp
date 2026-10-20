@@ -236,9 +236,92 @@ def test_claude_fetch_sends_claude_code_user_agent(tmp_path: Path):
         cache_ttl=0,
     )
     snap = service.snapshot(force=True)
-    assert captured["header"].get("User-Agent", "").startswith("claude-code/")
+    assert captured["header"].get("User-Agent") == "claude-code/2.1.80"
+    assert "(" not in captured["header"].get("User-Agent", "")
     assert snap["claude"]["session_remaining_pct"] == 88.0
     assert snap["claude"]["weekly_remaining_pct"] == 66.0
+
+
+def test_claude_usage_429_backs_off_and_skips_followup_polls(tmp_path: Path):
+    """After Anthropic 429, do not keep hitting /api/oauth/usage every cache TTL."""
+    calls = {"n": 0}
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            return FakeResponse(
+                200,
+                {
+                    "files": [
+                        {
+                            "auth_index": "auth-claude",
+                            "provider": "claude",
+                            "email": "user@example.com",
+                        }
+                    ]
+                },
+            )
+
+        def post(self, url, headers=None, json=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Seed cache with a successful read first.
+                body = {
+                    "five_hour": {"utilization": 7, "resets_at": "2026-10-20T12:00:00Z"},
+                    "seven_day": {"utilization": 72, "resets_at": "2026-10-24T00:00:00Z"},
+                }
+                return FakeResponse(
+                    200,
+                    {
+                        "status_code": 200,
+                        "body": __import__("json").dumps(body),
+                        "header": {},
+                    },
+                )
+            return FakeResponse(
+                200,
+                {"status_code": 429, "body": '{"error":"rate_limit"}', "header": {}},
+            )
+
+    service = pq.PlatformQuotaService(
+        runtime_dir=tmp_path,
+        port_provider=lambda: 8317,
+        http_client_factory=FakeClient,
+        cache_ttl=0,
+    )
+    first = service.snapshot(force=True)
+    assert first["claude"]["weekly_remaining_pct"] == 28.0
+    assert calls["n"] == 1
+
+    second = service.snapshot(force=True)
+    assert calls["n"] == 2  # one 429 attempt
+    assert second["claude"]["weekly_remaining_pct"] == 28.0
+    assert "429" in (second["claude"]["account_details"][0].get("error") or "")
+
+    third = service.snapshot(force=True)
+    # Still in backoff — must not call Anthropic again.
+    assert calls["n"] == 2
+    err = third["claude"]["account_details"][0].get("error") or ""
+    assert "em espera" in err
+    assert third["claude"]["weekly_remaining_pct"] == 28.0
+    assert third["claude"]["session_remaining_pct"] == 93.0
 
 
 def test_quota_service_refresh_via_management_api(tmp_path: Path, monkeypatch):
