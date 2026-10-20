@@ -73,6 +73,12 @@ def management_key_path(runtime_dir: Optional[Path] = None) -> Path:
     return base / "management.key"
 
 
+def quota_cache_path(runtime_dir: Optional[Path] = None) -> Path:
+    """Last-known provider quotas on disk (survives manager restarts)."""
+    base = Path(runtime_dir or Path(INSTALL_ROOT) / "data" / "cliproxy")
+    return base / "quota_cache.json"
+
+
 def ensure_management_key(runtime_dir: Optional[Path] = None) -> str:
     """Return a stable plaintext management key, creating it on first use."""
     path = management_key_path(runtime_dir)
@@ -489,12 +495,72 @@ class PlatformQuotaService:
         self._fetched_at: float = 0.0
         # auth_index → unix timestamp until which Claude usage calls are skipped
         self._claude_backoff_until: Dict[str, float] = {}
+        self._load_disk_cache()
 
     def invalidate(self) -> None:
         with self._lock:
             self._cache.clear()
             self._fetched_at = 0.0
             self._claude_backoff_until.clear()
+        self._clear_disk_cache()
+
+    def _load_disk_cache(self) -> None:
+        path = quota_cache_path(self._runtime_dir)
+        if not path.is_file():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            logger.debug("quota disk cache unreadable: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            return
+        quotas = raw.get("quotas")
+        if isinstance(quotas, dict):
+            loaded: Dict[str, Dict[str, Any]] = {}
+            for key, value in quotas.items():
+                if isinstance(value, dict):
+                    loaded[str(key)] = dict(value)
+            self._cache = loaded
+        fetched_at = _to_float(raw.get("fetched_at"))
+        if fetched_at is not None:
+            self._fetched_at = float(fetched_at)
+        backoff = raw.get("claude_backoff_until")
+        if isinstance(backoff, dict):
+            now = time.time()
+            self._claude_backoff_until = {
+                str(auth): float(until)
+                for auth, until in backoff.items()
+                if _to_float(until) is not None and float(until) > now
+            }
+
+    def _save_disk_cache(self) -> None:
+        path = quota_cache_path(self._runtime_dir)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "fetched_at": self._fetched_at,
+                "quotas": self._cache,
+                "claude_backoff_until": self._claude_backoff_until,
+                "saved_at": time.time(),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        except OSError as exc:
+            logger.debug("quota disk cache write failed: %s", exc)
+
+    def _clear_disk_cache(self) -> None:
+        path = quota_cache_path(self._runtime_dir)
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
 
     def _claude_in_backoff(self, auth_index: str) -> bool:
         with self._lock:
@@ -511,6 +577,7 @@ class PlatformQuotaService:
     ) -> None:
         with self._lock:
             self._claude_backoff_until[str(auth_index)] = time.time() + float(seconds)
+            self._save_disk_cache()
         logger.info(
             "Claude usage HTTP 429 for %s — backing off %.0fs before next poll",
             auth_index,
@@ -519,7 +586,9 @@ class PlatformQuotaService:
 
     def _clear_claude_backoff(self, auth_index: str) -> None:
         with self._lock:
-            self._claude_backoff_until.pop(str(auth_index), None)
+            if str(auth_index) in self._claude_backoff_until:
+                self._claude_backoff_until.pop(str(auth_index), None)
+                self._save_disk_cache()
 
     def cached_snapshot(self) -> Dict[str, Dict[str, Any]]:
         """Return the last known snapshot without contacting providers."""
@@ -574,6 +643,7 @@ class PlatformQuotaService:
             current["updated_at"] = time.time()
             current["provider"] = key
             self._cache[key] = current
+            self._save_disk_cache()
 
     def snapshot(self, *, force: bool = False) -> Dict[str, Dict[str, Any]]:
         """Return provider → quota map, refreshing when stale."""
@@ -592,6 +662,7 @@ class PlatformQuotaService:
         with self._lock:
             self._cache = refreshed
             self._fetched_at = time.time()
+            self._save_disk_cache()
             return {k: dict(v) for k, v in self._cache.items()}
 
     def for_provider(self, provider: str, *, force: bool = False) -> Dict[str, Any]:

@@ -32,6 +32,8 @@ bin/
 # Local auth tokens / session files (cliproxy, platform CLIs)
 data/cliproxy/auth/
 data/cliproxy/management.key
+data/cliproxy/quota_cache.json
+data/cliproxy/quota_cache.tmp
 data/proxy_sessions.json
 
 # Test / debug artifacts

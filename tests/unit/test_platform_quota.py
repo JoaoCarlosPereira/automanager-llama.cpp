@@ -157,6 +157,93 @@ def test_quota_service_update_from_headers(tmp_path: Path):
     assert snap["codex"]["available"] is True
 
 
+def test_quota_disk_cache_survives_service_restart(tmp_path: Path):
+    """Apos restart, cotas boas em disco alimentam o preserve no 429."""
+
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class OkThen429:
+        calls = {"n": 0}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            return FakeResponse(
+                200,
+                {
+                    "files": [
+                        {
+                            "auth_index": "auth-claude",
+                            "provider": "claude",
+                            "email": "user@example.com",
+                        }
+                    ]
+                },
+            )
+
+        def post(self, url, headers=None, json=None):
+            OkThen429.calls["n"] += 1
+            if OkThen429.calls["n"] == 1:
+                body = {
+                    "five_hour": {"utilization": 10, "resets_at": "2026-10-20T12:00:00Z"},
+                    "seven_day": {"utilization": 80, "resets_at": "2026-10-24T00:00:00Z"},
+                }
+                return FakeResponse(
+                    200,
+                    {
+                        "status_code": 200,
+                        "body": json_module.dumps(body),
+                        "header": {},
+                    },
+                )
+            return FakeResponse(
+                200,
+                {"status_code": 429, "body": '{"error":"rate_limit"}', "header": {}},
+            )
+
+    import json as json_module
+
+    first = pq.PlatformQuotaService(
+        runtime_dir=tmp_path,
+        port_provider=lambda: 8317,
+        http_client_factory=OkThen429,
+        cache_ttl=0,
+    )
+    snap = first.snapshot(force=True)
+    assert snap["claude"]["weekly_remaining_pct"] == 20.0
+    assert (tmp_path / "quota_cache.json").is_file()
+
+    # "Restart": nova instancia, primeira chamada ja vem 429.
+    OkThen429.calls["n"] = 1  # next post is 429
+    second = pq.PlatformQuotaService(
+        runtime_dir=tmp_path,
+        port_provider=lambda: 8317,
+        http_client_factory=OkThen429,
+        cache_ttl=0,
+    )
+    # Disco ja carregou 20%/90% — preserve deve manter apos 429.
+    assert second.cached_snapshot()["claude"]["weekly_remaining_pct"] == 20.0
+    after = second.snapshot(force=True)
+    assert after["claude"]["weekly_remaining_pct"] == 20.0
+    assert after["claude"]["session_remaining_pct"] == 90.0
+    err = after["claude"]["account_details"][0].get("error") or ""
+    assert "Monitoramento em espera" in err
+
+
 def test_preserve_account_on_error_keeps_last_known_percentages():
     previous = {
         "auth_index": "a1",
