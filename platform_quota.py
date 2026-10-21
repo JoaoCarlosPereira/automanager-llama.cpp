@@ -47,7 +47,9 @@ _ANTIGRAVITY_HOSTS = (
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://cloudcode-pa.googleapis.com",
 )
-_ANTIGRAVITY_UA = "antigravity/cli/1.0.13 (aidev_client; os_type=linux; arch=x86_64)"
+# Cloud Code rejects unrecognized UAs (403). Official clients identify as
+# plain ``antigravity`` / ``antigravity/<ver> <os>/<arch>``.
+_ANTIGRAVITY_UA = "antigravity/1.11.3"
 # Required: without a plain ``claude-code/<ver>`` UA the usage endpoint parks
 # the token in a persistent 429 bucket (anthropics/claude-code#31021 / #31637).
 # Do not append suffixes like "(external, cli)" — working clients send only
@@ -275,46 +277,193 @@ def parse_claude_usage(payload: Any) -> Dict[str, Any]:
     }
 
 
-def parse_antigravity_quota(payload: Any) -> Dict[str, Any]:
-    """Parse Antigravity retrieveUserQuotaSummary groups/buckets."""
+def _antigravity_groups(payload: Any) -> List[Dict[str, Any]]:
+    """Locate ``groups`` at top-level or under response/summary wrappers."""
     data = payload if isinstance(payload, dict) else {}
-    session_vals: List[float] = []
-    weekly_vals: List[float] = []
-    session_reset: Optional[str] = None
-    weekly_reset: Optional[str] = None
+    direct = data.get("groups")
+    if isinstance(direct, list):
+        return [g for g in direct if isinstance(g, dict)]
+    for key in ("response", "summary", "quotaSummary", "userQuotaSummary"):
+        wrapper = data.get(key)
+        if isinstance(wrapper, dict):
+            inner = wrapper.get("groups")
+            if isinstance(inner, list):
+                return [g for g in inner if isinstance(g, dict)]
+    return []
 
-    for group in data.get("groups") or []:
-        if not isinstance(group, dict):
+
+def _antigravity_remaining_fraction(bucket: Dict[str, Any]) -> Optional[float]:
+    """Read remainingFraction across flat, nested, and case-tagged shapes."""
+    for key in ("remainingFraction", "remaining_fraction"):
+        value = _to_float(bucket.get(key))
+        if value is not None:
+            return value
+    remaining = bucket.get("remaining")
+    if isinstance(remaining, dict):
+        for key in ("remainingFraction", "remaining_fraction"):
+            value = _to_float(remaining.get(key))
+            if value is not None:
+                return value
+        # Protobuf oneof: {"case":"remainingFraction","value":0.48}
+        case = str(remaining.get("case") or "").strip()
+        if case in ("remainingFraction", "remaining_fraction"):
+            value = _to_float(remaining.get("value"))
+            if value is not None:
+                return value
+    for key in ("usedFraction", "used_fraction"):
+        used = _to_float(bucket.get(key))
+        if used is not None:
+            return 1.0 - used
+    return None
+
+
+def _antigravity_fraction_to_pct(fraction: Optional[float]) -> Optional[float]:
+    """Convert 0..1 fraction (or accidental 0..100 percent) to remaining %."""
+    if fraction is None:
+        return None
+    value = float(fraction)
+    if value > 1.0:
+        # Some payloads already emit percent (e.g. 48.94). Avoid 48.94*100→100.
+        return _clamp_pct(value)
+    return _clamp_pct(value * 100.0)
+
+
+def _antigravity_bucket_period(bucket: Dict[str, Any]) -> Optional[str]:
+    """Classify bucket as weekly or session (5h) from window/id/name."""
+    label = " ".join(
+        str(bucket.get(key) or "")
+        for key in (
+            "window",
+            "kind",
+            "label",
+            "bucketId",
+            "bucket_id",
+            "id",
+            "displayName",
+            "display_name",
+            "name",
+        )
+    ).lower()
+    if not label.strip():
+        return None
+    if "week" in label or "7d" in label or "seven" in label or "168h" in label:
+        return "weekly"
+    if (
+        "5h" in label
+        or "five" in label
+        or "session" in label
+        or "300m" in label
+        or ("hour" in label and "24" not in label)
+    ):
+        return "session"
+    return None
+
+
+def _antigravity_bucket_reset(bucket: Dict[str, Any]) -> Optional[str]:
+    for key in ("resetTime", "reset_time", "resetAt", "reset_at", "resets_at"):
+        reset = _iso_or_unix(bucket.get(key))
+        if reset:
+            return reset
+    return None
+
+
+def _antigravity_group_kind(group: Dict[str, Any]) -> str:
+    name = str(
+        group.get("displayName")
+        or group.get("display_name")
+        or group.get("name")
+        or ""
+    ).lower()
+    if "gemini" in name:
+        return "gemini"
+    if "claude" in name or "gpt" in name or "3p" in name:
+        return "claude_gpt"
+    # Infer from first bucketId prefix (gemini-weekly / 3p-5h).
+    for bucket in group.get("buckets") or []:
+        if not isinstance(bucket, dict):
             continue
+        bucket_id = str(bucket.get("bucketId") or bucket.get("bucket_id") or "").lower()
+        if bucket_id.startswith("gemini"):
+            return "gemini"
+        if bucket_id.startswith("3p") or "claude" in bucket_id:
+            return "claude_gpt"
+    return "other"
+
+
+def parse_antigravity_quota(payload: Any) -> Dict[str, Any]:
+    """Parse Antigravity retrieveUserQuotaSummary groups/buckets.
+
+    Prefer the Gemini group (what the agy ``Models & Quota`` TUI shows first).
+    Fall back to the most depleted window across groups when Gemini is absent.
+    """
+    by_kind: Dict[str, Dict[str, Any]] = {}
+    for group in _antigravity_groups(payload):
+        kind = _antigravity_group_kind(group)
+        slot = by_kind.setdefault(
+            kind,
+            {
+                "session_remaining_pct": None,
+                "weekly_remaining_pct": None,
+                "session_reset_at": None,
+                "weekly_reset_at": None,
+            },
+        )
         for bucket in group.get("buckets") or []:
             if not isinstance(bucket, dict):
                 continue
-            remaining = _to_float(bucket.get("remainingFraction"))
-            if remaining is None:
-                used = _to_float(bucket.get("usedFraction"))
-                if used is not None:
-                    remaining = 1.0 - used
-            if remaining is None:
+            period = _antigravity_bucket_period(bucket)
+            if period is None:
                 continue
-            pct = _clamp_pct(remaining * 100.0)
+            pct = _antigravity_fraction_to_pct(_antigravity_remaining_fraction(bucket))
             if pct is None:
                 continue
-            kind = str(bucket.get("window") or bucket.get("kind") or "").lower()
-            label = str(bucket.get("label") or "").lower()
-            reset = _iso_or_unix(bucket.get("resetTime") or bucket.get("reset_at"))
-            if "5h" in kind or "5h" in label or "five" in kind or "session" in kind:
-                session_vals.append(pct)
-                session_reset = session_reset or reset
-            elif "week" in kind or "7d" in kind or "week" in label:
-                weekly_vals.append(pct)
-                weekly_reset = weekly_reset or reset
+            reset = _antigravity_bucket_reset(bucket)
+            key_pct = f"{period}_remaining_pct"
+            key_reset = f"{period}_reset_at"
+            previous = slot.get(key_pct)
+            if previous is None or pct < float(previous):
+                slot[key_pct] = pct
+                if reset:
+                    slot[key_reset] = reset
+            elif slot.get(key_reset) is None and reset:
+                slot[key_reset] = reset
 
+    preferred = by_kind.get("gemini") or None
+    if preferred is None:
+        # Most depleted weekly, then session — matches routing risk.
+        candidates = [row for row in by_kind.values() if row]
+        if candidates:
+            preferred = min(
+                candidates,
+                key=lambda row: (
+                    float(row["weekly_remaining_pct"])
+                    if row.get("weekly_remaining_pct") is not None
+                    else 101.0,
+                    float(row["session_remaining_pct"])
+                    if row.get("session_remaining_pct") is not None
+                    else 101.0,
+                ),
+            )
+
+    if not preferred:
+        return {
+            "session_remaining_pct": None,
+            "weekly_remaining_pct": None,
+            "session_reset_at": None,
+            "weekly_reset_at": None,
+            "source": "antigravity",
+        }
+
+    # Round like other providers for stable card text.
+    session = preferred.get("session_remaining_pct")
+    weekly = preferred.get("weekly_remaining_pct")
     return {
-        "session_remaining_pct": min(session_vals) if session_vals else None,
-        "weekly_remaining_pct": min(weekly_vals) if weekly_vals else None,
-        "session_reset_at": session_reset,
-        "weekly_reset_at": weekly_reset,
+        "session_remaining_pct": round(float(session), 1) if session is not None else None,
+        "weekly_remaining_pct": round(float(weekly), 1) if weekly is not None else None,
+        "session_reset_at": preferred.get("session_reset_at"),
+        "weekly_reset_at": preferred.get("weekly_reset_at"),
         "source": "antigravity",
+        "focus_group": "gemini" if "gemini" in by_kind else "depleted",
     }
 
 
@@ -959,8 +1108,16 @@ class PlatformQuotaService:
                 logger.debug("antigravity loadCodeAssist failed: %s", exc)
 
         last_error: Optional[Exception] = None
+        # Official clients often POST `{}` (or project). Wrong project can yield
+        # empty/stale buckets, so try project first then fall back to empty body.
+        bodies: List[str] = []
         if project:
-            for host in _ANTIGRAVITY_HOSTS:
+            bodies.append(json.dumps({"project": project}))
+        bodies.append("{}")
+        bodies.append(json.dumps({"metadata": {"ideType": "ANTIGRAVITY"}}))
+
+        for host in _ANTIGRAVITY_HOSTS:
+            for req_body in bodies:
                 try:
                     status, body, _ = self._api_call(
                         client,
@@ -969,26 +1126,20 @@ class PlatformQuotaService:
                         method="POST",
                         url=f"{host}/v1internal:retrieveUserQuotaSummary",
                         header=header,
-                        body=json.dumps({"project": project}),
+                        body=req_body,
                     )
                     if 200 <= status < 300:
-                        return parse_antigravity_quota(body)
+                        parsed = parse_antigravity_quota(body)
+                        if (
+                            parsed.get("session_remaining_pct") is not None
+                            or parsed.get("weekly_remaining_pct") is not None
+                        ):
+                            return parsed
+                        last_error = RuntimeError("antigravity quota empty summary")
+                        continue
                     last_error = RuntimeError(f"antigravity quota HTTP {status}")
                 except Exception as exc:
                     last_error = exc
-        else:
-            status, body, _ = self._api_call(
-                client,
-                base,
-                auth_index=auth_index,
-                method="POST",
-                url="https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-                header=header,
-                body=json.dumps({"metadata": {"ideType": "ANTIGRAVITY"}}),
-            )
-            if 200 <= status < 300:
-                return parse_antigravity_quota(body)
-            last_error = RuntimeError(f"antigravity quota HTTP {status}")
 
         if last_error:
             raise last_error
