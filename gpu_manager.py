@@ -759,6 +759,9 @@ class GPUManager(GPUDetector):
         """
         # Use cached value if available
         norm = normalize_model_path_for_cache(model_path)
+        base = os.path.basename(model_path).lower()
+        if "qwen3.6-35b" in base or "qwen3.5-35b" in base:
+            return 41
         now = time.monotonic()
         if norm in self._model_layers_cache:
             cached_time, cached_val = self._model_layers_cache[norm]
@@ -804,6 +807,9 @@ class GPUManager(GPUDetector):
         Results are cached per-model path for 5 minutes.
         """
         norm = _norm_path_for_cache(model_path)
+        base = os.path.basename(model_path).lower()
+        if "qwen3.6-35b" in base or "qwen3.5-35b" in base:
+            return True
         now = time.monotonic()
         if norm in self._model_mtp_cache:
             cached_time, cached_val = self._model_mtp_cache[norm]
@@ -927,9 +933,14 @@ def mtp_cli_args(
         reason = "MTP ativado na UI (model-info inconclusivo)"
 
     token_str = str(tokens)
-    flags = ["--spec-type", f"draft-{draft_type}", "--spec-draft-n-max", token_str]
-    if draft_type == "mtp":
-        flags.extend(["--spec-draft-n-min", token_str])
+    flags = [
+        "--spec-type", f"draft-{draft_type}",
+        "--spec-draft-n-max", token_str,
+        "--spec-draft-n-min", token_str,
+        "--spec-draft-p-min", "0.0",
+        "--spec-draft-sampling", "greedy",
+        "--spec-draft-backend-sampling",
+    ]
     if mtp_model_path:
         flags[0:0] = [
             "--spec-draft-model", mtp_model_path,

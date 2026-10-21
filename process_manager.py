@@ -581,8 +581,10 @@ class ProcessManager:
             str(batch_size),
             "--ubatch-size",
             str(ubatch_size),
-            "--mlock",
         ]
+
+        if supports_cli_flag("--mlock", llama_bin):
+            cmd.append("--mlock")
 
         if split:
             cmd.extend([
@@ -641,9 +643,28 @@ class ProcessManager:
         )
         cmd.extend(mtp_args)
 
+        # Optimize CPU affinity for big.LITTLE architectures (e.g. RK3588, A733 Orange Pi)
+        # Pinning kernel dispatch & MTP verification threads to big Cortex-A76 out-of-order cores (6-7)
+        # prevents slow Cortex-A55 in-order cores from serializing CUDA kernel launches.
+        if os.path.exists("/sys/devices/system/cpu/cpu6/cpufreq/cpuinfo_max_freq") and os.path.exists("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"):
+            try:
+                with open("/sys/devices/system/cpu/cpu6/cpufreq/cpuinfo_max_freq") as f6, open("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq") as f0:
+                    if int(f6.read().strip()) > int(f0.read().strip()):
+                        if supports_cli_flag("--cpu-range", llama_bin):
+                            cmd.extend(["--cpu-range", "6-7", "--cpu-range-batch", "0-7"])
+                            if supports_cli_flag("--spec-draft-cpu-range", llama_bin):
+                                cmd.extend(["--spec-draft-cpu-range", "6-7"])
+            except Exception:
+                pass
+
+        if supports_cli_flag("--backend-sampling", llama_bin):
+            cmd.append("--backend-sampling")
+
         env = os.environ.copy()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         env["CUDA_VISIBLE_DEVICES"] = visible if visible is not None else ""
+        env["GGML_CUDA_GRAPH_OPT"] = "1"
+        env["GGML_CUDA_GRAPH_DEBUG"] = "1"
 
         logger.info(f"Starting llama-server on port {port} for model {os.path.basename(model_path)}")
         try:
