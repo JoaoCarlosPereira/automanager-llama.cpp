@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.52';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.52';
+import { state } from './state.js?v=4.2.53';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.53';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.52';
+} from './gpu.js?v=4.2.53';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.52';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.52';
-import { checkForUpdates } from './version.js?v=4.2.52';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.53';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.53';
+import { checkForUpdates } from './version.js?v=4.2.53';
 
 // --- TAB MANAGEMENT ---
 

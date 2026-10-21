@@ -139,7 +139,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.52"  # Cota/sessao ao vivo via /proxy/status + patch in-place
+_DASHBOARD_JS_V = "4.2.53"  # Layout do card local alinhado (footer curto + meta GPU)
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -5217,6 +5217,11 @@ def _build_html(
             background:
                 linear-gradient(165deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.96) 55%, rgba(2, 6, 23, 0.98) 100%);
             transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+            min-height: 100%;
+            height: 100%;
+        }}
+        .proxy-card-v2 > .proxy-card-footer {{
+            margin-top: auto;
         }}
         .proxy-card-v2.accent-claude {{
             border-color: rgba(245, 158, 11, 0.45);
@@ -5379,6 +5384,12 @@ def _build_html(
             font-size: 1.05rem;
             letter-spacing: -0.02em;
         }}
+        .quota-gauge-pct-pending {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #64748b;
+            line-height: 1;
+        }}
         .quota-gauge-sub {{
             margin-top: 0.15rem;
             font-size: 0.62rem;
@@ -5392,6 +5403,14 @@ def _build_html(
         }}
         .quota-gauge[data-kind="startup"] .quota-gauge-name {{
             color: #99f6e4;
+        }}
+        .local-meta-host {{
+            min-height: 1.25rem;
+        }}
+        .local-meta-host .quota-account-name {{
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+            font-size: 0.68rem;
+            color: #94a3b8;
         }}
         .quota-gauge-name {{
             font-size: var(--text-caption);
@@ -5487,9 +5506,9 @@ def _build_html(
         }}
         .proxy-card-footer {{
             display: grid;
-            grid-template-columns: 1fr 1fr 1.35fr;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 0.45rem;
-            padding-top: 0.15rem;
+            padding-top: 0.55rem;
             border-top: 1px solid rgba(51, 65, 85, 0.45);
         }}
         .proxy-card-stat {{
@@ -5501,6 +5520,7 @@ def _build_html(
         }}
         .proxy-card-stat i {{
             margin-top: 0.15rem;
+            flex-shrink: 0;
             font-size: 0.7rem;
             color: #94a3b8;
         }}
@@ -5509,17 +5529,28 @@ def _build_html(
             font-weight: 800;
             color: #e2e8f0;
             font-variant-numeric: tabular-nums;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .proxy-card-stat-label {{
             font-size: 0.6rem;
             color: #64748b;
             letter-spacing: 0.02em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .proxy-backends-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
             gap: 0.85rem;
             align-items: stretch;
+        }}
+        .proxy-backends-grid > .platform-quota-shell,
+        .proxy-backends-grid > .proxy-backend-card {{
+            min-width: 0;
+            height: 100%;
         }}
 
         /* --- Polish: cursor, foco por teclado, transições --- */
