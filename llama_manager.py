@@ -5398,12 +5398,6 @@ def _build_html(
             text-transform: uppercase;
             color: #64748b;
         }}
-        .quota-gauge[data-kind="capacity"] .quota-gauge-name {{
-            color: #a7f3d0;
-        }}
-        .quota-gauge[data-kind="startup"] .quota-gauge-name {{
-            color: #99f6e4;
-        }}
         .local-meta-host {{
             min-height: 1.25rem;
         }}
