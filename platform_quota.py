@@ -19,9 +19,12 @@ through the Management API, so their cards omit the rings until a source exists.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import secrets
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -43,9 +46,8 @@ _REQUEST_TIMEOUT = 20.0
 _CLAUDE_USAGE_429_BACKOFF_SECONDS = 900.0
 
 _ANTIGRAVITY_HOSTS = (
-    "https://daily-cloudcode-pa.googleapis.com",
-    "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.googleapis.com",
 )
 # Cloud Code rejects unrecognized UAs (403). Official clients identify as
 # plain ``antigravity`` / ``antigravity/<ver> <os>/<arch>``.
@@ -283,7 +285,12 @@ def _antigravity_groups(payload: Any) -> List[Dict[str, Any]]:
     direct = data.get("groups")
     if isinstance(direct, list):
         return [g for g in direct if isinstance(g, dict)]
-    for key in ("response", "summary", "quotaSummary", "userQuotaSummary"):
+    cmd_data = data.get("command")
+    if isinstance(cmd_data, dict):
+        inner_data = cmd_data.get("data")
+        if isinstance(inner_data, dict) and isinstance(inner_data.get("groups"), list):
+            return [g for g in inner_data["groups"] if isinstance(g, dict)]
+    for key in ("response", "summary", "quotaSummary", "userQuotaSummary", "data"):
         wrapper = data.get(key)
         if isinstance(wrapper, dict):
             inner = wrapper.get("groups")
@@ -465,6 +472,87 @@ def parse_antigravity_quota(payload: Any) -> Dict[str, Any]:
         "source": "antigravity",
         "focus_group": "gemini" if "gemini" in by_kind else "depleted",
     }
+
+
+def _find_antigravity_binary() -> Optional[Path]:
+    for name in ("agy", "antigravity"):
+        found = shutil.which(name)
+        if found:
+            p = Path(found)
+            if p.is_file():
+                return p
+    for candidate in (
+        Path.home() / ".local/bin/agy",
+        Path.home() / ".local/bin/antigravity",
+        Path("/root/.local/bin/agy"),
+        Path("/root/.local/bin/antigravity"),
+        Path("/usr/local/bin/agy"),
+        Path("/usr/local/bin/antigravity"),
+        Path("/home/orangepi/.local/bin/agy"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _get_active_agy_email() -> Optional[str]:
+    for candidate in (
+        Path.home() / ".gemini/antigravity-cli/antigravity-oauth-token",
+        Path("/root/.gemini/antigravity-cli/antigravity-oauth-token"),
+        Path("/home/orangepi/.gemini/antigravity-cli/antigravity-oauth-token"),
+    ):
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            id_token = data.get("id_token")
+            if id_token and "." in id_token:
+                parts = id_token.split(".")
+                if len(parts) >= 2:
+                    payload_b64 = parts[1] + "=="
+                    jwt_payload = json.loads(
+                        base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8")
+                    )
+                    email = jwt_payload.get("email")
+                    if email:
+                        return str(email).strip().lower()
+        except Exception:
+            pass
+    return None
+
+
+def fetch_antigravity_cli(auth: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Query local agy CLI binary for authoritative live quota when available."""
+    binary = _find_antigravity_binary()
+    if not binary:
+        return None
+
+    if auth:
+        auth_email = str(auth.get("email") or "").strip().lower()
+        if auth_email:
+            active_email = _get_active_agy_email()
+            if active_email and active_email != auth_email:
+                return None
+
+    try:
+        proc = subprocess.run(
+            [str(binary), "-p", "/usage", "--output-format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            data = json.loads(proc.stdout)
+            parsed = parse_antigravity_quota(data)
+            if (
+                parsed.get("session_remaining_pct") is not None
+                or parsed.get("weekly_remaining_pct") is not None
+            ):
+                return parsed
+    except Exception as exc:
+        logger.debug("antigravity CLI usage query failed: %s", exc)
+    return None
 
 
 def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1081,6 +1169,10 @@ class PlatformQuotaService:
         auth_index: str,
         auth: Dict[str, Any],
     ) -> Dict[str, Any]:
+        cli_result = fetch_antigravity_cli(auth)
+        if cli_result:
+            return cli_result
+
         header = {
             "Authorization": "Bearer $TOKEN$",
             "Content-Type": "application/json",

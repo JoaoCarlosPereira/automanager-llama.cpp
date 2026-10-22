@@ -156,6 +156,95 @@ def test_parse_antigravity_quota_falls_back_to_most_depleted():
     assert parsed["session_remaining_pct"] == 90.0
 
 
+def test_parse_antigravity_quota_from_agy_cli_output():
+    payload = {
+        "command": {
+            "name": "usage",
+            "data": {
+                "description": "Within each group, models share a weekly limit...",
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "buckets": [
+                            {
+                                "id": "gemini-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "window": "weekly",
+                                "remaining_fraction": 0.443,
+                                "reset_time": "2026-10-23T21:57:36Z",
+                            },
+                            {
+                                "id": "gemini-5h",
+                                "name": "Five Hour Limit Remaining",
+                                "window": "5h",
+                                "remaining_fraction": 0.952,
+                                "reset_time": "2026-10-22T23:04:36Z",
+                            },
+                        ],
+                    },
+                    {
+                        "name": "Claude and GPT models",
+                        "buckets": [
+                            {
+                                "id": "3p-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "window": "weekly",
+                                "remaining_fraction": 1.0,
+                                "reset_time": "2026-10-23T20:25:24Z",
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+    }
+    parsed = pq.parse_antigravity_quota(payload)
+    assert parsed["weekly_remaining_pct"] == 44.3
+    assert parsed["session_remaining_pct"] == 95.2
+    assert parsed["weekly_reset_at"] == "2026-10-23T21:57:36Z"
+    assert parsed["session_reset_at"] == "2026-10-22T23:04:36Z"
+    assert parsed["focus_group"] == "gemini"
+
+
+def test_fetch_antigravity_cli_matches_auth_email(monkeypatch):
+    agy_payload = {
+        "command": {
+            "name": "usage",
+            "data": {
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "buckets": [
+                            {
+                                "id": "gemini-weekly",
+                                "window": "weekly",
+                                "remaining_fraction": 0.443,
+                                "reset_time": "2026-10-23T21:57:36Z",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+
+    class DummyProc:
+        returncode = 0
+        stdout = json.dumps(agy_payload)
+
+    monkeypatch.setattr(pq, "_find_antigravity_binary", lambda: Path("/fake/bin/agy"))
+    monkeypatch.setattr(pq, "_get_active_agy_email", lambda: "user@example.com")
+    monkeypatch.setattr(pq.subprocess, "run", lambda *args, **kwargs: DummyProc())
+
+    # When email matches, returns parsed quota
+    parsed = pq.fetch_antigravity_cli({"email": "user@example.com"})
+    assert parsed is not None
+    assert parsed["weekly_remaining_pct"] == 44.3
+
+    # When email mismatches, returns None
+    assert pq.fetch_antigravity_cli({"email": "other@example.com"}) is None
+
+
 def test_merge_account_quotas_keeps_per_account_and_focuses_priority():
     merged = pq._merge_account_quotas(
         "codex",
