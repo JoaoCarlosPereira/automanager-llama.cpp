@@ -54,16 +54,87 @@ def test_parse_claude_usage_five_hour_and_seven_day():
     assert parsed["weekly_remaining_pct"] == 58.8
 
 
-def test_parse_antigravity_quota_min_across_groups():
+def test_parse_antigravity_quota_prefers_gemini_group():
+    # agy TUI "Models & Quota" shows Gemini first; Claude@30% must not win.
     payload = {
         "groups": [
             {
                 "displayName": "GEMINI MODELS",
                 "buckets": [
-                    {"window": "weekly", "remainingFraction": 0.8, "resetTime": "2026-10-20T00:00:00Z"},
-                    {"window": "5h", "remainingFraction": 0.5, "resetTime": "2026-10-18T12:00:00Z"},
+                    {"window": "weekly", "remainingFraction": 0.4894, "resetTime": "2026-10-23T00:00:00Z"},
+                    {"window": "5h", "remainingFraction": 0.6755, "resetTime": "2026-10-21T05:00:00Z"},
                 ],
             },
+            {
+                "displayName": "CLAUDE AND GPT",
+                "buckets": [
+                    {"window": "weekly", "remainingFraction": 1.0},
+                    {"window": "5h", "remainingFraction": 1.0, "resetTime": "2026-10-21T08:00:00Z"},
+                ],
+            },
+        ]
+    }
+    parsed = pq.parse_antigravity_quota(payload)
+    assert parsed["weekly_remaining_pct"] == 48.9
+    assert parsed["session_remaining_pct"] == 67.5
+    assert parsed["focus_group"] == "gemini"
+    assert parsed["weekly_reset_at"] == "2026-10-23T00:00:00Z"
+    assert parsed["session_reset_at"] == "2026-10-21T05:00:00Z"
+
+
+def test_parse_antigravity_quota_nested_remaining_and_wrapper():
+    payload = {
+        "response": {
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {
+                            "bucketId": "gemini-weekly",
+                            "displayName": "Weekly Limit Remaining",
+                            "remaining": {"remainingFraction": 0.4894},
+                            "resetTime": "2026-10-23T00:00:00Z",
+                        },
+                        {
+                            "bucket_id": "gemini-5h",
+                            "display_name": "Five Hour Limit Remaining",
+                            "remaining": {
+                                "case": "remainingFraction",
+                                "value": 0.6755,
+                            },
+                            "reset_time": "2026-10-21T05:00:00Z",
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+    parsed = pq.parse_antigravity_quota(payload)
+    assert parsed["weekly_remaining_pct"] == 48.9
+    assert parsed["session_remaining_pct"] == 67.5
+
+
+def test_parse_antigravity_quota_accepts_percent_scale():
+    # Accidental percent payloads must not clamp to 100 via *100.
+    payload = {
+        "groups": [
+            {
+                "displayName": "GEMINI MODELS",
+                "buckets": [
+                    {"window": "weekly", "remainingFraction": 48.94},
+                    {"window": "5h", "remaining_fraction": 67.55},
+                ],
+            }
+        ]
+    }
+    parsed = pq.parse_antigravity_quota(payload)
+    assert parsed["weekly_remaining_pct"] == 48.9
+    assert parsed["session_remaining_pct"] == 67.5
+
+
+def test_parse_antigravity_quota_falls_back_to_most_depleted():
+    payload = {
+        "groups": [
             {
                 "displayName": "CLAUDE AND GPT",
                 "buckets": [
@@ -71,11 +142,18 @@ def test_parse_antigravity_quota_min_across_groups():
                     {"window": "5h", "remainingFraction": 0.9},
                 ],
             },
+            {
+                "displayName": "Other pool",
+                "buckets": [
+                    {"window": "weekly", "remainingFraction": 0.8},
+                    {"window": "5h", "remainingFraction": 0.5},
+                ],
+            },
         ]
     }
     parsed = pq.parse_antigravity_quota(payload)
     assert parsed["weekly_remaining_pct"] == 30.0
-    assert parsed["session_remaining_pct"] == 50.0
+    assert parsed["session_remaining_pct"] == 90.0
 
 
 def test_merge_account_quotas_keeps_per_account_and_focuses_priority():
@@ -521,3 +599,5 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "applyAllQuotaShells" in proxy_js
     assert "lastProxyQuotas" in proxy_js or "syncProxyQuotas" in proxy_js
     assert "patchBackendCard" in proxy_js or "patchPlatformGauges" in proxy_js
+    assert "shortGpuLabel" in proxy_js
+    assert "local-meta-host" in proxy_js

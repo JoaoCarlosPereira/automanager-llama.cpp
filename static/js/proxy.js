@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.52';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.53';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.52').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.53').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;
@@ -255,6 +255,28 @@ function localMetricColor(kind, pct) {
     return '#2dd4bf';
 }
 
+function shortGpuLabel(gpu) {
+    const text = String(gpu || 'CPU').trim();
+    if (!text) return 'CPU';
+    // "TESLA P100-PCIE-16GB #0" → "P100 #0"; "CUDA0" permanece.
+    const hash = text.match(/#\d+/)?.[0] || '';
+    const compact = text
+        .replace(/NVIDIA\s*/i, '')
+        .replace(/TESLA\s*/i, '')
+        .replace(/GEFORCE\s*/i, '')
+        .replace(/-PCIE-\d+GB/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const token = compact.split(/\s+/)[0] || compact;
+    return hash ? `${token} ${hash}` : token;
+}
+
+function shortModelLabel(model) {
+    const text = String(model || '').trim();
+    if (!text) return 'Modelo';
+    return text.replace(/\.gguf$/i, '');
+}
+
 /** Capacidade livre e prontidão de startup — substitutos locais de Semanal/Sessão. */
 function localGaugesHtml(backend) {
     const maxParallel = Math.max(0, Number(backend.max_parallel) || 0);
@@ -279,8 +301,8 @@ function localGaugesHtml(backend) {
         startupPct = 0;
     }
     const startupColor = startupPct == null ? '#475569' : localMetricColor('startup', startupPct);
-    const startupCenter = measured ? formatLatencyShort(latency) : '—';
-    let startupHint = 'medição pendente';
+    const startupCenter = measured ? formatLatencyShort(latency) : '…';
+    let startupHint = 'aguardando medição';
     if (measured) {
         const rank = backend.speed_rank;
         if (rank === 0) startupHint = 'principal';
@@ -289,8 +311,14 @@ function localGaugesHtml(backend) {
     } else if (backend.state === 'offline' || backend.state === 'disabled') {
         startupHint = 'indisponível';
     }
+    const gpuShort = shortGpuLabel(backend.gpu);
 
     return `
+        <div class="quota-accounts-host local-meta-host">
+            <div class="quota-account-single">
+                <span class="quota-account-name" title="${esc(backend.gpu || 'CPU')}">${esc(gpuShort)} · porta ${esc(backend.port)}</span>
+            </div>
+        </div>
         <div class="quota-gauges-host">
             <div class="quota-gauges" aria-label="Capacidade e startup local">
                 <div class="quota-gauge" data-kind="capacity" title="Slots livres: ${esc(capacityHint)}">
@@ -303,10 +331,10 @@ function localGaugesHtml(backend) {
                     <p class="quota-gauge-name">Capacidade</p>
                     <p class="quota-gauge-reset"><i class="fas fa-layer-group" aria-hidden="true"></i> <span>${esc(capacityHint)}</span></p>
                 </div>
-                <div class="quota-gauge" data-kind="startup" title="Startup: ${esc(startupCenter)}">
+                <div class="quota-gauge" data-kind="startup" title="Startup: ${esc(measured ? startupCenter : startupHint)}">
                     <div class="quota-gauge-ring" style="--quota-pct:${startupPct ?? 0};--quota-color:${startupColor}">
                         <div class="quota-gauge-center">
-                            <span class="quota-gauge-pct quota-gauge-pct-sm">${esc(startupCenter)}</span>
+                            <span class="quota-gauge-pct ${measured ? 'quota-gauge-pct-sm' : 'quota-gauge-pct-pending'}">${esc(startupCenter)}</span>
                             <span class="quota-gauge-sub">startup</span>
                         </div>
                     </div>
@@ -464,30 +492,30 @@ function backendCard(backend, index) {
         ? platformQuotaGaugesHtml(provider, lastProxyQuotas[provider] || null)
         : (showLocalGauges ? localGaugesHtml(backend) : '');
 
-    // Rodapé: plataformas sem cota e locais priorizam infra (gauges já cobrem carga/startup).
+    // Rodapé curto e uniforme — GPU longa fica no meta/subtitle, nao no footer.
     let footerHtml;
     if (showLocalGauges) {
         footerHtml = `
         <div class="proxy-card-footer">
             <div class="proxy-card-stat">
                 <i class="fas fa-server" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value">${esc(workerCount)} worker${workerCount === 1 ? '' : 's'}</p>
-                    <p class="proxy-card-stat-label">Instâncias</p>
+                <div class="min-w-0">
+                    <p class="proxy-card-stat-value">${esc(workerCount)}</p>
+                    <p class="proxy-card-stat-label">Workers</p>
                 </div>
             </div>
             <div class="proxy-card-stat">
                 <i class="fas fa-memory" aria-hidden="true"></i>
-                <div>
+                <div class="min-w-0">
                     <p class="proxy-card-stat-value">${esc(backend.ctx_per_slot || '—')}</p>
                     <p class="proxy-card-stat-label">Ctx/slot</p>
                 </div>
             </div>
-            <div class="proxy-card-stat proxy-card-stat-wide">
-                <i class="fas fa-microchip" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value truncate">${esc(backend.gpu || 'CPU')} · porta ${esc(backend.port)}</p>
-                    <p class="proxy-card-stat-label">Infra</p>
+            <div class="proxy-card-stat">
+                <i class="fas fa-plug" aria-hidden="true"></i>
+                <div class="min-w-0">
+                    <p class="proxy-card-stat-value">${esc(backend.port)}</p>
+                    <p class="proxy-card-stat-label">Porta</p>
                 </div>
             </div>
         </div>`;
@@ -496,28 +524,32 @@ function backendCard(backend, index) {
         <div class="proxy-card-footer">
             <div class="proxy-card-stat">
                 <i class="fas fa-bolt" aria-hidden="true"></i>
-                <div>
+                <div class="min-w-0">
                     <p class="proxy-card-stat-value">${esc(measured ? latencyLabel : '—')}</p>
-                    <p class="proxy-card-stat-label">${measured ? 'Latência média' : 'Startup pendente'}</p>
+                    <p class="proxy-card-stat-label">${measured ? 'Latência' : 'Startup'}</p>
                 </div>
             </div>
             <div class="proxy-card-stat">
                 <i class="fas fa-gauge-high" aria-hidden="true"></i>
-                <div>
+                <div class="min-w-0">
                     <p class="proxy-card-stat-value">${activeLabel}</p>
                     <p class="proxy-card-stat-label">Req. ativas</p>
                 </div>
             </div>
-            <div class="proxy-card-stat proxy-card-stat-wide">
+            <div class="proxy-card-stat">
                 <i class="fas fa-microchip" aria-hidden="true"></i>
-                <div>
-                    <p class="proxy-card-stat-value truncate">porta ${esc(backend.port)} · ctx ${esc(backend.ctx_per_slot)}</p>
+                <div class="min-w-0">
+                    <p class="proxy-card-stat-value truncate">ctx ${esc(backend.ctx_per_slot)}</p>
                     <p class="proxy-card-stat-label">Infra</p>
                 </div>
             </div>
         </div>`;
     }
 
+    const displayName = showLocalGauges ? shortModelLabel(backend.model) : backend.model;
+    const localDetail = showLocalGauges
+        ? `Local · ${esc(shortGpuLabel(backend.gpu))}`
+        : detail;
     const cardHtml = `
     <div draggable="true" class="proxy-backend-card proxy-card-v2 accent-${esc(accent)} cursor-pointer active:cursor-grabbing select-none" data-proxy-backend="${esc(backend.port)}" data-backend-id="${esc(backend.backend_id || '')}" data-navigation-backend-id="${esc(navigationBackendId)}" data-backend-type="${esc(backend.backend_type || 'local')}" data-provider="${esc(backend.provider || '')}"${dataBackendIds}${dataModelPath}${dataCardId} title="Clique para abrir a aba · Arraste para alterar a prioridade">
         <div class="proxy-card-head">
@@ -525,10 +557,10 @@ function backendCard(backend, index) {
                 <span class="proxy-card-icon" aria-hidden="true"><i class="fas ${providerIcon(provider, isPlatform)}"></i></span>
                 <div class="proxy-card-title-text min-w-0">
                     <div class="proxy-card-name-row">
-                        <span class="proxy-card-name truncate">${esc(backend.model)}</span>
+                        <span class="proxy-card-name truncate" title="${esc(backend.model)}">${esc(displayName)}</span>
                         <span class="proxy-card-status ${stateColor}"><span class="proxy-card-status-dot" aria-hidden="true"></span>${esc(STATE_LABELS[state] || backend.state)}</span>
                     </div>
-                    <p class="proxy-card-subtitle truncate">${role} · ${detail}</p>
+                    <p class="proxy-card-subtitle truncate" title="${esc(isPlatform ? `${role} · ${kind}` : `${role} · Local · ${backend.gpu || 'CPU'}`)}">${role} · ${localDetail}</p>
                 </div>
                 <i class="fas fa-grip-vertical proxy-card-grip" aria-hidden="true"></i>
             </div>
@@ -855,17 +887,27 @@ function updateGaugeDom(root, kind, pct, color, centerText, hintText) {
 }
 
 function patchLocalGauges(card, backend) {
+    const meta = card.querySelector('.local-meta-host');
     const host = card.querySelector('.quota-gauges-host');
-    if (!host) {
-        // Card antigo sem gauges: recria o bloco inteiro.
+    const tmp = document.createElement('div');
+    tmp.innerHTML = localGaugesHtml(backend);
+    const nextMeta = tmp.querySelector('.local-meta-host');
+    const nextGauges = tmp.querySelector('.quota-gauges-host');
+    if (!host && !meta) {
         const priority = card.querySelector('.proxy-priority-bar');
         if (priority) priority.insertAdjacentHTML('afterend', localGaugesHtml(backend));
         return;
     }
-    const tmp = document.createElement('div');
-    tmp.innerHTML = localGaugesHtml(backend);
-    const next = tmp.querySelector('.quota-gauges-host');
-    if (next) host.replaceWith(next);
+    if (meta && nextMeta) meta.replaceWith(nextMeta);
+    else if (!meta && nextMeta) {
+        const priority = card.querySelector('.proxy-priority-bar');
+        if (priority) priority.insertAdjacentElement('afterend', nextMeta);
+    }
+    if (host && nextGauges) host.replaceWith(nextGauges);
+    else if (!host && nextGauges) {
+        const after = card.querySelector('.local-meta-host') || card.querySelector('.proxy-priority-bar');
+        if (after) after.insertAdjacentElement('afterend', nextGauges);
+    }
 }
 
 function patchPlatformGauges(shellOrCard, provider, quota) {
@@ -908,9 +950,20 @@ function patchBackendCard(card, backend, index, quotas) {
         patchLocalGauges(card, backend);
         const workerCount = Array.isArray(backend.grouped_ids) ? backend.grouped_ids.length : 1;
         const stats = card.querySelectorAll('.proxy-card-stat-value');
-        if (stats[0]) stats[0].textContent = `${workerCount} worker${workerCount === 1 ? '' : 's'}`;
+        if (stats[0]) stats[0].textContent = String(workerCount);
         if (stats[1]) stats[1].textContent = String(backend.ctx_per_slot || '—');
-        if (stats[2]) stats[2].textContent = `${backend.gpu || 'CPU'} · porta ${backend.port}`;
+        if (stats[2]) stats[2].textContent = String(backend.port ?? '—');
+        const subtitle = card.querySelector('.proxy-card-subtitle');
+        if (subtitle) {
+            const role = backend.role === 'primary' ? 'Principal' : 'Secundário';
+            subtitle.textContent = `${role} · Local · ${shortGpuLabel(backend.gpu)}`;
+            subtitle.title = `${role} · Local · ${backend.gpu || 'CPU'}`;
+        }
+        const nameEl = card.querySelector('.proxy-card-name');
+        if (nameEl) {
+            nameEl.textContent = shortModelLabel(backend.model);
+            nameEl.title = String(backend.model || '');
+        }
         return;
     }
     if (QUOTA_PROVIDERS.has(provider)) {
