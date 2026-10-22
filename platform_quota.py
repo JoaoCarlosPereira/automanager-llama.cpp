@@ -133,7 +133,15 @@ def _iso_or_unix(value: Any) -> Optional[str]:
         except (OverflowError, OSError, ValueError):
             return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+    try:
+        num = float(text)
+        if 1_000_000_000 <= num <= 2_500_000_000:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(num))
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    return text
 
 
 def _normalize_provider(raw: Optional[str]) -> Optional[str]:
@@ -566,6 +574,21 @@ def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ):
             return parsed
 
+    # Anthropic unified rate limit headers (5h + 7d utilization).
+    uni_7d_used = _to_float(lower.get("anthropic-ratelimit-unified-7d-utilization"))
+    uni_5h_used = _to_float(lower.get("anthropic-ratelimit-unified-5h-utilization"))
+    if uni_7d_used is not None or uni_5h_used is not None:
+        return {
+            "session_remaining_pct": _remaining_from_used(uni_5h_used * 100.0) if uni_5h_used is not None else None,
+            "weekly_remaining_pct": _remaining_from_used(uni_7d_used * 100.0) if uni_7d_used is not None else None,
+            "session_reset_at": _iso_or_unix(lower.get("anthropic-ratelimit-unified-5h-reset")),
+            "weekly_reset_at": _iso_or_unix(
+                lower.get("anthropic-ratelimit-unified-7d-reset")
+                or lower.get("anthropic-ratelimit-unified-reset")
+            ),
+            "source": "claude-unified-headers",
+        }
+
     # Anthropic subscription / API responses sometimes expose remaining tokens.
     remaining = _to_float(
         lower.get("anthropic-ratelimit-tokens-remaining")
@@ -590,9 +613,47 @@ def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _friendly_quota_error(err: Optional[str], *, has_values: bool) -> str:
+def _extract_auth_quota(auth: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract quota metrics directly from stored auth-file signals or cooldowns."""
+    parsed: Dict[str, Any] = {
+        "session_remaining_pct": None,
+        "weekly_remaining_pct": None,
+        "session_reset_at": None,
+        "weekly_reset_at": None,
+        "source": "auth-signals",
+    }
+    signals = auth.get("quota", {}).get("signals") if isinstance(auth.get("quota"), dict) else None
+    if not signals and isinstance(auth.get("model_quotas"), dict):
+        for mq in auth["model_quotas"].values():
+            if isinstance(mq, dict) and isinstance(mq.get("signals"), dict):
+                signals = mq["signals"]
+                break
+    if isinstance(signals, dict) and signals:
+        h = parse_quota_headers(signals)
+        if h:
+            for k in ("session_remaining_pct", "weekly_remaining_pct", "session_reset_at", "weekly_reset_at"):
+                if h.get(k) is not None:
+                    parsed[k] = h[k]
+
+    for cd in auth.get("cooldowns") or []:
+        if isinstance(cd, dict):
+            retry = _iso_or_unix(cd.get("retry_at"))
+            reason = str(cd.get("reason") or "").lower()
+            if retry and any(w in reason for w in ("quota", "rate_limit", "429")):
+                if parsed.get("weekly_remaining_pct") is None or parsed.get("weekly_remaining_pct") <= 0:
+                    parsed["weekly_remaining_pct"] = 0.0
+                    parsed["weekly_reset_at"] = retry
+
+    return parsed
+
+
+def _friendly_quota_error(err: Optional[str], *, has_values: bool) -> Optional[str]:
     """Humanize provider errors for the card (avoid raw HTTP 429 noise)."""
-    text = str(err or "").strip()
+    if not err:
+        return None
+    text = str(err).strip()
+    if not text:
+        return None
     low = text.lower()
     waiting = "429" in low or "em espera" in low or "rate limit" in low
     if waiting and has_values:
@@ -600,17 +661,21 @@ def _friendly_quota_error(err: Optional[str], *, has_values: bool) -> str:
     if waiting:
         return "Monitoramento em espera — tente mais tarde"
     if has_values:
-        return f"{text} · exibindo ultima cota" if text else "Exibindo ultima cota conhecida"
-    return text or "Falha ao atualizar cota"
+        return f"{text} · exibindo ultima cota"
+    return text
 
 
 def _preserve_account_on_error(
     previous: Optional[Dict[str, Any]], failed: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Keep last known percentages when a refresh fails (e.g. usage HTTP 429)."""
+    has_values = (
+        failed.get("session_remaining_pct") is not None
+        or failed.get("weekly_remaining_pct") is not None
+    )
     if not previous:
         out = dict(failed)
-        out["error"] = _friendly_quota_error(failed.get("error"), has_values=False)
+        out["error"] = _friendly_quota_error(failed.get("error"), has_values=has_values)
         return out
     merged = dict(failed)
     for field in (
@@ -950,32 +1015,50 @@ class PlatformQuotaService:
                 provider: self._previous_accounts(provider) for provider in _QUOTA_PROVIDERS
             }
             for auth in files:
-                if auth.get("disabled") or auth.get("unavailable"):
+                if auth.get("disabled"):
                     continue
                 provider = _infer_provider(auth)
                 if not provider or not auth.get("auth_index"):
                     continue
                 auth_index = str(auth.get("auth_index"))
                 previous = previous_by_provider.get(provider, {}).get(auth_index)
+                auth_quota = _extract_auth_quota(auth)
+
+                if auth.get("unavailable"):
+                    base_account = {
+                        "auth_index": auth.get("auth_index"),
+                        "label": auth.get("email")
+                        or auth.get("label")
+                        or auth.get("name"),
+                        "email": auth.get("email"),
+                        "priority": int(auth.get("priority") or 0),
+                        "session_remaining_pct": auth_quota.get("session_remaining_pct"),
+                        "weekly_remaining_pct": auth_quota.get("weekly_remaining_pct"),
+                        "session_reset_at": auth_quota.get("session_reset_at"),
+                        "weekly_reset_at": auth_quota.get("weekly_reset_at"),
+                        "error": None,
+                    }
+                    account = _preserve_account_on_error(previous, base_account)
+                    by_provider[provider].append(account)
+                    continue
+
                 if provider == "claude" and self._claude_in_backoff(auth_index):
                     remaining = self._claude_backoff_remaining(auth_index)
                     mins = max(1, int((remaining + 59) // 60))
-                    account = _preserve_account_on_error(
-                        previous,
-                        {
-                            "auth_index": auth.get("auth_index"),
-                            "label": auth.get("email")
-                            or auth.get("label")
-                            or auth.get("name"),
-                            "email": auth.get("email"),
-                            "priority": int(auth.get("priority") or 0),
-                            "session_remaining_pct": None,
-                            "weekly_remaining_pct": None,
-                            "session_reset_at": None,
-                            "weekly_reset_at": None,
-                            "error": f"em espera ~{mins} min apos HTTP 429",
-                        },
-                    )
+                    base_account = {
+                        "auth_index": auth.get("auth_index"),
+                        "label": auth.get("email")
+                        or auth.get("label")
+                        or auth.get("name"),
+                        "email": auth.get("email"),
+                        "priority": int(auth.get("priority") or 0),
+                        "session_remaining_pct": auth_quota.get("session_remaining_pct"),
+                        "weekly_remaining_pct": auth_quota.get("weekly_remaining_pct"),
+                        "session_reset_at": auth_quota.get("session_reset_at"),
+                        "weekly_reset_at": auth_quota.get("weekly_reset_at"),
+                        "error": f"em espera ~{mins} min apos HTTP 429",
+                    }
+                    account = _preserve_account_on_error(previous, base_account)
                     by_provider[provider].append(account)
                     continue
                 try:
@@ -983,22 +1066,20 @@ class PlatformQuotaService:
                 except Exception as exc:
                     if provider == "claude" and "HTTP 429" in str(exc):
                         self._mark_claude_backoff(auth_index)
-                    account = _preserve_account_on_error(
-                        previous,
-                        {
-                            "auth_index": auth.get("auth_index"),
-                            "label": auth.get("email")
-                            or auth.get("label")
-                            or auth.get("name"),
-                            "email": auth.get("email"),
-                            "priority": int(auth.get("priority") or 0),
-                            "session_remaining_pct": None,
-                            "weekly_remaining_pct": None,
-                            "session_reset_at": None,
-                            "weekly_reset_at": None,
-                            "error": str(exc),
-                        },
-                    )
+                    base_account = {
+                        "auth_index": auth.get("auth_index"),
+                        "label": auth.get("email")
+                        or auth.get("label")
+                        or auth.get("name"),
+                        "email": auth.get("email"),
+                        "priority": int(auth.get("priority") or 0),
+                        "session_remaining_pct": auth_quota.get("session_remaining_pct"),
+                        "weekly_remaining_pct": auth_quota.get("weekly_remaining_pct"),
+                        "session_reset_at": auth_quota.get("session_reset_at"),
+                        "weekly_reset_at": auth_quota.get("weekly_reset_at"),
+                        "error": str(exc),
+                    }
+                    account = _preserve_account_on_error(previous, base_account)
                 else:
                     if provider == "claude":
                         self._clear_claude_backoff(auth_index)
@@ -1150,15 +1231,32 @@ class PlatformQuotaService:
         else:
             raise RuntimeError(f"unsupported provider {provider}")
 
+        auth_quota = _extract_auth_quota(auth)
         return {
             "auth_index": auth_index,
             "label": label,
             "email": auth.get("email"),
             "priority": int(auth.get("priority") or 0),
-            "session_remaining_pct": parsed.get("session_remaining_pct"),
-            "weekly_remaining_pct": parsed.get("weekly_remaining_pct"),
-            "session_reset_at": parsed.get("session_reset_at"),
-            "weekly_reset_at": parsed.get("weekly_reset_at"),
+            "session_remaining_pct": (
+                parsed.get("session_remaining_pct")
+                if parsed.get("session_remaining_pct") is not None
+                else auth_quota.get("session_remaining_pct")
+            ),
+            "weekly_remaining_pct": (
+                parsed.get("weekly_remaining_pct")
+                if parsed.get("weekly_remaining_pct") is not None
+                else auth_quota.get("weekly_remaining_pct")
+            ),
+            "session_reset_at": (
+                parsed.get("session_reset_at")
+                if parsed.get("session_reset_at") is not None
+                else auth_quota.get("session_reset_at")
+            ),
+            "weekly_reset_at": (
+                parsed.get("weekly_reset_at")
+                if parsed.get("weekly_reset_at") is not None
+                else auth_quota.get("weekly_reset_at")
+            ),
             "error": None,
         }
 

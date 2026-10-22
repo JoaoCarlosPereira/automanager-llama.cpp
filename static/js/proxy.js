@@ -398,6 +398,84 @@ function formatResetShort(iso) {
     return remHours ? `reset em ${days}d ${remHours}h` : `reset em ${days}d`;
 }
 
+function isQuotaExhausted(remainingPct, resetAt) {
+    const value = clampPct(remainingPct);
+    const hasReset = !!(resetAt && !Number.isNaN(new Date(resetAt).getTime()) && new Date(resetAt).getTime() > Date.now());
+    if (value != null && value <= 0 && hasReset) return true;
+    if (value == null && hasReset) return true;
+    return false;
+}
+
+function formatQuotaCountdown(resetAt) {
+    if (!resetAt) return '—';
+    const stamp = new Date(resetAt).getTime();
+    if (Number.isNaN(stamp)) return '—';
+    const ms = stamp - Date.now();
+    if (ms <= 0) return '00m 00s';
+    const totalSecs = Math.floor(ms / 1000);
+    const totalMins = Math.floor(totalSecs / 60);
+    const totalHours = Math.floor(totalMins / 60);
+    const days = Math.floor(totalHours / 24);
+
+    if (days >= 2) {
+        const remHours = totalHours % 24;
+        return `${days}d ${String(remHours).padStart(2, '0')}h`;
+    }
+    if (totalHours >= 1) {
+        const remMins = totalMins % 60;
+        return `${totalHours}h ${String(remMins).padStart(2, '0')}m`;
+    }
+    const remSecs = totalSecs % 60;
+    return `${String(totalMins).padStart(2, '0')}m ${String(remSecs).padStart(2, '0')}s`;
+}
+
+let proxyQuotaCountdownInterval = null;
+function ensureProxyQuotaCountdownTicker() {
+    if (proxyQuotaCountdownInterval != null || typeof window === 'undefined') return;
+    proxyQuotaCountdownInterval = window.setInterval(() => {
+        const exhaustedGauges = document.querySelectorAll('.quota-gauge.is-exhausted[data-reset-at]');
+        if (!exhaustedGauges.length) return;
+        exhaustedGauges.forEach((gauge) => {
+            const resetAt = gauge.dataset.resetAt;
+            if (!resetAt) return;
+            const pctEl = gauge.querySelector('.quota-gauge-pct');
+            if (pctEl) {
+                pctEl.textContent = formatQuotaCountdown(resetAt);
+            }
+        });
+    }, 1000);
+}
+
+function platformQuotaGaugeHtml(kind, remainingPct, resetAt) {
+    const value = clampPct(remainingPct);
+    const exhausted = isQuotaExhausted(value, resetAt);
+    const pct = exhausted ? 0 : (value == null ? 0 : value);
+    const color = exhausted ? '#ef4444' : (value == null ? '#475569' : platformQuotaColor(kind, value));
+    const label = kind === 'weekly' ? 'Semanal' : 'Sessão';
+    const centerText = exhausted ? formatQuotaCountdown(resetAt) : (value == null ? '—' : `${Math.round(value)}%`);
+    const subText = exhausted ? 'para reset' : 'restante';
+    const pctClass = exhausted ? 'quota-gauge-pct quota-gauge-pct-countdown' : 'quota-gauge-pct';
+    const subClass = exhausted ? 'quota-gauge-sub quota-gauge-sub-exhausted' : 'quota-gauge-sub';
+    const exhaustedClass = exhausted ? ' is-exhausted' : '';
+    const resetAttr = resetAt ? ` data-reset-at="${esc(resetAt)}"` : '';
+    const resetHint = exhausted
+        ? `esgotado · ${formatResetShort(resetAt)}`
+        : formatResetShort(resetAt);
+    const iconClass = exhausted ? 'fa-hourglass-half' : 'fa-clock';
+
+    return `
+        <div class="quota-gauge${exhaustedClass}" data-kind="${kind}"${resetAttr} title="${esc(label)}: ${exhausted ? 'Esgotado (reset em ' + centerText + ')' : (value == null ? '—' : `${Math.round(value)}%`) + ' restante'}">
+            <div class="quota-gauge-ring" style="--quota-pct:${pct};--quota-color:${color}">
+                <div class="quota-gauge-center">
+                    <span class="${pctClass}">${esc(centerText)}</span>
+                    <span class="${subClass}">${esc(subText)}</span>
+                </div>
+            </div>
+            <p class="quota-gauge-name">${label}</p>
+            <p class="quota-gauge-reset"><i class="fas ${iconClass}" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${esc(resetHint)}</span></p>
+        </div>`;
+}
+
 function focusedQuotaFromMap(quota) {
     if (!quota || typeof quota !== 'object') return null;
     const rows = Array.isArray(quota.account_details) ? quota.account_details : [];
@@ -413,13 +491,12 @@ function focusedQuotaFromMap(quota) {
 }
 
 function platformQuotaGaugesHtml(provider, quota = null) {
+    ensureProxyQuotaCountdownTicker();
     const focused = focusedQuotaFromMap(quota);
     const weekly = clampPct(focused?.weekly_remaining_pct ?? quota?.weekly_remaining_pct);
     const session = clampPct(focused?.session_remaining_pct ?? quota?.session_remaining_pct);
     const weeklyReset = focused?.weekly_reset_at || quota?.weekly_reset_at || null;
     const sessionReset = focused?.session_reset_at || quota?.session_reset_at || null;
-    const weeklyColor = weekly == null ? '#475569' : platformQuotaColor('weekly', weekly);
-    const sessionColor = session == null ? '#475569' : platformQuotaColor('session', session);
     const label = focused?.label || focused?.email || provider || 'Conta';
     const rows = Array.isArray(quota?.account_details) ? quota.account_details : [];
     const err = focused?.error
@@ -437,26 +514,8 @@ function platformQuotaGaugesHtml(provider, quota = null) {
         <div class="quota-accounts-host">${accountHost}</div>
         <div class="quota-gauges-host">
             <div class="quota-gauges" aria-label="Cota semanal e de sessao">
-                <div class="quota-gauge" data-kind="weekly" title="Semanal restante: ${weekly == null ? '—' : `${Math.round(weekly)}%`}">
-                    <div class="quota-gauge-ring" style="--quota-pct:${weekly ?? 0};--quota-color:${weeklyColor}">
-                        <div class="quota-gauge-center">
-                            <span class="quota-gauge-pct">${weekly == null ? '—' : `${Math.round(weekly)}%`}</span>
-                            <span class="quota-gauge-sub">restante</span>
-                        </div>
-                    </div>
-                    <p class="quota-gauge-name">Semanal</p>
-                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${esc(formatResetShort(weeklyReset))}</span></p>
-                </div>
-                <div class="quota-gauge" data-kind="session" title="Sessao restante: ${session == null ? '—' : `${Math.round(session)}%`}">
-                    <div class="quota-gauge-ring" style="--quota-pct:${session ?? 0};--quota-color:${sessionColor}">
-                        <div class="quota-gauge-center">
-                            <span class="quota-gauge-pct">${session == null ? '—' : `${Math.round(session)}%`}</span>
-                            <span class="quota-gauge-sub">restante</span>
-                        </div>
-                    </div>
-                    <p class="quota-gauge-name">Sessão</p>
-                    <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${esc(formatResetShort(sessionReset))}</span></p>
-                </div>
+                ${platformQuotaGaugeHtml('weekly', weekly, weeklyReset)}
+                ${platformQuotaGaugeHtml('session', session, sessionReset)}
             </div>
         </div>`;
 }

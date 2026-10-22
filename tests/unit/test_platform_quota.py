@@ -690,3 +690,91 @@ def test_models_js_exposes_quota_ring_helpers():
     assert "patchBackendCard" in proxy_js or "patchPlatformGauges" in proxy_js
     assert "shortGpuLabel" in proxy_js
     assert "local-meta-host" in proxy_js
+    assert "isQuotaExhausted" in models_js
+    assert "isQuotaExhausted" in proxy_js
+    assert "formatQuotaCountdown" in models_js
+    assert "formatQuotaCountdown" in proxy_js
+    assert "quota-gauge-pct-countdown" in models_js
+    assert "quota-gauge-pct-countdown" in proxy_js
+    assert "quota-gauge-pct-countdown" in Path("llama_manager.py").read_text(encoding="utf-8")
+
+
+def test_parse_quota_headers_anthropic_unified():
+    headers = {
+        "Anthropic-Ratelimit-Unified-5h-Utilization": "0.06",
+        "Anthropic-Ratelimit-Unified-5h-Reset": "1792709400",
+        "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+        "Anthropic-Ratelimit-Unified-7d-Reset": "1792818000",
+    }
+    parsed = pq.parse_quota_headers(headers)
+    assert parsed is not None
+    assert parsed["session_remaining_pct"] == 94.0
+    assert parsed["weekly_remaining_pct"] == 0.0
+    assert parsed["weekly_reset_at"] == "2026-10-24T05:00:00Z"
+
+
+def test_extract_auth_quota_signals_and_cooldowns():
+    auth = {
+        "auth_index": "test_claude",
+        "provider": "claude",
+        "unavailable": True,
+        "cooldowns": [
+            {
+                "scope": "credential",
+                "reason": "credential_quota",
+                "retry_at": "2026-10-24T05:00:01Z",
+                "remaining_seconds": 120000,
+            }
+        ],
+        "quota": {
+            "signals": {
+                "Anthropic-Ratelimit-Unified-5h-Utilization": "0.10",
+                "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+                "Anthropic-Ratelimit-Unified-7d-Reset": "1792818000",
+            }
+        },
+    }
+    extracted = pq._extract_auth_quota(auth)
+    assert extracted["session_remaining_pct"] == 90.0
+    assert extracted["weekly_remaining_pct"] == 0.0
+    assert extracted["weekly_reset_at"] == "2026-10-24T05:00:01Z"
+
+
+def test_refresh_handles_unavailable_accounts_without_skipping():
+    class DummyClient:
+        pass
+
+    service = pq.PlatformQuotaService()
+    files = [
+        {
+            "auth_index": "cl1",
+            "provider": "claude",
+            "email": "claude@sysmo.com.br",
+            "unavailable": True,
+            "disabled": False,
+            "cooldowns": [
+                {
+                    "scope": "credential",
+                    "reason": "quota",
+                    "retry_at": "2026-10-24T05:00:01Z",
+                }
+            ],
+            "quota": {
+                "signals": {
+                    "Anthropic-Ratelimit-Unified-5h-Utilization": "0.06",
+                    "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0",
+                    "Anthropic-Ratelimit-Unified-7d-Reset": "1792818000",
+                }
+            },
+        }
+    ]
+    service._base_url = lambda: "http://127.0.0.1:8317"
+    service._list_auth_files = lambda client, base: files
+
+    result = service._refresh()
+    assert "claude" in result
+    claude = result["claude"]
+    assert claude["available"] is True
+    assert claude["weekly_remaining_pct"] == 0.0
+    assert claude["session_remaining_pct"] == 94.0
+    assert claude["weekly_reset_at"] == "2026-10-24T05:00:01Z"

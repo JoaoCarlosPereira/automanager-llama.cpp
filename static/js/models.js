@@ -245,21 +245,81 @@ function shortAccountLabel(label) {
     return text.replace(/\.json$/i, '').replace(/^(claude|codex|antigravity|gemini)-/i, '');
 }
 
+function isQuotaExhausted(remainingPct, resetAt) {
+    const value = clampQuotaPct(remainingPct);
+    const hasReset = !!(resetAt && !Number.isNaN(new Date(resetAt).getTime()) && new Date(resetAt).getTime() > Date.now());
+    if (value != null && value <= 0 && hasReset) return true;
+    if (value == null && hasReset) return true;
+    return false;
+}
+
+function formatQuotaCountdown(resetAt) {
+    if (!resetAt) return '—';
+    const stamp = new Date(resetAt).getTime();
+    if (Number.isNaN(stamp)) return '—';
+    const ms = stamp - Date.now();
+    if (ms <= 0) return '00m 00s';
+    const totalSecs = Math.floor(ms / 1000);
+    const totalMins = Math.floor(totalSecs / 60);
+    const totalHours = Math.floor(totalMins / 60);
+    const days = Math.floor(totalHours / 24);
+
+    if (days >= 2) {
+        const remHours = totalHours % 24;
+        return `${days}d ${String(remHours).padStart(2, '0')}h`;
+    }
+    if (totalHours >= 1) {
+        const remMins = totalMins % 60;
+        return `${totalHours}h ${String(remMins).padStart(2, '0')}m`;
+    }
+    const remSecs = totalSecs % 60;
+    return `${String(totalMins).padStart(2, '0')}m ${String(remSecs).padStart(2, '0')}s`;
+}
+
+let quotaCountdownInterval = null;
+function ensureQuotaCountdownTicker() {
+    if (quotaCountdownInterval != null || typeof window === 'undefined') return;
+    quotaCountdownInterval = window.setInterval(() => {
+        const exhaustedGauges = document.querySelectorAll('.quota-gauge.is-exhausted[data-reset-at]');
+        if (!exhaustedGauges.length) return;
+        exhaustedGauges.forEach((gauge) => {
+            const resetAt = gauge.dataset.resetAt;
+            if (!resetAt) return;
+            const pctEl = gauge.querySelector('.quota-gauge-pct');
+            if (pctEl) {
+                pctEl.textContent = formatQuotaCountdown(resetAt);
+            }
+        });
+    }, 1000);
+}
+
 function buildQuotaGaugeHtml(kind, remainingPct, resetAt) {
     const value = clampQuotaPct(remainingPct);
-    const pct = value == null ? 0 : value;
-    const color = value == null ? '#475569' : quotaColor(kind, value);
+    const exhausted = isQuotaExhausted(remainingPct, resetAt);
+    const pct = exhausted ? 0 : (value == null ? 0 : value);
+    const color = exhausted ? '#ef4444' : (value == null ? '#475569' : quotaColor(kind, value));
     const label = kind === 'weekly' ? 'Semanal' : 'Sessão';
+    const centerText = exhausted ? formatQuotaCountdown(resetAt) : formatQuotaPct(value);
+    const subText = exhausted ? 'para reset' : 'restante';
+    const pctClass = exhausted ? 'quota-gauge-pct quota-gauge-pct-countdown' : 'quota-gauge-pct';
+    const subClass = exhausted ? 'quota-gauge-sub quota-gauge-sub-exhausted' : 'quota-gauge-sub';
+    const exhaustedClass = exhausted ? ' is-exhausted' : '';
+    const resetAttr = resetAt ? ` data-reset-at="${escapeHtml(resetAt)}"` : '';
+    const resetHint = exhausted
+        ? `esgotado · ${formatQuotaReset(resetAt)}`
+        : formatQuotaReset(resetAt);
+    const iconClass = exhausted ? 'fa-hourglass-half' : 'fa-clock';
+
     return `
-        <div class="quota-gauge" data-kind="${kind}" title="${escapeHtml(label)} restante: ${formatQuotaPct(value)}">
+        <div class="quota-gauge${exhaustedClass}" data-kind="${kind}"${resetAttr} title="${escapeHtml(label)}: ${exhausted ? 'Esgotado (reset em ' + centerText + ')' : formatQuotaPct(value) + ' restante'}">
             <div class="quota-gauge-ring" style="--quota-pct:${pct};--quota-color:${color}">
                 <div class="quota-gauge-center">
-                    <span class="quota-gauge-pct">${formatQuotaPct(value)}</span>
-                    <span class="quota-gauge-sub">restante</span>
+                    <span class="${pctClass}">${escapeHtml(centerText)}</span>
+                    <span class="${subClass}">${escapeHtml(subText)}</span>
                 </div>
             </div>
             <p class="quota-gauge-name">${label}</p>
-            <p class="quota-gauge-reset"><i class="fas fa-clock" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${escapeHtml(formatQuotaReset(resetAt))}</span></p>
+            <p class="quota-gauge-reset"><i class="fas ${iconClass}" aria-hidden="true"></i> <span class="quota-gauge-reset-text">${escapeHtml(resetHint)}</span></p>
         </div>`;
 }
 
@@ -341,23 +401,50 @@ function updateQuotaGauge(root, kind, remainingPct, resetAt) {
     const gauge = root?.querySelector(`.quota-gauge[data-kind="${kind}"]`);
     if (!gauge) return;
     const value = clampQuotaPct(remainingPct);
-    const pct = value == null ? 0 : value;
-    const color = value == null ? '#475569' : quotaColor(kind, value);
+    const exhausted = isQuotaExhausted(remainingPct, resetAt);
+    const pct = exhausted ? 0 : (value == null ? 0 : value);
+    const color = exhausted ? '#ef4444' : (value == null ? '#475569' : quotaColor(kind, value));
     const ring = gauge.querySelector('.quota-gauge-ring');
     const pctEl = gauge.querySelector('.quota-gauge-pct');
+    const subEl = gauge.querySelector('.quota-gauge-sub');
     const resetEl = gauge.querySelector('.quota-gauge-reset-text');
+    const iconEl = gauge.querySelector('.quota-gauge-reset i');
+
+    if (resetAt) gauge.dataset.resetAt = resetAt;
+    else delete gauge.dataset.resetAt;
+
+    gauge.classList.toggle('is-exhausted', exhausted);
+
     if (ring) {
         ring.style.setProperty('--quota-pct', String(pct));
         ring.style.setProperty('--quota-color', color);
     }
-    if (pctEl) pctEl.textContent = formatQuotaPct(value);
-    if (resetEl) resetEl.textContent = formatQuotaReset(resetAt);
+    const centerText = exhausted ? formatQuotaCountdown(resetAt) : formatQuotaPct(value);
+    const subText = exhausted ? 'para reset' : 'restante';
+
+    if (pctEl) {
+        pctEl.textContent = centerText;
+        pctEl.className = exhausted ? 'quota-gauge-pct quota-gauge-pct-countdown' : 'quota-gauge-pct';
+    }
+    if (subEl) {
+        subEl.textContent = subText;
+        subEl.className = exhausted ? 'quota-gauge-sub quota-gauge-sub-exhausted' : 'quota-gauge-sub';
+    }
+    if (resetEl) {
+        resetEl.textContent = exhausted
+            ? `esgotado · ${formatQuotaReset(resetAt)}`
+            : formatQuotaReset(resetAt);
+    }
+    if (iconEl) {
+        iconEl.className = `fas ${exhausted ? 'fa-hourglass-half' : 'fa-clock'}`;
+    }
     const label = kind === 'weekly' ? 'Semanal' : 'Sessão';
-    gauge.title = `${label} restante: ${formatQuotaPct(value)}`;
+    gauge.title = `${label}: ${exhausted ? 'Esgotado (reset em ' + centerText + ')' : formatQuotaPct(value) + ' restante'}`;
 }
 
 function applyQuotaRings(shell, quota) {
     if (!shell) return;
+    ensureQuotaCountdownTicker();
     if (quota && platformQuotaByShell) platformQuotaByShell.set(shell, quota);
     const preferred = shell.dataset.focusedAuthIndex || null;
     const normalized = normalizeQuota(quota, preferred);

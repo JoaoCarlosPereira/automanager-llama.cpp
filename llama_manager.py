@@ -5451,6 +5451,23 @@ def _build_html(
             color: #64748b;
             line-height: 1;
         }}
+        .quota-gauge-pct-countdown {{
+            font-size: 0.98rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            color: #fca5a5;
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+        }}
+        .quota-gauge-sub-exhausted {{
+            color: #ef4444 !important;
+            font-weight: 800;
+        }}
+        .quota-gauge.is-exhausted .quota-gauge-ring {{
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+        }}
+        .quota-gauge.is-exhausted .quota-gauge-reset i {{
+            color: #f87171;
+        }}
         .quota-gauge-sub {{
             margin-top: 0.15rem;
             font-size: 0.62rem;
