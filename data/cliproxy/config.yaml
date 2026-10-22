@@ -3,5 +3,5 @@ host: "127.0.0.1"
 auth-dir: "/mnt/dados-orangepi/dados/dsv/automanager-llama.cpp/data/cliproxy/auth"
 api-keys: []
 remote-management:
-  secret-key: "$2a$10$Sf9ZzXsJMflCBMzOmrpQe.jUEuPW.WG3diCkMordOpMtsu67fbEc."
+  secret-key: "$2a$10$3V3fKDpyswi1bBPjHw2zj.idtNnaF0MkIQeBihfgCaP6d2Ozht3.i"
   allow-remote: false

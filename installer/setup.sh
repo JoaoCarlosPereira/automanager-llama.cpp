@@ -122,6 +122,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${PROJECT_DIR}
+ExecStartPre=-/bin/sh -c 'if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi -pl 175 >/dev/null 2>&1 || true; fi'
 ExecStart=${VENV_DIR}/bin/python ${PROJECT_DIR}/llama_manager.py
 TimeoutStopSec=30
 Restart=on-failure

@@ -177,7 +177,7 @@ class GPUDetector:
         self._metrics_cache: Dict[str, Any] = {}
         self._metrics_cache_time: float = 0.0
         self._metrics_cache_ttl: float = 2.0  # seconds
-        self._gpus_cache: List[Dict[str, Any]] = []
+        self._gpus_cache: Optional[List[Dict[str, Any]]] = None
         self._gpus_cache_time: float = 0.0
         self._gpus_cache_ttl: float = 60.0  # seconds — GPU list rarely changes
         self._cpu_info_cache: CPUInfo = CPUInfo(
@@ -218,7 +218,7 @@ class GPUDetector:
         """Detect GPUs using llama-server --help first, fallback to nvidia-smi."""
         # Cache results — GPU hardware topology does not change at runtime
         now = time.monotonic()
-        if self._gpus_cache and (now - self._gpus_cache_time) < self._gpus_cache_ttl:
+        if self._gpus_cache is not None and (now - self._gpus_cache_time) < self._gpus_cache_ttl:
             return self._gpus_cache
 
         result: List[Dict[str, Any]] = []
@@ -263,7 +263,7 @@ class GPUDetector:
                         "vram": int(parts[2]),
                     })
         except Exception as e:
-            logger.error(f"GPU detection error: {e}")
+            logger.debug(f"GPU detection error: {e}")
 
         self._gpus_cache = result
         self._gpus_cache_time = now
@@ -280,53 +280,58 @@ class GPUDetector:
             return self._metrics_cache
 
         gpus: List[Dict[str, Any]] = []
-        try:
-            query = (
-                "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
-                "temperature.gpu,power.draw,pcie.link.width.current"
-            )
+        if self._gpus_cache is None:
+            self.detect_gpus()
+
+        if self._gpus_cache:
             try:
-                output = subprocess.check_output(
-                    ["nvidia-smi", query, "--format=csv,noheader,nounits"],
-                    timeout=10,
-                ).decode()
-            except subprocess.CalledProcessError:
-                # Older drivers may not expose PCIe link width. Keep the other
-                # GPU metrics available and let the UI show an unknown width.
-                legacy_query = (
+                query = (
                     "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
-                    "temperature.gpu,power.draw"
+                    "temperature.gpu,power.draw,pcie.link.width.current"
                 )
-                output = subprocess.check_output(
-                    ["nvidia-smi", legacy_query, "--format=csv,noheader,nounits"],
-                    timeout=10,
-                ).decode()
-            for line in output.strip().split("\n"):
-                if not line.strip():
-                    continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 6:
-                    mem_used = float(parts[2])
-                    mem_total = float(parts[3])
-                    pcie_width = None
-                    if len(parts) >= 7:
-                        raw_width = parts[6].lower().removeprefix("x")
-                        if raw_width.isdigit() and int(raw_width) > 0:
-                            pcie_width = int(raw_width)
-                    gpus.append({
-                        "index": int(parts[0]),
-                        "util": parts[1],
-                        "mem_used": parts[2],
-                        "mem_total": parts[3],
-                        "vram_pct": round(
-                            (mem_used / mem_total) * 100, 1
-                        ) if mem_total > 0 else 0,
-                        "temp": parts[4],
-                        "power": parts[5].split(".")[0] if "." in parts[5] else parts[5],
-                        "pcie_width": pcie_width,
-                    })
-        except Exception as e:
-            logger.error(f"GPU metrics error: {e}")
+                try:
+                    output = subprocess.check_output(
+                        ["nvidia-smi", query, "--format=csv,noheader,nounits"],
+                        timeout=10,
+                    ).decode()
+                except subprocess.CalledProcessError:
+                    # Older drivers may not expose PCIe link width. Keep the other
+                    # GPU metrics available and let the UI show an unknown width.
+                    legacy_query = (
+                        "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
+                        "temperature.gpu,power.draw"
+                    )
+                    output = subprocess.check_output(
+                        ["nvidia-smi", legacy_query, "--format=csv,noheader,nounits"],
+                        timeout=10,
+                    ).decode()
+                for line in output.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 6:
+                        mem_used = float(parts[2])
+                        mem_total = float(parts[3])
+                        pcie_width = None
+                        if len(parts) >= 7:
+                            raw_width = parts[6].lower().removeprefix("x")
+                            if raw_width.isdigit() and int(raw_width) > 0:
+                                pcie_width = int(raw_width)
+                        gpus.append({
+                            "index": int(parts[0]),
+                            "util": parts[1],
+                            "mem_used": parts[2],
+                            "mem_total": parts[3],
+                            "vram_pct": round(
+                                (mem_used / mem_total) * 100, 1
+                            ) if mem_total > 0 else 0,
+                            "temp": parts[4],
+                            "power": parts[5].split(".")[0] if "." in parts[5] else parts[5],
+                            "pcie_width": pcie_width,
+                        })
+            except Exception as e:
+                logger.debug(f"GPU metrics error: {e}")
+                self._gpus_cache = None
 
         try:
             vm = psutil.virtual_memory()
