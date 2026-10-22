@@ -44,6 +44,13 @@ from proxy_router import (
     rewrite_json_model,
     rewrite_sse_stream,
 )
+from anthropic_safeguards import (
+    attach_safeguard_results_to_json,
+    attach_safeguard_results_to_sse,
+    backend_supports_native_safeguards,
+    peek_safeguards,
+    strip_safeguards,
+)
 from context_optimizer import (
     AuditRecorder,
     ConservativeEstimator,
@@ -3073,6 +3080,12 @@ async def _smart_proxy_forward(
     client_ip = request.client.host if request.client else ""
     user_agent = request.headers.get("user-agent", "")
     is_stream = bool(data.get("stream"))
+    # Envelope Claude Code auto mode — preservar para sintetizar safeguard_results.
+    safeguards_envelope = (
+        peek_safeguards(received_payload or data)
+        if _is_anthropic_messages_path(path)
+        else None
+    )
     route_headers = _filter_proxy_headers(dict(request.headers))
     route_headers.pop("host", None)
     instances = _hybrid_status().get("instances", [])
@@ -3410,6 +3423,14 @@ async def _smart_proxy_forward(
                 custom_tool_conversions,
                 decision.backend_id,
             )
+        forward_provider = (
+            decision.provider if decision.backend_type == "platform" else None
+        )
+        if (
+            safeguards_envelope
+            and not backend_supports_native_safeguards(forward_provider)
+        ):
+            payload_to_forward = strip_safeguards(payload_to_forward)
         forward_body = json.dumps(
             {**payload_to_forward, "model": forward_model}, ensure_ascii=False
         ).encode("utf-8")
@@ -3746,15 +3767,19 @@ async def _smart_proxy_forward(
                             )
                         if dec.rewrite:
                             # Reescrita por linha (ADR-006)
-                            async for chunk in rewrite_sse_stream(
+                            out_stream = rewrite_sse_stream(
                                 guarded_stream, client_model or dec.external_model,
                                 usage_holder,
-                            ):
-                                yield chunk
+                            )
                         else:
                             # Backend principal: repasse bruto, sem parse
-                            async for chunk in guarded_stream:
-                                yield chunk
+                            out_stream = guarded_stream
+                        if safeguards_envelope:
+                            out_stream = attach_safeguard_results_to_sse(
+                                out_stream, safeguards_envelope
+                            )
+                        async for chunk in out_stream:
+                            yield chunk
                     except (httpx.ReadError, httpx.ReadTimeout) as exc:
                         # Depois que bytes chegaram nao e seguro reiniciar a
                         # chamada escondendo duplicacoes/tool calls. Feche a
@@ -3840,6 +3865,10 @@ async def _smart_proxy_forward(
                     content, usage = rewrite_json_model(
                         content, client_model or decision.external_model
                     )
+                    if safeguards_envelope:
+                        content = attach_safeguard_results_to_json(
+                            content, safeguards_envelope
+                        )
                     response_headers = _filter_proxy_headers(dict(resp.headers))
                     response_headers.update(telemetry)
                     if decision.backend_type == "platform":
@@ -4084,7 +4113,27 @@ async def openai_proxy(
             custom_tool_conversions,
             target_instance.get("backend_id") or target_instance.get("port"),
         )
-    if custom_tool_conversions or (requested_model and forward_model != requested_model):
+    safeguards_envelope = (
+        peek_safeguards(received_payload or data)
+        if _is_anthropic_messages_path(path_norm)
+        else None
+    )
+    forward_provider = (
+        target_instance.get("provider")
+        if target_instance.get("backend_type") == "platform"
+        else None
+    )
+    stripped_safeguards = bool(
+        safeguards_envelope
+        and not backend_supports_native_safeguards(forward_provider)
+    )
+    if stripped_safeguards:
+        data = strip_safeguards(data)
+    if (
+        custom_tool_conversions
+        or (requested_model and forward_model != requested_model)
+        or stripped_safeguards
+    ):
         data = {**data, "model": forward_model}
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
@@ -4188,13 +4237,17 @@ async def openai_proxy(
                             byte_iter or response.aiter_bytes()
                         )
                         if client_facing_model:
-                            async for chunk in rewrite_sse_stream(
+                            out_stream = rewrite_sse_stream(
                                 guarded_stream, client_facing_model
-                            ):
-                                yield chunk
+                            )
                         else:
-                            async for chunk in guarded_stream:
-                                yield chunk
+                            out_stream = guarded_stream
+                        if safeguards_envelope:
+                            out_stream = attach_safeguard_results_to_sse(
+                                out_stream, safeguards_envelope
+                            )
+                        async for chunk in out_stream:
+                            yield chunk
                     finally:
                         await response.aclose()
 
@@ -4234,6 +4287,10 @@ async def openai_proxy(
             content = resp.content
             if client_facing_model and target_instance.get("backend_type") != "platform":
                 content, _ = rewrite_json_model(content, client_facing_model)
+            if safeguards_envelope:
+                content = attach_safeguard_results_to_json(
+                    content, safeguards_envelope
+                )
             response_headers = _filter_proxy_headers(dict(resp.headers))
             response_headers.pop("content-length", None)
             return Response(
@@ -4254,6 +4311,10 @@ async def openai_proxy(
         content = await resp.aread()
         if client_facing_model and target_instance.get("backend_type") != "platform":
             content, _ = rewrite_json_model(content, client_facing_model)
+        if safeguards_envelope:
+            content = attach_safeguard_results_to_json(
+                content, safeguards_envelope
+            )
         response_headers = _filter_proxy_headers(dict(resp.headers))
         response_headers.pop("content-length", None)
         return Response(
