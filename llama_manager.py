@@ -2592,6 +2592,17 @@ def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 ),
                 None,
             )
+        if target_entry is None:
+            target_entry = next(
+                (
+                    m for m in models
+                    if (m.get("meta") or {}).get("root_model") == target_text
+                    or (m.get("meta") or {}).get("alias_target") == target_text
+                ),
+                None,
+            )
+        if target_entry is None:
+            target_entry = _find_model_in_v1_list(models, target_text)
         if target_entry is not None:
             entry = dict(target_entry)
             entry["owned_by"] = "llamacpp"
@@ -2601,19 +2612,12 @@ def _inject_model_aliases(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "alias_target": target_text,
                 "is_alias": True,
             }
+            entry["id"] = alias_key
+            alias_entries.append(entry)
+            seen_alias_ids.add(alias_key)
         else:
-            entry = platform_model_listing_entry(
-                {"id": target_text, "owned_by": "platform"}, provider="platform"
-            )
-            entry["meta"] = {
-                **(entry.get("meta") or {}),
-                "root_model": target_text,
-                "alias_target": target_text,
-                "is_alias": True,
-            }
-        entry["id"] = alias_key
-        alias_entries.append(entry)
-        seen_alias_ids.add(alias_key)
+            # Não expõe alias cujo modelo alvo não esteja disponível/carregado
+            continue
     return alias_entries + remaining
 
 
