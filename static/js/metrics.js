@@ -1,13 +1,13 @@
-import { state } from './state.js?v=4.2.53';
-import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.2.53';
+import { state } from './state.js?v=4.2.54';
+import { apiFetch, sessionExpiredHandled, showToast } from './auth.js?v=4.2.54';
 import {
     applyGpuWeightsToUI, getContextSize, setContextSize,
     hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
     updateAutoBalanceProfileBadge, syncAutoBalanceCancelButton,
     showAutoBalanceProgress, hideAutoBalanceProgress,
-} from './gpu.js?v=4.2.53';
-import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.53';
-import { updateProxyPanel } from './proxy.js?v=4.2.53';
+} from './gpu.js?v=4.2.54';
+import { getTabActionsHtml, refreshPlatformTabsFromStatus } from './models.js?v=4.2.54';
+import { updateProxyPanel } from './proxy.js?v=4.2.54';
 
 export async function updateStatus() {
     try {
@@ -127,7 +127,7 @@ export async function updateStatus() {
                     showAutoBalanceCapacityAlert(recovery, tabId);
                 } else if (!recovery.cancelled) {
                     if (recovery.smart_proposal) {
-                        import('./models.js?v=4.2.53').then(m => {
+                        import('./models.js?v=4.2.54').then(m => {
                             m.restoreScreenSnapshot(tabId);
                             m.showProposedConfig(
                                 tabId,
@@ -206,7 +206,13 @@ export async function updateStatus() {
             hideAutoBalanceProgress();
         }
 
-        window.updateModels();
+        const now = Date.now();
+        const instanceSignature = (data.instances || []).map(i => `${i.card_id || i.model_path}:${i.status}`).sort().join(';');
+        if (state._lastInstanceSig !== instanceSignature || !state._lastModelsUpdate || (now - state._lastModelsUpdate) > 10000) {
+            state._lastInstanceSig = instanceSignature;
+            state._lastModelsUpdate = now;
+            window.updateModels?.();
+        }
     } catch (e) { console.error("updateStatus error:", e); }
 }
 

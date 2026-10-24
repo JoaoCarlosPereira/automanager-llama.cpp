@@ -529,7 +529,16 @@ def _get_active_agy_email() -> Optional[str]:
     return None
 
 
-def fetch_antigravity_cli(auth: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+_AGY_CLI_LOCK = threading.Lock()
+_AGY_CLI_CACHE: Dict[str, Any] = {"result": None, "fetched_at": 0.0}
+_AGY_CLI_MIN_INTERVAL: float = 60.0
+
+
+def fetch_antigravity_cli(
+    auth: Optional[Dict[str, Any]] = None,
+    *,
+    min_interval: float = _AGY_CLI_MIN_INTERVAL,
+) -> Optional[Dict[str, Any]]:
     """Query local agy CLI binary for authoritative live quota when available."""
     binary = _find_antigravity_binary()
     if not binary:
@@ -542,25 +551,34 @@ def fetch_antigravity_cli(auth: Optional[Dict[str, Any]] = None) -> Optional[Dic
             if active_email and active_email != auth_email:
                 return None
 
-    try:
-        proc = subprocess.run(
-            [str(binary), "-p", "/usage", "--output-format", "json"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if proc.returncode == 0 and proc.stdout:
-            data = json.loads(proc.stdout)
-            parsed = parse_antigravity_quota(data)
-            if (
-                parsed.get("session_remaining_pct") is not None
-                or parsed.get("weekly_remaining_pct") is not None
-            ):
-                return parsed
-    except Exception as exc:
-        logger.debug("antigravity CLI usage query failed: %s", exc)
-    return None
+    with _AGY_CLI_LOCK:
+        now = time.time()
+        if min_interval > 0 and (now - _AGY_CLI_CACHE["fetched_at"]) < min_interval:
+            cached = _AGY_CLI_CACHE.get("result")
+            if cached is not None:
+                return dict(cached)
+
+        try:
+            proc = subprocess.run(
+                [str(binary), "-p", "/usage", "--output-format", "json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                data = json.loads(proc.stdout)
+                parsed = parse_antigravity_quota(data)
+                if (
+                    parsed.get("session_remaining_pct") is not None
+                    or parsed.get("weekly_remaining_pct") is not None
+                ):
+                    _AGY_CLI_CACHE["result"] = dict(parsed)
+                    _AGY_CLI_CACHE["fetched_at"] = time.time()
+                    return parsed
+        except Exception as exc:
+            logger.debug("antigravity CLI usage query failed: %s", exc)
+        return None
 
 
 def parse_quota_headers(headers: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -793,6 +811,7 @@ class PlatformQuotaService:
         )
         self._cache_ttl = cache_ttl
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._fetched_at: float = 0.0
         # auth_index → unix timestamp until which Claude usage calls are skipped
@@ -804,6 +823,9 @@ class PlatformQuotaService:
             self._cache.clear()
             self._fetched_at = 0.0
             self._claude_backoff_until.clear()
+        with _AGY_CLI_LOCK:
+            _AGY_CLI_CACHE["result"] = None
+            _AGY_CLI_CACHE["fetched_at"] = 0.0
         self._clear_disk_cache()
 
     def _load_disk_cache(self) -> None:
@@ -949,23 +971,32 @@ class PlatformQuotaService:
 
     def snapshot(self, *, force: bool = False) -> Dict[str, Dict[str, Any]]:
         """Return provider → quota map, refreshing when stale."""
+        now = time.time()
         with self._lock:
-            fresh = (time.time() - self._fetched_at) < self._cache_ttl and not force
+            fresh = (now - self._fetched_at) < self._cache_ttl and not force
             if fresh and self._cache:
                 return {k: dict(v) for k, v in self._cache.items()}
 
-        try:
-            refreshed = self._refresh()
-        except Exception as exc:
-            logger.debug("platform quota refresh failed: %s", exc)
+        call_time = time.time()
+        with self._refresh_lock:
             with self._lock:
-                return {k: dict(v) for k, v in self._cache.items()}
+                if self._fetched_at >= call_time and self._cache:
+                    return {k: dict(v) for k, v in self._cache.items()}
+                if (time.time() - self._fetched_at) < self._cache_ttl and not force and self._cache:
+                    return {k: dict(v) for k, v in self._cache.items()}
 
-        with self._lock:
-            self._cache = refreshed
-            self._fetched_at = time.time()
-            self._save_disk_cache()
-            return {k: dict(v) for k, v in self._cache.items()}
+            try:
+                refreshed = self._refresh()
+            except Exception as exc:
+                logger.debug("platform quota refresh failed: %s", exc)
+                with self._lock:
+                    return {k: dict(v) for k, v in self._cache.items()}
+
+            with self._lock:
+                self._cache = refreshed
+                self._fetched_at = time.time()
+                self._save_disk_cache()
+                return {k: dict(v) for k, v in self._cache.items()}
 
     def for_provider(self, provider: str, *, force: bool = False) -> Dict[str, Any]:
         key = _normalize_provider(provider) or str(provider or "")

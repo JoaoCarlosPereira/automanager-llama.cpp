@@ -646,13 +646,13 @@ def default_executable_resolver(command: str) -> Optional[str]:
             return norm
         return None
 
-    for directory in _search_bin_directories():
-        resolved = add(os.path.join(directory, command))
+    for path in _tool_specific_paths(command):
+        resolved = add(path)
         if resolved:
             return resolved
 
-    for path in _tool_specific_paths(command):
-        resolved = add(path)
+    for directory in _search_bin_directories():
+        resolved = add(os.path.join(directory, command))
         if resolved:
             return resolved
 
@@ -683,7 +683,7 @@ class CLIProxySidecarManager:
         popen_factory: PopenFactory = subprocess.Popen,
         health_checker: Optional[HealthChecker] = None,
         port_available: Optional[PortChecker] = None,
-        health_timeout: float = 15.0,
+        health_timeout: float = 30.0,
     ) -> None:
         self._platform_manager = platform_manager
         self._log_manager = log_manager
@@ -916,8 +916,10 @@ class PlatformIntegrationManager:
                     "reason": None,
                     "account_id": account.id,
                     "base_url": account.base_url,
+                    "api_type": account.api_type,
                     "accounts": [{"id": account.id, "label": account.name,
-                                  "base_url": account.base_url, "status": account.status}],
+                                  "base_url": account.base_url, "api_type": account.api_type,
+                                  "status": account.status}],
                     "account_count": 1,
                     "proxy_eligible": bool(account_config.get("proxy_eligible", False)),
                     "vision_enabled": bool(account_config.get("vision_enabled", True)),
@@ -1210,6 +1212,7 @@ class PlatformIntegrationManager:
                     "id": acc.id,
                     "label": acc.name,
                     "base_url": acc.base_url,
+                    "api_type": acc.api_type,
                     "status": acc.status,
                 }
                 if acc.cooldown_until:

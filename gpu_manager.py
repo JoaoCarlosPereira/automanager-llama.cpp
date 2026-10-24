@@ -188,6 +188,7 @@ class GPUDetector:
         self._model_layers_cache: Dict[str, Tuple[float, int]] = {}
         self._model_layers_cache_ttl: float = 300.0  # 5 minutes — model files rarely change
         self._model_mtp_cache: Dict[str, Tuple[float, bool]] = {}
+        self._gpu_fail_until: float = 0.0
 
     def _read_cpu_power_w(self) -> Optional[float]:
         """Estimate CPU package power (RAPL delta or hwmon instantaneous)."""
@@ -226,6 +227,10 @@ class GPUDetector:
             env = os.environ.copy()
             env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             bin_path = _llama_server_cmd()
+            bin_dir = os.path.dirname(bin_path)
+            ld_path = env.get("LD_LIBRARY_PATH", "")
+            if bin_dir and bin_dir not in ld_path.split(":"):
+                env["LD_LIBRARY_PATH"] = f"{bin_dir}:{ld_path}" if ld_path else bin_dir
             output = subprocess.check_output(
                 [bin_path, "--help"],
                 env=env, timeout=10, stderr=subprocess.STDOUT,
@@ -246,24 +251,25 @@ class GPUDetector:
             pass
 
         # Fallback to nvidia-smi
-        try:
-            output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=index,name,memory.total",
-                 "--format=csv,noheader,nounits"],
-                timeout=10,
-            ).decode()
-            for line in output.strip().split("\n"):
-                if not line.strip():
-                    continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 3:
-                    result.append({
-                        "index": int(parts[0]),
-                        "name": parts[1],
-                        "vram": int(parts[2]),
-                    })
-        except Exception as e:
-            logger.debug(f"GPU detection error: {e}")
+        if not result:
+            try:
+                output = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=index,name,memory.total",
+                     "--format=csv,noheader,nounits"],
+                    timeout=10,
+                ).decode()
+                for line in output.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 3:
+                        result.append({
+                            "index": int(parts[0]),
+                            "name": parts[1],
+                            "vram": int(parts[2]),
+                        })
+            except Exception as e:
+                logger.debug(f"GPU detection error: {e}")
 
         self._gpus_cache = result
         self._gpus_cache_time = now
@@ -280,10 +286,9 @@ class GPUDetector:
             return self._metrics_cache
 
         gpus: List[Dict[str, Any]] = []
-        if self._gpus_cache is None:
-            self.detect_gpus()
-
-        if self._gpus_cache:
+        if self._gpus_cache is not None and not self._gpus_cache:
+            pass
+        elif now >= self._gpu_fail_until:
             try:
                 query = (
                     "--query-gpu=index,utilization.gpu,memory.used,memory.total,"
@@ -294,7 +299,10 @@ class GPUDetector:
                         ["nvidia-smi", query, "--format=csv,noheader,nounits"],
                         timeout=10,
                     ).decode()
-                except subprocess.CalledProcessError:
+                except subprocess.CalledProcessError as err:
+                    # If driver communication failed (code 9), retrying legacy query won't help
+                    if err.returncode == 9:
+                        raise
                     # Older drivers may not expose PCIe link width. Keep the other
                     # GPU metrics available and let the UI show an unknown width.
                     legacy_query = (
@@ -331,7 +339,7 @@ class GPUDetector:
                         })
             except Exception as e:
                 logger.debug(f"GPU metrics error: {e}")
-                self._gpus_cache = None
+                self._gpu_fail_until = now + 10.0
 
         try:
             vm = psutil.virtual_memory()
@@ -938,14 +946,9 @@ def mtp_cli_args(
         reason = "MTP ativado na UI (model-info inconclusivo)"
 
     token_str = str(tokens)
-    flags = [
-        "--spec-type", f"draft-{draft_type}",
-        "--spec-draft-n-max", token_str,
-        "--spec-draft-n-min", token_str,
-        "--spec-draft-p-min", "0.0",
-        "--spec-draft-sampling", "greedy",
-        "--spec-draft-backend-sampling",
-    ]
+    flags = ["--spec-type", f"draft-{draft_type}", "--spec-draft-n-max", token_str]
+    if draft_type == "mtp":
+        flags.extend(["--spec-draft-n-min", token_str])
     if mtp_model_path:
         flags[0:0] = [
             "--spec-draft-model", mtp_model_path,

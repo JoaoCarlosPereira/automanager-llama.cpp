@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.53';
-import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.53';
+import { state } from './state.js?v=4.2.54';
+import { apiFetch, sessionExpiredHandled, showToast, showConfirm, showPrompt } from './auth.js?v=4.2.54';
 import {
     getContextSize, setContextSize, resetToDefaults, applyGpuWeightsToUI,
     updateTotal, hideAutoBalanceCapacityAlert, showAutoBalanceCapacityAlert,
@@ -23,7 +23,7 @@ import {
     detectTurboquantPreset,
     getEffectiveCacheTypes,
     isTurboquantBin,
-} from './gpu.js?v=4.2.53';
+} from './gpu.js?v=4.2.54';
 
 const tabLogHeightObservers = new Map();
 let tabLogHeightResizeTimer = null;
@@ -93,9 +93,9 @@ if (typeof window !== 'undefined') {
         });
     }, true);
 }
-import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.53';
-import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.53';
-import { checkForUpdates } from './version.js?v=4.2.53';
+import { setProxyPrimary, setProxyEligible, setProxyMaxParallel } from './proxy.js?v=4.2.54';
+import { attachTabLogs, detachTabLogs } from './metrics.js?v=4.2.54';
+import { checkForUpdates } from './version.js?v=4.2.54';
 
 // --- TAB MANAGEMENT ---
 
@@ -139,6 +139,8 @@ const PLATFORM_LIMITS_INFO = {
 
 let platformQuotaPollTimer = null;
 let platformQuotaRotateTimer = null;
+let initialPlatformQuotaFetched = false;
+let isRefreshingPlatformQuotas = false;
 const QUOTA_ACCOUNT_ROTATE_MS = 5000;
 const QUOTA_ACCOUNT_ROTATE_PAUSE_MS = 20000;
 /** @type {WeakMap<Element, object>|null} */
@@ -559,6 +561,8 @@ export function applyAllQuotaShells(quotas = null) {
 }
 
 export async function refreshPlatformQuotas({ force = false } = {}) {
+    if (isRefreshingPlatformQuotas) return;
+    isRefreshingPlatformQuotas = true;
     try {
         const res = await apiFetch(`/platforms/quota${force ? '?refresh=true' : ''}`);
         if (!res.ok) return;
@@ -575,6 +579,8 @@ export async function refreshPlatformQuotas({ force = false } = {}) {
         applyAllQuotaShells(quotas);
     } catch (err) {
         console.debug('refreshPlatformQuotas:', err);
+    } finally {
+        isRefreshingPlatformQuotas = false;
     }
 }
 
@@ -2445,12 +2451,12 @@ function buildGenericOpenAICardsHtml(platform) {
     const creatorCard = `
         <div class="model-item-container platform-card group p-3 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 transition-all cursor-pointer hover:bg-amber-500/10"
              data-generic-openai-creator="true"
-             title="Cadastrar uma API compatível com OpenAI"
+             title="Cadastrar uma API compatível com OpenAI ou Anthropic"
              onclick="manageGenericOpenAIAuth('platform:generic-openai', 'Cadastrar API Genérica')">
             <div class="flex items-center justify-between gap-3">
                 <div class="min-w-0">
                     <p class="model-name text-ui-body font-bold text-slate-100 truncate">Cadastrar API Genérica</p>
-                    <p class="text-ui-label text-slate-400 mt-0.5">Adicione um endpoint compatível com OpenAI</p>
+                    <p class="text-ui-label text-slate-400 mt-0.5">Adicione um endpoint compatível com OpenAI ou Anthropic</p>
                 </div>
                 <span class="w-9 h-9 shrink-0 rounded-lg bg-amber-500/15 text-amber-300 flex items-center justify-center">
                     <i class="fas fa-plus"></i>
@@ -3079,9 +3085,10 @@ export async function updateModels() {
             await renderList();
         }
         ensurePlatformQuotaPolling();
-        // First paint may have empty cache; force a real upstream refresh.
-        const needsQuota = (data.platforms || []).some((p) => QUOTA_RING_PROVIDERS.has(p.provider));
-        refreshPlatformQuotas({ force: needsQuota });
+        if (!initialPlatformQuotaFetched) {
+            initialPlatformQuotaFetched = true;
+            refreshPlatformQuotas({ force: false });
+        }
     } catch (e) {
         console.error('updateModels error:', e);
     }
@@ -3591,9 +3598,9 @@ export async function manageGenericOpenAIAuth(backendId, displayName) {
 
 window.manageGenericOpenAIAuth = manageGenericOpenAIAuth;
 
-window.manageGenericOpenAIAccount = async function(id, name, baseUrl) {
+window.manageGenericOpenAIAccount = async function(id, name, baseUrl, apiType = 'openai') {
     await manageGenericOpenAIAuth('platform:generic-openai', name || 'API Genérica');
-    editGenericOpenAIAccount(id, name, baseUrl);
+    editGenericOpenAIAccount(id, name, baseUrl, apiType);
 };
 
 export function closeGenericOpenAIAuthModal() {
@@ -3606,6 +3613,40 @@ export function closeGenericOpenAIAuthModal() {
 }
 
 window.closeGenericOpenAIAuthModal = closeGenericOpenAIAuthModal;
+
+window.onGenericAPITypeChange = function() {
+    const apiType = document.getElementById('generic-openai-apitype')?.value || 'openai';
+    const urlInput = document.getElementById('generic-openai-baseurl');
+    const urlHint = document.getElementById('generic-openai-baseurl-hint');
+    const keyInput = document.getElementById('generic-openai-apikey');
+    if (apiType === 'anthropic') {
+        if (urlInput) {
+            urlInput.placeholder = 'https://api.anthropic.com/v1';
+            if (urlInput.value === 'https://api.openai.com/v1') {
+                urlInput.value = 'https://api.anthropic.com/v1';
+            }
+        }
+        if (urlHint) {
+            urlHint.textContent = 'Vazio para usar o padrão da Anthropic.';
+        }
+        if (keyInput) {
+            keyInput.placeholder = 'sk-ant-...';
+        }
+    } else {
+        if (urlInput) {
+            urlInput.placeholder = 'https://api.openai.com/v1';
+            if (urlInput.value === 'https://api.anthropic.com/v1') {
+                urlInput.value = 'https://api.openai.com/v1';
+            }
+        }
+        if (urlHint) {
+            urlHint.textContent = 'Vazio para usar o padrão da OpenAI.';
+        }
+        if (keyInput) {
+            keyInput.placeholder = 'sk-...';
+        }
+    }
+};
 
 async function loadGenericOpenAIAccounts() {
     const listContainer = document.getElementById('generic-openai-accounts-list');
@@ -3625,10 +3666,18 @@ async function loadGenericOpenAIAccounts() {
 
         let html = '';
         accounts.forEach(acc => {
+            const isAnthropic = acc.api_type === 'anthropic';
+            const typeBadge = isAnthropic
+                ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono font-semibold mr-1.5 border border-purple-500/30">Anthropic</span>'
+                : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono font-semibold mr-1.5 border border-blue-500/30">OpenAI</span>';
+
             html += `
                 <div class="flex items-center justify-between p-3 rounded-xl border border-slate-700 bg-slate-800/50 hover:border-amber-500/30 transition-colors group">
                     <div class="flex-1 min-w-0 pr-4">
-                        <div class="font-bold text-white text-sm truncate">${escapeHtml(acc.name)}</div>
+                        <div class="font-bold text-white text-sm truncate flex items-center">
+                            ${typeBadge}
+                            <span class="truncate">${escapeHtml(acc.name)}</span>
+                        </div>
                         <div class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(acc.base_url || 'Endpoint não configurado')}</div>
                         ${acc.is_valid ?
                             '<div class="text-[10px] text-emerald-400 font-bold uppercase mt-1"><i class="fas fa-check-circle mr-1"></i>Válida</div>' :
@@ -3657,7 +3706,7 @@ async function loadGenericOpenAIAccounts() {
                 if (button.dataset.genericOpenaiAction === 'validate') {
                     validateGenericOpenAIAccount(account.id);
                 } else if (button.dataset.genericOpenaiAction === 'edit') {
-                    editGenericOpenAIAccount(account.id, account.name, account.base_url || '');
+                    editGenericOpenAIAccount(account.id, account.name, account.base_url || '', account.api_type || 'openai');
                 } else if (button.dataset.genericOpenaiAction === 'delete') {
                     deleteGenericOpenAIAccount(account.id, account.name);
                 }
@@ -3672,6 +3721,9 @@ async function loadGenericOpenAIAccounts() {
 window.showGenericOpenAIForm = function() {
     document.getElementById('generic-openai-id').value = '';
     document.getElementById('generic-openai-name').value = '';
+    const apiTypeSelect = document.getElementById('generic-openai-apitype');
+    if (apiTypeSelect) apiTypeSelect.value = 'openai';
+    if (window.onGenericAPITypeChange) window.onGenericAPITypeChange();
     document.getElementById('generic-openai-baseurl').value = 'https://api.openai.com/v1';
     document.getElementById('generic-openai-apikey').value = '';
     document.getElementById('generic-openai-apikey').required = true;
@@ -3687,9 +3739,12 @@ window.cancelGenericOpenAIForm = function() {
     document.getElementById('generic-openai-add-btn-container').classList.remove('hidden');
 };
 
-window.editGenericOpenAIAccount = function(id, name, baseUrl) {
+window.editGenericOpenAIAccount = function(id, name, baseUrl, apiType = 'openai') {
     document.getElementById('generic-openai-id').value = id;
     document.getElementById('generic-openai-name').value = name;
+    const apiTypeSelect = document.getElementById('generic-openai-apitype');
+    if (apiTypeSelect) apiTypeSelect.value = apiType || 'openai';
+    if (window.onGenericAPITypeChange) window.onGenericAPITypeChange();
     document.getElementById('generic-openai-baseurl').value = baseUrl;
     document.getElementById('generic-openai-apikey').value = '';
     document.getElementById('generic-openai-apikey').required = false;
@@ -3707,10 +3762,13 @@ window.saveGenericOpenAIAccount = async function(event) {
     const name = document.getElementById('generic-openai-name').value;
     const baseUrl = document.getElementById('generic-openai-baseurl').value;
     const apiKey = document.getElementById('generic-openai-apikey').value;
+    const apiType = document.getElementById('generic-openai-apitype')?.value || 'openai';
 
+    const defaultUrl = apiType === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
     const payload = {
         name: name,
-        base_url: baseUrl.trim() || 'https://api.openai.com/v1'
+        api_type: apiType,
+        base_url: apiType === 'anthropic' && !baseUrl.trim() ? defaultUrl : (baseUrl.trim() || 'https://api.openai.com/v1')
     };
 
     if (apiKey) {

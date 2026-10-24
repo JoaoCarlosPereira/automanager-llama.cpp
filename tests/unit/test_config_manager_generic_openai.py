@@ -19,6 +19,35 @@ def test_generic_openai_config_crud(tmp_path):
     assert len(cm.get_generic_openai_accounts()) == 0
 
 
+def test_generic_anthropic_config_crud(tmp_path):
+    cm = ConfigManager(str(tmp_path / "config.json"))
+
+    acc = cm.add_generic_openai_account(
+        "Claude Official", "https://api.anthropic.com/v1", "sk-ant-123", api_type="anthropic"
+    )
+    assert acc["api_type"] == "anthropic"
+    assert acc["base_url"] == "https://api.anthropic.com/v1"
+
+    accounts = cm.get_generic_openai_accounts()
+    assert len(accounts) == 1
+    assert accounts[0]["api_type"] == "anthropic"
+
+    raw = cm.get_generic_openai_accounts_raw()
+    assert raw[0]["api_type"] == "anthropic"
+    assert raw[0]["api_key"] == "sk-ant-123"
+
+    # Switch api_type to openai
+    updated = cm.update_generic_openai_account(acc["id"], {"api_type": "openai"})
+    assert updated["api_type"] == "openai"
+
+    # Reject invalid api_type
+    with pytest.raises(ValueError):
+        cm.add_generic_openai_account("Bad", "https://api.test/v1", "sk-1", api_type="unknown")
+
+    with pytest.raises(ValueError):
+        cm.update_generic_openai_account(acc["id"], {"api_type": "invalid"})
+
+
 def test_remove_platform_settings_cleans_smart_proxy_references(tmp_path):
     cm = ConfigManager(str(tmp_path / "config.json"))
     backend_id = "platform:generic-openai:account-1"

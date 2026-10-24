@@ -18,17 +18,28 @@ class GenericOpenAIAccount:
     name: str
     base_url: str
     api_key: str
+    api_type: str = "openai"
     status: str = "available"
     cooldown_until: Optional[float] = None
     rate_limited_until: Optional[float] = None
 
     @property
     def completions_url(self) -> str:
-        return f"{self.base_url}/chat/completions"
+        base = self.base_url.rstrip("/")
+        if self.api_type == "anthropic":
+            if base.endswith("/v1"):
+                return f"{base}/messages"
+            return f"{base}/v1/messages"
+        return f"{base}/chat/completions"
 
     @property
     def models_url(self) -> str:
-        return f"{self.base_url}/models"
+        base = self.base_url.rstrip("/")
+        if self.api_type == "anthropic":
+            if base.endswith("/v1"):
+                return f"{base}/models"
+            return f"{base}/v1/models"
+        return f"{base}/models"
 
 
 @dataclass(frozen=True)
@@ -40,6 +51,7 @@ class GenericOpenAIModel:
     capabilities: frozenset = field(default_factory=lambda: frozenset(["text"]))
     backend_id: str = "platform:generic-openai"
     account_id: Optional[str] = None
+    api_type: str = "openai"
 
 
 class GenericOpenAIProvider:
@@ -47,13 +59,24 @@ class GenericOpenAIProvider:
         self.account = account
         self.timeout = timeout
         headers = {}
-        if account.api_key:
-            headers["Authorization"] = f"Bearer {account.api_key}"
+        if account.api_type == "anthropic":
+            if account.api_key:
+                headers["x-api-key"] = account.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            if account.api_key:
+                headers["Authorization"] = f"Bearer {account.api_key}"
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers)
 
     async def health_check(self) -> bool:
         try:
             resp = await self._client.get(self.account.models_url)
+            if resp.is_success:
+                return True
+            if self.account.api_type == "anthropic" and resp.status_code in (404, 405):
+                test_resp = await self._client.post(self.account.completions_url, json={})
+                if test_resp.status_code == 400:
+                    return True
             resp.raise_for_status()
             return True
         except Exception as e:
@@ -63,16 +86,35 @@ class GenericOpenAIProvider:
     async def fetch_models(self) -> List[GenericOpenAIModel]:
         try:
             resp = await self._client.get(self.account.models_url)
+            if resp.status_code in (404, 405) and self.account.api_type == "anthropic":
+                fallback_ids = [
+                    ("claude-3-7-sonnet-latest", "Claude 3.7 Sonnet"),
+                    ("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet"),
+                    ("claude-3-5-haiku-latest", "Claude 3.5 Haiku"),
+                    ("claude-3-opus-latest", "Claude 3 Opus"),
+                ]
+                return [
+                    GenericOpenAIModel(
+                        id=model_id,
+                        display_name=display_name,
+                        context_length=200000,
+                        output_token_limit=8192,
+                        account_id=self.account.id,
+                        api_type="anthropic",
+                    )
+                    for model_id, display_name in fallback_ids
+                ]
             resp.raise_for_status()
             data = resp.json()
             models_list = data.get("data", [])
             return [
                 GenericOpenAIModel(
                     id=m.get("id"),
-                    display_name=m.get("id"),
-                    context_length=m.get("context_length") or m.get("inputTokenLimit"),
-                    output_token_limit=m.get("outputTokenLimit"),
+                    display_name=m.get("display_name") or m.get("id"),
+                    context_length=m.get("context_length") or m.get("inputTokenLimit") or (200000 if self.account.api_type == "anthropic" else None),
+                    output_token_limit=m.get("outputTokenLimit") or (8192 if self.account.api_type == "anthropic" else None),
                     account_id=self.account.id,
+                    api_type=self.account.api_type,
                 )
                 for m in models_list if m.get("id")
             ]
@@ -191,6 +233,7 @@ class GenericOpenAIAccountManager:
                 name=acc["name"],
                 base_url=acc["base_url"],
                 api_key=acc.get("api_key", ""),
+                api_type=acc.get("api_type", "openai"),
                 status=status,
                 cooldown_until=cooldown_until,
                 rate_limited_until=rate_limited_until,
@@ -204,13 +247,18 @@ class GenericOpenAIAccountManager:
             "rate_limited_until": account.rate_limited_until,
         })
 
-    def add_account(self, name: str, base_url: str, api_key: str) -> GenericOpenAIAccount:
-        created = self.config_manager.add_generic_openai_account(name, base_url, api_key)
+    def add_account(
+        self, name: str, base_url: str, api_key: str, api_type: str = "openai"
+    ) -> GenericOpenAIAccount:
+        created = self.config_manager.add_generic_openai_account(
+            name, base_url, api_key, api_type=api_type
+        )
         return GenericOpenAIAccount(
             id=created["id"],
             name=created["name"],
             base_url=created["base_url"],
             api_key=api_key,
+            api_type=created.get("api_type", "openai"),
         )
 
     def remove_account(self, account_id: str) -> None:

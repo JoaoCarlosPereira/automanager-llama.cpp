@@ -1,4 +1,4 @@
-import { apiFetch } from './auth.js?v=4.2.53';
+import { apiFetch } from './auth.js?v=4.2.54';
 
 const DISMISS_KEY = 'version-update-dismissed';
 let checked = false;

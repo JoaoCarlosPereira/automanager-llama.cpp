@@ -854,6 +854,7 @@ class ConfigManager:
                 "name": acc.get("name", ""),
                 "base_url": acc.get("base_url", ""),
                 "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "api_type": acc.get("api_type", "openai"),
                 "status": acc.get("status", "available"),
                 "cooldown_until": acc.get("cooldown_until"),
                 "rate_limited_until": acc.get("rate_limited_until"),
@@ -867,11 +868,23 @@ class ConfigManager:
         accounts = config.get("generic_openai_accounts")
         if not isinstance(accounts, list):
             return []
-        return [dict(acc) for acc in accounts if isinstance(acc, dict)]
+        res = []
+        for acc in accounts:
+            if isinstance(acc, dict):
+                item = dict(acc)
+                item.setdefault("api_type", "openai")
+                res.append(item)
+        return res
 
-    def add_generic_openai_account(self, name: str, base_url: str, api_key: str) -> dict:
+    def add_generic_openai_account(
+        self, name: str, base_url: str, api_key: str, api_type: str = "openai"
+    ) -> dict:
         if not name or not base_url or not api_key:
             raise ValueError("name, base_url and api_key are required")
+
+        api_type_norm = str(api_type or "openai").strip().lower()
+        if api_type_norm not in ("openai", "anthropic"):
+            raise ValueError("api_type deve ser 'openai' ou 'anthropic'")
 
         # Normalize base_url
         base_url = base_url.strip()
@@ -889,6 +902,7 @@ class ConfigManager:
             "name": name,
             "base_url": base_url,
             "api_key": api_key,
+            "api_type": api_type_norm,
             "status": "available",
             "cooldown_until": None,
             "rate_limited_until": None,
@@ -902,6 +916,7 @@ class ConfigManager:
             "name": account["name"],
             "base_url": account["base_url"],
             "api_key": self._mask_api_key(api_key),
+            "api_type": account["api_type"],
             "status": account["status"],
             "cooldown_until": account["cooldown_until"],
             "rate_limited_until": account["rate_limited_until"],
@@ -940,6 +955,11 @@ class ConfigManager:
                 acc["base_url"] = base_url
             if "api_key" in updates and updates["api_key"]:
                 acc["api_key"] = updates["api_key"]
+            if "api_type" in updates and updates["api_type"]:
+                val = str(updates["api_type"]).strip().lower()
+                if val not in ("openai", "anthropic"):
+                    raise ValueError("api_type deve ser 'openai' ou 'anthropic'")
+                acc["api_type"] = val
             if "created_at" in updates:
                 acc["created_at"] = updates["created_at"]
             for runtime_field in ("status", "cooldown_until", "rate_limited_until"):
@@ -952,6 +972,7 @@ class ConfigManager:
                 "name": acc.get("name", ""),
                 "base_url": acc.get("base_url", ""),
                 "api_key": self._mask_api_key(acc.get("api_key", "")),
+                "api_type": acc.get("api_type", "openai"),
                 "status": acc.get("status", "available"),
                 "cooldown_until": acc.get("cooldown_until"),
                 "rate_limited_until": acc.get("rate_limited_until"),

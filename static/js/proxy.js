@@ -1,7 +1,7 @@
 // Modo Proxy Inteligente — controles de configuração (task 07) e painel de
 // monitoramento (task 08). Consome /proxy/config, /models/proxy,
 // /proxy/status e /proxy/sessions.
-import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.53';
+import { apiFetch, showToast, showConfirm } from './auth.js?v=4.2.54';
 
 // Quota helpers vivem em models.js; import dinâmico evita ciclo proxy ↔ models.
 const QUOTA_PROVIDERS = new Set(['codex', 'claude', 'antigravity']);
@@ -9,7 +9,7 @@ let quotaHelpersPromise = null;
 
 function loadQuotaHelpers() {
     if (!quotaHelpersPromise) {
-        quotaHelpersPromise = import('./models.js?v=4.2.53').catch((err) => {
+        quotaHelpersPromise = import('./models.js?v=4.2.54').catch((err) => {
             console.debug('quota helpers:', err);
             quotaHelpersPromise = null;
             return null;

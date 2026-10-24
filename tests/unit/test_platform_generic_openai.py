@@ -193,3 +193,177 @@ async def test_provider_forwards_payload_and_streams():
     async with provider.stream_chat_completion({**payload, "stream": True}) as response:
         assert b"data: ok" in await response.aread()
     await provider.close()
+
+
+def test_anthropic_account_urls_and_headers():
+    acc_v1 = GenericOpenAIAccount(
+        id="acc-ant-1",
+        name="Claude API",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test-key",
+        api_type="anthropic",
+    )
+    assert acc_v1.completions_url == "https://api.anthropic.com/v1/messages"
+    assert acc_v1.models_url == "https://api.anthropic.com/v1/models"
+
+    acc_bare = GenericOpenAIAccount(
+        id="acc-ant-2",
+        name="Claude API Bare",
+        base_url="https://api.anthropic.com",
+        api_key="sk-ant-test-key",
+        api_type="anthropic",
+    )
+    assert acc_bare.completions_url == "https://api.anthropic.com/v1/messages"
+    assert acc_bare.models_url == "https://api.anthropic.com/v1/models"
+
+    provider = GenericOpenAIProvider(acc_v1)
+    assert provider._client.headers.get("x-api-key") == "sk-ant-test-key"
+    assert provider._client.headers.get("anthropic-version") == "2023-06-01"
+    assert "authorization" not in provider._client.headers
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_health_and_fetch_models():
+    account = GenericOpenAIAccount(
+        id="acc-ant-3",
+        name="Claude",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-key",
+        api_type="anthropic",
+    )
+
+    # 1. Health check & model list when /models is supported
+    def handler(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                json={
+                    "data": [
+                        {
+                            "id": "claude-3-5-sonnet-20241022",
+                            "display_name": "Claude 3.5 Sonnet",
+                            "type": "model",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    provider = GenericOpenAIProvider(account)
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers={"x-api-key": account.api_key, "anthropic-version": "2023-06-01"},
+    )
+
+    assert await provider.health_check() is True
+    models = await provider.fetch_models()
+    assert len(models) == 1
+    assert models[0].id == "claude-3-5-sonnet-20241022"
+    assert models[0].display_name == "Claude 3.5 Sonnet"
+    assert models[0].api_type == "anthropic"
+    await provider.close()
+
+    # 2. Fallback when /models returns 404 but endpoint is alive
+    def handler_fallback(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(404)
+        if request.url.path == "/v1/messages":
+            return httpx.Response(400, json={"error": "messages required"})
+        return httpx.Response(500)
+
+    provider2 = GenericOpenAIProvider(account)
+    await provider2._client.aclose()
+    provider2._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler_fallback),
+        headers={"x-api-key": account.api_key, "anthropic-version": "2023-06-01"},
+    )
+
+    assert await provider2.health_check() is True
+    fallback_models = await provider2.fetch_models()
+    assert len(fallback_models) >= 1
+    assert any("claude" in m.id for m in fallback_models)
+    assert fallback_models[0].api_type == "anthropic"
+    await provider2.close()
+
+
+def test_anthropic_account_exposed_in_platform_manager(tmp_config_manager):
+    catalog = GenericOpenAICatalog()
+    account_manager = GenericOpenAIAccountManager(tmp_config_manager, catalog)
+    account = account_manager.add_account(
+        "Claude API", "https://api.anthropic.com/v1", "sk-ant-test", api_type="anthropic"
+    )
+    platforms = PlatformIntegrationManager(
+        tmp_config_manager,
+        executable_resolver=lambda _command: None,
+        generic_openai_account_manager=account_manager,
+        generic_openai_catalog=catalog,
+    )
+
+    backend = platforms.get(f"platform:generic-openai:{account.id}")
+    assert backend is not None
+    assert backend["display_name"] == "Claude API"
+    assert backend["api_type"] == "anthropic"
+    assert backend["accounts"][0]["api_type"] == "anthropic"
+
+
+def test_generic_account_api_type_routes(tmp_config_manager, monkeypatch):
+    import llama_manager
+    from fastapi.testclient import TestClient
+
+    catalog = GenericOpenAICatalog()
+    account_manager = GenericOpenAIAccountManager(tmp_config_manager, catalog)
+
+    monkeypatch.setattr(llama_manager, "config_manager", tmp_config_manager)
+    monkeypatch.setattr(llama_manager, "generic_openai_manager", account_manager)
+    monkeypatch.setattr(llama_manager, "generic_openai_catalog", catalog)
+
+    llama_manager.app.dependency_overrides[llama_manager.require_auth] = lambda: True
+    try:
+        client = TestClient(llama_manager.app)
+
+        # 1. Create Anthropic account
+        res = client.post(
+            "/platforms/generic-openai/accounts",
+            json={
+                "name": "Anthropic Official",
+                "base_url": "https://api.anthropic.com/v1",
+                "api_key": "sk-ant-123456",
+                "api_type": "anthropic",
+            },
+        )
+        assert res.status_code == 201
+        data = res.json()
+        assert data["name"] == "Anthropic Official"
+        assert data["api_type"] == "anthropic"
+        account_id = data["id"]
+
+        # 2. List accounts
+        list_res = client.get("/platforms/generic-openai/accounts")
+        assert list_res.status_code == 200
+        accounts = list_res.json()["accounts"]
+        target = next(a for a in accounts if a["id"] == account_id)
+        assert target["api_type"] == "anthropic"
+
+        # 3. Update account to openai
+        patch_res = client.patch(
+            f"/platforms/generic-openai/accounts/{account_id}",
+            json={"api_type": "openai"},
+        )
+        assert patch_res.status_code == 200
+        assert patch_res.json()["api_type"] == "openai"
+
+        # 4. Invalid api_type
+        bad_res = client.post(
+            "/platforms/generic-openai/accounts",
+            json={
+                "name": "Invalid",
+                "base_url": "https://api.test/v1",
+                "api_key": "sk-123",
+                "api_type": "other",
+            },
+        )
+        assert bad_res.status_code == 422 or bad_res.status_code == 400
+    finally:
+        llama_manager.app.dependency_overrides.pop(llama_manager.require_auth, None)

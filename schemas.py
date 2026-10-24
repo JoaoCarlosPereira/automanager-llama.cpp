@@ -306,6 +306,7 @@ class GenericOpenAIAddAccountRequest(BaseModel):
     name: str = Field(..., min_length=1)
     base_url: str = Field(..., min_length=1)
     api_key: str = Field(..., min_length=1)
+    api_type: str = Field(default="openai")
 
     @field_validator("name", "base_url", "api_key")
     @classmethod
@@ -314,6 +315,16 @@ class GenericOpenAIAddAccountRequest(BaseModel):
         if not value:
             raise ValueError("campo obrigatório")
         return value
+
+    @field_validator("api_type")
+    @classmethod
+    def validate_api_type(cls, value: Optional[str]) -> str:
+        if not value:
+            return "openai"
+        val = value.strip().lower()
+        if val not in ("openai", "anthropic"):
+            raise ValueError("api_type deve ser 'openai' ou 'anthropic'")
+        return val
 
     @field_validator("base_url")
     @classmethod
@@ -327,6 +338,7 @@ class GenericOpenAIUpdateAccountRequest(BaseModel):
     name: Optional[str] = None
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+    api_type: Optional[str] = None
     status: Optional[str] = None
     cooldown_until: Optional[float] = None
     rate_limited_until: Optional[float] = None
@@ -340,6 +352,16 @@ class GenericOpenAIUpdateAccountRequest(BaseModel):
         if not value:
             raise ValueError("não é permitido valor vazio")
         return value
+
+    @field_validator("api_type")
+    @classmethod
+    def validate_optional_api_type(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        val = value.strip().lower()
+        if val not in ("openai", "anthropic"):
+            raise ValueError("api_type deve ser 'openai' ou 'anthropic'")
+        return val
 
     @field_validator("base_url")
     @classmethod

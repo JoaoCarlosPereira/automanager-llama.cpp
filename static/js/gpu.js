@@ -1,5 +1,5 @@
-import { state } from './state.js?v=4.2.53';
-import { apiFetch } from './auth.js?v=4.2.53';
+import { state } from './state.js?v=4.2.54';
+import { apiFetch } from './auth.js?v=4.2.54';
 
 const CPU_INDEX = -1;
 
@@ -720,22 +720,34 @@ export function resetToDefaults(tabId = null) {
     populateLlamaBinSelect(tabId, window.defaultLlamaBin || null);
     syncTurboquantPanelVisibility(tabId);
     
-    scope.querySelectorAll('.gpu-row').forEach((row, idx) => {
-        row.querySelector('.gpu-checkbox').checked = true;
-        row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
-        row.querySelector('.gpu-main-radio').checked = (idx === 0);
-        const pin = row.querySelector('.gpu-pin');
-        if (pin) pin.checked = false;
-        row.querySelector('.gpu-weight')?.classList.remove('ring-1', 'ring-amber-500/50');
-    });
-    
-    const cpuRow = scope.querySelector('.cpu-row');
-    if (cpuRow) {
-        cpuRow.querySelector('.cpu-checkbox').checked = false;
-        const weight = cpuRow.querySelector('.cpu-weight');
-        weight.value = '0';
-        weight.classList.remove('ring-1', 'ring-amber-500/50');
-        cpuRow.querySelector('.cpu-pin').checked = false;
+    const gpuRows = scope.querySelectorAll('.gpu-row');
+    if (gpuRows.length > 0) {
+        gpuRows.forEach((row, idx) => {
+            row.querySelector('.gpu-checkbox').checked = true;
+            row.querySelector('.gpu-weight').value = (idx === 0 ? "100" : "0");
+            row.querySelector('.gpu-main-radio').checked = (idx === 0);
+            const pin = row.querySelector('.gpu-pin');
+            if (pin) pin.checked = false;
+            row.querySelector('.gpu-weight')?.classList.remove('ring-1', 'ring-amber-500/50');
+        });
+        
+        const cpuRow = scope.querySelector('.cpu-row');
+        if (cpuRow) {
+            cpuRow.querySelector('.cpu-checkbox').checked = false;
+            const weight = cpuRow.querySelector('.cpu-weight');
+            weight.value = '0';
+            weight.classList.remove('ring-1', 'ring-amber-500/50');
+            cpuRow.querySelector('.cpu-pin').checked = false;
+        }
+    } else {
+        const cpuRow = scope.querySelector('.cpu-row');
+        if (cpuRow) {
+            cpuRow.querySelector('.cpu-checkbox').checked = true;
+            const weight = cpuRow.querySelector('.cpu-weight');
+            weight.value = '100';
+            weight.classList.remove('ring-1', 'ring-amber-500/50');
+            cpuRow.querySelector('.cpu-pin').checked = false;
+        }
     }
     
     updateTotal(tabId);

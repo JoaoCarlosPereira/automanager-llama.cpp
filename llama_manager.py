@@ -146,7 +146,7 @@ from paths import CONFIG_PATH, INSTALL_ROOT, get_paths, update_models_dir, reloa
 from utils import mask_api_key
 
 # Version tracking
-_DASHBOARD_JS_V = "4.2.53"  # Layout do card local alinhado (footer curto + meta GPU)
+_DASHBOARD_JS_V = "4.2.54"  # Deduplica e limita quota polling / agy subprocess
 
 MANAGER_PORT = 8000
 GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 5
@@ -1122,6 +1122,7 @@ async def _generic_openai_models_for_listing(instances: List[Dict[str, Any]]) ->
                 "account_ids": generic_openai_catalog.get_model_accounts(model.id),
                 "context_length": model.context_length,
                 "max_completion_tokens": model.output_token_limit,
+                "api_type": getattr(model, "api_type", "openai"),
             },
         }
         entries.append(entry)
@@ -1143,11 +1144,14 @@ async def _forward_generic_openai(
     payload: Dict[str, Any],
     requested_model: str,
 ):
-    """Forward generic OpenAI requests directly, without a local port."""
-    if path.strip("/") != "chat/completions":
+    """Forward generic OpenAI/Anthropic requests directly, without a local port."""
+    norm_path = path.strip("/")
+    while norm_path.startswith("v1/"):
+        norm_path = norm_path[3:].strip("/")
+    if norm_path not in ("chat/completions", "messages"):
         raise HTTPException(
             status_code=404,
-            detail="A plataforma genérica suporta apenas chat/completions",
+            detail="A plataforma genérica suporta apenas chat/completions e messages",
         )
     bare_model = resolve_platform_listing_model(requested_model)
     account = generic_openai_manager.resolve_for_model(bare_model)
@@ -1362,7 +1366,7 @@ async def change_password(req: Dict[str, str], authenticated: bool = Depends(req
 async def get_status(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return _hybrid_status()
+    return await asyncio.to_thread(_hybrid_status)
 
 
 @app.get("/llama-bins")
@@ -1376,14 +1380,14 @@ async def get_llama_bins(authenticated: bool = Depends(require_auth)):
 async def get_metrics(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return gpu_manager.get_metrics()
+    return await asyncio.to_thread(gpu_manager.get_metrics)
 
 
 @app.get("/models")
 async def list_models(authenticated: bool = Depends(require_auth)):
     if not authenticated:
         raise HTTPException(status_code=401)
-    return _model_catalog_response()
+    return await asyncio.to_thread(_model_catalog_response)
 
 
 @app.post("/models/dir")
@@ -1865,7 +1869,7 @@ async def add_generic_openai_account(
         raise HTTPException(status_code=401)
     try:
         account = generic_openai_manager.add_account(
-            req.name, req.base_url, req.api_key
+            req.name, req.base_url, req.api_key, api_type=req.api_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1874,6 +1878,7 @@ async def add_generic_openai_account(
         "name": account.name,
         "base_url": account.base_url,
         "api_key": mask_api_key(account.api_key),
+        "api_type": account.api_type,
         "status": account.status,
     }
 
@@ -3487,14 +3492,28 @@ async def _smart_proxy_forward(
                     ).payload(),
                     status_code=502,
                 )
-            if generic_account.api_key:
-                headers["authorization"] = f"Bearer {generic_account.api_key}"
+            if generic_account.api_type == "anthropic":
+                if generic_account.api_key:
+                    headers["x-api-key"] = generic_account.api_key
+                headers.setdefault("anthropic-version", "2023-06-01")
+                headers.pop("authorization", None)
+            else:
+                if generic_account.api_key:
+                    headers["authorization"] = f"Bearer {generic_account.api_key}"
+                headers.pop("x-api-key", None)
             clean_path = path.strip("/")
             while clean_path.startswith("v1/"):
                 clean_path = clean_path[3:].strip("/")
-            target_url = (
-                f"{generic_account.base_url.rstrip('/')}/{clean_path}"
-            )
+            base = generic_account.base_url.rstrip('/')
+            if generic_account.api_type == "anthropic":
+                if not base.endswith("/v1") and not clean_path.startswith("v1/"):
+                    target_url = f"{base}/v1/{clean_path}"
+                else:
+                    target_url = f"{base}/{clean_path}"
+            else:
+                target_url = (
+                    f"{generic_account.base_url.rstrip('/')}/{clean_path}"
+                )
         else:
             clean_path = path.strip("/")
             while clean_path.startswith("v1/"):
@@ -4186,9 +4205,21 @@ async def openai_proxy(
                 ).payload(),
                 status_code=502,
             )
-        if generic_account.api_key:
-            headers["authorization"] = f"Bearer {generic_account.api_key}"
-        target_url = f"{generic_account.base_url.rstrip('/')}/{path_norm}"
+        if generic_account.api_type == "anthropic":
+            if generic_account.api_key:
+                headers["x-api-key"] = generic_account.api_key
+            headers.setdefault("anthropic-version", "2023-06-01")
+            headers.pop("authorization", None)
+            base = generic_account.base_url.rstrip('/')
+            if not base.endswith("/v1") and not path_norm.startswith("v1/"):
+                target_url = f"{base}/v1/{path_norm}"
+            else:
+                target_url = f"{base}/{path_norm}"
+        else:
+            if generic_account.api_key:
+                headers["authorization"] = f"Bearer {generic_account.api_key}"
+            headers.pop("x-api-key", None)
+            target_url = f"{generic_account.base_url.rstrip('/')}/{path_norm}"
     else:
         target_url = f"http://127.0.0.1:{target_instance['port']}/v1/{path_norm}"
     if request.url.query:
@@ -4739,7 +4770,7 @@ async def index(request: Request):
     is_authenticated = auth_manager.check_auth_cookie(request)
     
     # Pre-render rows for the template (they will be cloned per tab)
-    gpus = gpu_manager.detect_gpus()
+    gpus = await asyncio.to_thread(gpu_manager.detect_gpus)
     gpu_rows = ""
     for g in gpus:
         idx = g["index"]
@@ -4784,10 +4815,12 @@ async def index(request: Request):
                 </td>
             </tr>"""
 
+    cpu_checked = "checked" if not gpus else ""
+    cpu_weight_val = "100" if not gpus else "0"
     cpu_rows = f"""
         <tr class="cpu-row group/row">
             <td class="px-6 py-4 text-center">
-                <input type="checkbox" class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-emerald-600 cursor-pointer">
+                <input type="checkbox" {cpu_checked} class="cpu-checkbox w-5 h-5 bg-slate-900 border-slate-700 rounded text-emerald-600 cursor-pointer">
             </td>
             <td class="px-4 py-4 text-center opacity-20 pointer-events-none">
                 <input type="radio" disabled class="w-4 h-4">
@@ -4802,7 +4835,7 @@ async def index(request: Request):
                 <div class="relative flex items-center group/input cfg-field group/tip">
                     {_cfg_tip("Offload para RAM/CPU quando a VRAM não comporta o modelo. Mais lento que GPU; o auto-balance usa como último recurso se habilitado.")}
                     <input type="number" class="cpu-weight w-20 bg-slate-900 border border-slate-700 text-slate-300 rounded-lg px-2 py-1.5 text-xs font-bold focus:ring-2 focus:ring-emerald-500/50 outline-none transition-all pr-6" 
-                           value="0" min="0" max="100">
+                           value="{cpu_weight_val}" min="0" max="100">
                     <span class="absolute right-2 text-ui-label font-black text-slate-600">%</span>
                     <label class="ml-3 flex items-center gap-2 cursor-pointer" title="Travar valor no auto-balance">
                         <input type="checkbox" class="cpu-pin hidden">
@@ -5068,7 +5101,7 @@ def _build_html(
             <div class="relative glass w-full max-w-xl max-h-[min(90vh,720px)] flex flex-col rounded-2xl sm:rounded-3xl border border-amber-500/30 shadow-2xl overflow-hidden my-auto">
                 <div class="shrink-0 p-4 sm:p-6 border-b border-slate-800/60 bg-slate-900/40">
                     <h2 id="generic-openai-auth-title" class="text-base sm:text-lg font-bold text-white">Plataformas Genéricas</h2>
-                    <p class="text-xs text-slate-500 mt-1">Gerencie contas para plataformas compatíveis com a API OpenAI</p>
+                    <p class="text-xs text-slate-500 mt-1">Gerencie contas para plataformas compatíveis com OpenAI ou Anthropic</p>
                 </div>
                 <div class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 sm:p-6 space-y-4">
                     <!-- List of accounts -->
@@ -5088,9 +5121,17 @@ def _build_html(
                             </div>
 
                             <div>
+                                <label for="generic-openai-apitype" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Padrão da API</label>
+                                <select id="generic-openai-apitype" onchange="onGenericAPITypeChange()" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 transition-colors">
+                                    <option value="openai">OpenAI (v1/chat/completions)</option>
+                                    <option value="anthropic">Anthropic (v1/messages)</option>
+                                </select>
+                            </div>
+
+                            <div>
                                 <label for="generic-openai-baseurl" class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">URL Base</label>
                                 <input type="url" id="generic-openai-baseurl" placeholder="https://api.openai.com/v1" class="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 placeholder-slate-600 transition-colors">
-                                <p class="text-[10px] text-slate-500 mt-1">Vazio para usar o padrão da OpenAI.</p>
+                                <p id="generic-openai-baseurl-hint" class="text-[10px] text-slate-500 mt-1">Vazio para usar o padrão da OpenAI.</p>
                             </div>
 
                             <div>
@@ -6574,6 +6615,16 @@ def _auto_start_default_model() -> None:
                             index=g["index"],
                             weight=val,
                             name=g["name"],
+                        )
+                    )
+                if not weights:
+                    weights.append(
+                        GPUWeight(
+                            index=-1,
+                            weight=100.0,
+                            name="CPU",
+                            active=True,
+                            device="cpu",
                         )
                     )
                 context_size = DEFAULT_CONTEXT_SIZE

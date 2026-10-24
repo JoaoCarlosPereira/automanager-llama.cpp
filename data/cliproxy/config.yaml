@@ -1,7 +1,7 @@
 port: 8317
 host: "127.0.0.1"
-auth-dir: "/mnt/dados-orangepi/dados/dsv/automanager-llama.cpp/data/cliproxy/auth"
+auth-dir: "/home/orangepi/dsv/automanager-llama.cpp/data/cliproxy/auth"
 api-keys: []
 remote-management:
-  secret-key: "$2a$10$dCbAgihV.YUtjZKhphN2B.o7ey/4fgpzuqvxDcbKfkDHcEuCB.EPm"
+  secret-key: "$2a$10$c26A6wBbOJxEo.fWjntmWOu1hTFZMOhSm7ZOM8C0dKkY9z8QrAe.O"
   allow-remote: false

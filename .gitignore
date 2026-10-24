@@ -28,6 +28,9 @@ data/models/
 
 # Binaries installed by installer/setup.sh (llama-server and bundled libs)
 bin/
+bin*/
+*.best_50tps
+*.patch
 
 # Local auth tokens / session files (cliproxy, platform CLIs)
 data/cliproxy/auth/

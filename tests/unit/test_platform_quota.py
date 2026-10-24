@@ -778,3 +778,83 @@ def test_refresh_handles_unavailable_accounts_without_skipping():
     assert claude["weekly_remaining_pct"] == 0.0
     assert claude["session_remaining_pct"] == 94.0
     assert claude["weekly_reset_at"] == "2026-10-24T05:00:01Z"
+
+
+def test_fetch_antigravity_cli_cooldown(monkeypatch):
+    run_calls = []
+
+    class DummyProc:
+        returncode = 0
+        stdout = json.dumps({
+            "command": {
+                "name": "usage",
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini Models",
+                            "buckets": [
+                                {
+                                    "id": "gemini-weekly",
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.5,
+                                    "reset_time": "2026-10-23T21:57:36Z",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        })
+
+    def fake_run(*args, **kwargs):
+        run_calls.append(args)
+        return DummyProc()
+
+    monkeypatch.setattr(pq, "_find_antigravity_binary", lambda: Path("/fake/bin/agy"))
+    monkeypatch.setattr(pq, "_get_active_agy_email", lambda: "user@example.com")
+    monkeypatch.setattr(pq.subprocess, "run", fake_run)
+
+    # Invalidate CLI cache
+    with pq._AGY_CLI_LOCK:
+        pq._AGY_CLI_CACHE["result"] = None
+        pq._AGY_CLI_CACHE["fetched_at"] = 0.0
+
+    res1 = pq.fetch_antigravity_cli({"email": "user@example.com"})
+    assert res1 is not None
+    assert len(run_calls) == 1
+
+    # Second call within cooldown must return cached result without calling subprocess.run
+    res2 = pq.fetch_antigravity_cli({"email": "user@example.com"})
+    assert res2 is not None
+    assert len(run_calls) == 1
+
+
+def test_snapshot_single_flight_deduplication(tmp_path: Path):
+    import concurrent.futures
+    import threading
+    import time
+
+    service = pq.PlatformQuotaService(runtime_dir=tmp_path, cache_ttl=0)
+    refresh_count = 0
+    lock = threading.Lock()
+
+    def slow_refresh():
+        nonlocal refresh_count
+        time.sleep(0.05)
+        with lock:
+            refresh_count += 1
+        return {"test": {"available": True}}
+
+    service._refresh = slow_refresh
+
+    # Launch 5 concurrent calls with force=True
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(service.snapshot, force=True) for _ in range(5)]
+        results = [f.result() for f in futures]
+
+    assert len(results) == 5
+    for r in results:
+        assert r["test"]["available"] is True
+    # Single-flight deduplication must ensure only 1 real refresh occurred
+    assert refresh_count == 1
+
