@@ -121,6 +121,41 @@ class ProcessManager:
     def auto_balance_cancel_requested(self, value: bool) -> None:
         self._auto_balance_cancel = value
 
+    def resolve_optimal_llama_bin(
+        self,
+        requested_bin: Optional[str],
+        gpu_weights: List[GPUWeight],
+    ) -> str:
+        """Select the optimal llama-server binary based on active GPU architecture."""
+        p100_bin = "/home/joao/llama-cpp-p100-optimized/build/bin/llama-server"
+        rtx3090_bin = "/home/joao/llama-cpp-3090-optimized/build/bin/llama-server"
+
+        active = self.gpu_manager.active_gpus_with_weight(gpu_weights)
+        active_indices = [w.index for w in active]
+        has_p100 = any(idx in (0, 1) for idx in active_indices)
+        only_3090 = bool(active_indices and all(idx == 2 for idx in active_indices))
+
+        if requested_bin and os.path.isfile(requested_bin):
+            if "turboquant" in requested_bin:
+                return requested_bin
+            if has_p100 and "3090" in requested_bin:
+                logger.warning(
+                    "Binário RTX 3090 (sm_86) incompatível com Tesla P100 (sm_60). "
+                    "Usando automaticamente llama-cpp-p100-optimized."
+                )
+                if os.path.isfile(p100_bin):
+                    return p100_bin
+            if not requested_bin.endswith("llama.cpp/build/bin/llama-server"):
+                return requested_bin
+
+        if has_p100 and os.path.isfile(p100_bin):
+            return p100_bin
+
+        if only_3090 and os.path.isfile(rtx3090_bin):
+            return rtx3090_bin
+
+        return resolve_llama_server_bin()
+
     def _is_port_free(self, port: int) -> bool:
         """Check if a TCP port is free to bind."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -468,7 +503,7 @@ class ProcessManager:
         split_mode: str = "layer",
         parallel_slots: int = DEFAULT_PARALLEL_SLOTS,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        ubatch_size: int = 512,
+        ubatch_size: int = 2048,
         cache_type_k: str = "f16",
         cache_type_v: str = "f16",
         numa_enabled: bool = False,
@@ -529,7 +564,7 @@ class ProcessManager:
         n_gpu_layers = plan.n_gpu_layers
         main_gpu = self.gpu_manager.resolve_main_gpu_index(gpu_weights)
 
-        llama_bin = llama_server_bin or resolve_llama_server_bin()
+        llama_bin = self.resolve_optimal_llama_bin(llama_server_bin, gpu_weights)
         if llama_server_bin and not os.path.isfile(llama_server_bin):
             raise HTTPException(
                 status_code=400,
@@ -665,6 +700,10 @@ class ProcessManager:
         env["CUDA_VISIBLE_DEVICES"] = visible if visible is not None else ""
         env["GGML_CUDA_GRAPH_OPT"] = "1"
         env["GGML_CUDA_GRAPH_DEBUG"] = "1"
+        if os.path.isfile("/home/joao/qwen_draft_vocab.txt"):
+            env["LLAMA_MTP_DRAFT_VOCAB"] = "/home/joao/qwen_draft_vocab.txt"
+        env["LLAMA_DEC_SLOTS"] = "1"
+        env["LLAMA_DEC_MAX_TOK"] = "1"
 
         logger.info(f"Starting llama-server on port {port} for model {os.path.basename(model_path)}")
         try:

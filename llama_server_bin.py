@@ -75,9 +75,18 @@ def _relative_candidate_dirs() -> List[str]:
         "build/bin",
         "build/bin/Release",
         "build/bin/Debug",
+        "llama-cpp-3090-optimized/build/bin",
+        "llama-cpp-3090-optimized/build/bin/Release",
+        "llama-cpp-p100-optimized/build/bin",
+        "llama-cpp-p100-optimized/build/bin/Release",
+        "llama-cpp-turboquant/build/bin",
+        "llama-cpp-turboquant/build/bin/Release",
         "llama.cpp/build/bin",
         "llama.cpp/build/bin/Release",
         "llama.cpp/build/bin/Debug",
+        os.path.join("..", "llama-cpp-3090-optimized", "build", "bin"),
+        os.path.join("..", "llama-cpp-p100-optimized", "build", "bin"),
+        os.path.join("..", "llama-cpp-turboquant", "build", "bin"),
         os.path.join("..", "llama.cpp", "build", "bin"),
         os.path.join("..", "llama.cpp", "build", "bin", "Release"),
         os.path.join("..", "..", "llama.cpp", "build", "bin"),
@@ -210,12 +219,22 @@ def get_bin_version_info(bin_path: str) -> Dict[str, Optional[str]]:
     if not parent or parent == "bin":
         parent = "llama-server"
 
+    display_name = parent
+    if "3090-optimized" in bin_path:
+        display_name = "llama-cpp-3090-optimized (Ampere sm_86)"
+    elif "p100-optimized" in bin_path:
+        display_name = "llama-cpp-p100-optimized (Pascal sm_60)"
+    elif "turboquant" in bin_path:
+        display_name = "llama-cpp-turboquant (TurboQuant+)"
+    elif parent == "llama.cpp":
+        display_name = "llama.cpp (Stock Upstream)"
+
     if build and commit:
-        label = f"{parent} · build {build} ({commit[:7]})"
+        label = f"{display_name} · build {build} ({commit[:7]})"
     elif build:
-        label = f"{parent} · build {build}"
+        label = f"{display_name} · build {build}"
     else:
-        label = parent
+        label = display_name
 
     return {"build": build, "commit": commit, "label": label}
 

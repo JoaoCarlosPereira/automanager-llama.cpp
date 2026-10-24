@@ -948,7 +948,7 @@ def mtp_cli_args(
     token_str = str(tokens)
     flags = ["--spec-type", f"draft-{draft_type}", "--spec-draft-n-max", token_str]
     if draft_type == "mtp":
-        flags.extend(["--spec-draft-n-min", token_str])
+        flags.extend(["--spec-draft-n-min", "0", "--spec-draft-p-min", "0.75"])
     if mtp_model_path:
         flags[0:0] = [
             "--spec-draft-model", mtp_model_path,

@@ -4955,7 +4955,7 @@ async def index(request: Request):
 
     ubatch_opts = ""
     for val in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
-        selected = "selected" if val == 512 else ""
+        selected = "selected" if val == 2048 else ""
         ubatch_opts += f'<option value="{val}" class="bg-slate-900" {selected}>{val}</option>'
 
     # Só expõe o token da API no HTML quando há sessão válida; GET / é público
