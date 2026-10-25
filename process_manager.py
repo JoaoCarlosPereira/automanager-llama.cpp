@@ -618,7 +618,9 @@ class ProcessManager:
             str(ubatch_size),
         ]
 
-        if supports_cli_flag("--mlock", llama_bin):
+        if supports_cli_flag("--load-mode", llama_bin):
+            cmd.extend(["--load-mode", "mlock"])
+        elif supports_cli_flag("--mlock", llama_bin):
             cmd.append("--mlock")
 
         if split:
@@ -655,6 +657,20 @@ class ProcessManager:
 
         if supports_cli_flag("--kv-unified", llama_bin):
             cmd.append("--kv-unified")
+
+        if supports_cli_flag("--cache-ram", llama_bin):
+            cache_ram_env = os.environ.get("AUTOMANAGER_CACHE_RAM_MIB") or os.environ.get("LLAMA_CACHE_RAM_MIB")
+            if cache_ram_env:
+                cmd.extend(["--cache-ram", str(cache_ram_env)])
+            else:
+                try:
+                    import psutil
+                    total_ram_mib = int(psutil.virtual_memory().total / (1024 * 1024))
+                    safe_cache_ram = min(24576, int(total_ram_mib * 0.45))
+                    safe_cache_ram = max(8192, safe_cache_ram)
+                except Exception:
+                    safe_cache_ram = 24576
+                cmd.extend(["--cache-ram", str(safe_cache_ram)])
 
         # Tool use da API Anthropic (/v1/messages) exige o chat template Jinja.
         if supports_cli_flag("--jinja", llama_bin):
