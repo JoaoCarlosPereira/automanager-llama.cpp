@@ -209,10 +209,18 @@ class HybridTokenCounter:
 
         local_instances = self._local_instances(instances)
         if exact_required and local_instances:
+            # Deduplicate instances running identical models to avoid redundant HTTP /tokenize calls
+            seen_models = set()
+            unique_instances = []
+            for inst in local_instances:
+                model_key = str(inst.get("model_path") or inst.get("model") or inst.get("port"))
+                if model_key not in seen_models:
+                    seen_models.add(model_key)
+                    unique_instances.append(inst)
             results = await asyncio.gather(
                 *(
                     self._exact_local_count(body, instance, headers)
-                    for instance in local_instances
+                    for instance in unique_instances
                 ),
                 return_exceptions=True,
             )

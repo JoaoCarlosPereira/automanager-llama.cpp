@@ -3054,8 +3054,14 @@ async def _count_request_tokens(
         if (limit := _local_context_limit(instance)) is not None
     ]
     conservative_required = token_counter.conservative_required_context(data)
+    # conservative_required is based on raw serialized JSON bytes (1 byte ~ 1 unit).
+    # Since BPE tokenizers produce at least 2 to 4 bytes per token on code/text,
+    # raw bytes // 2 is a guaranteed safe upper bound for actual token count.
+    # Comparing raw bytes directly to context token limits falsely triggered slow exact
+    # /tokenize HTTP calls on prompts that used only ~25-30% of the context window.
+    safe_token_estimate = conservative_required // 2
     exact_required = bool(
-        local_limits and conservative_required > min(local_limits)
+        local_limits and safe_token_estimate > min(local_limits)
     )
     budget = await token_counter.count(
         data,
