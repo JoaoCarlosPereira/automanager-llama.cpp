@@ -37,6 +37,7 @@ data/cliproxy/auth/
 data/cliproxy/management.key
 data/cliproxy/quota_cache.json
 data/cliproxy/quota_cache.tmp
+data/cliproxy/models_catalog_cache.json
 data/proxy_sessions.json
 
 # Test / debug artifacts
